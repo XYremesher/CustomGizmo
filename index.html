@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modular Three.js Gizmo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; }
+        canvas { display: block; touch-action: none; }
+        .ui {
+            position: absolute; top: 1rem; left: 1rem; pointer-events: none;
+            color: white; font-family: sans-serif;
+            background: rgba(15, 23, 42, 0.95); padding: 0.75rem;
+            border-radius: 0.75rem; border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px); width: 220px; z-index: 100;
+        }
+        .ui.collapsed .collapsible-content { max-height: 0; opacity: 0; margin-top: 0; }
+        .ui * { pointer-events: auto; }
+        .mode-btn {
+            background: #1e293b; border: 1px solid rgba(255,255,255,0.1);
+            padding: 0.25rem 0.5rem; border-radius: 0.3rem; font-weight: bold;
+            font-size: 0.75rem; flex: 1; text-align: center; cursor: pointer;
+            transition: all 0.2s; user-select: none;
+        }
+        .mode-btn.active { background: #ec4899; color: white; border-color: #ec4899; }
+        .collapsible-content { max-height: 500px; overflow: hidden; transition: all 0.3s; }
+        input[type=range] { accent-color: #ec4899; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.167.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.167.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="ui collapsed" id="uiPanel">
+        <div class="flex justify-between items-center mb-2">
+            <h1 class="font-bold text-sm">Gizmo Control</h1>
+            <button id="toggleBtn" class="text-[10px] bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded">Settings</button>
+        </div>
+        
+        <div class="flex gap-1 mb-2">
+            <div class="mode-btn active" data-mode="translate">M</div>
+            <div class="mode-btn" data-mode="rotate">R</div>
+            <div class="mode-btn" data-mode="scale">S</div>
+            <button id="spaceToggle" class="mode-btn" style="flex: 2">WORLD</button>
+        </div>
+
+        <div class="mb-2">
+            <label class="block text-[10px] opacity-70 mb-0.5">Gizmo Scale: <span id="gizmoScaleValue">1.2</span></label>
+            <input type="range" id="gizmoScaleSlider" min="0.1" max="3.0" step="0.1" value="1.2" class="w-full h-1">
+        </div>
+
+        <div class="collapsible-content space-y-2 mt-2" id="settings">
+            <div>
+                <label class="block text-[10px] opacity-70 mb-0.5">Handle Offset: <span id="offsetValue">1.1</span></label>
+                <input type="range" id="offsetSlider" min="0.5" max="3.0" step="0.1" value="1.1" class="w-full h-1">
+            </div>
+            <div>
+                <label class="block text-[10px] opacity-70 mb-0.5">Thickness: <span id="thicknessValue">0.4</span></label>
+                <input type="range" id="thicknessSlider" min="0.1" max="1.5" step="0.1" value="0.4" class="w-full h-1">
+            </div>
+            <div>
+                <label class="block text-[10px] opacity-70 mb-0.5">Axis Length: <span id="lengthValue">1.8</span></label>
+                <input type="range" id="lengthSlider" min="1.0" max="3.5" step="0.1" value="1.8" class="w-full h-1">
+            </div>
+            <div>
+                <label class="block text-[10px] opacity-70 mb-0.5">Center Cube: <span id="centerSizeValue">0.5</span></label>
+                <input type="range" id="centerSizeSlider" min="0.1" max="1.2" step="0.1" value="0.5" class="w-full h-1">
+            </div>
+            <div>
+                <label class="block text-[10px] opacity-70 mb-0.5">Plane Size: <span id="planeSizeValue">0.6</span></label>
+                <input type="range" id="planeSizeSlider" min="0.2" max="1.5" step="0.1" value="0.6" class="w-full h-1">
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import App from './App.js';
+        
+        const app = new App();
+        app.animate();
+
+        // UI Event Listeners
+        document.querySelectorAll('.mode-btn[data-mode]').forEach(b => b.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('.mode-btn[data-mode]').forEach(x => x.classList.remove('active'));
+            e.target.classList.add('active');
+            app.gizmo.updateMode(e.target.dataset.mode);
+        }));
+
+        document.getElementById('spaceToggle').addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            const s = app.gizmo.config.space === 'world' ? 'local' : 'world';
+            app.gizmo.setSpace(s); e.target.innerText = s.toUpperCase();
+        });
+
+        const bind = (id, prop) => {
+            document.getElementById(id).oninput = (e) => {
+                const v = parseFloat(e.target.value);
+                app.gizmo.config[prop] = v;
+                document.getElementById(id.replace('Slider', 'Value')).innerText = v.toFixed(1);
+                if (prop !== 'gizmoScale') app.gizmo.createGizmoMeshes();
+            };
+        };
+        bind('offsetSlider', 'handleOffset'); bind('thicknessSlider', 'gizmoThickness');
+        bind('lengthSlider', 'axisLength'); bind('centerSizeSlider', 'centerCubeSize');
+        bind('planeSizeSlider', 'planeHandleSize'); bind('gizmoScaleSlider', 'gizmoScale');
+        
+        document.getElementById('toggleBtn').addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            document.getElementById('uiPanel').classList.toggle('collapsed');
+        });
+    </script>
+</body>
+</html>
