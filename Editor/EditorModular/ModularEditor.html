@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Geometry Editor Pro</title>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <style>
+        :root { --ui-width: 107px; --timeline-height: 250px; --accent: #4CAF50; --selected: #2196F3; --key-color: #fff; --key-selected: #FFEB3B; --overlap-color: rgba(255, 87, 34, 0.6); }
+        body { margin: 0; overflow: hidden; background-color: #3d3d3d; font-family: sans-serif; display: flex; touch-action: none; }
+        canvas { display: block; }
+        #ui-container { position: absolute; top: 0; right: 0; width: var(--ui-width); height: calc(100vh - var(--timeline-height)); background: rgba(30, 30, 30, 0.95); border-left: 1px solid #444; border-bottom: 1px solid #444; border-bottom-left-radius: 4px; color: #ccc; display: flex; flex-direction: row; z-index: 100; transition: transform 0.3s ease; }
+        #ui-container.collapsed { transform: translateX(calc(var(--ui-width) - 10px)); }
+        .side-grip { width: 10px; align-self: stretch; background: #252525; cursor: col-resize; display: flex; align-items: center; justify-content: center; border-right: 1px solid #444; flex-shrink: 0; touch-action: none; border-bottom-left-radius: 4px; }
+        .side-grip::after { content: ""; width: 2px; height: 20px; background: #555; border-radius: 1px; box-shadow: 0 4px 0 #555, 0 -4px 0 #555; }
+        .drag-grip { width: 14px; background: #252525; color: #666; display: flex; align-items: center; justify-content: center; cursor: grab; border-right: 1px solid #444; font-size: 10px; user-select: none; border-radius: 3px 0 0 3px; touch-action: none; }
+        .drag-grip:active { cursor: grabbing; }
+        .panel-content-wrapper { flex-grow: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .panel { padding: 6px; border-bottom: 1px solid #444; }
+        .panel-title { font-size: 9px; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; color: #888; }
+        #outliner { flex-grow: 1; overflow: auto; border-bottom: 1px solid #444; padding-right: 3px; height: 0; touch-action: auto; }
+        .outliner-item-container { padding: 2px; cursor: pointer; font-size: 9px; border-radius: 2px; display: flex; align-items: center; border: 1px solid transparent; user-select: none; width: max-content; min-width: 100%; box-sizing: border-box; }
+        .outliner-item-container:hover { background: #333; }
+        .outliner-item-container.selected { background: #0055aa; color: white; border-color: #0077cc; }
+        .outliner-item-container.drag-over { border-bottom: 2px solid #00aaff; }
+        .outliner-toggle { width: 10px; text-align: center; flex-shrink: 0; font-family: monospace; font-weight: bold; cursor: pointer; font-size: 8px; }
+        .outliner-name { flex-grow: 1; white-space: nowrap; padding-left: 2px; pointer-events: auto; padding-right: 8px; }
+        .outliner-vis { width: 12px; text-align: center; flex-shrink: 0; opacity: 0.6; font-size: 9px; cursor: pointer; }
+        .outliner-vis:hover { opacity: 1.0; }
+        .children-container { padding-left: 2px; border-left: 1px dotted #555; margin-left: 2px; }
+        .transform-group { display: grid; grid-template-columns: 24px 1fr 1fr 1fr; gap: 2px; align-items: center; margin-bottom: 4px; }
+        .transform-group label { font-size: 8px; color: #555; text-align: left; overflow: hidden; text-overflow: ellipsis; }
+        input[type="number"], input[type="checkbox"], select, input[type="range"], input[type="text"] { background: #111; border: 1px solid #444; color: #ccc; font-family: monospace; padding: 1px; width: 100%; font-size: 8px; outline: none; box-sizing: border-box; }
+        input[type="checkbox"] { width: auto; margin: 0; }
+        .btn { width: 100%; padding: 4px; background: #333; color: #bbb; border: 1px solid #444; cursor: pointer; font-size: 9px; margin-top: 2px; text-transform: uppercase; border-radius: 2px; }
+        .btn:hover { background: #444; color: #fff; }
+        .btn.primary { background: #0055aa; color: #fff; border-color: #0077cc; margin-top: 6px; }
+        .action-group { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+        .floating-panel { position: absolute; background: rgba(30, 30, 30, 0.95); border: 1px solid #444; color: #ccc; z-index: 200; display: flex; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.6); }
+        .drag-header-top { background: #252525; padding: 4px 6px; cursor: grab; font-size: 9px; font-weight: bold; text-transform: uppercase; border-bottom: 1px solid #444; user-select: none; display: flex; justify-content: space-between; border-radius: 3px 3px 0 0; touch-action: none; }
+        .drag-header-top:active { cursor: grabbing; }
+        .floating-content { padding: 0; flex-grow: 1; display: flex; flex-direction: column; }
+        .dropdown-panel { position: absolute; top: calc(100% + 4px); background: rgba(30, 30, 30, 0.95); border: 1px solid #444; border-radius: 4px; padding: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.6); display: none; z-index: 201; }
+        .shape-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 4px; padding: 4px; background: #1a1a1a; border: 1px solid #333; border-radius: 2px; }
+        .shape-grid button, .gizmo-btn, .square-btn { padding: 0; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: #222; border: 1px solid #555; border-radius: 3px; cursor: pointer; color: #ccc; transition: all 0.2s; font-size: 12px; }
+        .shape-grid button:hover, .gizmo-btn:hover, .gizmo-btn.active, .square-btn:hover, .square-btn.active { background: #0055aa; border-color: #0077cc; color: #fff; }
+        .gizmo-btn.active, .square-btn.active { background: #0055aa; border-color: #0077cc; }
+        .shape-grid svg, .gizmo-btn svg, .square-btn svg { width: 14px; height: 14px; }
+        #context-menu { position: absolute; background: #222; border: 1px solid #555; z-index: 1000; display: none; padding: 4px 0; border-radius: 2px; box-shadow: 0 4px 8px rgba(0,0,0,0.5); }
+        .context-menu-item { padding: 4px 12px; cursor: pointer; font-size: 9px; color: #ccc; }
+        .context-menu-item:hover { background: #0055aa; color: #fff; }
+        #collection-list { margin-top: 4px; max-height: 100px; overflow-y: auto; border: 1px solid #444; background: #1a1a1a; display: none; }
+        .collection-entry { padding: 3px 6px; font-size: 9px; border-bottom: 1px solid #333; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .accordion-entry .del-btn { color: #e74c3c; font-weight: bold; padding: 0 4px; margin-left: 5px; }
+        #floating-properties .floating-content { max-height: 400px; overflow-y: auto; overflow-x: hidden; }
+        #floating-properties::-webkit-scrollbar { width: 4px; }
+        #floating-properties::-webkit-scrollbar-track { background: #1a1a1a; }
+        #floating-properties::-webkit-scrollbar-thumb { background: #444; }
+        .accordion-header { background: #252525; padding: 4px 6px; font-size: 8px; font-weight: bold; cursor: pointer; border-bottom: 1px solid #333; display: flex; justify-content: space-between; text-transform: uppercase; color: #aaa; }
+        .accordion-header:hover { background: #333; color: #fff; }
+        .accordion-content { display: flex; flex-direction: column; padding: 6px; display: none; background: rgba(20,20,20,0.5); }
+        #floating-properties { width: 110px !important; }
+        #floating-properties .transform-group { grid-template-columns: 32px 1fr 1fr 1fr; gap: 2px; margin-bottom: 2px; }
+        #acc-transform .transform-group { grid-template-columns: 8px 1fr 1fr 1fr; gap: 2px; margin-left: -2px; }
+        #acc-shape .transform-group, #acc-cuts .transform-group { grid-template-columns: 1fr 45px; }
+        #floating-properties .transform-group label { font-size: 8px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #floating-properties input, #floating-properties select { font-size: 8px; padding: 0px 1px; height: 14px; width: 100%; box-sizing: border-box; }
+        #floating-properties .accordion-header { font-size: 8px; padding: 3px 4px; }
+        #floating-properties .drag-header-top { font-size: 8px; padding: 2px 4px; }
+        #floating-properties .square-btn { width: 14px !important; height: 14px !important; padding: 1px !important; }
+        #floating-properties .accordion-content { padding: 4px; }
+        #stats-overlay { position: absolute; top: 4px; font-size: 8px; color: #ccc; pointer-events: none; text-align: right; font-family: monospace; z-index: 100; display: flex; flex-direction: column; text-shadow: 1px 1px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000; }
+        .bottom-resizer { width: 100%; height: 10px; background: #252525; cursor: row-resize; border-top: 1px solid #444; flex-shrink: 0; display: flex; align-items: center; justify-content: center; touch-action: none; border-bottom-left-radius: 4px; }
+        .bottom-resizer::after { content: ""; width: 20px; height: 2px; background: #555; border-radius: 1px; }
+
+        /* Timeline & Animation Styles */
+        #timeline-area { position: absolute; bottom: 0; left: 0; width: 100%; height: var(--timeline-height); background: #1e1e1e; border-top: 1px solid #333; display: flex; flex-direction: column; z-index: 150; }
+        #timeline-header { height: 40px; background: #252525; border-bottom: 1px solid #333; display: flex; align-items: center; padding: 0 10px; font-size: 11px; gap: 8px; }
+        #timeline-body { display: flex; flex: 1; overflow: hidden; }
+        #track-headers { width: 140px; background: #1a1a1a; border-right: 1px solid #333; overflow-y: hidden; flex-shrink: 0; }
+        #tracks-container { flex: 1; overflow-x: auto; overflow-y: auto; position: relative; background: repeating-linear-gradient(90deg, transparent, transparent 99px, #2a2a2a 100px); background-size: 100px 100%; touch-action: none; }
+        .track-wrapper { display: flex; border-bottom: 1px solid #2a2a2a; position: relative; }
+        .track-header { height: 40px; box-sizing: border-box; border-bottom: 1px solid #2a2a2a; padding: 5px; display: flex; align-items: center; position: relative; }
+        .track-header input { background: transparent; border: 1px solid transparent; color: #888; font-size: 11px; padding: 2px; width: 70px; }
+        .track-header input:hover, .track-header input:focus { background: #2a2a2a; border-color: #444; color: #fff; }
+        .track-header.selected { background: #333; border-left: 3px solid var(--accent); }
+        .track-eye-btn { position: absolute; right: 20px; background: transparent; border: none; color: #aaa; cursor: pointer; font-size: 12px; }
+        .track-delete-btn { position: absolute; right: 2px; background: transparent; border: none; color: #ff5252; cursor: pointer; font-size: 12px; opacity: 0.5; }
+        .track-content { height: 40px; box-sizing: border-box; border-bottom: 1px solid #2a2a2a; position: relative; width: 10000px; }
+        .track-content[data-hidden="true"] { opacity: 0.3; pointer-events: none; }
+        .clip-block { position: absolute; height: 32px; top: 4px; background: #2e7d32; border: 1px solid #4CAF50; border-radius: 4px; font-size: 10px; line-height: 32px; cursor: move; user-select: none; overflow: hidden; color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 5; box-sizing: border-box; }
+        .clip-block.selected-clip { outline: 2px solid var(--selected); outline-offset: -2px; z-index: 11; }
+        .clip-name { pointer-events: none; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .clip-block.layer-clip { background: #000; border-color: #444; }
+        .clip-block.active { border-color: #fff; z-index: 10; }
+        .trim-handle { position: absolute; top: 0; bottom: 0; width: 6px; background: rgba(255, 255, 255, 0.2); cursor: ew-resize; z-index: 20; display: flex; justify-content: center; align-items: center; }
+        .trim-handle.left { left: 0; } .trim-handle.right { right: 0; }
+        .overlap-marker { position: absolute; height: 32px; top: 4px; background: var(--overlap-color); pointer-events: none; z-index: 12; border-radius: 4px; }
+        .key-marker { position: absolute; width: 6px; height: 6px; background: var(--key-color); top: 13px; transform: rotate(45deg); cursor: pointer; z-index: 25; border: 1px solid #000; }
+        .key-marker.selected { background: var(--key-selected); transform: rotate(45deg) scale(1.3); box-shadow: 0 0 5px var(--key-selected); }
+        .loop-overlay { position: absolute; top: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 50; pointer-events: none; }
+        .loop-handle { position: absolute; top: 0; bottom: 0; width: 8px; background: rgba(255, 152, 0, 0.8); cursor: ew-resize; pointer-events: auto; }
+        #handle-start { right: 0; } #handle-end { left: 0; }
+        #playhead { position: absolute; top: 0; left: 0; width: 2px; height: 100%; background: #ff5252; z-index: 100; cursor: ew-resize; }
+        #playhead::after { content: ''; position: absolute; top: 0; left: -5px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid #ff5252; }
+        .anim-list-item { background: #2a2a2a; margin-bottom: 4px; padding: 6px; border-radius: 4px; font-size: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .anim-list-item button { background: var(--accent); border: none; color: white; padding: 2px 6px; border-radius: 2px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="gizmo-panel" class="floating-panel" style="top: 10px; left: 10px; flex-direction: row; width: 265px; box-sizing: border-box;">
+        <div class="drag-grip" id="gizmo-drag-grip">⋮</div>
+        <div style="display: flex; gap: 4px; padding: 4px; align-items: center; justify-content: space-between; flex-grow: 1;">
+            <div style="display: flex; gap: 4px;">
+                <button class="gizmo-btn active" id="btn-translate" title="Translate (W)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M19 9l3 3-3 3M9 19l3 3-3 3M2 12h20M12 2v20"></path></svg></button>
+                <button class="gizmo-btn" id="btn-rotate" title="Rotate (E)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg></button>
+                <button class="gizmo-btn" id="btn-scale" title="Scale (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 3l-6 6M21 3v6M21 3h-6M3 21l6-6M3 21v-6M3 21h6M15 15l6 6M15 15v6M15 15h6M9 9L3 3M9 9V3M9 9H3"></path></svg></button>
+                <button class="gizmo-btn" id="btn-shape" style="color: #ffaa00;" title="Shape Controls (T)">⚒</button>
+            </div>
+            <div style="width: 1px; height: 16px; background: #444; margin: 0 2px;"></div>
+            <div style="display: flex; gap: 4px;">
+                <button class="btn" id="btn-space" style="width: 32px; height: 24px; margin: 0; padding: 0; font-size: 8px;" title="Toggle Space">WLD</button>
+                <button class="btn" id="btn-focus" style="width: 32px; height: 24px; margin: 0; padding: 0; font-size: 8px;" title="Focus Selected">FCS</button>
+                <button class="btn" id="btn-undo" style="width: 24px; height: 24px; margin: 0; padding: 0; font-size: 14px; border-radius: 50%;" title="Undo (Ctrl+Z)">↺</button>
+                <button class="btn" id="btn-redo" style="width: 24px; height: 24px; margin: 0; padding: 0; font-size: 14px; border-radius: 50%;" title="Redo (Ctrl+Y)">↻</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="add-panel" class="floating-panel" style="top: 46px; left: 10px; flex-direction: row; width: 103px; box-sizing: border-box;">
+        <div class="drag-grip" id="add-drag-grip">⋮</div>
+        <div style="display: flex; flex-direction: column; flex-grow: 1;">
+            <div style="display: flex; gap: 4px; padding: 4px; justify-content: space-between;">
+                <button id="add-shape-toggle" class="square-btn" title="Add Object"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></button>
+                <button id="add-collection-toggle" class="square-btn" title="Add Entity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg></button>
+                <button id="settings-toggle" class="square-btn" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
+            </div>
+        </div>
+        <div id="shape-dropdown" class="dropdown-panel" style="left: 18px;">
+            <div id="shape-grid" class="shape-grid" style="display: grid; margin-top: 0; padding: 0; border: none; background: transparent;">
+                <button class="add-shape-btn" data-shape="Cube" title="Box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg></button>
+                <button class="add-shape-btn" data-shape="Sphere" title="Sphere"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path><path d="M2 12h20"></path></svg></button>
+                <button class="add-shape-btn" data-shape="Cone" title="Cone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 20h20L12 2z"></path><path d="M12 22c-5.52 0-10-1.79-10-4s4.48-4 10-4 10 1.79 10 4-4.48 4-10 4z"></path></svg></button>
+                <button class="add-shape-btn" data-shape="Cylinder" title="Cylinder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 19c0 1.66-4.03 3-9 3s-9-1.34-9-3V5"></path><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path></svg></button>
+                <button class="add-shape-btn" data-shape="Torus" title="Torus">🍩</button>
+                <button class="add-shape-btn" data-shape="Empty" title="Empty Group">📁</button>
+            </div>
+        </div>
+        <div id="collection-dropdown" class="dropdown-panel" style="left: 46px; flex-direction: column; width: max-content; min-width: 100px;">
+            <div id="collection-list" style="display: block; margin-top: 0;"></div>
+            <button id="add-selected-root-btn" class="btn primary" style="display: none; margin-top: 4px;">Define Entity</button>
+        </div>
+    </div>
+
+    <div id="tools-panel" class="floating-panel" style="top: 46px; left: 117px; flex-direction: row; width: 103px; box-sizing: border-box;">
+        <div class="drag-grip" id="tools-drag-grip">⋮</div>
+        <div style="display: flex; gap: 4px; padding: 4px; align-items: center; justify-content: space-between; flex-grow: 1;">
+            <button id="btn-origin-bottom" class="square-btn" style="width: 24px; height: 24px;" title="Origin to Bottom"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v14M5 9l7 7 7-7M5 22h14"></path></svg></button>
+            <button id="btn-move-to-zero" class="square-btn" style="width: 24px; height: 24px;" title="Move to Zero"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"></circle><path d="M12 2v6M12 16v6M2 12h6M16 12h6"></path></svg></button>
+            <button id="btn-multi-select" class="square-btn" style="width: 24px; height: 24px;" title="Multi-Select Mode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg></button>
+        </div>
+    </div>
+
+    <div id="anim-panel" class="floating-panel" style="top: 46px; left: 224px; flex-direction: column; width: 220px; z-index: 200;">
+        <div class="drag-header-top" id="anim-drag-header">Animation Library</div>
+        <div class="floating-content" style="padding: 6px;">
+            <input type="file" id="anim-upload" accept=".fbx" multiple style="width:100%; font-size:9px; margin-bottom:6px;">
+            <div id="anim-library" style="max-height: 120px; overflow-y: auto;"></div>
+            <div style="display:flex; gap:4px; margin-top:6px;">
+                <button class="btn primary" id="btn-add-layer" style="margin:0">+ Layer</button>
+                <button class="btn" id="btn-set-key" style="margin:0; background:#FFEB3B; color:#000;">Key (K)</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-panel" class="floating-panel" style="display: none; top: 10px; left: 280px; flex-direction: column; padding: 0; width: 140px;">
+        <div class="drag-header-top" id="settings-drag-header"><span>Settings</span></div>
+        <div class="floating-content" style="padding: 4px;">
+            <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="text-align: left; grid-column: 1/2;">Outline</label><input type="checkbox" id="set-outline" checked style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="text-align: left; grid-column: 1/2;">Highlight</label><input type="checkbox" id="set-highlight" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 30px;"><label style="text-align: left; grid-column: 1/2;">Vis. Col</label><input type="color" id="set-out-color" value="#ffffff" style="grid-column: 2/3; height: 16px; border: none; padding: 0;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 30px;"><label style="text-align: left; grid-column: 1/2;">Hid. Col</label><input type="color" id="set-out-hidden-color" value="#444444" style="grid-column: 2/3; height: 16px; border: none; padding: 0;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Hid. Opac</label><input type="number" step="0.1" id="set-out-hidden-opacity" value="0.5" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Thickness</label><input type="number" step="0.05" id="set-out-thick" value="1" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Strength</label><input type="number" step="0.1" id="set-out-strength" value="5" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Glow</label><input type="number" step="0.1" id="set-out-glow" value="0" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Pulse</label><input type="number" step="0.1" id="set-out-pulse" value="0" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 40px;"><label style="text-align: left; grid-column: 1/2;">Dot Size</label><input type="number" step="0.01" id="set-dot-size" value="0.02" style="grid-column: 2/3;"></div>
+            <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="text-align: left; grid-column: 1/2;">Gizmo Top</label><input type="checkbox" id="set-gizmo-ontop" checked style="grid-column: 2/3;"></div>
+        </div>
+    </div>
+
+    <div id="floating-properties" class="floating-panel" style="display: none; top: 82px; left: 10px; flex-direction: column; padding: 0;">
+        <div class="drag-header-top" id="properties-drag-header" style="align-items: center; padding: 4px 6px; display: flex;">
+            <span id="active-obj-name" style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 4px; cursor: grab; touch-action: none;">Properties</span>
+            <div style="display: flex; gap: 4px; align-items: center;" onpointerdown="event.stopPropagation()">
+                <button id="btn-lock-toggle" class="square-btn" style="width: 16px; height: 16px; background: transparent; border: none; padding: 1px;" title="Lock Transform"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></button>
+                <button id="delete-btn" class="square-btn" style="width: 16px; height: 16px; background: transparent; border: none; padding: 1px; color: #e74c3c;" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg></button>
+            </div>
+        </div>
+        <div class="floating-content" style="display: none;">
+            <div class="accordion-header">Transform</div>
+            <div class="accordion-content" id="acc-transform" style="display: flex;">
+                <div class="transform-group"><label>P</label><input type="number" step="0.01" id="posX"><input type="number" step="0.01" id="posY"><input type="number" step="0.01" id="posZ"></div>
+                <div class="transform-group"><label>R</label><input type="number" step="1" id="rotX"><input type="number" step="1" id="rotY"><input type="number" step="1" id="rotZ"></div>
+                <div class="transform-group"><label>S</label><input type="number" step="0.01" id="scaleX"><input type="number" step="0.01" id="scaleY"><input type="number" step="0.01" id="scaleZ"></div>
+            </div>
+            
+            <div class="accordion-header" id="acc-shape-header">Shape</div>
+            <div class="accordion-content" id="acc-shape"><div id="geom-params-container" style="display: flex; flex-direction: column; gap: 1px;"></div></div>
+            
+            <div class="accordion-header" id="acc-cuts-header">Cuts</div>
+            <div class="accordion-content" id="acc-cuts"><div id="cuts-params-container" style="display: flex; flex-direction: column; gap: 1px;"></div></div>
+
+            <div class="accordion-header" id="acc-mat-header">Material</div>
+            <div class="accordion-content" id="acc-mat">
+                <div id="mat-params-container">
+                    <div class="transform-group"><label>Color</label><input type="color" id="obj-color" style="grid-column: 2 / 5; width: 100%; height: 16px; border: none; padding: 0; background: transparent; cursor: pointer;"></div>
+                    <div class="transform-group"><label>Type</label><select id="mat-type" style="grid-column: 2 / 5;"><option value="" disabled hidden></option><option value="Standard">Standard</option><option value="Physical">Physical</option><option value="Basic">Basic</option><option value="Phong">Phong</option><option value="Lambert">Lambert</option><option value="Toon">Toon</option><option value="Normal">Normal</option><option value="Depth">Depth</option></select></div>
+                    <div class="transform-group"><label>Side</label><select id="mat-side" style="grid-column: 2 / 5;"><option value="" disabled hidden></option><option value="0">Front</option><option value="1">Back</option><option value="2">Double</option></select></div>
+                    <div class="transform-group" id="mat-rough-group"><label>Rough</label><input type="number" step="0.05" id="mat-roughness" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group" id="mat-metal-group"><label>Metal</label><input type="number" step="0.05" id="mat-metalness" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group physical-prop"><label>ClearC</label><input type="number" step="0.05" id="mat-clearcoat" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group physical-prop"><label>CCRgh</label><input type="number" step="0.05" id="mat-clearcoatRoughness" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group physical-prop"><label>Trans</label><input type="number" step="0.05" id="mat-transmission" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group physical-prop"><label>IOR</label><input type="number" step="0.05" id="mat-ior" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group physical-prop"><label>Thick</label><input type="number" step="0.05" id="mat-thickness" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group"><label>Emi C</label><input type="color" id="mat-emissive" value="#000000" style="grid-column: 2 / 5; width: 100%; height: 16px; border: none; padding: 0; background: transparent; cursor: pointer;"></div>
+                    <div class="transform-group"><label>Emi I</label><input type="number" step="0.1" id="mat-emissiveIntensity" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group" style="grid-template-columns: 1fr 20px; margin-bottom: 2px;"><label style="grid-column: 1/2; text-align: left;">Flat S.</label><input type="checkbox" id="mat-flatShading" style="grid-column: 2/3; justify-self: end;"></div>
+                    <div class="transform-group" style="grid-template-columns: 1fr 20px; margin-bottom: 2px;"><label style="grid-column: 1/2; text-align: left;">Wirefr.</label><input type="checkbox" id="mat-wireframe" style="grid-column: 2/3; justify-self: end;"></div>
+                    <div class="transform-group" style="grid-template-columns: 1fr 20px; margin-bottom: 2px;"><label style="grid-column: 1/2; text-align: left;">Dep.T.</label><input type="checkbox" id="mat-depthTest" style="grid-column: 2/3; justify-self: end;"></div>
+                    <div class="transform-group" style="grid-template-columns: 1fr 20px; margin-bottom: 2px;"><label style="grid-column: 1/2; text-align: left;">Dep.W.</label><input type="checkbox" id="mat-depthWrite" style="grid-column: 2/3; justify-self: end;"></div>
+                    <div class="transform-group"><label>Alph.T</label><input type="number" step="0.05" id="mat-alphaTest" style="grid-column: 2 / 5;"></div>
+                    <div class="transform-group" style="grid-template-columns: 1fr 20px; margin-bottom: 2px;"><label style="grid-column: 1/2; text-align: left;">Transp.</label><input type="checkbox" id="mat-transparent" style="grid-column: 2/3; justify-self: end;"></div>
+                    <div class="transform-group"><label>Opac.</label><input type="number" step="0.05" id="mat-opacity" style="grid-column: 2 / 5;"></div>
+                </div>
+            </div>
+            
+            <div class="accordion-header" id="acc-obj-header">Object</div>
+            <div class="accordion-content" id="acc-obj">
+                <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="grid-column: 1/2;">Cast Shadow</label><input type="checkbox" id="obj-castShadow" style="grid-column: 2/3;"></div>
+                <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="grid-column: 1/2;">Recv Shadow</label><input type="checkbox" id="obj-receiveShadow" style="grid-column: 2/3;"></div>
+                <div class="transform-group" style="grid-template-columns: 1fr 20px;"><label style="grid-column: 1/2;">Visible</label><input type="checkbox" id="obj-visible" style="grid-column: 2/3;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="context-menu"><div class="context-menu-item" id="ctx-add-empty-parent">Add Empty Parent</div></div>
+
+    <div id="custom-prompt" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; justify-content: center; align-items: center;">
+        <div style="background: #222; padding: 15px; border: 1px solid #555; border-radius: 4px; width: 250px; color: #ccc; font-family: sans-serif;">
+            <div id="custom-prompt-msg" style="font-size: 12px; margin-bottom: 10px;"></div>
+            <input type="text" id="custom-prompt-input" style="width: 100%; padding: 4px; margin-bottom: 15px; background: #111; border: 1px solid #444; color: #ccc; box-sizing: border-box; outline: none;">
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button id="custom-prompt-cancel" class="btn" style="width: auto; padding: 4px 12px; margin: 0;">Cancel</button>
+                <button id="custom-prompt-ok" class="btn primary" style="width: auto; padding: 4px 12px; margin: 0;">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="stats-overlay">
+        <div id="stat-total">0</div>
+        <div id="stat-selected">0</div>
+    </div>
+
+    <div id="ui-container">
+        <div class="side-grip" id="hierarchy-panel-toggle"></div>
+        <div class="panel-content-wrapper">
+            <div class="panel" id="outliner-panel" style="flex-grow: 0; height: 100px; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0;">
+                <div class="panel-title" style="display: flex; justify-content: space-between; align-items: center; pointer-events: auto;"><span>Hierarchy</span></div>
+                <div id="outliner"></div>
+            </div>
+            <div class="accordion-header" style="border-top: 1px solid #444; border-bottom: none;">Tools</div>
+            <div class="accordion-content panel" style="padding: 4px; border-bottom: 1px solid #444; display: none; flex-direction: column;">
+                <div style="display: flex; gap: 4px; margin-bottom: 4px; align-items: center;">
+                    <button id="wireframe-btn" class="square-btn" title="Toggle Wireframe" style="font-size: 10px; font-weight: bold;">WF</button>
+                    <input type="color" id="wf-color" value="#666666" style="width: 24px; height: 24px; border: 1px solid #555; border-radius: 3px; padding: 0; cursor: pointer; background: transparent;" title="Color">
+                </div>
+                <div style="display: flex; gap: 4px; margin-bottom: 4px;">
+                    <button id="export-gltf-btn" class="btn" style="flex: 1; margin: 0;">EXP</button>
+                    <button id="import-gltf-btn" class="btn primary" style="flex: 1; margin: 0;">IMP</button>
+                    <input type="file" id="gltf-file-input" accept=".glb,.gltf" style="display: none;">
+                </div>
+                <div style="display: flex; gap: 4px;">
+                    <button id="toggle-axes-btn" class="btn" style="margin: 0; flex: 1; font-size: 8px;" title="Toggle Axes">AXS</button>
+                    <button id="toggle-origins-btn" class="btn" style="margin: 0; flex: 1; font-size: 8px;" title="Toggle Origins">ORG</button>
+                    <button id="toggle-entity-dots-btn" class="btn" style="margin: 0; flex: 1; font-size: 8px;" title="Toggle Dots">DOT</button>
+                </div>
+            </div>
+            <div class="bottom-resizer" id="ui-bottom-resizer"></div>
+        </div>
+    </div>
+
+    <div id="timeline-area">
+        <div id="timeline-header">
+            <button class="btn" id="anim-play-pause" style="width:auto; padding: 2px 8px;">Play</button>
+            <button class="btn" id="anim-stop" style="width:auto; padding: 2px 8px;">Stop</button>
+            <button class="btn primary" id="anim-bake" style="width:auto; padding: 2px 8px;">Bake</button>
+            <button class="btn" id="anim-loop-sel" style="width:auto; padding: 2px 8px;">Loop Sel</button>
+            <button class="btn" id="anim-add-track" style="width:auto; padding: 2px 8px;">+ Track</button>
+            
+            <div style="display: flex; align-items: center; gap: 4px; margin-left: 10px;">
+                <label style="font-size:10px; color:#888;">LOOP:</label>
+                <input type="number" id="loop-start" value="0" step="0.1" style="width: 40px;">
+                <span style="color:#888;">-</span>
+                <input type="number" id="loop-end" value="10" step="0.1" style="width: 40px;">
+            </div>
+
+            <span id="time-display" style="margin-left:20px; font-family:monospace; font-size:12px; color:#4CAF50;">00:00.00</span>
+            <div style="margin-left:auto; display:flex; align-items:center; gap:6px;">
+                <label style="font-size:10px; color:#888;">ZOOM:</label>
+                <input type="range" id="zoom-slider" min="20" max="600" value="100" style="width:80px;">
+            </div>
+        </div>
+        <div id="timeline-body">
+            <div id="track-headers"></div>
+            <div id="tracks-container">
+                <div id="loop-left" class="loop-overlay"><div class="loop-handle" id="handle-start"></div></div>
+                <div id="loop-right" class="loop-overlay"><div class="loop-handle" id="handle-end"></div></div>
+                <div id="playhead"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="./main.js"></script>
+</body>
+</html>

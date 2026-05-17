@@ -1,0 +1,1475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Mixamo Humanoid T-Pose IK Rig</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.7.4/umd/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FBXLoader.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1e293b; color: #f3f4f6; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        .custom-glass { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(12px); border: 1px rgba(255, 255, 255, 0.1) solid; }
+    </style>
+</head>
+<body>
+
+    <button id="main-toggle-btn" onclick="toggleMainPanel()" class="absolute top-4 left-4 z-20 p-2.5 rounded-xl bg-slate-800/90 text-white shadow-lg border border-gray-700 flex items-center gap-2 hover:bg-slate-700 transition duration-150">
+        <svg class="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        <span class="text-[10px] font-semibold font-mono tracking-wider">RIG PANEL</span>
+    </button>
+
+    <div id="main-panel" class="absolute top-16 left-4 z-10 w-52 max-w-[calc(100vw-2rem)] p-3 rounded-xl custom-glass shadow-2xl flex flex-col gap-3 hidden overflow-y-auto max-h-[85vh]">
+        <div class="flex justify-between items-center">
+            <div>
+                <h1 class="text-xs font-bold tracking-wide text-white uppercase font-mono">Mixamo IK Rig</h1>
+                <p class="text-[8px] text-gray-400 mt-0.5">CCD Solver Pipeline</p>
+            </div>
+            <button onclick="toggleMainPanel()" class="text-gray-500 hover:text-white transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Model Import</span>
+            <button onclick="triggerFileImport()" class="w-full py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] rounded transition duration-150 flex items-center justify-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                Import GLTF/GLB
+            </button>
+            <input type="file" id="model-loader" accept=".glb,.gltf" style="display: none;" onchange="handleFileImport(event)">
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Model Scale</span>
+            <div class="flex flex-col gap-0.5">
+                <div class="flex justify-between text-[10px] text-gray-300">
+                    <span>Scale Factor</span>
+                    <span id="val-model-scale" class="font-mono text-cyan-400">1.00x</span>
+                </div>
+                <input type="range" id="slide-model-scale" min="0.01" max="5.0" step="0.01" value="1.00" class="w-full accent-cyan-500 bg-gray-700 rounded appearance-none h-1 cursor-pointer" oninput="updateModelScale(this.value)">
+            </div>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <div class="flex justify-between items-center">
+                <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Gizmo</span>
+                <select onchange="setGizmoSpace(this.value)" class="bg-gray-800 border border-gray-700 text-[9px] text-white px-1.5 py-0.5 rounded outline-none cursor-pointer">
+                    <option value="world">World</option>
+                    <option value="local">Local</option>
+                </select>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5">
+                <button onclick="setGizmoMode('translate')" class="py-1 px-2 text-[10px] font-medium rounded border border-gray-600/30 bg-gray-800/40 text-gray-300 hover:bg-gray-700/30 transition">
+                    Move (W)
+                </button>
+                <button onclick="setGizmoMode('rotate')" class="py-1 px-2 text-[10px] font-medium rounded border border-gray-600/30 bg-gray-800/40 text-gray-300 hover:bg-gray-700/30 transition">
+                    Rotate (E)
+                </button>
+            </div>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-2">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Finger Controls</span>
+            <div class="flex flex-col gap-0.5">
+                <div class="flex justify-between text-[10px] text-gray-300">
+                    <span>L Fingers Curl</span>
+                    <span id="val-l-curl" class="font-mono text-cyan-400">0%</span>
+                </div>
+                <input type="range" id="slide-l-curl" min="0" max="1" step="0.01" value="0" class="w-full accent-cyan-500 bg-gray-700 rounded appearance-none h-1 cursor-pointer" oninput="updateFingerCurl('left', this.value)">
+            </div>
+            <div class="flex flex-col gap-0.5">
+                <div class="flex justify-between text-[10px] text-gray-300">
+                    <span>R Fingers Curl</span>
+                    <span id="val-r-curl" class="font-mono text-cyan-400">0%</span>
+                </div>
+                <input type="range" id="slide-r-curl" min="0" max="1" step="0.01" value="0" class="w-full accent-cyan-500 bg-gray-700 rounded appearance-none h-1 cursor-pointer" oninput="updateFingerCurl('right', this.value)">
+            </div>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Interactive Targets</span>
+            
+            <div class="relative w-full h-48 bg-gray-900/60 border border-gray-700/50 rounded-lg select-none overflow-hidden">
+                <svg class="absolute w-full h-full pointer-events-none stroke-gray-500/30" stroke-width="2" stroke-linecap="round">
+                    <line x1="50%" y1="20%" x2="50%" y2="55%" />
+                    <line x1="20%" y1="30%" x2="80%" y2="30%" />
+                    <line x1="50%" y1="55%" x2="35%" y2="90%" />
+                    <line x1="50%" y1="55%" x2="65%" y2="90%" />
+                    <line x1="35%" y1="30%" x2="35%" y2="15%" stroke-dasharray="3,3" stroke-width="1.5"/>
+                    <line x1="65%" y1="30%" x2="65%" y2="15%" stroke-dasharray="3,3" stroke-width="1.5"/>
+                    <line x1="42.5%" y1="72.5%" x2="25%" y2="72.5%" stroke-dasharray="3,3" stroke-width="1.5"/>
+                    <line x1="57.5%" y1="72.5%" x2="75%" y2="72.5%" stroke-dasharray="3,3" stroke-width="1.5"/>
+                </svg>
+
+                <button id="btn-look-at" onclick="selectTarget('lookAt')" class="absolute top-[5%] left-[50%] w-4 h-4 -ml-2 -mt-2 bg-white rounded-full border border-transparent hover:border-blue-400 shadow-[0_0_6px_rgba(255,255,255,0.5)] z-10" title="Look Target"></button>
+                <button id="btn-head" onclick="selectTarget('head')" class="absolute top-[20%] left-[50%] w-4 h-4 -ml-2 -mt-2 bg-yellow-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(234,179,8,0.5)] z-10" title="Head"></button>
+                <button id="btn-chest" onclick="selectTarget('chest')" class="absolute top-[35%] left-[50%] w-4 h-4 -ml-2 -mt-2 bg-purple-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(168,85,247,0.5)] z-10" title="Chest"></button>
+                <button id="btn-pelvis" onclick="selectTarget('pelvis')" class="absolute top-[55%] left-[50%] w-4 h-4 -ml-2 -mt-2 bg-pink-500 rounded border-2 border-transparent hover:border-white shadow-[0_0_6px_rgba(236,72,153,0.5)] z-10" title="Pelvis"></button>
+
+                <button id="btn-left-shoulder" onclick="selectTarget('leftShoulder')" class="absolute top-[30%] left-[35%] w-4 h-4 -ml-2 -mt-2 bg-blue-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(59,130,246,0.5)] z-10" title="Left Shoulder"></button>
+                <button id="btn-right-shoulder" onclick="selectTarget('rightShoulder')" class="absolute top-[30%] left-[65%] w-4 h-4 -ml-2 -mt-2 bg-blue-500 rounded border-transparent hover:border-white shadow-[0_0_6px_rgba(59,130,246,0.5)] z-10" title="Right Shoulder"></button>
+
+                <button id="btn-left-hand" onclick="selectTarget('leftHand')" class="absolute top-[30%] left-[20%] w-4 h-4 -ml-2 -mt-2 bg-cyan-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(6,182,212,0.5)] z-10" title="Left Hand"></button>
+                <button id="btn-right-hand" onclick="selectTarget('rightHand')" class="absolute top-[30%] left-[80%] w-4 h-4 -ml-2 -mt-2 bg-cyan-500 rounded border-2 border-transparent hover:border-white shadow-[0_0_6px_rgba(6,182,212,0.5)] z-10" title="Right Hand"></button>
+
+                <button id="btn-left-foot" onclick="selectTarget('leftFoot')" class="absolute top-[90%] left-[35%] w-4 h-4 -ml-2 -mt-2 bg-rose-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(244,63,94,0.5)] z-10" title="Left Foot"></button>
+                <button id="btn-right-foot" onclick="selectTarget('rightFoot')" class="absolute top-[90%] left-[65%] w-4 h-4 -ml-2 -mt-2 bg-rose-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(244,63,94,0.5)] z-10" title="Right Foot"></button>
+
+                <button id="btn-left-elbow-pole" onclick="selectTarget('leftElbowPole')" class="absolute top-[15%] left-[35%] w-3 h-3 -ml-1.5 -mt-1.5 bg-emerald-500 rounded-full border border-transparent hover:border-white shadow-[0_0_6px_rgba(16,185,129,0.5)] z-10" title="Left Elbow Goal"></button>
+                <button id="btn-right-elbow-pole" onclick="selectTarget('rightElbowPole')" class="absolute top-[15%] left-[65%] w-3 h-3 -ml-1.5 -mt-1.5 bg-emerald-500 rounded-full border border-transparent hover:border-white shadow-[0_0_6px_rgba(16,185,129,0.5)] z-10" title="Right Elbow Goal"></button>
+
+                <button id="btn-left-knee-pole" onclick="selectTarget('leftKneePole')" class="absolute top-[72.5%] left-[25%] w-3 h-3 -ml-1.5 -mt-1.5 bg-orange-500 rounded-full border border-transparent hover:border-white shadow-[0_0_6px_rgba(249,115,22,0.5)] z-10" title="Left Knee Goal"></button>
+                <button id="btn-right-knee-pole" onclick="selectTarget('rightKneePole')" class="absolute top-[72.5%] left-[75%] w-3 h-3 -ml-1.5 -mt-1.5 bg-orange-500 rounded-full border border-transparent hover:border-white shadow-[0_0_6px_rgba(249,115,22,0.5)] z-10" title="Right Knee Goal"></button>
+            </div>
+
+            <button onclick="deselectAll()" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-white text-[10px] font-medium rounded transition mt-1">
+                Deselect Active
+            </button>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Target Parents</span>
+            <div class="flex flex-col gap-1.5">
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" onchange="toggleFollowSpace(['chest'], 'pelvis', this.checked)" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Chest Follows Hips</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" onchange="toggleFollowSpace(['leftShoulder', 'rightShoulder'], 'chest', this.checked)" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Shoulders Follow Chest</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" onchange="toggleFollowSpace(['leftHand', 'rightHand', 'leftElbowPole', 'rightElbowPole'], 'chest', this.checked)" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Hands Follow Chest</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" onchange="toggleFollowSpace(['lookAt', 'head'], 'chest', this.checked)" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Head/Look Follows Chest</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300 border-t border-gray-700/50 pt-1.5">
+                    <input type="checkbox" id="toggle-body-drag" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Body Drags on Arm Pull</span>
+                </label>
+            </div>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <div class="flex flex-col gap-1.5">
+            <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Settings</span>
+            <div class="flex flex-col gap-1.5">
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" id="toggle-ik" checked class="rounded border-gray-700 bg-gray-900 text-cyan-500 focus:ring-cyan-500">
+                    <span>Active IK Computations</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" id="toggle-lookat" checked class="rounded border-gray-700 bg-gray-900 text-cyan-500 focus:ring-cyan-500">
+                    <span>Active Head Look-At</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" id="toggle-shoulder-track" onchange="updateIKChains()" class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Shoulders Track Arms IK</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" id="toggle-skeleton" checked class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Show Bones Helper</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer text-[10px] text-gray-300">
+                    <input type="checkbox" id="toggle-grid" checked class="rounded border-gray-700 bg-gray-900 text-cyan-500">
+                    <span>Show Floor Grid Helper</span>
+                </label>
+            </div>
+        </div>
+
+        <hr class="border-gray-700/50">
+
+        <button onclick="resetRig()" class="w-full py-2 bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white font-semibold text-xs rounded shadow-lg transition">
+            Reset to T-Pose
+        </button>
+    </div>
+
+    <!-- Collapsible Instructions Toggle Button -->
+    <button id="info-toggle-btn" onclick="toggleInfoPanel()" class="absolute bottom-4 left-4 z-20 p-3 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition duration-150">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+    </button>
+
+    <div id="info-panel" class="absolute bottom-16 left-4 z-10 p-4 rounded-xl custom-glass text-xs text-gray-400 max-w-sm flex flex-col gap-1.5 hidden shadow-2xl">
+        <div class="flex justify-between items-center border-b border-gray-800 pb-1.5 mb-1">
+            <span class="font-semibold text-gray-200">Interactive Control Map</span>
+            <button onclick="toggleInfoPanel()" class="text-gray-500 hover:text-white transition">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+        <div>• <b class="text-cyan-400">Left Click + Drag</b>: Rotate View</div>
+        <div>• <b class="text-cyan-400">Right Click + Drag</b>: Pan View</div>
+        <div>• <b class="text-cyan-400">Direct Click on Target Spheres</b>: Select targets in viewport</div>
+        <div>• <b class="text-cyan-400">Drag Gizmo Handles</b>: Drive live skeletal IK solving</div>
+        <div>• <b class="text-cyan-400">Shortcuts</b>: W = Translate, E = Rotate</div>
+        <div class="mt-1 text-gray-300 font-medium text-[11px] border-t border-gray-800 pt-1.5">
+            <span class="text-emerald-400">✓ Full Rotation & Parent Toggles Active:</span><br>
+            Chest, Pelvis, and Limbs can be rotated. Target parents can be toggled to follow body movements. Shoulder IK tracking available.
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script>
+        let scene, camera, renderer, orbitControls, transformControls;
+        let mannequin, skeleton, skeletonHelper, gridHelper;
+        let ikSolver, iks = [];
+        let targets = {};
+        let initialPositions = {};
+        let initialQuaternions = {};
+        let bonesArray = [];
+        let isDefaultModel = true;
+        let activeTargetKey = null;
+        let fingerCurlLeft = 0;
+        let fingerCurlRight = 0;
+        let importedRootObject = null;
+        let currentModelScale = 1.0;
+        let currentBoneMappings = null;
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        class CustomCCDIKSolver {
+            constructor(mesh, iks) {
+                this.mesh = mesh;
+                this.iks = iks;
+            }
+
+            update() {
+                if (!this.mesh || !this.mesh.skeleton) return;
+                const bones = this.mesh.skeleton.bones;
+                const targetPos = new THREE.Vector3();
+                const effectorPos = new THREE.Vector3();
+                const linkPos = new THREE.Vector3();
+                const toEffector = new THREE.Vector3();
+                const toTarget = new THREE.Vector3();
+                const localRotation = new THREE.Quaternion();
+                const boneWorldQuat = new THREE.Quaternion();
+                const parentWorldQuat = new THREE.Quaternion();
+                
+                for (let i = 0; i < this.iks.length; i++) {
+                    const ik = this.iks[i];
+                    if (ik.target === undefined || ik.effector === undefined || ik.effector < 0) continue;
+                    const targetObj = ik.target;
+                    const effectorBone = bones[ik.effector];
+                    if (!effectorBone) continue;
+                    
+                    targetObj.getWorldPosition(targetPos);
+
+                    for (let iter = 0; iter < ik.iteration; iter++) {
+                        for (let j = 0; j < ik.links.length; j++) {
+                            const link = ik.links[j];
+                            if (link.index < 0 || link.index >= bones.length) continue;
+                            const linkBone = bones[link.index];
+
+                            effectorBone.getWorldPosition(effectorPos);
+                            linkBone.getWorldPosition(linkPos);
+
+                            toEffector.subVectors(effectorPos, linkPos).normalize();
+                            toTarget.subVectors(targetPos, linkPos).normalize();
+
+                            if (link.hingeAxis && isDefaultModel) {
+                                const parentBone = linkBone.parent;
+                                parentBone ? parentBone.getWorldQuaternion(parentWorldQuat) : parentWorldQuat.identity();
+
+                                const invParentQuat = parentWorldQuat.clone().invert();
+                                const localEffector = toEffector.clone().applyQuaternion(invParentQuat);
+                                const localTarget = toTarget.clone().applyQuaternion(invParentQuat);
+
+                                const axis = link.hingeAxis.clone().normalize();
+                                const projEffector = localEffector.clone().projectOnPlane(axis);
+                                const projTarget = localTarget.clone().projectOnPlane(axis);
+
+                                if (projEffector.lengthSq() < 0.0001 || projTarget.lengthSq() < 0.0001) continue;
+
+                                projEffector.normalize();
+                                projTarget.normalize();
+
+                                let dot = projEffector.dot(projTarget);
+                                dot = Math.max(-1, Math.min(1, dot));
+                                let angle = Math.acos(dot);
+
+                                const cross = new THREE.Vector3().crossVectors(projEffector, projTarget);
+                                if (cross.dot(axis) < 0) angle = -angle;
+
+                                const q = linkBone.quaternion;
+                                const sinHalf = q.x * axis.x + q.y * axis.y + q.z * axis.z;
+                                const cosHalf = q.w;
+                                let currentAngle = 2 * Math.atan2(sinHalf, cosHalf);
+
+                                if (currentAngle > Math.PI) currentAngle -= 2 * Math.PI;
+                                if (currentAngle < -Math.PI) currentAngle += 2 * Math.PI;
+
+                                let newAngle = currentAngle + angle;
+                                newAngle = Math.max(link.minAngle, Math.min(link.maxAngle, newAngle));
+
+                                linkBone.quaternion.setFromAxisAngle(axis, newAngle);
+                            } else {
+                                let dot = toEffector.dot(toTarget);
+                                if (dot > 0.99999) continue; 
+                                if (dot < -0.99999) dot = -0.99999;
+                                const angle = Math.acos(dot);
+
+                                const axis = new THREE.Vector3().crossVectors(toEffector, toTarget).normalize();
+
+                                linkBone.getWorldQuaternion(boneWorldQuat);
+                                const localAxis = axis.clone().applyQuaternion(boneWorldQuat.clone().invert()).normalize();
+
+                                localRotation.setFromAxisAngle(localAxis, angle);
+                                linkBone.quaternion.multiply(localRotation).normalize();
+                            }
+
+                            linkBone.updateMatrixWorld(true);
+                        }
+                    }
+
+                    if (ik.poleTarget && ik.links.length >= 2) {
+                        const rootBone = bones[ik.links[1].index];
+                        const midBone = bones[ik.links[0].index];
+                        const endBone = bones[ik.effector];
+
+                        const pRoot = new THREE.Vector3();
+                        const pMid = new THREE.Vector3();
+                        const pEnd = new THREE.Vector3();
+                        const pPole = new THREE.Vector3();
+
+                        rootBone.getWorldPosition(pRoot);
+                        midBone.getWorldPosition(pMid);
+                        endBone.getWorldPosition(pEnd);
+                        ik.poleTarget.getWorldPosition(pPole);
+
+                        const vRootEnd = new THREE.Vector3().subVectors(pEnd, pRoot);
+                        const lenSq = vRootEnd.lengthSq();
+                        if (lenSq > 0.0001) {
+                            const vRootEndDir = vRootEnd.clone().normalize();
+                            
+                            const vRootMid = new THREE.Vector3().subVectors(pMid, pRoot);
+                            const vRootPole = new THREE.Vector3().subVectors(pPole, pRoot);
+
+                            const projMid = vRootMid.clone().projectOnPlane(vRootEndDir);
+                            const projPole = vRootPole.clone().projectOnPlane(vRootEndDir);
+
+                            if (projMid.lengthSq() > 0.0001 && projPole.lengthSq() > 0.0001) {
+                                projMid.normalize();
+                                projPole.normalize();
+
+                                let poleDot = projMid.dot(projPole);
+                                poleDot = Math.max(-1, Math.min(1, poleDot));
+                                let angle = Math.acos(poleDot);
+
+                                const cross = new THREE.Vector3().crossVectors(projMid, projPole);
+                                if (cross.dot(vRootEndDir) < 0) angle = -angle;
+
+                                const worldAxis = vRootEndDir;
+                                rootBone.getWorldQuaternion(boneWorldQuat);
+                                const localAxis = worldAxis.clone().applyQuaternion(boneWorldQuat.clone().invert()).normalize();
+
+                                const poleRot = new THREE.Quaternion().setFromAxisAngle(localAxis, angle);
+                                rootBone.quaternion.multiply(poleRot).normalize();
+                                rootBone.updateMatrixWorld(true);
+                            }
+                        }
+                    }
+
+                    if (ik.matchRotation && ik.effector !== undefined && ik.target !== targets.head?.mesh) {
+                        const effectorBone = bones[ik.effector];
+                        effectorBone.parent ? effectorBone.parent.getWorldQuaternion(parentWorldQuat) : parentWorldQuat.identity();
+                        
+                        const targetWorldQuat = new THREE.Quaternion();
+                        targetObj.getWorldQuaternion(targetWorldQuat);
+
+                        const localQuat = parentWorldQuat.clone().invert().multiply(targetWorldQuat);
+                        effectorBone.quaternion.copy(localQuat);
+                        effectorBone.updateMatrixWorld(true);
+                    }
+                }
+            }
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1e293b);
+            scene.fog = new THREE.FogExp2(0x1e293b, 0.015);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 1.8, 3.5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x1a2436, 1.2);
+            scene.add(ambientLight);
+
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x1e293b, 0.6);
+            hemiLight.position.set(0, 20, 0);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xa5f3fc, 1.5);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            dirLight.shadow.bias = -0.0001;
+            scene.add(dirLight);
+
+            gridHelper = new THREE.GridHelper(30, 30, 0x475569, 0x334155);
+            gridHelper.position.y = 0;
+            scene.add(gridHelper);
+
+            const floorGeo = new THREE.PlaneGeometry(100, 100);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.8 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+            orbitControls.enableDamping = true;
+            orbitControls.dampingFactor = 0.05;
+            orbitControls.target.set(0, 1.1, 0);
+            orbitControls.maxPolarAngle = Math.PI / 2;
+
+            transformControls = new THREE.TransformControls(camera, renderer.domElement);
+            transformControls.size = 0.8;
+            transformControls.addEventListener('change', () => renderer.render(scene, camera));
+            transformControls.addEventListener('dragging-changed', (event) => {
+                orbitControls.enabled = !event.value;
+            });
+            scene.add(transformControls);
+
+            buildDefaultRig();
+            setupUIListeners();
+
+            renderer.domElement.addEventListener('pointerdown', onViewportClick, false);
+            window.addEventListener('resize', onWindowResize, false);
+            animate();
+        }
+
+        function setGizmoMode(mode) {
+            transformControls.setMode(mode);
+        }
+
+        function setGizmoSpace(space) {
+            transformControls.setSpace(space);
+        }
+
+        function toggleFollowSpace(targetKeys, parentKey, isFollow) {
+            let parentObj = scene;
+            if (isFollow && targets[parentKey]) {
+                parentObj = targets[parentKey].mesh;
+            }
+            
+            targetKeys.forEach(key => {
+                const targetMesh = targets[key]?.mesh;
+                if (targetMesh && targetMesh.parent !== parentObj) {
+                    parentObj.attach(targetMesh);
+                }
+            });
+        }
+
+        function updateFingerCurl(side, value) {
+            if (side === 'left') {
+                fingerCurlLeft = parseFloat(value);
+                document.getElementById('val-l-curl').innerText = Math.round(fingerCurlLeft * 100) + '%';
+            } else {
+                fingerCurlRight = parseFloat(value);
+                document.getElementById('val-r-curl').innerText = Math.round(fingerCurlRight * 100) + '%';
+            }
+        }
+
+        function updateModelScale(value) {
+            currentModelScale = parseFloat(value);
+            document.getElementById('val-model-scale').innerText = currentModelScale.toFixed(2) + 'x';
+            
+            if (!isDefaultModel && importedRootObject) {
+                importedRootObject.scale.set(currentModelScale, currentModelScale, currentModelScale);
+                scene.updateMatrixWorld(true);
+                importedRootObject.updateMatrixWorld(true);
+                if (mannequin) mannequin.updateMatrixWorld(true);
+                
+                Object.keys(targets).forEach(key => {
+                    if (targets[key] && targets[key].mesh) {
+                        scene.remove(targets[key].mesh);
+                    }
+                });
+                targets = {};
+                rebuildIKPipelineFromSkeleton();
+            } else if (isDefaultModel) {
+                if (mannequin) {
+                    mannequin.scale.set(currentModelScale, currentModelScale, currentModelScale);
+                    mannequin.updateMatrixWorld(true);
+                    
+                    Object.keys(targets).forEach(key => {
+                        if (targets[key] && targets[key].mesh) {
+                            scene.remove(targets[key].mesh);
+                        }
+                    });
+                    targets = {};
+                    setupDefaultIKTargets();
+                }
+            }
+        }
+
+        function updateIKChains() {
+            if (!currentBoneMappings || !mannequin) return;
+            const trackArms = document.getElementById('toggle-shoulder-track').checked;
+            
+            iks = [
+                {
+                    target: targets.chest.mesh,
+                    effector: currentBoneMappings.chest,
+                    matchRotation: true,
+                    links: [
+                        { index: currentBoneMappings.spine },
+                        { index: currentBoneMappings.hips }
+                    ].filter(l => l.index !== -1),
+                    iteration: 12
+                },
+                {
+                    target: targets.leftShoulder.mesh,
+                    effector: currentBoneMappings.leftArm,
+                    links: [
+                        { index: currentBoneMappings.leftShoulder }
+                    ].filter(l => l.index !== -1),
+                    iteration: 10
+                },
+                {
+                    target: targets.rightShoulder.mesh,
+                    effector: currentBoneMappings.rightArm,
+                    links: [
+                        { index: currentBoneMappings.rightShoulder }
+                    ].filter(l => l.index !== -1),
+                    iteration: 10
+                },
+                {
+                    target: targets.leftHand.mesh,
+                    effector: currentBoneMappings.leftHand,
+                    poleTarget: targets.leftElbowPole.mesh,
+                    matchRotation: true,
+                    links: [
+                        { index: currentBoneMappings.leftForearm }, 
+                        { index: currentBoneMappings.leftArm },
+                        ...(trackArms ? [{ index: currentBoneMappings.leftShoulder }] : [])
+                    ].filter(l => l.index !== -1),
+                    iteration: 15
+                },
+                {
+                    target: targets.rightHand.mesh,
+                    effector: currentBoneMappings.rightHand,
+                    poleTarget: targets.rightElbowPole.mesh,
+                    matchRotation: true,
+                    links: [
+                        { index: currentBoneMappings.rightForearm }, 
+                        { index: currentBoneMappings.rightArm },
+                        ...(trackArms ? [{ index: currentBoneMappings.rightShoulder }] : [])
+                    ].filter(l => l.index !== -1),
+                    iteration: 15
+                },
+                {
+                    target: targets.leftFoot.mesh,
+                    effector: currentBoneMappings.leftFoot,
+                    poleTarget: targets.leftKneePole.mesh,
+                    matchRotation: true,
+                    links: [
+                        { index: currentBoneMappings.leftLeg }, 
+                        { index: currentBoneMappings.leftUpLeg }
+                    ].filter(l => l.index !== -1),
+                    iteration: 15
+                },
+                {
+                    target: targets.rightFoot.mesh,
+                    effector: currentBoneMappings.rightFoot,
+                    poleTarget: targets.rightKneePole.mesh,
+                    matchRotation: true,
+                    links: [
+                        { index: currentBoneMappings.rightLeg }, 
+                        { index: currentBoneMappings.rightUpLeg }
+                    ].filter(l => l.index !== -1),
+                    iteration: 15
+                }
+            ];
+
+            ikSolver = new CustomCCDIKSolver(mannequin, iks);
+        }
+
+        function applyFingerRotations() {
+            if (!mannequin || !mannequin.skeleton) return;
+            const bones = mannequin.skeleton.bones;
+            const fingerKeywords = ['thumb', 'index', 'middle', 'ring', 'pinky', 'finger'];
+
+            bones.forEach(bone => {
+                const name = bone.name.toLowerCase();
+                const isFinger = fingerKeywords.some(kw => name.includes(kw));
+                if (!isFinger) return;
+
+                const isLeft = name.includes('left') || name.startsWith('l_') || name.includes('_l_') || name.includes(' l ');
+                const isRight = name.includes('right') || name.startsWith('r_') || name.includes('_r_') || name.includes(' r ');
+
+                let curlVal = 0;
+                if (isLeft) curlVal = fingerCurlLeft;
+                else if (isRight) curlVal = fingerCurlRight;
+                else return;
+
+                const maxAngle = 1.4;
+                let angle = curlVal * maxAngle;
+
+                let directionFactor = isRight ? -1 : 1;
+                bone.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle * directionFactor);
+            });
+        }
+
+        function addWorldOffset(targetMesh, offset) {
+            if (!targetMesh) return;
+            const worldPos = new THREE.Vector3();
+            targetMesh.getWorldPosition(worldPos);
+            worldPos.add(offset);
+            if (targetMesh.parent) {
+                targetMesh.parent.worldToLocal(worldPos);
+            }
+            targetMesh.position.copy(worldPos);
+        }
+
+        function applyArmPullTension() {
+            const dragEnabled = document.getElementById('toggle-body-drag')?.checked;
+            if (!dragEnabled || !mannequin || !currentBoneMappings) return;
+
+            const shoulderLeft = getBonePos(currentBoneMappings.leftShoulder);
+            const shoulderRight = getBonePos(currentBoneMappings.rightShoulder);
+
+            let leftArmLen = 0.3 * currentModelScale;
+            let leftForearmLen = 0.25 * currentModelScale;
+            if (currentBoneMappings.leftArm !== -1 && currentBoneMappings.leftForearm !== -1) {
+                const armPos = getBonePos(currentBoneMappings.leftArm);
+                const forearmPos = getBonePos(currentBoneMappings.leftForearm);
+                const handPos = getBonePos(currentBoneMappings.leftHand);
+                if (armPos.lengthSq() > 0 && forearmPos.lengthSq() > 0 && handPos.lengthSq() > 0) {
+                    leftArmLen = armPos.distanceTo(forearmPos);
+                    leftForearmLen = forearmPos.distanceTo(handPos);
+                }
+            }
+            const armReach = (leftArmLen + leftForearmLen) * 1.1; 
+
+            if (targets.leftHand && shoulderLeft.lengthSq() > 0) {
+                const targetPos = new THREE.Vector3();
+                targets.leftHand.mesh.getWorldPosition(targetPos);
+                const dist = shoulderLeft.distanceTo(targetPos);
+                if (dist > armReach) {
+                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderLeft).normalize().multiplyScalar((dist - armReach) * 0.4);
+                    if (targets.chest) {
+                        addWorldOffset(targets.chest.mesh, pullVec);
+                    }
+                    if (targets.pelvis) {
+                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
+                    }
+                }
+            }
+
+            if (targets.rightHand && shoulderRight.lengthSq() > 0) {
+                const targetPos = new THREE.Vector3();
+                targets.rightHand.mesh.getWorldPosition(targetPos);
+                const dist = shoulderRight.distanceTo(targetPos);
+                if (dist > armReach) {
+                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderRight).normalize().multiplyScalar((dist - armReach) * 0.4);
+                    if (targets.chest) {
+                        addWorldOffset(targets.chest.mesh, pullVec);
+                    }
+                    if (targets.pelvis) {
+                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
+                    }
+                }
+            }
+        }
+
+        function onViewportClick(event) {
+            if (transformControls.dragging) return;
+
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const candidates = [];
+            const keyMap = {};
+            Object.keys(targets).forEach(key => {
+                if (targets[key] && targets[key].mesh) {
+                    candidates.push(targets[key].mesh);
+                    keyMap[targets[key].mesh.uuid] = key;
+                }
+            });
+
+            const intersects = raycaster.intersectObjects(candidates, true);
+            if (intersects.length > 0) {
+                let hitMesh = intersects[0].object;
+                while (hitMesh.parent && !keyMap[hitMesh.uuid]) {
+                    hitMesh = hitMesh.parent;
+                }
+                const key = keyMap[hitMesh.uuid];
+                if (key) {
+                    selectTarget(key);
+                }
+            }
+        }
+
+        function toggleMainPanel() {
+            const panel = document.getElementById('main-panel');
+            panel.classList.toggle('hidden');
+        }
+
+        function toggleInfoPanel() {
+            const panel = document.getElementById('info-panel');
+            panel.classList.toggle('hidden');
+        }
+
+        function triggerFileImport() {
+            document.getElementById('model-loader').click();
+        }
+
+        function handleFileImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            
+            reader.readAsArrayBuffer(file);
+            reader.onload = function (e) {
+                const contents = e.target.result;
+                
+                const loader = new THREE.GLTFLoader();
+                loader.parse(contents, '', function (gltf) {
+                    setupImportedModel(gltf.scene);
+                }, function (error) {
+                    console.error("Error parsing GLTF model: ", error);
+                });
+            };
+        }
+
+        function setupImportedModel(rootObject) {
+            cleanupOldModel();
+            
+            importedRootObject = rootObject;
+            
+            let scaleVal = parseFloat(document.getElementById('slide-model-scale').value);
+            rootObject.scale.set(scaleVal, scaleVal, scaleVal);
+            
+            scene.add(rootObject);
+            scene.updateMatrixWorld(true);
+            
+            let importedMesh = null;
+            rootObject.traverse((child) => {
+                if (child.isSkinnedMesh) {
+                    importedMesh = child;
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+
+            if (importedMesh) {
+                mannequin = importedMesh;
+                skeleton = importedMesh.skeleton;
+                bonesArray = skeleton.bones;
+
+                mannequin.updateMatrixWorld(true);
+
+                isDefaultModel = false;
+
+                skeletonHelper = new THREE.SkeletonHelper(rootObject);
+                skeletonHelper.material.linewidth = 2;
+                skeletonHelper.visible = document.getElementById('toggle-skeleton').checked;
+                scene.add(skeletonHelper);
+
+                rebuildIKPipelineFromSkeleton();
+            } else {
+                buildDefaultRig();
+            }
+        }
+
+        function cleanupOldModel() {
+            deselectAll();
+            if (mannequin) {
+                let parentNode = mannequin.parent;
+                while (parentNode && parentNode !== scene) {
+                    let temp = parentNode.parent;
+                    parentNode = temp;
+                }
+                scene.remove(mannequin);
+                if (mannequin.parent) scene.remove(mannequin.parent);
+            }
+            if (skeletonHelper) scene.remove(skeletonHelper);
+            
+            Object.keys(targets).forEach(key => {
+                if (targets[key] && targets[key].mesh) {
+                    let p = targets[key].mesh;
+                    if(p.parent) p.parent.remove(p);
+                }
+            });
+            targets = {};
+            bonesArray = [];
+            importedRootObject = null;
+            currentBoneMappings = null;
+        }
+
+        function buildDefaultRig() {
+            cleanupOldModel();
+            isDefaultModel = true;
+            createHumanoidSkeleton();
+            createEmptyMannequin(); 
+            
+            const scaleVal = parseFloat(document.getElementById('slide-model-scale').value);
+            if (mannequin) {
+                mannequin.scale.set(scaleVal, scaleVal, scaleVal);
+                mannequin.updateMatrixWorld(true);
+            }
+            setupDefaultIKTargets();
+        }
+
+        function createHumanoidSkeleton() {
+            const boneDef = {
+                root: { parent: null, pos: [0, 0, 0] },
+                hips: { parent: 'root', pos: [0, 0.95, 0] },
+                spine: { parent: 'hips', pos: [0, 1.25, 0] },
+                chest: { parent: 'spine', pos: [0, 1.5, 0] },
+                neck: { parent: 'chest', pos: [0, 1.7, 0] },
+                head: { parent: 'neck', pos: [0, 1.85, 0] },
+                
+                leftShoulder: { parent: 'chest', pos: [-0.08, 1.55, 0] },
+                leftArm: { parent: 'leftShoulder', pos: [-0.18, 1.55, 0] },
+                leftForearm: { parent: 'leftArm', pos: [-0.45, 1.55, 0] },
+                leftHand: { parent: 'leftForearm', pos: [-0.7, 1.55, 0] },
+
+                leftHandIndex1: { parent: 'leftHand', pos: [-0.75, 1.55, 0.02] },
+                leftHandIndex2: { parent: 'leftHandIndex1', pos: [-0.79, 1.55, 0.02] },
+                leftHandIndex3: { parent: 'leftHandIndex2', pos: [-0.82, 1.55, 0.02] },
+                leftHandMiddle1: { parent: 'leftHand', pos: [-0.75, 1.55, -0.02] },
+                leftHandMiddle2: { parent: 'leftHandMiddle1', pos: [-0.79, 1.55, -0.02] },
+                leftHandMiddle3: { parent: 'leftHandMiddle2', pos: [-0.82, 1.55, -0.02] },
+                
+                rightShoulder: { parent: 'chest', pos: [0.08, 1.55, 0] },
+                rightArm: { parent: 'rightShoulder', pos: [0.18, 1.55, 0] },
+                rightForearm: { parent: 'rightArm', pos: [0.45, 1.55, 0] },
+                rightHand: { parent: 'rightForearm', pos: [0.7, 1.55, 0] },
+
+                rightHandIndex1: { parent: 'rightHand', pos: [0.75, 1.55, 0.02] },
+                rightHandIndex2: { parent: 'rightHandIndex1', pos: [0.79, 1.55, 0.02] },
+                rightHandIndex3: { parent: 'rightHandIndex2', pos: [0.82, 1.55, 0.02] },
+                rightHandMiddle1: { parent: 'rightHand', pos: [0.75, 1.55, -0.02] },
+                rightHandMiddle2: { parent: 'rightHandMiddle1', pos: [0.79, 1.55, -0.02] },
+                rightHandMiddle3: { parent: 'rightHandMiddle2', pos: [0.82, 1.55, -0.02] },
+                
+                leftUpLeg: { parent: 'hips', pos: [-0.12, 0.9, 0] },
+                leftLeg: { parent: 'leftUpLeg', pos: [-0.12, 0.5, 0] },
+                leftFoot: { parent: 'leftLeg', pos: [-0.12, 0.1, 0] },
+                
+                rightUpLeg: { parent: 'hips', pos: [0.12, 0.9, 0] },
+                rightLeg: { parent: 'rightUpLeg', pos: [0.12, 0.5, 0] },
+                rightFoot: { parent: 'rightLeg', pos: [0.12, 0.1, 0] }
+            };
+
+            const boneMap = {};
+            Object.keys(boneDef).forEach(name => {
+                const bone = new THREE.Bone();
+                bone.name = name;
+                boneMap[name] = bone;
+                bonesArray.push(bone);
+            });
+
+            Object.keys(boneDef).forEach(name => {
+                const def = boneDef[name];
+                const bone = boneMap[name];
+                if (def.parent) {
+                    const parentBone = boneMap[def.parent];
+                    parentBone.add(bone);
+
+                    const parentPos = boneDef[def.parent].pos;
+                    const localX = def.pos[0] - parentPos[0];
+                    const localY = def.pos[1] - parentPos[1];
+                    const localZ = def.pos[2] - parentPos[2];
+                    bone.position.set(localX, localY, localZ);
+                } else {
+                    bone.position.set(...def.pos);
+                }
+            });
+        }
+
+        function createEmptyMannequin() {
+            const dummyGeo = new THREE.BufferGeometry();
+            dummyGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+            dummyGeo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute([], 4));
+            dummyGeo.setAttribute('skinWeight', new THREE.Float32BufferAttribute([], 4));
+
+            const dummyMat = new THREE.MeshBasicMaterial({ visible: false });
+
+            mannequin = new THREE.SkinnedMesh(dummyGeo, dummyMat);
+            const rootBone = bonesArray[0];
+            mannequin.add(rootBone);
+
+            scene.add(mannequin);
+            mannequin.updateMatrixWorld(true);
+
+            skeleton = new THREE.Skeleton(bonesArray);
+            mannequin.bind(skeleton);
+
+            skeletonHelper = new THREE.SkeletonHelper(mannequin);
+            skeletonHelper.material.linewidth = 2;
+            skeletonHelper.visible = document.getElementById('toggle-skeleton').checked;
+            scene.add(skeletonHelper);
+        }
+
+        function getBonePos(index) {
+            const pos = new THREE.Vector3();
+            if (index !== -1 && bonesArray[index]) {
+                bonesArray[index].getWorldPosition(pos);
+            }
+            return pos;
+        }
+
+        function setupDefaultIKTargets() {
+            const baseScale = currentModelScale;
+            
+            currentBoneMappings = {
+                spine: bonesArray.findIndex(b => b.name === 'spine'),
+                chest: bonesArray.findIndex(b => b.name === 'chest'),
+                neck: bonesArray.findIndex(b => b.name === 'neck'),
+                head: bonesArray.findIndex(b => b.name === 'head'),
+                leftShoulder: bonesArray.findIndex(b => b.name === 'leftShoulder'),
+                leftArm: bonesArray.findIndex(b => b.name === 'leftArm'),
+                leftForearm: bonesArray.findIndex(b => b.name === 'leftForearm'),
+                leftHand: bonesArray.findIndex(b => b.name === 'leftHand'),
+                rightShoulder: bonesArray.findIndex(b => b.name === 'rightShoulder'),
+                rightArm: bonesArray.findIndex(b => b.name === 'rightArm'),
+                rightForearm: bonesArray.findIndex(b => b.name === 'rightForearm'),
+                rightHand: bonesArray.findIndex(b => b.name === 'rightHand'),
+                leftUpLeg: bonesArray.findIndex(b => b.name === 'leftUpLeg'),
+                leftLeg: bonesArray.findIndex(b => b.name === 'leftLeg'),
+                leftFoot: bonesArray.findIndex(b => b.name === 'leftFoot'),
+                rightUpLeg: bonesArray.findIndex(b => b.name === 'rightUpLeg'),
+                rightLeg: bonesArray.findIndex(b => b.name === 'rightLeg'),
+                rightFoot: bonesArray.findIndex(b => b.name === 'rightFoot'),
+                hips: bonesArray.findIndex(b => b.name === 'hips')
+            };
+
+            const headPos = getBonePos(currentBoneMappings.head);
+            const fallbackHeadY = headPos.lengthSq() > 0 ? headPos.y : 1.85 * baseScale;
+            const fallbackHeadX = headPos.lengthSq() > 0 ? headPos.x : 0;
+            const fallbackHeadZ = headPos.lengthSq() > 0 ? headPos.z : 0;
+
+            const targetDetails = {
+                lookAt: { pos: new THREE.Vector3(fallbackHeadX, fallbackHeadY, fallbackHeadZ + 0.5 * baseScale), color: 0xffffff },
+                pelvis: { pos: getBonePos(currentBoneMappings.hips), color: 0xec4899 },
+                chest: { pos: getBonePos(currentBoneMappings.chest), color: 0xa855f7 },
+                head: { pos: getBonePos(currentBoneMappings.head), color: 0xeab308 },
+                leftShoulder: { pos: getBonePos(currentBoneMappings.leftArm), color: 0x3b82f6 },
+                rightShoulder: { pos: getBonePos(currentBoneMappings.rightArm), color: 0x3b82f6 },
+                leftHand: { pos: getBonePos(currentBoneMappings.leftHand), color: 0x06b6d4 },
+                rightHand: { pos: getBonePos(currentBoneMappings.rightHand), color: 0x06b6d4 },
+                leftFoot: { pos: getBonePos(currentBoneMappings.leftFoot), color: 0xf43f5e },
+                rightFoot: { pos: getBonePos(currentBoneMappings.rightFoot), color: 0xf43f5e },
+                leftElbowPole: { pos: getBonePos(currentBoneMappings.leftForearm).add(new THREE.Vector3(0, 0, -0.4 * baseScale)), color: 0x10b981 },
+                rightElbowPole: { pos: getBonePos(currentBoneMappings.rightForearm).add(new THREE.Vector3(0, 0, -0.4 * baseScale)), color: 0x10b981 },
+                leftKneePole: { pos: getBonePos(currentBoneMappings.leftLeg).add(new THREE.Vector3(0, 0, 0.4 * baseScale)), color: 0xf97316 },
+                rightKneePole: { pos: getBonePos(currentBoneMappings.rightLeg).add(new THREE.Vector3(0, 0, 0.4 * baseScale)), color: 0xf97316 }
+            };
+
+            const sphereGeo = new THREE.SphereGeometry(0.04, 16, 16);
+
+            Object.keys(targetDetails).forEach(key => {
+                const detail = targetDetails[key];
+
+                const targetGroup = new THREE.Group();
+
+                const mat = new THREE.MeshBasicMaterial({
+                    color: detail.color,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.8,
+                    depthTest: false,
+                    depthWrite: false
+                });
+                
+                const visualMesh = new THREE.Mesh(sphereGeo, mat);
+                visualMesh.renderOrder = 999;
+                
+                if (detail.pos.lengthSq() === 0) {
+                    let fallbackPos = new THREE.Vector3();
+                    if (key === 'pelvis') fallbackPos.set(0, 0.95, 0);
+                    if (key === 'chest') fallbackPos.set(0, 1.5, 0);
+                    if (key === 'head') fallbackPos.set(0, 1.85, 0);
+                    if (key === 'leftHand') fallbackPos.set(-0.7, 1.55, 0);
+                    if (key === 'rightHand') fallbackPos.set(0.7, 1.55, 0);
+                    if (key === 'leftFoot') fallbackPos.set(-0.12, 0.1, 0);
+                    if (key === 'rightFoot') fallbackPos.set(0.12, 0.1, 0);
+                    if (key === 'leftShoulder') fallbackPos.set(-0.18, 1.55, 0);
+                    if (key === 'rightShoulder') fallbackPos.set(0.18, 1.55, 0);
+                    if (key === 'lookAt') fallbackPos.set(0, 1.85, 1.0);
+                    fallbackPos.multiplyScalar(baseScale);
+                    targetGroup.position.copy(fallbackPos);
+                } else {
+                    targetGroup.position.copy(detail.pos);
+                }
+
+                const ringGeo = new THREE.RingGeometry(0.07, 0.08, 16);
+                const ringMat = new THREE.MeshBasicMaterial({ color: detail.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+                const ring = new THREE.Mesh(ringGeo, ringMat);
+                ring.renderOrder = 999;
+                ring.rotation.x = Math.PI/2;
+                
+                visualMesh.add(ring);
+                targetGroup.add(visualMesh);
+                scene.add(targetGroup);
+
+                targets[key] = { mesh: targetGroup, visual: visualMesh };
+                initialPositions[key] = targetGroup.position.clone();
+                initialQuaternions[key] = targetGroup.quaternion.clone();
+            });
+
+            updateIKChains();
+        }
+
+        function findBoneByKeywords(keywords, exclude = []) {
+            return bonesArray.findIndex(bone => {
+                const name = bone.name.toLowerCase();
+                const matchesAll = keywords.every(kw => name.includes(kw));
+                const matchesExclude = exclude.some(ex => name.includes(ex));
+                return matchesAll && !matchesExclude;
+            });
+        }
+
+        function rebuildIKPipelineFromSkeleton() {
+            currentBoneMappings = {
+                hips: findBoneByKeywords(['hips']) !== -1 ? findBoneByKeywords(['hips']) : findBoneByKeywords(['hip']),
+                spine: findBoneByKeywords(['spine'], ['spine1', 'spine2', 'chest']),
+                chest: findBoneByKeywords(['spine2']) !== -1 ? findBoneByKeywords(['spine2']) : (findBoneByKeywords(['chest']) !== -1 ? findBoneByKeywords(['chest']) : findBoneByKeywords(['spine1'])),
+                neck: findBoneByKeywords(['neck']),
+                head: findBoneByKeywords(['head']),
+                
+                leftShoulder: findBoneByKeywords(['left', 'shoulder']),
+                leftArm: findBoneByKeywords(['left', 'arm'], ['fore', 'shoulder', 'hand']) !== -1 ? findBoneByKeywords(['left', 'arm'], ['fore', 'shoulder', 'hand']) : findBoneByKeywords(['left', 'up'], ['fore', 'shoulder', 'hand']),
+                leftForearm: findBoneByKeywords(['left', 'fore']) !== -1 ? findBoneByKeywords(['left', 'fore']) : findBoneByKeywords(['left', 'low'], ['hand']),
+                leftHand: findBoneByKeywords(['left', 'hand']),
+                
+                rightShoulder: findBoneByKeywords(['right', 'shoulder']),
+                rightArm: findBoneByKeywords(['right', 'arm'], ['fore', 'shoulder', 'hand']) !== -1 ? findBoneByKeywords(['right', 'arm'], ['fore', 'shoulder', 'hand']) : findBoneByKeywords(['right', 'up'], ['fore', 'shoulder', 'hand']),
+                rightForearm: findBoneByKeywords(['right', 'fore']) !== -1 ? findBoneByKeywords(['right', 'fore']) : findBoneByKeywords(['right', 'low'], ['hand']),
+                rightHand: findBoneByKeywords(['right', 'hand']),
+                
+                leftUpLeg: findBoneByKeywords(['left', 'up', 'leg']) !== -1 ? findBoneByKeywords(['left', 'up', 'leg']) : findBoneByKeywords(['left', 'thigh']),
+                leftLeg: findBoneByKeywords(['left', 'leg'], ['up', 'foot']) !== -1 ? findBoneByKeywords(['left', 'leg'], ['up', 'foot']) : findBoneByKeywords(['left', 'calf'], ['up', 'foot']),
+                leftFoot: findBoneByKeywords(['left', 'foot']),
+                
+                rightUpLeg: findBoneByKeywords(['right', 'up', 'leg']) !== -1 ? findBoneByKeywords(['right', 'up', 'leg']) : findBoneByKeywords(['right', 'thigh']),
+                rightLeg: findBoneByKeywords(['right', 'leg'], ['up', 'foot']) !== -1 ? findBoneByKeywords(['right', 'leg'], ['up', 'foot']) : findBoneByKeywords(['right', 'calf'], ['up', 'foot']),
+                rightFoot: findBoneByKeywords(['right', 'foot'])
+            };
+
+            const targetPointsConfig = {
+                lookAt: { index: -1, color: 0xffffff, defaultPos: [0, 1.85, 1.0] },
+                pelvis: { index: currentBoneMappings.hips, color: 0xec4899, defaultPos: [0, 0.95, 0] },
+                chest: { index: currentBoneMappings.chest, color: 0xa855f7, defaultPos: [0, 1.5, 0] },
+                head: { index: currentBoneMappings.head, color: 0xeab308, defaultPos: [0, 1.85, 0] },
+                leftShoulder: { index: currentBoneMappings.leftArm, color: 0x3b82f6, defaultPos: [-0.18, 1.55, 0] },
+                rightShoulder: { index: currentBoneMappings.rightArm, color: 0x3b82f6, defaultPos: [0.18, 1.55, 0] },
+                leftHand: { index: currentBoneMappings.leftHand, color: 0x06b6d4, defaultPos: [-0.7, 1.55, 0] },
+                rightHand: { index: currentBoneMappings.rightHand, color: 0x06b6d4, defaultPos: [0.7, 1.55, 0] },
+                leftFoot: { index: currentBoneMappings.leftFoot, color: 0xf43f5e, defaultPos: [-0.12, 0.1, 0] },
+                rightFoot: { index: currentBoneMappings.rightFoot, color: 0xf43f5e, defaultPos: [0.12, 0.1, 0] },
+                leftElbowPole: { index: currentBoneMappings.leftForearm, color: 0x10b981, defaultPos: [-0.45, 1.55, -0.4], offset: [0, 0, -0.4] },
+                rightElbowPole: { index: currentBoneMappings.rightForearm, color: 0x10b981, defaultPos: [0.45, 1.55, -0.4], offset: [0, 0, -0.4] },
+                leftKneePole: { index: currentBoneMappings.leftLeg, color: 0xf97316, defaultPos: [-0.12, 0.5, 0.4], offset: [0, 0, 0.4] },
+                rightKneePole: { index: currentBoneMappings.rightLeg, color: 0xf97316, defaultPos: [0.12, 0.5, 0.4], offset: [0, 0, 0.4] }
+            };
+
+            const sphereGeo = new THREE.SphereGeometry(0.04, 16, 16);
+
+            Object.keys(targetPointsConfig).forEach(key => {
+                const conf = targetPointsConfig[key];
+                const boneIndex = conf.index;
+                const targetWorldPos = new THREE.Vector3();
+                const targetWorldQuat = new THREE.Quaternion();
+
+                if (key === 'lookAt') {
+                    const headBoneIndex = currentBoneMappings.head;
+                    if (headBoneIndex !== -1 && bonesArray[headBoneIndex]) {
+                        bonesArray[headBoneIndex].getWorldPosition(targetWorldPos);
+                        targetWorldPos.z += 0.5 * currentModelScale;
+                    } else {
+                        targetWorldPos.set(...conf.defaultPos).multiplyScalar(currentModelScale);
+                    }
+                } else if (boneIndex !== -1 && bonesArray[boneIndex]) {
+                    bonesArray[boneIndex].getWorldPosition(targetWorldPos);
+                    bonesArray[boneIndex].getWorldQuaternion(targetWorldQuat);
+                    
+                    if (conf.offset) {
+                        const offsetVec = new THREE.Vector3(...conf.offset);
+                        if (importedRootObject && importedRootObject.scale) {
+                            offsetVec.multiplyScalar(importedRootObject.scale.x);
+                        }
+                        targetWorldPos.add(offsetVec);
+                    }
+                } else {
+                    targetWorldPos.set(...conf.defaultPos).multiplyScalar(currentModelScale); 
+                }
+
+                const targetGroup = new THREE.Group();
+                targetGroup.position.copy(targetWorldPos);
+
+                const mat = new THREE.MeshBasicMaterial({
+                    color: conf.color,
+                    wireframe: true,
+                    transparent: true,
+                    opacity: 0.8,
+                    depthTest: false,
+                    depthWrite: false
+                });
+                
+                const visualMesh = new THREE.Mesh(sphereGeo, mat);
+                visualMesh.renderOrder = 999;
+                
+                // Keep target orientation aligned with bone orientation for shoulders as well to ensure perfect local space rotations
+                if (['leftFoot', 'rightFoot', 'leftHand', 'rightHand', 'head', 'chest', 'pelvis', 'leftShoulder', 'rightShoulder'].includes(key)) {
+                    targetGroup.quaternion.copy(targetWorldQuat);
+                }
+
+                const ringGeo = new THREE.RingGeometry(0.07, 0.08, 16);
+                const ringMat = new THREE.MeshBasicMaterial({ color: conf.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+                const ring = new THREE.Mesh(ringGeo, ringMat);
+                ring.renderOrder = 999;
+                ring.rotation.x = Math.PI/2;
+                
+                visualMesh.add(ring);
+                targetGroup.add(visualMesh);
+                scene.add(targetGroup);
+
+                targets[key] = {
+                    mesh: targetGroup,
+                    visual: visualMesh
+                };
+
+                initialPositions[key] = targetWorldPos.clone();
+                initialQuaternions[key] = targetGroup.quaternion.clone();
+            });
+
+            updateIKChains();
+        }
+
+        function selectTarget(key) {
+            deselectAll();
+            const target = targets[key];
+            if (target) {
+                activeTargetKey = key;
+                transformControls.attach(target.mesh);
+                target.visual.material.color.setHex(0xffff00); 
+                
+                const btnId = `btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`;
+                const btn = document.getElementById(btnId);
+                if (btn) {
+                    btn.classList.add('border-white', 'scale-125');
+                    btn.classList.remove('border-transparent');
+                }
+            }
+        }
+
+        function deselectAll() {
+            transformControls.detach();
+            activeTargetKey = null;
+            Object.keys(targets).forEach(key => {
+                const target = targets[key];
+                if (!target || !target.mesh) return;
+                const isFoot = key.includes('foot') || key.includes('Foot');
+                const isChest = key === 'chest';
+                const isHead = key === 'head';
+                const isShoulder = key.includes('shoulder') || key.includes('Shoulder');
+                const isElbowPole = key.includes('ElbowPole');
+                const isKneePole = key.includes('KneePole');
+                const isPelvis = key === 'pelvis';
+                const isLookAt = key === 'lookAt';
+
+                let initialColor = 0x06b6d4; 
+                if (isFoot) initialColor = 0xf43f5e; 
+                else if (isChest) initialColor = 0xa855f7; 
+                else if (isHead) initialColor = 0xeab308; 
+                else if (isShoulder) initialColor = 0x3b82f6;
+                else if (isElbowPole) initialColor = 0x10b981;
+                else if (isKneePole) initialColor = 0xf97316;
+                else if (isPelvis) initialColor = 0xec4899;
+                else if (isLookAt) initialColor = 0xffffff;
+
+                target.visual.material.color.setHex(initialColor);
+
+                const btnId = `btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`;
+                const btn = document.getElementById(btnId);
+                if (btn) {
+                    btn.classList.remove('border-white', 'scale-125');
+                    btn.classList.add('border-transparent');
+                }
+            });
+        }
+
+        function resetRig() {
+            deselectAll();
+
+            bonesArray.forEach(bone => {
+                bone.quaternion.set(0, 0, 0, 1);
+            });
+
+            document.getElementById('slide-model-scale').value = 1.00;
+            updateModelScale(1.00);
+
+            Object.keys(targets).forEach(key => {
+                const target = targets[key];
+                if (target && target.mesh) {
+                    if (target.mesh.parent !== scene) {
+                        scene.attach(target.mesh);
+                    }
+                    target.mesh.position.copy(initialPositions[key]);
+                    if (initialQuaternions[key]) {
+                        target.mesh.quaternion.copy(initialQuaternions[key]);
+                    }
+                }
+            });
+
+            document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+                if (cb.id.startsWith('toggle')) return;
+                cb.checked = false;
+            });
+
+            document.getElementById('slide-l-curl').value = 0;
+            document.getElementById('slide-r-curl').value = 0;
+            updateFingerCurl('left', 0);
+            updateFingerCurl('right', 0);
+
+            if (mannequin) {
+                mannequin.updateMatrixWorld(true);
+            }
+        }
+
+        function setupUIListeners() {
+            const skelCheck = document.getElementById('toggle-skeleton');
+            skelCheck.addEventListener('change', (e) => {
+                if (skeletonHelper) skeletonHelper.visible = e.target.checked;
+            });
+
+            const gridCheck = document.getElementById('toggle-grid');
+            gridCheck.addEventListener('change', (e) => {
+                if (gridHelper) gridHelper.visible = e.target.checked;
+            });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.key.toLowerCase() === 'w') setGizmoMode('translate');
+                if (e.key.toLowerCase() === 'e') setGizmoMode('rotate');
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function applyHeadLookAt() {
+            const lookAtEnabled = document.getElementById('toggle-lookat').checked;
+            if (lookAtEnabled && targets.lookAt && mannequin) {
+                const headBone = bonesArray.find(b => b.name.toLowerCase().includes('head'));
+                if (headBone && headBone.parent) {
+                    const lookPos = new THREE.Vector3();
+                    targets.lookAt.mesh.getWorldPosition(lookPos);
+                    
+                    const headWorldPos = new THREE.Vector3();
+                    headBone.getWorldPosition(headWorldPos);
+                    
+                    const dir = new THREE.Vector3().subVectors(lookPos, headWorldPos).normalize();
+                    const parentInv = new THREE.Matrix4().copy(headBone.parent.matrixWorld).invert();
+                    const localDir = dir.transformDirection(parentInv);
+                    
+                    let yaw = Math.atan2(localDir.x, localDir.z);
+                    let pitch = Math.asin(Math.max(-1, Math.min(1, -localDir.y)));
+                    
+                    const maxYaw = Math.PI / 2.5; 
+                    const maxPitch = Math.PI / 4; 
+                    yaw = Math.max(-maxYaw, Math.min(maxYaw, yaw));
+                    pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+                    
+                    headBone.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+                    headBone.updateMatrixWorld(true);
+                }
+            }
+        }
+
+        function applyHeadRotation() {
+            const lookAtEnabled = document.getElementById('toggle-lookat').checked;
+            if (!lookAtEnabled && targets.head && mannequin) {
+                const headBone = bonesArray.find(b => b.name.toLowerCase().includes('head'));
+                if (headBone && headBone.parent) {
+                    const parentWorldQuat = new THREE.Quaternion();
+                    headBone.parent.getWorldQuaternion(parentWorldQuat);
+                    
+                    const targetWorldQuat = new THREE.Quaternion();
+                    targets.head.mesh.getWorldQuaternion(targetWorldQuat);
+
+                    // Safer non-destructive multiplication chain preventing joint drift across frames
+                    const localQuat = parentWorldQuat.clone().invert().multiply(targetWorldQuat);
+                    headBone.quaternion.copy(localQuat);
+                    headBone.updateMatrixWorld(true);
+                }
+            }
+        }
+
+        // Apply world space offset cleanly independent of hierarchical parent matrix scale and rotation
+        function addWorldOffset(targetMesh, offset) {
+            if (!targetMesh) return;
+            const worldPos = new THREE.Vector3();
+            targetMesh.getWorldPosition(worldPos);
+            worldPos.add(offset);
+            if (targetMesh.parent) {
+                targetMesh.parent.worldToLocal(worldPos);
+            }
+            targetMesh.position.copy(worldPos);
+        }
+
+        function applyArmPullTension() {
+            const dragEnabled = document.getElementById('toggle-body-drag')?.checked;
+            if (!dragEnabled || !mannequin || !currentBoneMappings) return;
+
+            const shoulderLeft = getBonePos(currentBoneMappings.leftShoulder);
+            const shoulderRight = getBonePos(currentBoneMappings.rightShoulder);
+
+            let leftArmLen = 0.3 * currentModelScale;
+            let leftForearmLen = 0.25 * currentModelScale;
+            if (currentBoneMappings.leftArm !== -1 && currentBoneMappings.leftForearm !== -1) {
+                const armPos = getBonePos(currentBoneMappings.leftArm);
+                const forearmPos = getBonePos(currentBoneMappings.leftForearm);
+                const handPos = getBonePos(currentBoneMappings.leftHand);
+                if (armPos.lengthSq() > 0 && forearmPos.lengthSq() > 0 && handPos.lengthSq() > 0) {
+                    leftArmLen = armPos.distanceTo(forearmPos);
+                    leftForearmLen = forearmPos.distanceTo(handPos);
+                }
+            }
+            const armReach = (leftArmLen + leftForearmLen) * 1.1; 
+
+            if (targets.leftHand && shoulderLeft.lengthSq() > 0) {
+                const targetPos = new THREE.Vector3();
+                targets.leftHand.mesh.getWorldPosition(targetPos);
+                const dist = shoulderLeft.distanceTo(targetPos);
+                if (dist > armReach) {
+                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderLeft).normalize().multiplyScalar((dist - armReach) * 0.4);
+                    if (targets.chest) {
+                        addWorldOffset(targets.chest.mesh, pullVec);
+                    }
+                    if (targets.pelvis) {
+                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
+                    }
+                }
+            }
+
+            if (targets.rightHand && shoulderRight.lengthSq() > 0) {
+                const targetPos = new THREE.Vector3();
+                targets.rightHand.mesh.getWorldPosition(targetPos);
+                const dist = shoulderRight.distanceTo(targetPos);
+                if (dist > armReach) {
+                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderRight).normalize().multiplyScalar((dist - armReach) * 0.4);
+                    if (targets.chest) {
+                        addWorldOffset(targets.chest.mesh, pullVec);
+                    }
+                    if (targets.pelvis) {
+                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
+                    }
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (mannequin) {
+                mannequin.updateMatrixWorld(true);
+            }
+
+            const scaleFactor = 0.285;
+            const tempPos = new THREE.Vector3();
+            Object.keys(targets).forEach(key => {
+                const t = targets[key];
+                if (t && t.mesh) {
+                    t.mesh.getWorldPosition(tempPos);
+                    const dist = camera.position.distanceTo(tempPos);
+                    let scale = dist * scaleFactor;
+                    if (key === activeTargetKey) scale *= 1.4;
+                    if (t.visual) t.visual.scale.set(scale, scale, scale);
+                }
+            });
+
+            const ikActive = document.getElementById('toggle-ik').checked;
+            if (ikActive && ikSolver) {
+                if (targets.pelvis && mannequin) {
+                    const bones = mannequin.skeleton.bones;
+                    const hipsBone = bones.find(b => b.name.toLowerCase().includes('hip'));
+                    if (hipsBone) {
+                        const targetPos = new THREE.Vector3();
+                        targets.pelvis.mesh.getWorldPosition(targetPos);
+                        
+                        const targetWorldQuat = new THREE.Quaternion();
+                        targets.pelvis.mesh.getWorldQuaternion(targetWorldQuat);
+
+                        if (hipsBone.parent) {
+                            hipsBone.parent.worldToLocal(targetPos);
+                            hipsBone.position.copy(targetPos);
+                            
+                            const parentWorldQuat = new THREE.Quaternion();
+                            hipsBone.parent.getWorldQuaternion(parentWorldQuat);
+                            const localQuat = targetWorldQuat.premultiply(parentWorldQuat.invert());
+                            hipsBone.quaternion.copy(localQuat);
+                        } else {
+                            hipsBone.position.copy(targetPos);
+                            hipsBone.quaternion.copy(targetWorldQuat);
+                        }
+                    }
+                }
+                
+                // Immediately evaluate pelvis world matrix alterations so following drag calculations start with correct spatial metrics
+                mannequin.updateMatrixWorld(true);
+
+                applyArmPullTension();
+                ikSolver.update();
+                
+                // Explicitly rebuild full hierarchical bone matrix chain here before evaluating dependent look-at/rotational metrics to eliminate one-frame lag on target alignment
+                mannequin.updateMatrixWorld(true);
+
+                applyFingerRotations();
+                applyHeadLookAt();
+                applyHeadRotation();
+                
+                if (mannequin) {
+                    mannequin.updateMatrixWorld(true);
+                }
+            }
+
+            orbitControls.update();
+            renderer.render(scene, camera);
+        }
+
+        window.onload = init;
+
+    </script>
+</body>
+</html>
