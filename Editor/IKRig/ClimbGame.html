@@ -7,19 +7,142 @@
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
         canvas { display: block; width: 100vw; height: 100vh; }
-        #ui { position: absolute; top: 10px; left: 10px; color: white; font-family: monospace; background: rgba(0,0,0,0.5); padding: 10px; pointer-events: none; border-radius: 8px; min-width: 200px; z-index: 10; }
-        .ui-controls { margin-top: 10px; pointer-events: auto; background: rgba(255,255,255,0.1); padding: 5px; border-radius: 4px; }
-        #stamina-container { width: 100%; height: 10px; background: rgba(0,0,0,0.5); border-radius: 5px; margin-top: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); }
+        
+        #ui { 
+            position: absolute; 
+            top: 25px; 
+            left: 10px; 
+            color: white; 
+            font-family: monospace; 
+            background: rgba(0,0,0,0.7); 
+            padding: 12px; 
+            border-radius: 8px; 
+            width: 220px; 
+            z-index: 10; 
+            transition: transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        #ui.collapsed {
+            transform: translateX(-240px);
+        }
+        .ui-controls { margin-top: 10px; background: rgba(255,255,255,0.1); padding: 8px; border-radius: 6px; }
+        
+        #stamina-container { 
+            position: absolute;
+            top: 10px; 
+            left: 10px;
+            width: 150px; 
+            height: 4px; 
+            background: rgba(0,0,0,0.5); 
+            border-radius: 2px; 
+            overflow: hidden; 
+            border: 1px solid rgba(255,255,255,0.2); 
+            z-index: 11;
+        }
         #stamina-bar { width: 100%; height: 100%; background: #44ff44; transition: width 0.1s linear, background-color 0.3s; }
+        
+        #dock-btn {
+            position: absolute;
+            right: -36px;
+            top: 10px;
+            width: 30px;
+            height: 40px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-left: none;
+            border-radius: 0 6px 6px 0;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #hitbox-toggle {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 0, 0, 0.2);
+            border: 2px solid #ff4444;
+            color: white;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 10px;
+            text-align: center;
+            line-height: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 6px;
+            z-index: 10;
+            transition: all 0.2s ease;
+        }
+        #hitbox-toggle.inactive {
+            background: rgba(0, 0, 0, 0.7);
+            border-color: rgba(255, 255, 255, 0.4);
+        }
         
         .joystick-base { position: absolute; bottom: 30px; width: 120px; height: 120px; background: rgba(255, 255, 255, 0.1); border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); display: flex; justify-content: center; align-items: center; touch-action: none; z-index: 10; }
         #base-left { left: 30px; }
         .joystick-stick { width: 50px; height: 50px; background: rgba(255, 255, 255, 0.6); border-radius: 50%; position: absolute; pointer-events: none; z-index: 5; }
         
-        #jump-btn, #reset-cam-btn, #build-btn { position: absolute; bottom: 170px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; }
-        #jump-btn { right: 45px; background: rgba(100, 255, 100, 0.5); }
-        #build-btn { right: 125px; background: rgba(255, 150, 50, 0.5); }
-        #reset-cam-btn { left: 45px; background: rgba(100, 100, 255, 0.5); font-size: 10px; text-align: center; }
+        #jump-btn { 
+            position: absolute; 
+            bottom: 170px; 
+            right: 45px;
+            width: 70px; 
+            height: 70px; 
+            border-radius: 50%; 
+            border: 2px solid rgba(255, 255, 255, 0.5); 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            color: white; 
+            font-family: monospace; 
+            font-weight: bold; 
+            touch-action: none; 
+            cursor: pointer; 
+            z-index: 10; 
+            background: rgba(100, 255, 100, 0.5); 
+        }
+        #build-btn { 
+            position: absolute; 
+            bottom: 240px; 
+            right: 125px;
+            width: 35px; 
+            height: 35px; 
+            border-radius: 50%; 
+            border: 1.5px solid rgba(255, 255, 255, 0.4); 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            color: white; 
+            font-family: monospace; 
+            font-weight: bold; 
+            font-size: 10px;
+            touch-action: none; 
+            cursor: pointer; 
+            z-index: 10; 
+            background: rgba(255, 150, 50, 0.5); 
+        }
+        #reset-cam-btn { 
+            position: absolute; 
+            bottom: 180px; 
+            left: 45px;
+            width: 24px; 
+            height: 24px; 
+            border-radius: 50%; 
+            border: 1px solid rgba(255, 255, 255, 0.3); 
+            touch-action: none; 
+            cursor: pointer; 
+            z-index: 10; 
+            background: rgba(100, 100, 255, 0.15); 
+        }
         #jump-btn:active, #reset-cam-btn:active, #build-btn:active { opacity: 0.8; transform: scale(0.95); }
         
         .ledge-hint-container { position: absolute; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.2s; border-radius: 50%; overflow: hidden; }
@@ -30,14 +153,29 @@
         #base-left.ledge-mode .ledge-hint-container { opacity: 1; }
         #base-left.ledge-mode { border-color: rgba(255, 0, 0, 0.5); background: rgba(255, 0, 0, 0.1); }
         
-        #msg-overlay { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-family: monospace; font-weight: bold; font-size: 32px; text-shadow: 2px 2px #000; pointer-events: none; z-index: 20; }
+        #msg-overlay { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-family: monospace; font-weight: bold; font-size: 28px; text-shadow: 2px 2px #000; text-align: center; pointer-events: none; z-index: 20; }
     </style>
 </head>
 <body>
-    <div id="ui">
+    <div id="stamina-container"><div id="stamina-bar"></div></div>
+    
+    <div id="ui" class="collapsed">
+        <button id="dock-btn">▶</button>
         WASD/Left: Move | Look: Drag | Space: Jump
-        <div id="stamina-container"><div id="stamina-bar"></div></div>
         <div class="ui-controls">
+            <label>Current Level:</label><br>
+            <select id="level-select" style="width: 100%; background: #333; color: white; border: 1px solid #555; padding: 4px; margin-bottom: 8px; font-family: monospace;">
+                <option value="9" selected>Level 9: Grand Castle</option>
+                <option value="1">Level 1: Mini Tower</option>
+                <option value="2">Level 2: Gap Jumps</option>
+                <option value="3">Level 3: Ledge Traverse</option>
+                <option value="4">Level 4: Hazard Run</option>
+                <option value="5">Level 5: Infinite Tower (Random)</option>
+                <option value="6">Level 6: Obstacle Playground</option>
+                <option value="7">Level 7: Cylinder Ledges</option>
+                <option value="8">Level 8: Nested Cylinders</option>
+            </select>
+            <br>
             <label>Jump Force: <span id="force-val">1.0</span>x</label><br>
             <input type="range" id="ledge-force-slider" min="0.2" max="3.0" step="0.1" value="1.0" style="width: 100%;">
             <br>
@@ -46,12 +184,23 @@
             <br>
             <label>Ledge Offset: <span id="offset-val">0.06</span></label><br>
             <input type="range" id="offset-slider" min="0.0" max="0.5" step="0.01" value="0.06" style="width: 100%;">
+            <br>
+            <label>Climb Speed: <span id="climb-speed-val">1.6</span>x</label><br>
+            <input type="range" id="climb-speed-slider" min="1.0" max="6.0" step="0.1" value="1.6" style="width: 100%;">
+            <br>
+            <label>Land Speed: <span id="land-speed-val">2.4</span>x</label><br>
+            <input type="range" id="land-speed-slider" min="1.0" max="6.0" step="0.1" value="2.4" style="width: 100%;">
+            <br>
+            <label>Land Duration: <span id="land-dur-val">0.25</span>s</label><br>
+            <input type="range" id="land-dur-slider" min="0.1" max="2.0" step="0.05" value="0.25" style="width: 100%;">
         </div>
     </div>
-    <div id="msg-overlay">GOAL REACHED!</div>
+    
+    <div id="hitbox-toggle" class="inactive">HB<br>OFF</div>
+    <div id="msg-overlay">LEVEL COMPLETED!</div>
     <div id="jump-btn">JUMP</div>
-    <div id="build-btn">BUILD</div>
-    <div id="reset-cam-btn">RESET<br>CAM</div>
+    <div id="build-btn">B</div>
+    <div id="reset-cam-btn"></div>
     <div id="base-left" class="joystick-base">
         <div id="ledge-hint-container" class="ledge-hint-container">
             <div class="ledge-hint-line"></div>
@@ -75,6 +224,11 @@
         import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 
+        const threeTone = new THREE.DataTexture(new Uint8Array([0, 128, 255]), 3, 1, THREE.RedFormat);
+        threeTone.needsUpdate = true;
+        threeTone.minFilter = THREE.NearestFilter;
+        threeTone.magFilter = THREE.NearestFilter;
+
         class Character {
             constructor(scene) {
                 this.group = new THREE.Group();
@@ -84,6 +238,7 @@
                 const hitboxMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, transparent: true, opacity: 0.5 });
                 this.hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
                 this.hitbox.position.y = 0.9;
+                this.hitbox.visible = false;
                 this.group.add(this.hitbox);
             
                 this.mixer = null;
@@ -92,6 +247,9 @@
                 this.isLoaded = false;
                 this.fbxModel = null;
                 this.climbFinished = false;
+                this.hips = null;
+                this.climbSpeed = 1.6;
+                this.landSpeed = 2.4;
 
                 const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
                 const loader = new FBXLoader();
@@ -99,10 +257,20 @@
                 loader.load(baseUrl + 'StickMan.fbx', (object) => {
                     this.fbxModel = object;
                     object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
+                    
                     object.traverse((child) => {
                         if (child.isMesh) {
                             child.castShadow = true;
                             child.receiveShadow = true;
+                            if (child.material) {
+                                child.material = new THREE.MeshToonMaterial({
+                                    color: 0xdddddd,
+                                    gradientMap: threeTone
+                                });
+                            }
+                        }
+                        if (child.isBone && (child.name.toLowerCase().includes('hips') || child.name.toLowerCase().includes('pelvis'))) {
+                            this.hips = child;
                         }
                     });
 
@@ -133,7 +301,7 @@
                         loader.load(baseUrl + anim.file, (animObj) => {
                             if (animObj.animations.length > 0) {
                                 const action = this.mixer.clipAction(animObj.animations[0]);
-                                if(anim.name === 'jump_start' || anim.name === 'climb') {
+                                if(anim.name === 'jump_start' || anim.name === 'climb' || anim.name === 'land') {
                                     action.setLoop(THREE.LoopOnce);
                                     action.clampWhenFinished = true;
                                 }
@@ -155,55 +323,77 @@
                 this.hitbox.scale.setScalar(ratio);
             }
 
-            fadeToAction(name, duration = 0.2) {
-            if (!this.isLoaded || !this.actions[name]) return;
-            const action = this.actions[name];
-            if (this.activeAction === action) return;
-
-            const previousAction = this.activeAction;
-            this.activeAction = action;
-
-            if (previousAction) {
-                if (duration <= 0) previousAction.stop();
-                else previousAction.fadeOut(duration);
+            toggleHitbox(visible) {
+                this.hitbox.visible = visible;
             }
 
-            this.activeAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1);
-            if (duration > 0) this.activeAction.fadeIn(duration);
-            this.activeAction.play();
-        }
-
-        animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
-            if (this.mixer) this.mixer.update(delta);
-            if (!this.isLoaded) return;
-
-            const dur = forceSnap ? 0 : 0.2;
-
-            if (state === 'climbing') {
-                this.fadeToAction('climb', dur);
-            } else if (state === 'ledge') {
-                if (moveMag > 0.1) {
-                    if (moveDirX > 0.1) this.fadeToAction('hang_right', dur);
-                    else if (moveDirX < -0.1) this.fadeToAction('hang_left', dur);
-                    else this.fadeToAction('hang_idle', dur);
-                } else {
-                    this.fadeToAction('hang_idle', dur);
+            updateClimbSpeed(val) {
+                this.climbSpeed = val;
+                if (this.activeAction && this.activeAction === this.actions['climb']) {
+                    this.activeAction.setEffectiveTimeScale(val);
                 }
-            } else if (state === 'walk') {
-                if (moveMag > 0.8) this.fadeToAction('run', dur);
-                else this.fadeToAction('walk', dur);
-            } else if (state === 'air') {
-                if (yVelocity > 0) this.fadeToAction('jump_start', dur);
-                else this.fadeToAction('fall', dur);
-            } else if (state === 'landing') {
-                this.fadeToAction('land', dur);
-            } else {
-                this.fadeToAction('idle', dur);
+            }
+
+            updateLandSpeed(val) {
+                this.landSpeed = val;
+                if (this.activeAction && this.activeAction === this.actions['land']) {
+                    this.activeAction.setEffectiveTimeScale(val);
+                }
+            }
+
+            fadeToAction(name, duration = 0.2) {
+                if (!this.isLoaded || !this.actions[name]) return;
+                const action = this.actions[name];
+                if (this.activeAction === action) return;
+
+                const previousAction = this.activeAction;
+                this.activeAction = action;
+
+                if (previousAction) {
+                    if (duration <= 0) previousAction.stop();
+                    else previousAction.fadeOut(duration);
+                }
+
+                let timeScale = 1.0;
+                if (name === 'climb') timeScale = this.climbSpeed;
+                else if (name === 'land') timeScale = this.landSpeed;
+
+                this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
+                if (duration > 0) this.activeAction.fadeIn(duration);
+                this.activeAction.play();
+            }
+
+            animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
+                if (this.mixer) this.mixer.update(delta);
+                if (!this.isLoaded) return;
+
+                const dur = forceSnap ? 0 : 0.2;
+
+                if (state === 'climbing') {
+                    this.fadeToAction('climb', dur);
+                } else if (state === 'ledge') {
+                    if (moveMag > 0.1) {
+                        if (moveDirX > 0.1) this.fadeToAction('hang_right', dur);
+                        else if (moveDirX < -0.1) this.fadeToAction('hang_left', dur);
+                        else this.fadeToAction('hang_idle', dur);
+                    } else {
+                        this.fadeToAction('hang_idle', dur);
+                    }
+                } else if (state === 'walk') {
+                    if (moveMag > 0.8) this.fadeToAction('run', dur);
+                    else this.fadeToAction('walk', dur);
+                } else if (state === 'air') {
+                    if (yVelocity > 0) this.fadeToAction('jump_start', dur);
+                    else this.fadeToAction('fall', dur);
+                } else if (state === 'landing') {
+                    this.fadeToAction('land', dur);
+                } else {
+                    this.fadeToAction('idle', dur);
+                }
             }
         }
-    }
 
-    const scene = new THREE.Scene();
+        const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87ceeb);
         scene.fog = new THREE.Fog(0x87ceeb, 10, 150);
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -214,32 +404,254 @@
 
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
+        
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(50, 100, 50);
+        dirLight.position.set(0.1, 40, 0.1); 
         dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 0.5;
+        dirLight.shadow.camera.far = 150;
+        dirLight.shadow.camera.left = -40;
+        dirLight.shadow.camera.right = 40;
+        dirLight.shadow.camera.top = 40;
+        dirLight.shadow.camera.bottom = -40;
+        dirLight.shadow.bias = -0.0001;
+        dirLight.shadow.normalBias = 0.05;
         scene.add(dirLight);
+        scene.add(dirLight.target);
 
         const collidables = [];
-        const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshStandardMaterial({ color: 0x44aa44 }));
+        const levelGroup = new THREE.Group();
+        scene.add(levelGroup);
+
+        const texLoader = new THREE.TextureLoader();
+        const groundTex = texLoader.load('https://media.istockphoto.com/id/865924416/de/vektor/cartoon-rasen.jpg?s=612x612&w=0&k=20&c=RPfx_iiW2SZsn_MinDtdgzJyeCKDbONn8Gn-8CSdg0s=');
+        groundTex.wrapS = THREE.RepeatWrapping;
+        groundTex.wrapT = THREE.RepeatWrapping;
+        groundTex.repeat.set(150, 150);
+
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshToonMaterial({ map: groundTex, gradientMap: threeTone }));
         ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
         scene.add(ground); collidables.push(ground);
 
         const cubeSize = 3.0;
-        const platMat = new THREE.MeshStandardMaterial({ color: 0x5555aa });
+        const platMat = new THREE.MeshToonMaterial({ color: 0x5555aa, gradientMap: threeTone });
         const boxGeoTemplate = new RoundedBoxGeometry(cubeSize, cubeSize, cubeSize, 1, 0.15);
 
         const hazards = [];
-        const hazardMat = new THREE.MeshStandardMaterial({ color: 0xff4444, emissive: 0x441111 });
+        const hazardMat = new THREE.MeshToonMaterial({ color: 0xff4444, emissive: 0x441111, gradientMap: threeTone });
         const sphereGeo = new THREE.SphereGeometry(1.2, 16, 16);
 
         function createHazard(x, y, z, range = 5, speed = 2, axis = 'x') {
             const mesh = new THREE.Mesh(sphereGeo, hazardMat);
             mesh.position.set(x, y, z);
-            scene.add(mesh);
+            levelGroup.add(mesh);
             hazards.push({ mesh, x, y, z, range, speed, axis });
         }
 
-        function generateLevel() {
+        const starGeo = new THREE.OctahedronGeometry(1.2);
+        const starMat = new THREE.MeshToonMaterial({ color: 0xffff00, emissive: 0xaa8800, gradientMap: threeTone });
+        const star = new THREE.Mesh(starGeo, starMat);
+        scene.add(star);
+
+        const char = new Character(scene);
+
+        function clearLevel() {
+            while(levelGroup.children.length > 0){
+                const obj = levelGroup.children[0];
+                levelGroup.remove(obj);
+            }
+            collidables.length = 0;
+            collidables.push(ground);
+            hazards.length = 0;
+        }
+
+        // Level 1: Mini Tower with a stepped 3x3 hollow structure (Original stepped winding staircase kept here)
+        function generateMiniTower() {
+            clearLevel();
+            
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -30);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            const stepPositions = [
+                {x: 0, y: cubeSize * 1.0, z: -23}, 
+                {x: 0, y: cubeSize * 1.8, z: -16}, 
+                {x: 0, y: cubeSize * 2.6, z: -9},  
+                {x: 0, y: cubeSize * 3.4, z: -2},  
+                {x: 0, y: cubeSize * 4.2, z: 5}    
+            ];
+
+            stepPositions.forEach(pos => {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(pos.x, pos.y - cubeSize/2, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            });
+
+            const startTowerY = cubeSize * 4.2;
+            const towerCenterZ = 12;
+
+            // Generate stepped heights on the outer rim of the 3x3 layout to form a winding staircase
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) {
+                    if (dx === 0 && dz === 0) continue; // Leaves the center hollow
+
+                    let height = 4;
+                    if (dx === 0 && dz === -1) height = 1;      // Front Center
+                    else if (dx === 1 && dz === -1) height = 2; // Front Right
+                    else if (dx === 1 && dz === 0) height = 3;  // Middle Right
+                    else if (dx === 1 && dz === 1) height = 4;  // Back Right
+                    else if (dx === 0 && dz === 1) height = 5;  // Back Center (Highest step)
+                    else if (dx === -1 && dz === 1) height = 4; // Back Left
+                    else if (dx === -1 && dz === 0) height = 3; // Middle Left
+                    else if (dx === -1 && dz === -1) height = 2;// Front Left
+
+                    for (let y = 0; y < height; y++) {
+                        const posY = startTowerY + (y + 0.5) * cubeSize;
+                        const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                        m.position.set(dx * cubeSize, posY, towerCenterZ + dz * cubeSize);
+                        m.castShadow = true; m.receiveShadow = true;
+                        levelGroup.add(m); collidables.push(m);
+                    }
+                }
+            }
+
+            // Place goal star on the highest back-center peak step
+            star.position.set(0, startTowerY + 5 * cubeSize + 2, towerCenterZ + cubeSize);
+            star.visible = true;
+            char.group.position.set(0, 5, -30);
+        }
+
+        // Level 2: Gap Jumps (Brought closer to start)
+        function generateGapJumps() {
+            clearLevel();
+            
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -25);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            const stepPositions = [
+                {x: -2, y: cubeSize * 1.0, z: -18}, 
+                {x: 2,  y: cubeSize * 1.8, z: -12}, 
+                {x: -3, y: cubeSize * 2.6, z: -6},  
+                {x: 3,  y: cubeSize * 3.4, z: 0},  
+                {x: 0,  y: cubeSize * 4.2, z: 5}    
+            ];
+
+            stepPositions.forEach(pos => {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(pos.x, pos.y - cubeSize/2, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            });
+
+            const startTowerY = cubeSize * 4.2;
+            const towerHeight = 5; 
+            for (let y = 0; y < towerHeight; y++) {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(0, startTowerY + (y + 0.5) * cubeSize, 10);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            }
+
+            star.position.set(0, startTowerY + towerHeight * cubeSize + 2, 10);
+            star.visible = true;
+            char.group.position.set(0, 5, -25);
+        }
+
+        // Level 3: Ledge Traverse (Horizontal climbing focused)
+        function generateLedgeTraverse() {
+            clearLevel();
+            
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -35);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            const structures = [
+                {x: -4, y: cubeSize * 1.5, z: -20},
+                {x: 0,  y: cubeSize * 2.5, z: -10},
+                {x: 4,  y: cubeSize * 3.5, z: 0},
+                {x: 0,  y: cubeSize * 4.5, z: 10}
+            ];
+
+            structures.forEach(pos => {
+                for (let h = 0; h < 2; h++) {
+                    const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                    m.position.set(pos.x, pos.y - cubeSize/2 + h * cubeSize, pos.z);
+                    m.castShadow = true; m.receiveShadow = true;
+                    levelGroup.add(m); collidables.push(m);
+                }
+            });
+
+            const towerHeight = 5;
+            for (let y = 0; y < towerHeight; y++) {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(0, (y + 4.5) * cubeSize, 20);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            }
+
+            star.position.set(0, (towerHeight + 4.5) * cubeSize + 2, 20);
+            star.visible = true;
+            char.group.position.set(0, 5, -35);
+        }
+
+        // Level 4: Hazard Run (Avoid moving obstacles)
+        function generateHazardRun() {
+            clearLevel();
+            
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -35);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            const stepPositions = [
+                {x: 0, y: cubeSize * 1.0, z: -25}, 
+                {x: -3, y: cubeSize * 1.8, z: -17}, 
+                {x: 3, y: cubeSize * 2.6, z: -9},  
+                {x: 0, y: cubeSize * 3.4, z: -1},  
+                {x: 0, y: cubeSize * 4.2, z: 7}    
+            ];
+
+            stepPositions.forEach((pos, idx) => {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(pos.x, pos.y - cubeSize/2, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+                
+                createHazard(pos.x, pos.y + 1.5, pos.z, 5, 2.5 + (idx * 0.3), 'x');
+            });
+
+            const startTowerY = cubeSize * 4.2;
+            const towerHeight = 5; 
+            for (let y = 0; y < towerHeight; y++) {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(0, startTowerY + (y + 0.5) * cubeSize, 15);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            }
+
+            star.position.set(0, startTowerY + towerHeight * cubeSize + 2, 15);
+            star.visible = true;
+            char.group.position.set(0, 5, -35);
+        }
+
+        // Level 5: Procedural Large Tower (Random)
+        function generateRandomTower() {
+            clearLevel();
             const startZ = -40;
             const endZ = 0;
             let currentZ = startZ;
@@ -249,7 +661,7 @@
                 const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
                 mesh.position.set(x * cubeSize, cubeSize/2, startZ);
                 mesh.castShadow = true; mesh.receiveShadow = true;
-                scene.add(mesh); collidables.push(mesh);
+                levelGroup.add(mesh); collidables.push(mesh);
             }
 
             while (currentZ < endZ - 10) {
@@ -259,7 +671,7 @@
                 const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
                 mesh.position.set(x, currentY + cubeSize/2, currentZ);
                 mesh.castShadow = true; mesh.receiveShadow = true;
-                scene.add(mesh); collidables.push(mesh);
+                levelGroup.add(mesh); collidables.push(mesh);
                 if (Math.random() > 0.4) createHazard(x + (Math.random()-0.5)*15, currentY + 3, currentZ, 4 + Math.random()*4, 1.0 + Math.random()*2, Math.random() > 0.5 ? 'x' : 'y');
             }
 
@@ -268,8 +680,6 @@
             for(let x=4; x<=5; x++) for(let y=0; y<hSize; y++) for(let z=4; z<=5; z++) grid[x][y][z] = true;
             for(let x=0; x<gSize; x++) for(let y=0; y<hSize; y++) for(let z=0; z<gSize; z++) if(Math.random() > 0.88) grid[x][y][z] = true;
 
-            const geometries = [];
-            const matrix = new THREE.Matrix4();
             for(let x=0; x<gSize; x++) {
                 for(let y=0; y<hSize; y++) {
                     for(let z=0; z<gSize; z++) {
@@ -280,23 +690,427 @@
                             const m = new THREE.Mesh(boxGeoTemplate, platMat);
                             m.position.set(px, py, pz);
                             m.castShadow = true; m.receiveShadow = true;
-                            scene.add(m); collidables.push(m);
+                            levelGroup.add(m); collidables.push(m);
                         }
                     }
                 }
             }
-            return hSize * cubeSize;
+            star.position.set(0, hSize * cubeSize + 2, 0);
+            star.visible = true;
+            char.group.position.set(0, 5, -40);
         }
 
-        const towerTopY = generateLevel();
-        const starGeo = new THREE.OctahedronGeometry(1.2);
-        const starMat = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xaa8800 });
-        const star = new THREE.Mesh(starGeo, starMat);
-        star.position.set(0, towerTopY + 2, 0);
-        scene.add(star);
+        // Level 6: Obstacle Playground (Various interactive shapes)
+        function generateObstaclePlayground() {
+            clearLevel();
+            
+            // Start zone
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -35);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
 
-        const char = new Character(scene);
-        char.group.position.set(0, 5, -40);
+            // 1. Sloped Ramp (Rotated Box) - excellent for testing slope/run angles
+            const rampGeo = new RoundedBoxGeometry(cubeSize * 1.5, 0.5, 12.0, 1, 0.05);
+            const ramp = new THREE.Mesh(rampGeo, platMat);
+            ramp.position.set(0, 2.0, -23);
+            ramp.rotation.x = -0.3; // Angle slope
+            ramp.castShadow = true; ramp.receiveShadow = true;
+            levelGroup.add(ramp); collidables.push(ramp);
+
+            // 2. High Octagonal Column (Cylinder)
+            const cylinderGeo = new THREE.CylinderGeometry(1.5, 2.0, 10.0, 8);
+            const column = new THREE.Mesh(cylinderGeo, platMat);
+            column.position.set(0, 5.0, -11);
+            column.castShadow = true; column.receiveShadow = true;
+            levelGroup.add(column); collidables.push(column);
+
+            // Staggered climbable pegs on the cylinder column
+            const pegGeo = new RoundedBoxGeometry(1.5, 0.8, 1.5, 1, 0.1);
+            const pegCoords = [
+                {x: -1.8, y: 3.5, z: -11},
+                {x: 1.8, y: 6.5, z: -11},
+                {x: 0, y: 9.5, z: -9.2}
+            ];
+            pegCoords.forEach(pos => {
+                const m = new THREE.Mesh(pegGeo, platMat);
+                m.position.set(pos.x, pos.y, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            });
+
+            // 3. Narrow flattened sphere steps
+            const sphereStepGeo = new THREE.SphereGeometry(1.8, 16, 16);
+            const sphereStep = new THREE.Mesh(sphereStepGeo, platMat);
+            sphereStep.position.set(4, 11, -3);
+            sphereStep.scale.set(1, 0.3, 1); // Flattened vertically
+            sphereStep.castShadow = true; sphereStep.receiveShadow = true;
+            levelGroup.add(sphereStep); collidables.push(sphereStep);
+
+            const stepPositions = [
+                {x: -3, y: 12, z: 4}, 
+                {x: 0, y: 13, z: 11}    
+            ];
+            stepPositions.forEach((pos, idx) => {
+                const size = idx % 2 === 0 ? 1.5 : 2.5;
+                const customStepGeo = new RoundedBoxGeometry(size, 1.5, size, 1, 0.1);
+                const m = new THREE.Mesh(customStepGeo, platMat);
+                m.position.set(pos.x, pos.y - 0.75, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            });
+
+            // 4. Overhanging Arch / Sideways traverse test zone
+            const archY = 13.0;
+            const archZ = 18.0;
+            
+            const archLeft = new THREE.Mesh(boxGeoTemplate, platMat);
+            archLeft.position.set(-3.5, archY + cubeSize/2, archZ);
+            archLeft.castShadow = true; archLeft.receiveShadow = true;
+            levelGroup.add(archLeft); collidables.push(archLeft);
+
+            const archRight = new THREE.Mesh(boxGeoTemplate, platMat);
+            archRight.position.set(3.5, archY + cubeSize/2, archZ);
+            archRight.castShadow = true; archRight.receiveShadow = true;
+            levelGroup.add(archRight); collidables.push(archRight);
+
+            const traverseBeamGeo = new RoundedBoxGeometry(10.0, 1.5, 3.0, 1, 0.1);
+            const traverseBeam = new THREE.Mesh(traverseBeamGeo, platMat);
+            traverseBeam.position.set(0, archY + cubeSize + 0.75, archZ);
+            traverseBeam.castShadow = true; traverseBeam.receiveShadow = true;
+            levelGroup.add(traverseBeam); collidables.push(traverseBeam);
+
+            // Final star placement
+            star.position.set(0, archY + cubeSize + 3.0, archZ);
+            star.visible = true;
+            char.group.position.set(0, 5, -35);
+        }
+
+        // Level 7: Cylinder Ledges (Large cylinders, dome structures, and flat balcony surfaces wrapping them for climbing & walking traverse)
+        function generateCylinderLedges() {
+            clearLevel();
+            
+            // Start zone
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -35);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            // 1. Giant Full Sphere with grabby ledges wrapping around it
+            const sphereGeo = new THREE.SphereGeometry(4.5, 16, 16);
+            const sphereMesh = new THREE.Mesh(sphereGeo, platMat);
+            sphereMesh.position.set(-3, 6, -22);
+            sphereMesh.castShadow = true; sphereMesh.receiveShadow = true;
+            levelGroup.add(sphereMesh); collidables.push(sphereMesh);
+
+            const numLedges = 6;
+            for (let i = 0; i < numLedges; i++) {
+                const angle = (i / numLedges) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(2.5, 0.6, 1.0, 1, 0.1), platMat);
+                ledge.position.set(
+                    sphereMesh.position.x + Math.sin(angle) * 4.6,
+                    sphereMesh.position.y,
+                    sphereMesh.position.z + Math.cos(angle) * 4.6
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // 2. Flat pressed cylinder (Balcony)
+            const balconyGeo = new THREE.CylinderGeometry(4.5, 4.5, 1.2, 16);
+            const balcony = new THREE.Mesh(balconyGeo, platMat);
+            balcony.position.set(4, 9, -10);
+            balcony.castShadow = true; balcony.receiveShadow = true;
+            levelGroup.add(balcony); collidables.push(balcony);
+
+            const numBalconyLedges = 8;
+            for (let i = 0; i < numBalconyLedges; i++) {
+                const angle = (i / numBalconyLedges) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(3.0, 0.5, 0.8, 1, 0.05), platMat);
+                ledge.position.set(
+                    balcony.position.x + Math.sin(angle) * 4.6,
+                    balcony.position.y + 0.6, 
+                    balcony.position.z + Math.cos(angle) * 4.6
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // 3. Floating Half-Sphere (Dome) with grabby bottom ring
+            const domeGeo = new THREE.SphereGeometry(4.0, 16, 12, 0, Math.PI*2, 0, Math.PI/2);
+            const dome = new THREE.Mesh(domeGeo, platMat);
+            dome.position.set(-2, 13, 2);
+            dome.castShadow = true; dome.receiveShadow = true;
+            levelGroup.add(dome); collidables.push(dome);
+
+            const numDomeLedges = 6;
+            for (let i = 0; i < numDomeLedges; i++) {
+                const angle = (i / numDomeLedges) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(2.5, 0.5, 0.8, 1, 0.05), platMat);
+                ledge.position.set(
+                    dome.position.x + Math.sin(angle) * 4.1,
+                    dome.position.y + 0.2, 
+                    dome.position.z + Math.cos(angle) * 4.1
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // 4. Higher flat pressed cylinders (Balconies) leading to the final star
+            const highBalcony = new THREE.Mesh(balconyGeo, platMat);
+            highBalcony.position.set(3, 17, 12);
+            highBalcony.castShadow = true; highBalcony.receiveShadow = true;
+            levelGroup.add(highBalcony); collidables.push(highBalcony);
+
+            for (let i = 0; i < numBalconyLedges; i++) {
+                const angle = (i / numBalconyLedges) * Math.PI * 2;
+                if (angle > Math.PI * 0.4 && angle < Math.PI * 1.6) {
+                    const ledge = new THREE.Mesh(new RoundedBoxGeometry(3.0, 0.5, 0.8, 1, 0.05), platMat);
+                    ledge.position.set(
+                        highBalcony.position.x + Math.sin(angle) * 4.6,
+                        highBalcony.position.y + 0.6,
+                        highBalcony.position.z + Math.cos(angle) * 4.6
+                    );
+                    ledge.rotation.y = angle;
+                    ledge.castShadow = true; ledge.receiveShadow = true;
+                    levelGroup.add(ledge); collidables.push(ledge);
+                }
+            }
+
+            // Final Goal Star on the top balcony
+            star.position.set(3, 17 + 2.5, 12);
+            star.visible = true;
+            char.group.position.set(0, 5, -35);
+        }
+
+        // Level 8: Nested Concentric Cylinders (Stepped jump heights to climb)
+        function generateNestedCylinders() {
+            clearLevel();
+            
+            // Start zone
+            for (let x = -1; x <= 1; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -35);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            // Concentric Set 1 (Z = -22)
+            const c1_outerGeo = new THREE.CylinderGeometry(5.0, 5.0, 4.0, 16);
+            const c1_outer = new THREE.Mesh(c1_outerGeo, platMat);
+            c1_outer.position.set(0, 2.0, -22);
+            c1_outer.castShadow = true; c1_outer.receiveShadow = true;
+            levelGroup.add(c1_outer); collidables.push(c1_outer);
+
+            const c1_innerGeo = new THREE.CylinderGeometry(2.5, 2.5, 8.0, 12);
+            const c1_inner = new THREE.Mesh(c1_innerGeo, platMat);
+            c1_inner.position.set(0, 4.0, -22);
+            c1_inner.castShadow = true; c1_inner.receiveShadow = true;
+            levelGroup.add(c1_inner); collidables.push(c1_inner);
+
+            // Concentric Set 2 (Z = -8, Shifted Right)
+            const c2_outerGeo = new THREE.CylinderGeometry(6.0, 6.0, 8.0, 16);
+            const c2_outer = new THREE.Mesh(c2_outerGeo, platMat);
+            c2_outer.position.set(4.0, 4.0, -8);
+            c2_outer.castShadow = true; c2_outer.receiveShadow = true;
+            levelGroup.add(c2_outer); collidables.push(c2_outer);
+
+            const c2_innerGeo = new THREE.CylinderGeometry(3.5, 3.5, 14.0, 12);
+            const c2_inner = new THREE.Mesh(c2_innerGeo, platMat);
+            c2_inner.position.set(4.0, 7.0, -8);
+            c2_inner.castShadow = true; c2_inner.receiveShadow = true;
+            levelGroup.add(c2_inner); collidables.push(c2_inner);
+
+            // Add climbable wrap ledges to the second inner cylinder
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(2.5, 0.6, 0.8, 1, 0.05), platMat);
+                ledge.position.set(
+                    c2_inner.position.x + Math.sin(angle) * 3.6,
+                    11.0,
+                    c2_inner.position.z + Math.cos(angle) * 3.6
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // Concentric Set 3 (Z = 8, Shifted Left & Very High)
+            const c3_outerGeo = new THREE.CylinderGeometry(5.0, 5.0, 14.0, 16);
+            const c3_outer = new THREE.Mesh(c3_outerGeo, platMat);
+            c3_outer.position.set(-4.0, 7.0, 8);
+            c3_outer.castShadow = true; c3_outer.receiveShadow = true;
+            levelGroup.add(c3_outer); collidables.push(c3_outer);
+
+            const c3_innerGeo = new THREE.CylinderGeometry(2.5, 2.5, 20.0, 12);
+            const c3_inner = new THREE.Mesh(c3_innerGeo, platMat);
+            c3_inner.position.set(-4.0, 10.0, 8);
+            c3_inner.castShadow = true; c3_inner.receiveShadow = true;
+            levelGroup.add(c3_inner); collidables.push(c3_inner);
+
+            // Climbable wrap ledges for the third outer cylinder to transition to inner
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(3.0, 0.6, 0.8, 1, 0.05), platMat);
+                ledge.position.set(
+                    c3_outer.position.x + Math.sin(angle) * 5.1,
+                    12.0,
+                    c3_outer.position.z + Math.cos(angle) * 5.1
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // Climbable wrap ledges for the third inner cylinder (the peak climb)
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2;
+                const ledge = new THREE.Mesh(new RoundedBoxGeometry(2.0, 0.6, 0.8, 1, 0.05), platMat);
+                ledge.position.set(
+                    c3_inner.position.x + Math.sin(angle) * 2.6,
+                    17.5,
+                    c3_inner.position.z + Math.cos(angle) * 2.6
+                );
+                ledge.rotation.y = angle;
+                ledge.castShadow = true; ledge.receiveShadow = true;
+                levelGroup.add(ledge); collidables.push(ledge);
+            }
+
+            // Star on top of the innermost final cylinder
+            star.position.set(-4.0, 20.0 + 2.0, 8);
+            star.visible = true;
+            char.group.position.set(0, 5, -35);
+        }
+
+        // Level 9: Grand Castle (Medieval Fort scaled up ~2x)
+        function generateGrandCastle() {
+            clearLevel();
+            
+            // Large start zone
+            for (let x = -2; x <= 2; x++) {
+                const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
+                mesh.position.set(x * cubeSize, cubeSize/2, -30);
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
+            }
+
+            // Giant modular stairs leading to castle base
+            const stepPositions = [
+                {x: 0, y: cubeSize * 1.0, z: -23}, 
+                {x: 0, y: cubeSize * 1.8, z: -16}, 
+                {x: 0, y: cubeSize * 2.6, z: -9},  
+                {x: 0, y: cubeSize * 3.4, z: -2},  
+                {x: 0, y: cubeSize * 4.2, z: 5}    
+            ];
+
+            stepPositions.forEach(pos => {
+                const m = new THREE.Mesh(boxGeoTemplate, platMat);
+                m.position.set(pos.x, pos.y - cubeSize/2, pos.z);
+                m.castShadow = true; m.receiveShadow = true;
+                levelGroup.add(m); collidables.push(m);
+            });
+
+            const startTowerY = cubeSize * 4.2; 
+            const castleZ = 12;
+
+            // 2x Scaled Twin Left Tower
+            const leftTowerGeo = new RoundedBoxGeometry(6.0, 30.0, 6.0, 1, 0.15);
+            const leftTower = new THREE.Mesh(leftTowerGeo, platMat);
+            leftTower.position.set(-9.0, startTowerY + 15.0, castleZ);
+            leftTower.castShadow = true; leftTower.receiveShadow = true;
+            levelGroup.add(leftTower); collidables.push(leftTower);
+
+            // 2x Scaled Twin Right Tower
+            const rightTowerGeo = new RoundedBoxGeometry(6.0, 30.0, 6.0, 1, 0.15);
+            const rightTower = new THREE.Mesh(rightTowerGeo, platMat);
+            rightTower.position.set(9.0, startTowerY + 15.0, castleZ);
+            rightTower.castShadow = true; rightTower.receiveShadow = true;
+            levelGroup.add(rightTower); collidables.push(rightTower);
+
+            // 2x Scaled Central Portcullis Wall / Gateway
+            const gateWallGeo = new RoundedBoxGeometry(12.0, 18.0, 4.0, 1, 0.15);
+            const gateWall = new THREE.Mesh(gateWallGeo, platMat);
+            gateWall.position.set(0, startTowerY + 9.0, castleZ);
+            gateWall.castShadow = true; gateWall.receiveShadow = true;
+            levelGroup.add(gateWall); collidables.push(gateWall);
+
+            // Extended Ledges wrapping Tower for modular climb sequence
+            const ledgeGeo = new RoundedBoxGeometry(6.4, 0.8, 6.4, 1, 0.05);
+            const leftLedge1 = new THREE.Mesh(ledgeGeo, platMat);
+            leftLedge1.position.set(-9.0, startTowerY + 10.0, castleZ);
+            leftLedge1.castShadow = true; leftLedge1.receiveShadow = true;
+            levelGroup.add(leftLedge1); collidables.push(leftLedge1);
+
+            const leftLedge2 = new THREE.Mesh(ledgeGeo, platMat);
+            leftLedge2.position.set(-9.0, startTowerY + 20.0, castleZ);
+            leftLedge2.castShadow = true; leftLedge2.receiveShadow = true;
+            levelGroup.add(leftLedge2); collidables.push(leftLedge2);
+
+            // Right Tower matching Ledge Elements
+            const rightLedge1 = new THREE.Mesh(ledgeGeo, platMat);
+            rightLedge1.position.set(9.0, startTowerY + 10.0, castleZ);
+            rightLedge1.castShadow = true; rightLedge1.receiveShadow = true;
+            levelGroup.add(rightLedge1); collidables.push(rightLedge1);
+
+            const rightLedge2 = new THREE.Mesh(ledgeGeo, platMat);
+            rightLedge2.position.set(9.0, startTowerY + 20.0, castleZ);
+            rightLedge2.castShadow = true; rightLedge2.receiveShadow = true;
+            levelGroup.add(rightLedge2); collidables.push(rightLedge2);
+
+            // Center Gateway upper battlements ledge
+            const centerLedgeGeo = new RoundedBoxGeometry(12.4, 0.8, 4.4, 1, 0.05);
+            const centerLedge = new THREE.Mesh(centerLedgeGeo, platMat);
+            centerLedge.position.set(0, startTowerY + 17.0, castleZ);
+            centerLedge.castShadow = true; centerLedge.receiveShadow = true;
+            levelGroup.add(centerLedge); collidables.push(centerLedge);
+
+            // Place goal star on Left Tower Peak
+            star.position.set(-9.0, startTowerY + 30.0 + 2.0, castleZ);
+            star.visible = true;
+            char.group.position.set(0, 5, -30);
+        }
+
+        function loadLevel(levelId) {
+            switch(levelId) {
+                case "1":
+                    generateMiniTower();
+                    break;
+                case "2":
+                    generateGapJumps();
+                    break;
+                case "3":
+                    generateLedgeTraverse();
+                    break;
+                case "4":
+                    generateHazardRun();
+                    break;
+                case "5":
+                    generateRandomTower();
+                    break;
+                case "6":
+                    generateObstaclePlayground();
+                    break;
+                case "7":
+                    generateCylinderLedges();
+                    break;
+                case "8":
+                    generateNestedCylinders();
+                    break;
+                case "9":
+                    generateGrandCastle();
+                    break;
+            }
+        }
+
+        // Default start at Level 9: Grand Castle
+        generateGrandCastle();
 
         const buildPreview = new THREE.Mesh(boxGeoTemplate, new THREE.MeshStandardMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 }));
         buildPreview.visible = false; scene.add(buildPreview);
@@ -311,7 +1125,7 @@
                     const newCube = new THREE.Mesh(boxGeoTemplate, platMat.clone());
                     newCube.position.copy(buildPreview.position);
                     newCube.castShadow = true; newCube.receiveShadow = true;
-                    scene.add(newCube); collidables.push(newCube);
+                    levelGroup.add(newCube); collidables.push(newCube);
                 }
                 isBuilding = false; buildPreview.visible = false; gridHelper.visible = false;
             }
@@ -340,21 +1154,75 @@
 
         window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = true; if (e.code === 'Space') handleJump(); });
         window.addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = false; });
+        
+        document.getElementById('jump-btn').addEventListener('pointerdown', handleJump);
 
         let isLook = false, lX, lY;
-        window.addEventListener('pointerdown', e => { if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1) { isLook = true; lX=e.clientX; lY=e.clientY; } });
+        window.addEventListener('pointerdown', e => { 
+            // Avoid activating look in the joystick area (bottom-left quadrant passive zone)
+            if (e.clientX < 200 && e.clientY > window.innerHeight - 200) return;
+            
+            if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && e.target.id !== 'hitbox-toggle' && e.target.id !== 'level-select') { 
+                isLook = true; 
+                lX=e.clientX; 
+                lY=e.clientY; 
+            } 
+        });
         window.addEventListener('pointermove', e => { if (isLook) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(0.1, Math.min(3.0, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
         window.addEventListener('pointerup', () => isLook=false);
         document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { cameraTheta = char.group.rotation.y + Math.PI; cameraPhi = Math.PI/3; });
 
         let stamina = 100, isGrounded = false, isLedgeGrabbing = false, isClimbingUp = false, ledgeTarget = new THREE.Vector3(), jumpMomentum = new THREE.Vector3();
-        let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0;
+        let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0, initialLandingTimer = 0;
         let ledgeOffset = 0.06;
-        const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4, LANDING_ANIM_DURATION = 0.5;
+        let baseLandingAnimDuration = 0.25;
+        const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
 
         document.getElementById('ledge-force-slider').addEventListener('input', e => { ledgeJumpMultiplier = parseFloat(e.target.value); document.getElementById('force-val').innerText = ledgeJumpMultiplier.toFixed(1); });
         document.getElementById('scale-slider').addEventListener('input', e => { const val = parseFloat(e.target.value); document.getElementById('scale-val').innerText = val.toFixed(4); char.updateScale(val); });
         document.getElementById('offset-slider').addEventListener('input', e => { ledgeOffset = parseFloat(e.target.value); document.getElementById('offset-val').innerText = ledgeOffset.toFixed(2); });
+        
+        const climbSlider = document.getElementById('climb-speed-slider');
+        climbSlider.addEventListener('input', e => {
+            const val = parseFloat(e.target.value);
+            document.getElementById('climb-speed-val').innerText = val.toFixed(1);
+            char.updateClimbSpeed(val);
+        });
+
+        const landSlider = document.getElementById('land-speed-slider');
+        landSlider.addEventListener('input', e => {
+            const val = parseFloat(e.target.value);
+            document.getElementById('land-speed-val').innerText = val.toFixed(1);
+            char.updateLandSpeed(val);
+        });
+
+        const landDurSlider = document.getElementById('land-dur-slider');
+        landDurSlider.addEventListener('input', e => {
+            baseLandingAnimDuration = parseFloat(e.target.value);
+            document.getElementById('land-dur-val').innerText = baseLandingAnimDuration.toFixed(2);
+        });
+
+        const levelSelect = document.getElementById('level-select');
+        levelSelect.addEventListener('change', e => {
+            document.getElementById('msg-overlay').style.display = 'none';
+            loadLevel(e.target.value);
+        });
+
+        const hbToggle = document.getElementById('hitbox-toggle');
+        let showHitbox = false;
+        hbToggle.addEventListener('pointerdown', () => {
+            showHitbox = !showHitbox;
+            char.toggleHitbox(showHitbox);
+            hbToggle.classList.toggle('inactive', !showHitbox);
+            hbToggle.innerHTML = showHitbox ? "HB<br>ON" : "HB<br>OFF";
+        });
+
+        const uiPanel = document.getElementById('ui');
+        const dockBtn = document.getElementById('dock-btn');
+        dockBtn.addEventListener('pointerdown', () => {
+            const isCollapsed = uiPanel.classList.toggle('collapsed');
+            dockBtn.innerText = isCollapsed ? "▶" : "◀";
+        });
 
         function handleJump() {
             if (stamina < JUMP_COST || landingTimer > 0) return;
@@ -374,23 +1242,45 @@
                     }
                 }
                 const fwd = new THREE.Vector3(0,0,1).applyQuaternion(char.group.quaternion);
-                if (action === 'jump_up_boost') { isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false; }
+                if (action === 'jump_up_boost') { 
+                    isLedgeGrabbing = false; 
+                    isClimbingUp = true; 
+                    lockedHintAngle = null; 
+                    char.climbFinished = false; 
+                }
                 else if (action === 'jump_back') { isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 10*ledgeJumpMultiplier; jumpMomentum.copy(fwd.negate().multiplyScalar(15*ledgeJumpMultiplier)); lockedHintAngle = null; ledgeGrabCooldown = 0.5; }
-                else { isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false; }
+                else { 
+                    isLedgeGrabbing = false; 
+                    isClimbingUp = true; 
+                    lockedHintAngle = null; 
+                    char.climbFinished = false; 
+                }
             }
         }
 
         const clock = new THREE.Clock();
         const rayDown = new THREE.Raycaster(), rayFwd = new THREE.Raycaster(), downVec = new THREE.Vector3(0,-1,0);
+        let camTarget = new THREE.Vector3(0, 5, -40);
+        let isNextLevelLoading = false;
 
         function animate() {
             requestAnimationFrame(animate);
             const delta = Math.min(clock.getDelta(), 0.1), time = Date.now()*0.001;
 
+            // Compute floorY at start of frame
+            rayDown.set(char.group.position.clone().setY(char.group.position.y+0.5), downVec);
+            const dH = rayDown.intersectObjects(collidables);
+            const floorY = dH.length > 0 ? dH[0].point.y : 0;
+
+            dirLight.position.set(char.group.position.x, char.group.position.y + 40, char.group.position.z);
+            dirLight.target.position.copy(char.group.position);
+
             hazards.forEach(h => {
                 const offset = Math.sin(time * h.speed) * h.range;
                 if (h.axis === 'x') h.mesh.position.x = h.x + offset; else h.mesh.position.y = h.y + offset;
-                if (char.group.position.distanceTo(h.mesh.position) < 2.2) char.group.position.set(0, 5, -40); 
+                if (char.group.position.distanceTo(h.mesh.position) < 2.2) {
+                    char.group.position.set(0, 5, levelSelect.value === "5" || levelSelect.value === "1" ? -30 : -25);
+                }
             });
 
             const curX = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
@@ -411,7 +1301,36 @@
 
             if (star.visible) {
                 star.rotation.y += delta;
-                if (char.group.position.distanceTo(star.position) < 3.0) { star.visible = false; document.getElementById('msg-overlay').style.display = 'block'; }
+                if (char.group.position.distanceTo(star.position) < 3.0 && !isNextLevelLoading) {
+                    star.visible = false;
+                    isNextLevelLoading = true;
+                    
+                    let nextVal = parseInt(levelSelect.value) + 1;
+                    if (levelSelect.value === "9") nextVal = 1; // Loop back to 1 from 9
+                    const overlay = document.getElementById('msg-overlay');
+                    
+                    if (nextVal <= 9) {
+                        overlay.innerHTML = `LEVEL COMPLETED!<br><span style="font-size: 16px;">Next level loading in 2 seconds...</span>`;
+                        overlay.style.display = 'block';
+                        
+                        setTimeout(() => {
+                            overlay.style.display = 'none';
+                            levelSelect.value = nextVal.toString();
+                            loadLevel(levelSelect.value);
+                            isNextLevelLoading = false;
+                        }, 2000);
+                    } else {
+                        overlay.innerHTML = `CONGRATULATIONS!<br><span style="font-size: 16px;">You completed all stages! Resetting tower...</span>`;
+                        overlay.style.display = 'block';
+                        
+                        setTimeout(() => {
+                            overlay.style.display = 'none';
+                            levelSelect.value = "1";
+                            loadLevel("1");
+                            isNextLevelLoading = false;
+                        }, 3000);
+                    }
+                }
             }
 
             if (ledgeGrabCooldown > 0) ledgeGrabCooldown -= delta;
@@ -430,21 +1349,41 @@
             let currentPushS = 0;
 
             if (isClimbingUp) {
-            char.animate(delta, 'climbing', 0, time, 0, 0);
-            if (char.climbFinished) {
-                const fwd = new THREE.Vector3(0,0,1).applyQuaternion(char.group.quaternion);
-                char.group.position.y = ledgeTarget.y;
-                char.group.position.x += fwd.x * 1.1;
-                char.group.position.z += fwd.z * 1.1;
-                isClimbingUp = false;
-                char.climbFinished = false;
-                yVelocity = 0;
-                isGrounded = true;
-                landingTimer = 0;
-                ledgeGrabCooldown = 0.5;
-                char.animate(delta, 'idle', 0, time, 0, 0, true);
-            }
-        } else if (isLedgeGrabbing) {
+                char.animate(delta, 'climbing', 0, time, 0, 0);
+                
+                if (char.fbxModel) {
+                    char.fbxModel.updateMatrixWorld(true);
+                }
+                
+                let visualPos = new THREE.Vector3();
+                if (char.hips) {
+                    char.hips.getWorldPosition(visualPos);
+                } else {
+                    const fwd = new THREE.Vector3(0,0,1).applyQuaternion(char.group.quaternion);
+                    visualPos.copy(char.group.position).add(fwd.multiplyScalar(0.5));
+                    visualPos.y = ledgeTarget.y;
+                }
+                
+                if (char.climbFinished) {
+                    char.group.position.x = visualPos.x;
+                    char.group.position.z = visualPos.z;
+                    char.group.position.y = ledgeTarget.y;
+                    
+                    isClimbingUp = false;
+                    char.climbFinished = false;
+                    yVelocity = 0;
+                    isGrounded = true;
+                    landingTimer = 0;
+                    ledgeGrabCooldown = 0.5;
+                    
+                    char.fadeToAction('idle', 0);
+                    if (char.mixer) char.mixer.update(0.001);
+                    
+                    if (char.fbxModel) {
+                        char.fbxModel.updateMatrixWorld(true);
+                    }
+                }
+            } else if (isLedgeGrabbing) {
                 yVelocity = 0; ledgeGrabTimer += delta;
                 
                 const chest = char.group.position.clone().setY(char.group.position.y+1.1);
@@ -469,17 +1408,33 @@
                     currentPushS = pS;
                     
                     if (ledgeGrabTimer > 0.2) {
-                        if (pCD > 0.6) { isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false; }
+                        if (pCD > 0.6) { 
+                            isLedgeGrabbing = false; 
+                            isClimbingUp = true; 
+                            lockedHintAngle = null; 
+                            char.climbFinished = false; 
+                        }
                         else if (pCD < -0.6) { isLedgeGrabbing = false; lockedHintAngle = null; yVelocity = -3; ledgeGrabCooldown = 0.5; return; }
                     }
                     
                     if (Math.abs(pS) > 0.1) {
                         const mDir = actualRgt.clone().multiplyScalar(-Math.sign(pS));
                         let handled = false;
+                        
+                        // Head collision check for sideways movement (prevents clipping under overhanging blocks)
+                        const targetHead = chest.clone().setY(char.group.position.y + 2.0).add(mDir.clone().multiplyScalar(0.5));
+                        const headRayFwd = new THREE.Raycaster(targetHead, charFwd);
+                        const headHitsFwd = headRayFwd.intersectObjects(collidables.filter(c => c !== ground));
+                        const isHeadBlocked = headHitsFwd.length > 0 && headHitsFwd[0].distance < 0.8;
+
                         const sideRay = new THREE.Raycaster(chest, mDir);
                         const sH = sideRay.intersectObjects(collidables);
                         
-                        if (sH.length > 0 && sH[0].distance < 0.8) {
+                        // Detect physically blocked sideways movement
+                        const isBlockedByWall = sH.length > 0 && sH[0].distance < 0.65;
+                        const isBlocked = isHeadBlocked || (isBlockedByWall && !handled);
+
+                        if (sH.length > 0 && sH[0].distance < 0.8 && !isBlocked) {
                              const n = sH[0].face.normal.clone().transformDirection(sH[0].object.matrixWorld).setY(0).normalize();
                              const top = sH[0].point.clone().add(n.clone().multiplyScalar(-0.2)).setY(sH[0].point.y+2.0);
                              rayDown.set(top, downVec); const h = rayDown.intersectObjects(collidables);
@@ -488,16 +1443,30 @@
                                  ledgeTarget.copy(h[0].point); char.group.lookAt(char.group.position.clone().sub(n)); handled = true;
                              }
                         }
-                        if (!handled && !(sH.length > 0 && sH[0].distance < 0.65)) char.group.position.add(mDir.multiplyScalar(4*delta));
+                        if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
+                            char.group.position.add(mDir.multiplyScalar(4*delta));
+                        } else if (isBlocked) {
+                            // Override the sideways animation value to play hanging idle
+                            currentPushS = 0;
+                        }
                     }
                 } else lockedHintAngle = null;
-                char.animate(delta, 'ledge', moveMag, time, 0, currentPushS);
+                char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
             } else {
-                if (moveMag > 0.1 && landingTimer <= 0) {
+                if (moveMag > 0.1) {
                     const mAng = cameraTheta + Math.atan2(curX, curY), mDir = new THREE.Vector3(Math.sin(mAng), 0, Math.cos(mAng));
                     rayFwd.set(char.group.position.clone().setY(char.group.position.y+0.3), mDir);
                     const collisions = rayFwd.intersectObjects(collidables);
-                    if (collisions.length === 0 || collisions[0].distance > 0.5) char.group.position.add(mDir.multiplyScalar(8*moveMag*delta));
+                    
+                    let speedMult = 1.0;
+                    if (landingTimer > 0 && initialLandingTimer > 0) {
+                        let t = landingTimer / initialLandingTimer;
+                        let progress = 1.0 - t;
+                        let penalty = Math.sin(Math.pow(progress, 0.6) * Math.PI);
+                        speedMult = 1.0 - (0.85 * penalty);
+                    }
+                    
+                    if (collisions.length === 0 || collisions[0].distance > 0.5) char.group.position.add(mDir.multiplyScalar(8*speedMult*moveMag*delta));
                     char.group.quaternion.slerp(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), mAng), 15*delta);
                 }
                 if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0) {
@@ -505,33 +1474,101 @@
                     rayFwd.set(chest, fwd); const wH = rayFwd.intersectObjects(collidables);
                     if (wH.length > 0 && wH[0].distance < 0.8) {
                         const n = wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld).setY(0).normalize();
-                        const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+2.0);
-                        rayDown.set(top, downVec); const lH = rayDown.intersectObjects(collidables);
-                        if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+2.5) {
-                            isLedgeGrabbing = true; yVelocity = 0; ledgeTarget.copy(lH[0].point);
-                            char.group.position.y = lH[0].point.y-1.7; char.group.position.x = wH[0].point.x + n.x*ledgeOffset; char.group.position.z = wH[0].point.z + n.z*ledgeOffset;
-                            char.group.lookAt(char.group.position.clone().sub(n)); jumpMomentum.set(0,0,0);
+                        
+                        // Check if there is another wall directly above this ledge position
+                        const upperChest = chest.clone().setY(chest.y + cubeSize);
+                        rayFwd.set(upperChest, fwd);
+                        const upperHits = rayFwd.intersectObjects(collidables);
+                        const isLedgeBlocked = upperHits.length > 0 && upperHits[0].distance < 0.8;
+
+                        if (!isLedgeBlocked) {
+                            const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
+                            rayDown.set(top, downVec); const lH = rayDown.intersectObjects(collidables);
+                            if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
+                                isLedgeGrabbing = true; yVelocity = 0; ledgeTarget.copy(lH[0].point);
+                                char.group.position.y = lH[0].point.y-1.7; char.group.position.x = wH[0].point.x + n.x*ledgeOffset; char.group.position.z = wH[0].point.z + n.z*ledgeOffset;
+                                char.group.lookAt(char.group.position.clone().sub(n)); jumpMomentum.set(0,0,0);
+                            }
                         }
                     }
                 }
                 if (jumpMomentum.lengthSq() > 0.01) { char.group.position.add(jumpMomentum.clone().multiplyScalar(delta)); jumpMomentum.lerp(new THREE.Vector3(), 4*delta); }
-                rayDown.set(char.group.position.clone().setY(char.group.position.y+0.5), downVec);
-                const dH = rayDown.intersectObjects(collidables);
-                let floorY = dH.length > 0 ? dH[0].point.y : -99;
-                if (char.group.position.y + yVelocity*delta > floorY + 0.01) { yVelocity -= 30*delta; isGrounded = false; char.group.position.y += yVelocity*delta; }
-                else { char.group.position.y = floorY; yVelocity = 0; isGrounded = true; jumpMomentum.set(0,0,0); }
-                if (landingTimer > 0) landingTimer -= delta;
+                
+                let wasGrounded = isGrounded;
+
+                if (char.group.position.y + yVelocity*delta > floorY + 0.01) { 
+                    yVelocity -= 30*delta; 
+                    isGrounded = false; 
+                    char.group.position.y += yVelocity*delta; 
+                } else { 
+                    char.group.position.y = floorY; 
+                    isGrounded = true; 
+                    
+                    if (!wasGrounded) {
+                        if (yVelocity < -5) {
+                            let fallImpact = Math.abs(yVelocity) - 5;
+                            let durationMult = 1.0 + (fallImpact * 0.2);
+                            landingTimer = baseLandingAnimDuration * durationMult;
+                            initialLandingTimer = landingTimer;
+                        } else {
+                            landingTimer = 0;
+                            initialLandingTimer = 0;
+                        }
+                    }
+                    
+                    yVelocity = 0; 
+                    jumpMomentum.set(0,0,0); 
+                }
+                
+                if (landingTimer > 0) {
+                    landingTimer -= delta;
+                }
                 
                 if (isGrounded) {
-                    if (landingTimer > 0) char.animate(delta, 'landing', moveMag, time, yVelocity, 0);
-                    else if (moveMag > 0.1) char.animate(delta, 'walk', moveMag, time, yVelocity, 0);
-                    else char.animate(delta, 'idle', 0, time, 0, 0);
+                    let t = initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0;
+                    if (landingTimer > 0 && t > 0.4) {
+                        char.animate(delta, 'landing', moveMag, time, yVelocity, 0);
+                    } else if (moveMag > 0.1) {
+                        char.animate(delta, 'walk', moveMag, time, yVelocity, 0);
+                    } else {
+                        char.animate(delta, 'idle', 0, time, 0, 0);
+                    }
                 } else {
                     char.animate(delta, 'air', moveMag, time, yVelocity, 0);
                 }
             }
-            camera.position.lerp(new THREE.Vector3(char.group.position.x + cameraRadius*Math.sin(cameraPhi)*Math.sin(cameraTheta), char.group.position.y + cameraRadius*Math.cos(cameraPhi)+1.5, char.group.position.z + cameraRadius*Math.sin(cameraPhi)*Math.cos(cameraTheta)), 0.1);
-            camera.lookAt(char.group.position.x, char.group.position.y+1, char.group.position.z);
+            
+            let trackingPoint = new THREE.Vector3();
+            if (char.hips && isClimbingUp) {
+                char.hips.getWorldPosition(trackingPoint);
+            } else {
+                trackingPoint.copy(char.group.position);
+                trackingPoint.y += 0.9;
+            }
+            
+            camTarget.lerp(trackingPoint, 10 * delta);
+
+            // Compute dynamic zoom factor based on camera's vertical distance above floorY
+            let currentRadius = cameraRadius;
+            let tempCamY = camTarget.y + cameraRadius * Math.cos(cameraPhi) + 1.5;
+            let distToGround = tempCamY - floorY;
+            if (distToGround < 4.0) {
+                let t = Math.max(0.3, distToGround / 4.0);
+                currentRadius = cameraRadius * t;
+            }
+
+            let targetCamX = camTarget.x + currentRadius * Math.sin(cameraPhi) * Math.sin(cameraTheta);
+            let targetCamY = camTarget.y + currentRadius * Math.cos(cameraPhi) + 1.5;
+            let targetCamZ = camTarget.z + currentRadius * Math.sin(cameraPhi) * Math.cos(cameraTheta);
+
+            // Clamp camera Y slightly above floor level to avoid ground clipping
+            if (targetCamY < floorY + 0.5) {
+                targetCamY = floorY + 0.5;
+            }
+
+            camera.position.lerp(new THREE.Vector3(targetCamX, targetCamY, targetCamZ), 10 * delta);
+            camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
+            
             renderer.render(scene, camera);
         }
         window.onload = animate;
