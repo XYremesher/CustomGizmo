@@ -17,6 +17,12 @@
         .custom-glass { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(12px); border: 1px rgba(255, 255, 255, 0.1) solid; }
     </style>
 </head>
+<div id="loading-spinner" class="absolute bottom-4 right-4 z-30 hidden flex items-center justify-center bg-slate-800/90 border border-gray-700 p-3 rounded-xl custom-glass shadow-xl">
+    <svg class="animate-spin h-6 w-6 text-cyan-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+    </svg>
+</div>
 <body>
 
     <button id="main-toggle-btn" onclick="toggleMainPanel()" class="absolute top-4 left-4 z-20 p-2.5 rounded-xl bg-slate-800/90 text-white shadow-lg border border-gray-700 flex items-center gap-2 hover:bg-slate-700 transition duration-150">
@@ -39,11 +45,23 @@
 
         <div class="flex flex-col gap-1.5">
             <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Model Import</span>
-            <button onclick="triggerFileImport()" class="w-full py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] rounded transition duration-150 flex items-center justify-center gap-1.5">
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                Import GLTF/GLB
-            </button>
+            <div class="flex gap-1">
+                <button onclick="triggerFileImport()" class="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-[10px] rounded transition duration-150 flex items-center justify-center gap-1">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    Local GLTF
+                </button>
+                <button onclick="toggleRemoteModelsList()" class="py-1.5 px-2 bg-slate-700 hover:bg-slate-600 text-white font-semibold text-[10px] rounded transition duration-150 flex items-center justify-center">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                </button>
+            </div>
             <input type="file" id="model-loader" accept=".glb,.gltf" style="display: none;" onchange="handleFileImport(event)">
+            
+            <div id="remote-models-container" class="hidden flex flex-col gap-1 mt-1 bg-slate-900/80 p-1.5 rounded border border-gray-700">
+                <span class="text-[8px] text-gray-400 uppercase font-mono">Repository Models</span>
+                <select id="remote-models-select" onchange="handleRemoteModelSelect(this.value)" class="w-full bg-slate-800 border border-gray-700 text-[10px] text-white p-1 rounded outline-none cursor-pointer">
+                    <option value="">Select character...</option>
+                </select>
+            </div>
         </div>
 
         <hr class="border-gray-700/50">
@@ -64,8 +82,8 @@
         <div class="flex flex-col gap-1.5">
             <div class="flex justify-between items-center">
                 <span class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Gizmo</span>
-                <select onchange="setGizmoSpace(this.value)" class="bg-gray-800 border border-gray-700 text-[9px] text-white px-1.5 py-0.5 rounded outline-none cursor-pointer">
-                    <option value="world">World</option>
+                <select id="gizmo-space" onchange="setGizmoSpace(this.value)" class="bg-gray-800 border border-gray-700 text-[9px] text-white px-1.5 py-0.5 rounded outline-none cursor-pointer">
+                    <option value="world" selected>World</option>
                     <option value="local">Local</option>
                 </select>
             </div>
@@ -122,7 +140,7 @@
                 <button id="btn-pelvis" onclick="selectTarget('pelvis')" class="absolute top-[55%] left-[50%] w-4 h-4 -ml-2 -mt-2 bg-pink-500 rounded border-2 border-transparent hover:border-white shadow-[0_0_6px_rgba(236,72,153,0.5)] z-10" title="Pelvis"></button>
 
                 <button id="btn-left-shoulder" onclick="selectTarget('leftShoulder')" class="absolute top-[30%] left-[35%] w-4 h-4 -ml-2 -mt-2 bg-blue-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(59,130,246,0.5)] z-10" title="Left Shoulder"></button>
-                <button id="btn-right-shoulder" onclick="selectTarget('rightShoulder')" class="absolute top-[30%] left-[65%] w-4 h-4 -ml-2 -mt-2 bg-blue-500 rounded border-transparent hover:border-white shadow-[0_0_6px_rgba(59,130,246,0.5)] z-10" title="Right Shoulder"></button>
+                <button id="btn-right-shoulder" onclick="selectTarget('rightShoulder')" class="absolute top-[30%] left-[65%] w-4 h-4 -ml-2 -mt-2 bg-blue-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(59,130,246,0.5)] z-10" title="Right Shoulder"></button>
 
                 <button id="btn-left-hand" onclick="selectTarget('leftHand')" class="absolute top-[30%] left-[20%] w-4 h-4 -ml-2 -mt-2 bg-cyan-500 rounded border border-transparent hover:border-white shadow-[0_0_6px_rgba(6,182,212,0.5)] z-10" title="Left Hand"></button>
                 <button id="btn-right-hand" onclick="selectTarget('rightHand')" class="absolute top-[30%] left-[80%] w-4 h-4 -ml-2 -mt-2 bg-cyan-500 rounded border-2 border-transparent hover:border-white shadow-[0_0_6px_rgba(6,182,212,0.5)] z-10" title="Right Hand"></button>
@@ -205,7 +223,6 @@
         </button>
     </div>
 
-    <!-- Collapsible Instructions Toggle Button -->
     <button id="info-toggle-btn" onclick="toggleInfoPanel()" class="absolute bottom-4 left-4 z-20 p-3 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white shadow-lg transition duration-150">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
     </button>
@@ -231,6 +248,7 @@
     <div id="canvas-container"></div>
 
     <script>
+        let importedBaseQuaternions = [];
         let scene, camera, renderer, orbitControls, transformControls;
         let mannequin, skeleton, skeletonHelper, gridHelper;
         let ikSolver, iks = [];
@@ -405,12 +423,20 @@
             }
         }
 
+        function showSpinner() {
+            document.getElementById('loading-spinner').classList.remove('hidden');
+        }
+
+        function hideSpinner() {
+            document.getElementById('loading-spinner').classList.add('hidden');
+        }
+
         function init() {
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x1e293b);
             scene.fog = new THREE.FogExp2(0x1e293b, 0.015);
 
-            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 2000);
             camera.position.set(0, 1.8, 3.5);
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -436,7 +462,6 @@
             scene.add(dirLight);
 
             gridHelper = new THREE.GridHelper(30, 30, 0x475569, 0x334155);
-            gridHelper.position.y = 0;
             scene.add(gridHelper);
 
             const floorGeo = new THREE.PlaneGeometry(100, 100);
@@ -460,32 +485,65 @@
             });
             scene.add(transformControls);
 
+            const initialSpace = document.getElementById('gizmo-space').value || 'world';
+            setGizmoSpace(initialSpace);
+
             buildDefaultRig();
             setupUIListeners();
+            fetchRemoteModels();
 
             renderer.domElement.addEventListener('pointerdown', onViewportClick, false);
             window.addEventListener('resize', onWindowResize, false);
             animate();
         }
 
+        function toggleRemoteModelsList() {
+            document.getElementById('remote-models-container').classList.toggle('hidden');
+        }
+
+        async function fetchRemoteModels() {
+            const apiUrl = "https://api.github.com/repos/XYremesher/CustomGizmo/contents/Models/GLTF_Humanoid";
+            const selectElement = document.getElementById('remote-models-select');
+            
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) throw new Error('Network error');
+                const files = await response.json();
+                const modelFiles = files.filter(file => file.name.endsWith('.gltf') || file.name.endsWith('.glb'));
+                
+                modelFiles.forEach(file => {
+                    const option = document.createElement('option');
+                    option.value = file.download_url;
+                    option.text = file.name;
+                    selectElement.appendChild(option);
+                });
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
         function setGizmoMode(mode) {
-            transformControls.setMode(mode);
+            if(transformControls.setMode) transformControls.setMode(mode);
+            transformControls.mode = mode;
         }
 
         function setGizmoSpace(space) {
-            transformControls.setSpace(space);
+            transformControls.space = space;
+            if(typeof transformControls.setSpace === 'function') {
+                transformControls.setSpace(space);
+            }
         }
 
         function toggleFollowSpace(targetKeys, parentKey, isFollow) {
             let parentObj = scene;
             if (isFollow && targets[parentKey]) {
-                parentObj = targets[parentKey].mesh;
+                parentObj = targets[parentKey].mesh; 
             }
             
             targetKeys.forEach(key => {
-                const targetMesh = targets[key]?.mesh;
-                if (targetMesh && targetMesh.parent !== parentObj) {
-                    parentObj.attach(targetMesh);
+                const targetParentGroup = targets[key]?.parentGroup; 
+                if (targetParentGroup) {
+                    parentObj.attach(targetParentGroup);
                 }
             });
         }
@@ -507,13 +565,9 @@
             if (!isDefaultModel && importedRootObject) {
                 importedRootObject.scale.set(currentModelScale, currentModelScale, currentModelScale);
                 scene.updateMatrixWorld(true);
-                importedRootObject.updateMatrixWorld(true);
-                if (mannequin) mannequin.updateMatrixWorld(true);
                 
                 Object.keys(targets).forEach(key => {
-                    if (targets[key] && targets[key].mesh) {
-                        scene.remove(targets[key].mesh);
-                    }
+                    if (targets[key] && targets[key].parentGroup) scene.remove(targets[key].parentGroup);
                 });
                 targets = {};
                 rebuildIKPipelineFromSkeleton();
@@ -521,11 +575,8 @@
                 if (mannequin) {
                     mannequin.scale.set(currentModelScale, currentModelScale, currentModelScale);
                     mannequin.updateMatrixWorld(true);
-                    
                     Object.keys(targets).forEach(key => {
-                        if (targets[key] && targets[key].mesh) {
-                            scene.remove(targets[key].mesh);
-                        }
+                        if (targets[key] && targets[key].parentGroup) scene.remove(targets[key].parentGroup);
                     });
                     targets = {};
                     setupDefaultIKTargets();
@@ -542,26 +593,19 @@
                     target: targets.chest.mesh,
                     effector: currentBoneMappings.chest,
                     matchRotation: true,
-                    links: [
-                        { index: currentBoneMappings.spine },
-                        { index: currentBoneMappings.hips }
-                    ].filter(l => l.index !== -1),
+                    links: [{ index: currentBoneMappings.spine }, { index: currentBoneMappings.hips }].filter(l => l.index !== -1),
                     iteration: 12
                 },
                 {
                     target: targets.leftShoulder.mesh,
                     effector: currentBoneMappings.leftArm,
-                    links: [
-                        { index: currentBoneMappings.leftShoulder }
-                    ].filter(l => l.index !== -1),
+                    links: [{ index: currentBoneMappings.leftShoulder }].filter(l => l.index !== -1),
                     iteration: 10
                 },
                 {
                     target: targets.rightShoulder.mesh,
                     effector: currentBoneMappings.rightArm,
-                    links: [
-                        { index: currentBoneMappings.rightShoulder }
-                    ].filter(l => l.index !== -1),
+                    links: [{ index: currentBoneMappings.rightShoulder }].filter(l => l.index !== -1),
                     iteration: 10
                 },
                 {
@@ -593,10 +637,7 @@
                     effector: currentBoneMappings.leftFoot,
                     poleTarget: targets.leftKneePole.mesh,
                     matchRotation: true,
-                    links: [
-                        { index: currentBoneMappings.leftLeg }, 
-                        { index: currentBoneMappings.leftUpLeg }
-                    ].filter(l => l.index !== -1),
+                    links: [{ index: currentBoneMappings.leftLeg }, { index: currentBoneMappings.leftUpLeg }].filter(l => l.index !== -1),
                     iteration: 15
                 },
                 {
@@ -604,10 +645,7 @@
                     effector: currentBoneMappings.rightFoot,
                     poleTarget: targets.rightKneePole.mesh,
                     matchRotation: true,
-                    links: [
-                        { index: currentBoneMappings.rightLeg }, 
-                        { index: currentBoneMappings.rightUpLeg }
-                    ].filter(l => l.index !== -1),
+                    links: [{ index: currentBoneMappings.rightLeg }, { index: currentBoneMappings.rightUpLeg }].filter(l => l.index !== -1),
                     iteration: 15
                 }
             ];
@@ -628,79 +666,10 @@
                 const isLeft = name.includes('left') || name.startsWith('l_') || name.includes('_l_') || name.includes(' l ');
                 const isRight = name.includes('right') || name.startsWith('r_') || name.includes('_r_') || name.includes(' r ');
 
-                let curlVal = 0;
-                if (isLeft) curlVal = fingerCurlLeft;
-                else if (isRight) curlVal = fingerCurlRight;
-                else return;
-
-                const maxAngle = 1.4;
-                let angle = curlVal * maxAngle;
-
+                let curlVal = isLeft ? fingerCurlLeft : (isRight ? fingerCurlRight : 0);
                 let directionFactor = isRight ? -1 : 1;
-                bone.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), angle * directionFactor);
+                bone.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), curlVal * 1.4 * directionFactor);
             });
-        }
-
-        function addWorldOffset(targetMesh, offset) {
-            if (!targetMesh) return;
-            const worldPos = new THREE.Vector3();
-            targetMesh.getWorldPosition(worldPos);
-            worldPos.add(offset);
-            if (targetMesh.parent) {
-                targetMesh.parent.worldToLocal(worldPos);
-            }
-            targetMesh.position.copy(worldPos);
-        }
-
-        function applyArmPullTension() {
-            const dragEnabled = document.getElementById('toggle-body-drag')?.checked;
-            if (!dragEnabled || !mannequin || !currentBoneMappings) return;
-
-            const shoulderLeft = getBonePos(currentBoneMappings.leftShoulder);
-            const shoulderRight = getBonePos(currentBoneMappings.rightShoulder);
-
-            let leftArmLen = 0.3 * currentModelScale;
-            let leftForearmLen = 0.25 * currentModelScale;
-            if (currentBoneMappings.leftArm !== -1 && currentBoneMappings.leftForearm !== -1) {
-                const armPos = getBonePos(currentBoneMappings.leftArm);
-                const forearmPos = getBonePos(currentBoneMappings.leftForearm);
-                const handPos = getBonePos(currentBoneMappings.leftHand);
-                if (armPos.lengthSq() > 0 && forearmPos.lengthSq() > 0 && handPos.lengthSq() > 0) {
-                    leftArmLen = armPos.distanceTo(forearmPos);
-                    leftForearmLen = forearmPos.distanceTo(handPos);
-                }
-            }
-            const armReach = (leftArmLen + leftForearmLen) * 1.1; 
-
-            if (targets.leftHand && shoulderLeft.lengthSq() > 0) {
-                const targetPos = new THREE.Vector3();
-                targets.leftHand.mesh.getWorldPosition(targetPos);
-                const dist = shoulderLeft.distanceTo(targetPos);
-                if (dist > armReach) {
-                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderLeft).normalize().multiplyScalar((dist - armReach) * 0.4);
-                    if (targets.chest) {
-                        addWorldOffset(targets.chest.mesh, pullVec);
-                    }
-                    if (targets.pelvis) {
-                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
-                    }
-                }
-            }
-
-            if (targets.rightHand && shoulderRight.lengthSq() > 0) {
-                const targetPos = new THREE.Vector3();
-                targets.rightHand.mesh.getWorldPosition(targetPos);
-                const dist = shoulderRight.distanceTo(targetPos);
-                if (dist > armReach) {
-                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderRight).normalize().multiplyScalar((dist - armReach) * 0.4);
-                    if (targets.chest) {
-                        addWorldOffset(targets.chest.mesh, pullVec);
-                    }
-                    if (targets.pelvis) {
-                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
-                    }
-                }
-            }
         }
 
         function onViewportClick(event) {
@@ -728,20 +697,16 @@
                     hitMesh = hitMesh.parent;
                 }
                 const key = keyMap[hitMesh.uuid];
-                if (key) {
-                    selectTarget(key);
-                }
+                if (key) selectTarget(key);
             }
         }
 
         function toggleMainPanel() {
-            const panel = document.getElementById('main-panel');
-            panel.classList.toggle('hidden');
+            document.getElementById('main-panel').classList.toggle('hidden');
         }
 
         function toggleInfoPanel() {
-            const panel = document.getElementById('info-panel');
-            panel.classList.toggle('hidden');
+            document.getElementById('info-panel').classList.toggle('hidden');
         }
 
         function triggerFileImport() {
@@ -752,26 +717,37 @@
             const file = event.target.files[0];
             if (!file) return;
 
+            showSpinner();
             const reader = new FileReader();
-            
             reader.readAsArrayBuffer(file);
             reader.onload = function (e) {
                 const contents = e.target.result;
-                
                 const loader = new THREE.GLTFLoader();
                 loader.parse(contents, '', function (gltf) {
                     setupImportedModel(gltf.scene);
-                }, function (error) {
-                    console.error("Error parsing GLTF model: ", error);
+                    hideSpinner();
+                }, function () {
+                    hideSpinner();
                 });
             };
         }
 
+        function handleRemoteModelSelect(url) {
+            if (!url) return;
+            
+            showSpinner();
+            const loader = new THREE.GLTFLoader();
+            loader.load(url, function (gltf) {
+                setupImportedModel(gltf.scene);
+                hideSpinner();
+            }, undefined, function () {
+                hideSpinner();
+            });
+        }
+
         function setupImportedModel(rootObject) {
             cleanupOldModel();
-            
             importedRootObject = rootObject;
-            
             let scaleVal = parseFloat(document.getElementById('slide-model-scale').value);
             rootObject.scale.set(scaleVal, scaleVal, scaleVal);
             
@@ -784,6 +760,7 @@
                     importedMesh = child;
                     child.castShadow = true;
                     child.receiveShadow = true;
+                    child.frustumCulled = false;
                 }
             });
 
@@ -791,13 +768,10 @@
                 mannequin = importedMesh;
                 skeleton = importedMesh.skeleton;
                 bonesArray = skeleton.bones;
-
-                mannequin.updateMatrixWorld(true);
-
                 isDefaultModel = false;
+                importedBaseQuaternions = bonesArray.map(bone => bone.quaternion.clone());
 
                 skeletonHelper = new THREE.SkeletonHelper(rootObject);
-                skeletonHelper.material.linewidth = 2;
                 skeletonHelper.visible = document.getElementById('toggle-skeleton').checked;
                 scene.add(skeletonHelper);
 
@@ -810,20 +784,14 @@
         function cleanupOldModel() {
             deselectAll();
             if (mannequin) {
-                let parentNode = mannequin.parent;
-                while (parentNode && parentNode !== scene) {
-                    let temp = parentNode.parent;
-                    parentNode = temp;
-                }
                 scene.remove(mannequin);
                 if (mannequin.parent) scene.remove(mannequin.parent);
             }
             if (skeletonHelper) scene.remove(skeletonHelper);
             
             Object.keys(targets).forEach(key => {
-                if (targets[key] && targets[key].mesh) {
-                    let p = targets[key].mesh;
-                    if(p.parent) p.parent.remove(p);
+                if (targets[key] && targets[key].parentGroup) {
+                    scene.remove(targets[key].parentGroup);
                 }
             });
             targets = {};
@@ -854,35 +822,17 @@
                 chest: { parent: 'spine', pos: [0, 1.5, 0] },
                 neck: { parent: 'chest', pos: [0, 1.7, 0] },
                 head: { parent: 'neck', pos: [0, 1.85, 0] },
-                
                 leftShoulder: { parent: 'chest', pos: [-0.08, 1.55, 0] },
                 leftArm: { parent: 'leftShoulder', pos: [-0.18, 1.55, 0] },
                 leftForearm: { parent: 'leftArm', pos: [-0.45, 1.55, 0] },
                 leftHand: { parent: 'leftForearm', pos: [-0.7, 1.55, 0] },
-
-                leftHandIndex1: { parent: 'leftHand', pos: [-0.75, 1.55, 0.02] },
-                leftHandIndex2: { parent: 'leftHandIndex1', pos: [-0.79, 1.55, 0.02] },
-                leftHandIndex3: { parent: 'leftHandIndex2', pos: [-0.82, 1.55, 0.02] },
-                leftHandMiddle1: { parent: 'leftHand', pos: [-0.75, 1.55, -0.02] },
-                leftHandMiddle2: { parent: 'leftHandMiddle1', pos: [-0.79, 1.55, -0.02] },
-                leftHandMiddle3: { parent: 'leftHandMiddle2', pos: [-0.82, 1.55, -0.02] },
-                
                 rightShoulder: { parent: 'chest', pos: [0.08, 1.55, 0] },
                 rightArm: { parent: 'rightShoulder', pos: [0.18, 1.55, 0] },
                 rightForearm: { parent: 'rightArm', pos: [0.45, 1.55, 0] },
                 rightHand: { parent: 'rightForearm', pos: [0.7, 1.55, 0] },
-
-                rightHandIndex1: { parent: 'rightHand', pos: [0.75, 1.55, 0.02] },
-                rightHandIndex2: { parent: 'rightHandIndex1', pos: [0.79, 1.55, 0.02] },
-                rightHandIndex3: { parent: 'rightHandIndex2', pos: [0.82, 1.55, 0.02] },
-                rightHandMiddle1: { parent: 'rightHand', pos: [0.75, 1.55, -0.02] },
-                rightHandMiddle2: { parent: 'rightHandMiddle1', pos: [0.79, 1.55, -0.02] },
-                rightHandMiddle3: { parent: 'rightHandMiddle2', pos: [0.82, 1.55, -0.02] },
-                
                 leftUpLeg: { parent: 'hips', pos: [-0.12, 0.9, 0] },
                 leftLeg: { parent: 'leftUpLeg', pos: [-0.12, 0.5, 0] },
                 leftFoot: { parent: 'leftLeg', pos: [-0.12, 0.1, 0] },
-                
                 rightUpLeg: { parent: 'hips', pos: [0.12, 0.9, 0] },
                 rightLeg: { parent: 'rightUpLeg', pos: [0.12, 0.5, 0] },
                 rightFoot: { parent: 'rightLeg', pos: [0.12, 0.1, 0] }
@@ -900,14 +850,9 @@
                 const def = boneDef[name];
                 const bone = boneMap[name];
                 if (def.parent) {
-                    const parentBone = boneMap[def.parent];
-                    parentBone.add(bone);
-
+                    boneMap[def.parent].add(bone);
                     const parentPos = boneDef[def.parent].pos;
-                    const localX = def.pos[0] - parentPos[0];
-                    const localY = def.pos[1] - parentPos[1];
-                    const localZ = def.pos[2] - parentPos[2];
-                    bone.position.set(localX, localY, localZ);
+                    bone.position.set(def.pos[0] - parentPos[0], def.pos[1] - parentPos[1], def.pos[2] - parentPos[2]);
                 } else {
                     bone.position.set(...def.pos);
                 }
@@ -920,20 +865,14 @@
             dummyGeo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute([], 4));
             dummyGeo.setAttribute('skinWeight', new THREE.Float32BufferAttribute([], 4));
 
-            const dummyMat = new THREE.MeshBasicMaterial({ visible: false });
-
-            mannequin = new THREE.SkinnedMesh(dummyGeo, dummyMat);
-            const rootBone = bonesArray[0];
-            mannequin.add(rootBone);
-
+            mannequin = new THREE.SkinnedMesh(dummyGeo, new THREE.MeshBasicMaterial({ visible: false }));
+            mannequin.add(bonesArray[0]);
             scene.add(mannequin);
-            mannequin.updateMatrixWorld(true);
 
             skeleton = new THREE.Skeleton(bonesArray);
             mannequin.bind(skeleton);
 
             skeletonHelper = new THREE.SkeletonHelper(mannequin);
-            skeletonHelper.material.linewidth = 2;
             skeletonHelper.visible = document.getElementById('toggle-skeleton').checked;
             scene.add(skeletonHelper);
         }
@@ -948,7 +887,6 @@
 
         function setupDefaultIKTargets() {
             const baseScale = currentModelScale;
-            
             currentBoneMappings = {
                 spine: bonesArray.findIndex(b => b.name === 'spine'),
                 chest: bonesArray.findIndex(b => b.name === 'chest'),
@@ -972,12 +910,8 @@
             };
 
             const headPos = getBonePos(currentBoneMappings.head);
-            const fallbackHeadY = headPos.lengthSq() > 0 ? headPos.y : 1.85 * baseScale;
-            const fallbackHeadX = headPos.lengthSq() > 0 ? headPos.x : 0;
-            const fallbackHeadZ = headPos.lengthSq() > 0 ? headPos.z : 0;
-
             const targetDetails = {
-                lookAt: { pos: new THREE.Vector3(fallbackHeadX, fallbackHeadY, fallbackHeadZ + 0.5 * baseScale), color: 0xffffff },
+                lookAt: { pos: new THREE.Vector3(headPos.x, headPos.y || 1.85 * baseScale, (headPos.z || 0) + 0.5 * baseScale), color: 0xffffff },
                 pelvis: { pos: getBonePos(currentBoneMappings.hips), color: 0xec4899 },
                 chest: { pos: getBonePos(currentBoneMappings.chest), color: 0xa855f7 },
                 head: { pos: getBonePos(currentBoneMappings.head), color: 0xeab308 },
@@ -997,51 +931,33 @@
 
             Object.keys(targetDetails).forEach(key => {
                 const detail = targetDetails[key];
-
-                const targetGroup = new THREE.Group();
-
-                const mat = new THREE.MeshBasicMaterial({
-                    color: detail.color,
-                    wireframe: true,
-                    transparent: true,
-                    opacity: 0.8,
-                    depthTest: false,
-                    depthWrite: false
-                });
                 
-                const visualMesh = new THREE.Mesh(sphereGeo, mat);
+                // Yapısal Çözüm: Parent (Gimbal) Grubu Dünya eksenlerine tam paralel oluşturulur.
+                const parentGroup = new THREE.Group();
+                const targetGroup = new THREE.Group();
+                
+                const visualMesh = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: detail.color, wireframe: true, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false }));
                 visualMesh.renderOrder = 999;
                 
                 if (detail.pos.lengthSq() === 0) {
-                    let fallbackPos = new THREE.Vector3();
-                    if (key === 'pelvis') fallbackPos.set(0, 0.95, 0);
-                    if (key === 'chest') fallbackPos.set(0, 1.5, 0);
-                    if (key === 'head') fallbackPos.set(0, 1.85, 0);
-                    if (key === 'leftHand') fallbackPos.set(-0.7, 1.55, 0);
-                    if (key === 'rightHand') fallbackPos.set(0.7, 1.55, 0);
-                    if (key === 'leftFoot') fallbackPos.set(-0.12, 0.1, 0);
-                    if (key === 'rightFoot') fallbackPos.set(0.12, 0.1, 0);
-                    if (key === 'leftShoulder') fallbackPos.set(-0.18, 1.55, 0);
-                    if (key === 'rightShoulder') fallbackPos.set(0.18, 1.55, 0);
-                    if (key === 'lookAt') fallbackPos.set(0, 1.85, 1.0);
-                    fallbackPos.multiplyScalar(baseScale);
-                    targetGroup.position.copy(fallbackPos);
+                    const fallbacks = { pelvis: [0, 0.95, 0], chest: [0, 1.5, 0], head: [0, 1.85, 0], leftHand: [-0.7, 1.55, 0], rightHand: [0.7, 1.55, 0], leftFoot: [-0.12, 0.1, 0], rightFoot: [0.12, 0.1, 0], leftShoulder: [-0.18, 1.55, 0], rightShoulder: [0.18, 1.55, 0], lookAt: [0, 1.85, 1.0] };
+                    parentGroup.position.set(...fallbacks[key]).multiplyScalar(baseScale);
                 } else {
-                    targetGroup.position.copy(detail.pos);
+                    parentGroup.position.copy(detail.pos);
                 }
 
-                const ringGeo = new THREE.RingGeometry(0.07, 0.08, 16);
-                const ringMat = new THREE.MeshBasicMaterial({ color: detail.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-                const ring = new THREE.Mesh(ringGeo, ringMat);
+                const ring = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.08, 16), new THREE.MeshBasicMaterial({ color: detail.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
                 ring.renderOrder = 999;
-                ring.rotation.x = Math.PI/2;
+                ring.rotation.x = Math.PI / 2;
                 
                 visualMesh.add(ring);
                 targetGroup.add(visualMesh);
-                scene.add(targetGroup);
+                parentGroup.add(targetGroup);
+                scene.add(parentGroup);
 
-                targets[key] = { mesh: targetGroup, visual: visualMesh };
-                initialPositions[key] = targetGroup.position.clone();
+                // targets dizisinde mesh artık oynatılabilir çocuk nesnedir.
+                targets[key] = { parentGroup: parentGroup, mesh: targetGroup, visual: visualMesh };
+                initialPositions[key] = parentGroup.position.clone();
                 initialQuaternions[key] = targetGroup.quaternion.clone();
             });
 
@@ -1051,9 +967,7 @@
         function findBoneByKeywords(keywords, exclude = []) {
             return bonesArray.findIndex(bone => {
                 const name = bone.name.toLowerCase();
-                const matchesAll = keywords.every(kw => name.includes(kw));
-                const matchesExclude = exclude.some(ex => name.includes(ex));
-                return matchesAll && !matchesExclude;
+                return keywords.every(kw => name.includes(kw)) && !exclude.some(ex => name.includes(ex));
             });
         }
 
@@ -1064,21 +978,17 @@
                 chest: findBoneByKeywords(['spine2']) !== -1 ? findBoneByKeywords(['spine2']) : (findBoneByKeywords(['chest']) !== -1 ? findBoneByKeywords(['chest']) : findBoneByKeywords(['spine1'])),
                 neck: findBoneByKeywords(['neck']),
                 head: findBoneByKeywords(['head']),
-                
                 leftShoulder: findBoneByKeywords(['left', 'shoulder']),
                 leftArm: findBoneByKeywords(['left', 'arm'], ['fore', 'shoulder', 'hand']) !== -1 ? findBoneByKeywords(['left', 'arm'], ['fore', 'shoulder', 'hand']) : findBoneByKeywords(['left', 'up'], ['fore', 'shoulder', 'hand']),
                 leftForearm: findBoneByKeywords(['left', 'fore']) !== -1 ? findBoneByKeywords(['left', 'fore']) : findBoneByKeywords(['left', 'low'], ['hand']),
                 leftHand: findBoneByKeywords(['left', 'hand']),
-                
                 rightShoulder: findBoneByKeywords(['right', 'shoulder']),
                 rightArm: findBoneByKeywords(['right', 'arm'], ['fore', 'shoulder', 'hand']) !== -1 ? findBoneByKeywords(['right', 'arm'], ['fore', 'shoulder', 'hand']) : findBoneByKeywords(['right', 'up'], ['fore', 'shoulder', 'hand']),
                 rightForearm: findBoneByKeywords(['right', 'fore']) !== -1 ? findBoneByKeywords(['right', 'fore']) : findBoneByKeywords(['right', 'low'], ['hand']),
                 rightHand: findBoneByKeywords(['right', 'hand']),
-                
                 leftUpLeg: findBoneByKeywords(['left', 'up', 'leg']) !== -1 ? findBoneByKeywords(['left', 'up', 'leg']) : findBoneByKeywords(['left', 'thigh']),
                 leftLeg: findBoneByKeywords(['left', 'leg'], ['up', 'foot']) !== -1 ? findBoneByKeywords(['left', 'leg'], ['up', 'foot']) : findBoneByKeywords(['left', 'calf'], ['up', 'foot']),
                 leftFoot: findBoneByKeywords(['left', 'foot']),
-                
                 rightUpLeg: findBoneByKeywords(['right', 'up', 'leg']) !== -1 ? findBoneByKeywords(['right', 'up', 'leg']) : findBoneByKeywords(['right', 'thigh']),
                 rightLeg: findBoneByKeywords(['right', 'leg'], ['up', 'foot']) !== -1 ? findBoneByKeywords(['right', 'leg'], ['up', 'foot']) : findBoneByKeywords(['right', 'calf'], ['up', 'foot']),
                 rightFoot: findBoneByKeywords(['right', 'foot'])
@@ -1132,41 +1042,25 @@
                     targetWorldPos.set(...conf.defaultPos).multiplyScalar(currentModelScale); 
                 }
 
+                const parentGroup = new THREE.Group();
+                parentGroup.position.copy(targetWorldPos); // Offset grubu dünya yönünde kalır
+                
                 const targetGroup = new THREE.Group();
-                targetGroup.position.copy(targetWorldPos);
-
-                const mat = new THREE.MeshBasicMaterial({
-                    color: conf.color,
-                    wireframe: true,
-                    transparent: true,
-                    opacity: 0.8,
-                    depthTest: false,
-                    depthWrite: false
-                });
+                targetGroup.quaternion.copy(targetWorldQuat); // Lokal yönelim içteki çocuğa atanır
                 
-                const visualMesh = new THREE.Mesh(sphereGeo, mat);
+                const visualMesh = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: conf.color, wireframe: true, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false }));
                 visualMesh.renderOrder = 999;
-                
-                // Keep target orientation aligned with bone orientation for shoulders as well to ensure perfect local space rotations
-                if (['leftFoot', 'rightFoot', 'leftHand', 'rightHand', 'head', 'chest', 'pelvis', 'leftShoulder', 'rightShoulder'].includes(key)) {
-                    targetGroup.quaternion.copy(targetWorldQuat);
-                }
 
-                const ringGeo = new THREE.RingGeometry(0.07, 0.08, 16);
-                const ringMat = new THREE.MeshBasicMaterial({ color: conf.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
-                const ring = new THREE.Mesh(ringGeo, ringMat);
+                const ring = new THREE.Mesh(new THREE.RingGeometry(0.07, 0.08, 16), new THREE.MeshBasicMaterial({ color: conf.color, side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
                 ring.renderOrder = 999;
-                ring.rotation.x = Math.PI/2;
+                ring.rotation.x = Math.PI / 2;
                 
                 visualMesh.add(ring);
                 targetGroup.add(visualMesh);
-                scene.add(targetGroup);
+                parentGroup.add(targetGroup);
+                scene.add(parentGroup);
 
-                targets[key] = {
-                    mesh: targetGroup,
-                    visual: visualMesh
-                };
-
+                targets[key] = { parentGroup: parentGroup, mesh: targetGroup, visual: visualMesh };
                 initialPositions[key] = targetWorldPos.clone();
                 initialQuaternions[key] = targetGroup.quaternion.clone();
             });
@@ -1179,15 +1073,14 @@
             const target = targets[key];
             if (target) {
                 activeTargetKey = key;
-                transformControls.attach(target.mesh);
-                target.visual.material.color.setHex(0xffff00); 
+                transformControls.attach(target.mesh); // Gizmo içteki nesneye bağlanır
                 
-                const btnId = `btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`;
-                const btn = document.getElementById(btnId);
-                if (btn) {
-                    btn.classList.add('border-white', 'scale-125');
-                    btn.classList.remove('border-transparent');
-                }
+                const spaceSelect = document.getElementById('gizmo-space');
+                if (spaceSelect) setGizmoSpace(spaceSelect.value);
+                
+                target.visual.material.color.setHex(0xffff00); 
+                const btn = document.getElementById(`btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`);
+                if (btn) btn.classList.add('border-white', 'scale-125');
             }
         }
 
@@ -1197,29 +1090,13 @@
             Object.keys(targets).forEach(key => {
                 const target = targets[key];
                 if (!target || !target.mesh) return;
-                const isFoot = key.includes('foot') || key.includes('Foot');
-                const isChest = key === 'chest';
-                const isHead = key === 'head';
-                const isShoulder = key.includes('shoulder') || key.includes('Shoulder');
-                const isElbowPole = key.includes('ElbowPole');
-                const isKneePole = key.includes('KneePole');
-                const isPelvis = key === 'pelvis';
-                const isLookAt = key === 'lookAt';
-
-                let initialColor = 0x06b6d4; 
-                if (isFoot) initialColor = 0xf43f5e; 
-                else if (isChest) initialColor = 0xa855f7; 
-                else if (isHead) initialColor = 0xeab308; 
-                else if (isShoulder) initialColor = 0x3b82f6;
-                else if (isElbowPole) initialColor = 0x10b981;
-                else if (isKneePole) initialColor = 0xf97316;
-                else if (isPelvis) initialColor = 0xec4899;
-                else if (isLookAt) initialColor = 0xffffff;
+                
+                const colors = { foot: 0xf43f5e, Foot: 0xf43f5e, chest: 0xa855f7, head: 0xeab308, shoulder: 0x3b82f6, Shoulder: 0x3b82f6, ElbowPole: 0x10b981, KneePole: 0xf97316, pelvis: 0xec4899, lookAt: 0xffffff };
+                let initialColor = 0x06b6d4;
+                Object.keys(colors).forEach(ck => { if (key.includes(ck)) initialColor = colors[ck]; });
 
                 target.visual.material.color.setHex(initialColor);
-
-                const btnId = `btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`;
-                const btn = document.getElementById(btnId);
+                const btn = document.getElementById(`btn-${key.replace(/([A-Z])/g, "-$1").toLowerCase()}`);
                 if (btn) {
                     btn.classList.remove('border-white', 'scale-125');
                     btn.classList.add('border-transparent');
@@ -1229,9 +1106,9 @@
 
         function resetRig() {
             deselectAll();
-
-            bonesArray.forEach(bone => {
-                bone.quaternion.set(0, 0, 0, 1);
+            bonesArray.forEach((bone, index) => {
+                if (!isDefaultModel && importedBaseQuaternions[index]) bone.quaternion.copy(importedBaseQuaternions[index]);
+                else bone.quaternion.set(0, 0, 0, 1);
             });
 
             document.getElementById('slide-model-scale').value = 1.00;
@@ -1239,43 +1116,51 @@
 
             Object.keys(targets).forEach(key => {
                 const target = targets[key];
-                if (target && target.mesh) {
-                    if (target.mesh.parent !== scene) {
-                        scene.attach(target.mesh);
+                if (!target || !target.mesh) return;
+                if (target.parentGroup.parent !== scene) scene.attach(target.parentGroup);
+
+                const targetWorldPos = new THREE.Vector3();
+                const targetWorldQuat = new THREE.Quaternion();
+
+                if (key === 'lookAt') {
+                    const headBoneIndex = currentBoneMappings?.head;
+                    if (headBoneIndex !== undefined && headBoneIndex !== -1 && bonesArray[headBoneIndex]) {
+                        bonesArray[headBoneIndex].getWorldPosition(targetWorldPos);
+                        targetWorldPos.z += 0.5 * currentModelScale;
+                    } else {
+                        targetWorldPos.set(0, 1.85, 1.0).multiplyScalar(currentModelScale);
                     }
-                    target.mesh.position.copy(initialPositions[key]);
-                    if (initialQuaternions[key]) {
-                        target.mesh.quaternion.copy(initialQuaternions[key]);
+                } else {
+                    let sourceIndex = currentBoneMappings ? currentBoneMappings[key] : -1;
+                    let offset = null;
+                    if (key === 'leftShoulder' || key === 'rightShoulder') sourceIndex = currentBoneMappings?.[key === 'leftShoulder' ? 'leftArm' : 'rightArm'];
+                    if (key === 'leftElbowPole' || key === 'rightElbowPole') { sourceIndex = currentBoneMappings?.[key === 'leftElbowPole' ? 'leftForearm' : 'rightForearm']; offset = [0, 0, -0.4]; }
+                    if (key === 'leftKneePole' || key === 'rightKneePole') { sourceIndex = currentBoneMappings?.[key === 'leftKneePole' ? 'leftLeg' : 'rightLeg']; offset = [0, 0, 0.4]; }
+                    if (key === 'pelvis') sourceIndex = currentBoneMappings?.hips;
+
+                    if (sourceIndex !== undefined && sourceIndex !== -1 && bonesArray[sourceIndex]) {
+                        bonesArray[sourceIndex].getWorldPosition(targetWorldPos);
+                        bonesArray[sourceIndex].getWorldQuaternion(targetWorldQuat);
+                        if (offset) targetWorldPos.add(new THREE.Vector3(...offset).multiplyScalar(currentModelScale));
+                    } else {
+                        const fallbacks = { pelvis: [0, 0.95, 0], chest: [0, 1.5, 0], head: [0, 1.85, 0], leftHand: [-0.7, 1.55, 0], rightHand: [0.7, 1.55, 0], leftFoot: [-0.12, 0.1, 0], rightFoot: [0.12, 0.1, 0], leftShoulder: [-0.18, 1.55, 0], rightShoulder: [0.18, 1.55, 0] };
+                        targetWorldPos.set(...(fallbacks[key] || [0, 0, 0])).multiplyScalar(currentModelScale);
                     }
                 }
+
+                target.parentGroup.position.copy(targetWorldPos);
+                target.mesh.position.set(0,0,0);
+                target.mesh.quaternion.copy(targetWorldQuat);
             });
 
-            document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-                if (cb.id.startsWith('toggle')) return;
-                cb.checked = false;
-            });
-
-            document.getElementById('slide-l-curl').value = 0;
-            document.getElementById('slide-r-curl').value = 0;
+            document.querySelectorAll('input[type="checkbox"]').forEach(cb => { if (!cb.id.startsWith('toggle')) cb.checked = false; });
             updateFingerCurl('left', 0);
             updateFingerCurl('right', 0);
-
-            if (mannequin) {
-                mannequin.updateMatrixWorld(true);
-            }
         }
 
         function setupUIListeners() {
-            const skelCheck = document.getElementById('toggle-skeleton');
-            skelCheck.addEventListener('change', (e) => {
-                if (skeletonHelper) skeletonHelper.visible = e.target.checked;
-            });
-
-            const gridCheck = document.getElementById('toggle-grid');
-            gridCheck.addEventListener('change', (e) => {
-                if (gridHelper) gridHelper.visible = e.target.checked;
-            });
-
+            document.getElementById('toggle-skeleton').addEventListener('change', (e) => { if (skeletonHelper) skeletonHelper.visible = e.target.checked; });
+            document.getElementById('toggle-grid').addEventListener('change', (e) => { if (gridHelper) gridHelper.visible = e.target.checked; });
             window.addEventListener('keydown', (e) => {
                 if (e.key.toLowerCase() === 'w') setGizmoMode('translate');
                 if (e.key.toLowerCase() === 'e') setGizmoMode('rotate');
@@ -1289,27 +1174,21 @@
         }
 
         function applyHeadLookAt() {
-            const lookAtEnabled = document.getElementById('toggle-lookat').checked;
-            if (lookAtEnabled && targets.lookAt && mannequin) {
+            if (document.getElementById('toggle-lookat').checked && targets.lookAt && mannequin) {
                 const headBone = bonesArray.find(b => b.name.toLowerCase().includes('head'));
                 if (headBone && headBone.parent) {
-                    const lookPos = new THREE.Vector3();
+                    const lookPos = new THREE.Vector3(), headWorldPos = new THREE.Vector3();
                     targets.lookAt.mesh.getWorldPosition(lookPos);
-                    
-                    const headWorldPos = new THREE.Vector3();
                     headBone.getWorldPosition(headWorldPos);
                     
                     const dir = new THREE.Vector3().subVectors(lookPos, headWorldPos).normalize();
-                    const parentInv = new THREE.Matrix4().copy(headBone.parent.matrixWorld).invert();
-                    const localDir = dir.transformDirection(parentInv);
+                    const localDir = dir.transformDirection(new THREE.Matrix4().copy(headBone.parent.matrixWorld).invert());
                     
                     let yaw = Math.atan2(localDir.x, localDir.z);
                     let pitch = Math.asin(Math.max(-1, Math.min(1, -localDir.y)));
                     
-                    const maxYaw = Math.PI / 2.5; 
-                    const maxPitch = Math.PI / 4; 
-                    yaw = Math.max(-maxYaw, Math.min(maxYaw, yaw));
-                    pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+                    yaw = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, yaw));
+                    pitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, pitch));
                     
                     headBone.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
                     headBone.updateMatrixWorld(true);
@@ -1318,127 +1197,84 @@
         }
 
         function applyHeadRotation() {
-            const lookAtEnabled = document.getElementById('toggle-lookat').checked;
-            if (!lookAtEnabled && targets.head && mannequin) {
+            if (!document.getElementById('toggle-lookat').checked && targets.head && mannequin) {
                 const headBone = bonesArray.find(b => b.name.toLowerCase().includes('head'));
                 if (headBone && headBone.parent) {
-                    const parentWorldQuat = new THREE.Quaternion();
+                    const parentWorldQuat = new THREE.Quaternion(), targetWorldQuat = new THREE.Quaternion();
                     headBone.parent.getWorldQuaternion(parentWorldQuat);
-                    
-                    const targetWorldQuat = new THREE.Quaternion();
                     targets.head.mesh.getWorldQuaternion(targetWorldQuat);
-
-                    // Safer non-destructive multiplication chain preventing joint drift across frames
-                    const localQuat = parentWorldQuat.clone().invert().multiply(targetWorldQuat);
-                    headBone.quaternion.copy(localQuat);
+                    headBone.quaternion.copy(parentWorldQuat.invert().multiply(targetWorldQuat));
                     headBone.updateMatrixWorld(true);
                 }
             }
         }
 
-        // Apply world space offset cleanly independent of hierarchical parent matrix scale and rotation
         function addWorldOffset(targetMesh, offset) {
             if (!targetMesh) return;
             const worldPos = new THREE.Vector3();
             targetMesh.getWorldPosition(worldPos);
             worldPos.add(offset);
-            if (targetMesh.parent) {
-                targetMesh.parent.worldToLocal(worldPos);
-            }
+            if (targetMesh.parent) targetMesh.parent.worldToLocal(worldPos);
             targetMesh.position.copy(worldPos);
         }
 
         function applyArmPullTension() {
-            const dragEnabled = document.getElementById('toggle-body-drag')?.checked;
-            if (!dragEnabled || !mannequin || !currentBoneMappings) return;
+            if (!document.getElementById('toggle-body-drag')?.checked || !mannequin || !currentBoneMappings) return;
 
             const shoulderLeft = getBonePos(currentBoneMappings.leftShoulder);
             const shoulderRight = getBonePos(currentBoneMappings.rightShoulder);
+            let leftArmLen = 0.3 * currentModelScale, leftForearmLen = 0.25 * currentModelScale;
 
-            let leftArmLen = 0.3 * currentModelScale;
-            let leftForearmLen = 0.25 * currentModelScale;
             if (currentBoneMappings.leftArm !== -1 && currentBoneMappings.leftForearm !== -1) {
-                const armPos = getBonePos(currentBoneMappings.leftArm);
-                const forearmPos = getBonePos(currentBoneMappings.leftForearm);
-                const handPos = getBonePos(currentBoneMappings.leftHand);
+                const armPos = getBonePos(currentBoneMappings.leftArm), forearmPos = getBonePos(currentBoneMappings.leftForearm), handPos = getBonePos(currentBoneMappings.leftHand);
                 if (armPos.lengthSq() > 0 && forearmPos.lengthSq() > 0 && handPos.lengthSq() > 0) {
                     leftArmLen = armPos.distanceTo(forearmPos);
                     leftForearmLen = forearmPos.distanceTo(handPos);
                 }
             }
-            const armReach = (leftArmLen + leftForearmLen) * 1.1; 
+            const armReach = (leftArmLen + leftForearmLen) * 1.1;
 
-            if (targets.leftHand && shoulderLeft.lengthSq() > 0) {
-                const targetPos = new THREE.Vector3();
-                targets.leftHand.mesh.getWorldPosition(targetPos);
-                const dist = shoulderLeft.distanceTo(targetPos);
-                if (dist > armReach) {
-                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderLeft).normalize().multiplyScalar((dist - armReach) * 0.4);
-                    if (targets.chest) {
-                        addWorldOffset(targets.chest.mesh, pullVec);
-                    }
-                    if (targets.pelvis) {
-                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
+            [ { t: targets.leftHand, s: shoulderLeft }, { t: targets.rightHand, s: shoulderRight } ].forEach(item => {
+                if (item.t && item.s.lengthSq() > 0) {
+                    const targetPos = new THREE.Vector3();
+                    item.t.mesh.getWorldPosition(targetPos);
+                    const dist = item.s.distanceTo(targetPos);
+                    if (dist > armReach) {
+                        const pullVec = new THREE.Vector3().subVectors(targetPos, item.s).normalize().multiplyScalar((dist - armReach) * 0.4);
+                        if (targets.chest) addWorldOffset(targets.chest.mesh, pullVec);
+                        if (targets.pelvis) addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
                     }
                 }
-            }
-
-            if (targets.rightHand && shoulderRight.lengthSq() > 0) {
-                const targetPos = new THREE.Vector3();
-                targets.rightHand.mesh.getWorldPosition(targetPos);
-                const dist = shoulderRight.distanceTo(targetPos);
-                if (dist > armReach) {
-                    const pullVec = new THREE.Vector3().subVectors(targetPos, shoulderRight).normalize().multiplyScalar((dist - armReach) * 0.4);
-                    if (targets.chest) {
-                        addWorldOffset(targets.chest.mesh, pullVec);
-                    }
-                    if (targets.pelvis) {
-                        addWorldOffset(targets.pelvis.mesh, pullVec.clone().multiplyScalar(0.7));
-                    }
-                }
-            }
+            });
         }
 
         function animate() {
             requestAnimationFrame(animate);
 
-            if (mannequin) {
-                mannequin.updateMatrixWorld(true);
-            }
-
-            const scaleFactor = 0.285;
-            const tempPos = new THREE.Vector3();
             Object.keys(targets).forEach(key => {
                 const t = targets[key];
-                if (t && t.mesh) {
-                    t.mesh.getWorldPosition(tempPos);
-                    const dist = camera.position.distanceTo(tempPos);
-                    let scale = dist * scaleFactor;
+                if (t && t.mesh && t.visual) {
+                    const dist = camera.position.distanceTo(t.mesh.position);
+                    let scale = dist * 0.285;
                     if (key === activeTargetKey) scale *= 1.4;
-                    if (t.visual) t.visual.scale.set(scale, scale, scale);
+                    t.visual.scale.set(scale, scale, scale);
                 }
             });
 
-            const ikActive = document.getElementById('toggle-ik').checked;
-            if (ikActive && ikSolver) {
+            if (document.getElementById('toggle-ik').checked && ikSolver) {
                 if (targets.pelvis && mannequin) {
-                    const bones = mannequin.skeleton.bones;
-                    const hipsBone = bones.find(b => b.name.toLowerCase().includes('hip'));
+                    const hipsBone = mannequin.skeleton.bones.find(b => b.name.toLowerCase().includes('hip'));
                     if (hipsBone) {
-                        const targetPos = new THREE.Vector3();
+                        const targetPos = new THREE.Vector3(), targetWorldQuat = new THREE.Quaternion();
                         targets.pelvis.mesh.getWorldPosition(targetPos);
-                        
-                        const targetWorldQuat = new THREE.Quaternion();
                         targets.pelvis.mesh.getWorldQuaternion(targetWorldQuat);
 
                         if (hipsBone.parent) {
                             hipsBone.parent.worldToLocal(targetPos);
                             hipsBone.position.copy(targetPos);
-                            
                             const parentWorldQuat = new THREE.Quaternion();
                             hipsBone.parent.getWorldQuaternion(parentWorldQuat);
-                            const localQuat = targetWorldQuat.premultiply(parentWorldQuat.invert());
-                            hipsBone.quaternion.copy(localQuat);
+                            hipsBone.quaternion.copy(parentWorldQuat.invert().multiply(targetWorldQuat));
                         } else {
                             hipsBone.position.copy(targetPos);
                             hipsBone.quaternion.copy(targetWorldQuat);
@@ -1446,22 +1282,13 @@
                     }
                 }
                 
-                // Immediately evaluate pelvis world matrix alterations so following drag calculations start with correct spatial metrics
                 mannequin.updateMatrixWorld(true);
-
                 applyArmPullTension();
                 ikSolver.update();
-                
-                // Explicitly rebuild full hierarchical bone matrix chain here before evaluating dependent look-at/rotational metrics to eliminate one-frame lag on target alignment
-                mannequin.updateMatrixWorld(true);
-
                 applyFingerRotations();
                 applyHeadLookAt();
                 applyHeadRotation();
-                
-                if (mannequin) {
-                    mannequin.updateMatrixWorld(true);
-                }
+                mannequin.updateMatrixWorld(true);
             }
 
             orbitControls.update();
@@ -1469,7 +1296,6 @@
         }
 
         window.onload = init;
-
     </script>
 </body>
 </html>
