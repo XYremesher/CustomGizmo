@@ -110,6 +110,10 @@ export function injectUIAndStyles() {
                         <input type="range" id="carry-start-speed-slider" min="0.5" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
                         <label>Lift Start Ratio: <span id="lift-start-val">0.40</span></label><br>
                         <input type="range" id="lift-start-slider" min="0.0" max="0.9" step="0.05" value="0.40" style="width: 100%;"><br>
+                        <label>Lift End Ratio: <span id="lift-end-val">0.85</span></label><br>
+                        <input type="range" id="lift-end-slider" min="0.1" max="1.0" step="0.05" value="0.85" style="width: 100%;"><br>
+                        <label>Hold Time: <span id="carry-hold-val">0.0</span>s</label><br>
+                        <input type="range" id="carry-hold-slider" min="0.0" max="1.0" step="0.1" value="0.0" style="width: 100%;"><br>
                         <label>Throw Anim Speed: <span id="throw-speed-val">1.0</span>x</label><br>
                         <input type="range" id="throw-speed-slider" min="0.5" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
                         <label>Throw Trim Start: <span id="throw-trim-val">0.25</span>s</label><br>
