@@ -1,0 +1,1624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>Climb Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
+        #gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        #ui { position: absolute; top: 25px; left: 0; color: white; font-family: monospace; background: rgba(0,0,0,0.85); padding: 12px; border-radius: 0 8px 8px 0; width: 240px; z-index: 10; transition: transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1); border: 1px solid rgba(255, 255, 255, 0.1); border-left: none; transform: translateX(0); }
+        #ui.collapsed { transform: translateX(-100%); }
+        .ui-controls { margin-top: 10px; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 6px; max-height: 75vh; overflow-y: auto; }
+        
+        .category { border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
+        .category-header { background: rgba(255, 255, 255, 0.1); padding: 8px; cursor: pointer; font-weight: bold; display: flex; justify-content: space-between; align-items: center; user-select: none; }
+        .category-header:hover { background: rgba(255, 255, 255, 0.2); }
+        .category-content { padding: 8px; display: none; background: rgba(0, 0, 0, 0.4); }
+        .category.active .category-content { display: block; }
+        .category-header::after { content: '▶'; font-size: 10px; transition: transform 0.2s; }
+        .category.active .category-header::after { transform: rotate(90deg); }
+
+        #stamina-container { position: absolute; top: 10px; left: 10px; width: 150px; height: 4px; background: rgba(0,0,0,0.5); border-radius: 2px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); z-index: 11; }
+        #stamina-bar { width: 100%; height: 100%; background: #44ff44; transition: width 0.1s linear, background-color 0.3s; }
+        #dock-btn { position: absolute; right: -24px; top: 50%; transform: translateY(-50%); width: 24px; height: 40px; background: rgba(0,0,0,0.85); border: 1px solid rgba(255, 255, 255, 0.1); border-left: none; border-radius: 0 6px 6px 0; color: white; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        
+        #empty-stamina-btn { position: absolute; top: 10px; right: 10px; padding: 8px 12px; background: rgba(255, 0, 0, 0.7); color: white; border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 4px; font-family: monospace; font-weight: bold; cursor: pointer; z-index: 100; }
+        #empty-stamina-btn:active { background: rgba(255, 0, 0, 0.9); }
+
+        .joystick-base { position: absolute; bottom: 30px; width: 120px; height: 120px; background: rgba(255, 255, 255, 0.1); border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); display: flex; justify-content: center; align-items: center; touch-action: none; z-index: 10; }
+        #base-left { left: 30px; } #base-right { right: 30px; }
+        .joystick-stick { width: 50px; height: 50px; background: rgba(255, 255, 255, 0.6); border-radius: 50%; position: absolute; pointer-events: none; z-index: 5; }
+        
+        #jump-btn { position: absolute; bottom: 170px; right: 45px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
+        #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
+        #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
+        #hold-btn:active { background: rgba(50, 150, 255, 0.9); }
+        #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
+        #drop-btn { position: absolute; bottom: 110px; right: 220px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
+        #throw-btn { position: absolute; bottom: 50px; right: 190px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
+        #reset-cam-btn { position: absolute; bottom: 180px; left: 45px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 100, 255, 0.15); }
+        
+        #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
+        
+        #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
+
+        .ledge-hint-container { position: absolute; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.2s; border-radius: 50%; overflow: hidden; }
+        .ledge-hint-line { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: rgba(255, 0, 0, 0.2); transform: translateX(-50%); }
+        .ledge-hint { position: absolute; font-size: 10px; font-weight: bold; color: #fff; background: rgba(255, 0, 0, 0.8); padding: 2px 10px; border-radius: 4px; left: 50%; transform: translateX(-50%); z-index: 2; font-family: monospace; }
+        .ledge-hint.up { top: 5px; width: 40px; text-align: center; }
+        .ledge-hint.down { bottom: 5px; width: 40px; text-align: center; }
+        #base-left.ledge-mode #ledge-hint-container { opacity: 1; }
+        #base-left.ledge-mode { border-color: rgba(255, 0, 0, 0.5); background: rgba(255, 0, 0, 0.1); }
+        
+        #base-left.hold-mode #push-pull-hint-container { opacity: 1; }
+        #base-left.hold-mode { border-color: rgba(50, 150, 255, 0.5); background: rgba(50, 150, 255, 0.1); }
+        #base-left.hold-mode #ledge-hint-container { opacity: 0 !important; }
+
+        #msg-overlay { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-family: monospace; font-weight: bold; font-size: 28px; text-shadow: 2px 2px #000; text-align: center; pointer-events: none; z-index: 20; }
+        #standup-indicator { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff6600; font-family: monospace; font-weight: bold; font-size: 20px; text-shadow: 1px 1px #000; pointer-events: none; z-index: 20; background: rgba(0,0,0,0.5); padding: 8px 16px; border-radius: 8px; }
+        #json-modal { display: none; position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 600px; background: rgba(0,0,0,0.9); padding: 20px; border: 1px solid #fff; z-index: 100; color: #fff; font-family: monospace; }
+        #json-modal textarea { width: 100%; height: 300px; background: #222; color: #0f0; font-family: monospace; margin-top: 10px; margin-bottom: 10px; }
+        #json-modal button { padding: 5px 10px; margin-right: 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="stamina-container"><div id="stamina-bar"></div></div>
+    <button id="empty-stamina-btn">EMPTY STAMINA</button>
+    
+    <div id="ui" class="collapsed">
+        <button id="dock-btn">▶</button>
+        <div class="ui-controls">
+            <div class="category active">
+                <div class="category-header">Level & Data</div>
+                <div class="category-content">
+                    <label>Select Level:</label><br>
+                    <select id="level-select" style="width: 100%; margin-bottom: 10px; color: black;"></select><br>
+                    <button id="btn-show-json" style="width: 100%; padding: 5px; color: black;">Import/Export JSON</button>
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">Physics & Core</div>
+                <div class="category-content">
+                    <label>Jump Force: <span id="force-val">1.0</span>x</label><br>
+                    <input type="range" id="ledge-force-slider" min="0.2" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
+                    <label>Model Scale: <span id="scale-val">0.0065</span></label><br>
+                    <input type="range" id="scale-slider" min="0.001" max="0.02" step="0.0005" value="0.0065" style="width: 100%;"><br>
+                    <label>Ledge Offset: <span id="offset-val">0.06</span></label><br>
+                    <input type="range" id="offset-slider" min="0.0" max="0.5" step="0.01" value="0.06" style="width: 100%;"><br>
+                    <label>Wall Stop Threshold: <span id="wall-stop-val">0.90</span></label><br>
+                    <input type="range" id="wall-stop-slider" min="0.0" max="1.0" step="0.01" value="0.90" style="width: 100%;"><br>
+                    <label>Ledge Slip Duration: <span id="slip-dur-val">0.05</span>s</label><br>
+                    <input type="range" id="slip-dur-slider" min="0.05" max="2.0" step="0.05" value="0.05" style="width: 100%;"><br>
+                    <label>Ledge Drop Pushback: <span id="drop-pushback-val">0.12</span></label><br>
+                    <input type="range" id="drop-pushback-slider" min="0.0" max="1.0" step="0.01" value="0.12" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">Anim Timing</div>
+                <div class="category-content">
+                    <label>Climb Speed: <span id="climb-speed-val">1.6</span>x</label><br>
+                    <input type="range" id="climb-speed-slider" min="1.0" max="6.0" step="0.1" value="1.6" style="width: 100%;"><br>
+                    <label>Land Speed: <span id="land-speed-val">2.4</span>x</label><br>
+                    <input type="range" id="land-speed-slider" min="1.0" max="6.0" step="0.1" value="2.4" style="width: 100%;"><br>
+                    <label>Land Duration: <span id="land-dur-val">0.25</span>s</label><br>
+                    <input type="range" id="land-dur-slider" min="0.1" max="2.0" step="0.05" value="0.25" style="width: 100%;"><br>
+                    <label>Climb Trans: <span id="climb-trans-val">0.20</span>s</label><br>
+                    <input type="range" id="climb-trans-slider" min="0.0" max="1.0" step="0.05" value="0.20" style="width: 100%;"><br>
+                    <label>Standup Start: <span id="standup-start-val">0.20</span>s</label><br>
+                    <input type="range" id="standup-start-slider" min="0.0" max="4.0" step="0.05" value="0.20" style="width: 100%;"><br>
+                    <label>Standup Speed: <span id="standup-speed-val">1.2</span>x</label><br>
+                    <input type="range" id="standup-speed-slider" min="0.5" max="3.0" step="0.1" value="1.2" style="width: 100%;"><br>
+                    <label>Standup Fade: <span id="standup-fade-val">0.45</span>s</label><br>
+                    <input type="range" id="standup-fade-slider" min="0.0" max="1.0" step="0.01" value="0.45" style="width: 100%;"><br>
+                    <label>Pose Duration: <span id="pose-dur-val">0.15</span>s</label><br>
+                    <input type="range" id="pose-dur-slider" min="0.01" max="1.0" step="0.01" value="0.15" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category active">
+                <div class="category-header">Carry & Throw</div>
+                <div class="category-content">
+                    <label>Carry Height: <span id="carry-height-val">2.45</span></label><br>
+                    <input type="range" id="carry-height-slider" min="1.5" max="3.5" step="0.05" value="2.45" style="width: 100%;"><br>
+                    <label>Throw Anim Speed: <span id="throw-speed-val">1.0</span>x</label><br>
+                    <input type="range" id="throw-speed-slider" min="0.5" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
+                    <label>Throw Trim Start: <span id="throw-trim-val">0.25</span>s</label><br>
+                    <input type="range" id="throw-trim-slider" min="0.0" max="1.0" step="0.05" value="0.25" style="width: 100%;"><br>
+                    <label>Spine Stabilize Blend: <span id="spine-blend-val">1.00</span></label><br>
+                    <input type="range" id="spine-blend-slider" min="0.0" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category active">
+                <div class="category-header">Projectiles</div>
+                <div class="category-content">
+                    <label>Projectile Size: <span id="proj-size-val">0.3</span></label><br>
+                    <input type="range" id="proj-size-slider" min="0.1" max="1.5" step="0.05" value="0.3" style="width: 100%;"><br>
+                    <label>Projectile Speed: <span id="proj-speed-val">20.0</span></label><br>
+                    <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
+                    <label>Orange Recoil Force: <span id="orange-recoil-val">35.0</span></label><br>
+                    <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="35.0" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">Debug Vis</div>
+                <div class="category-content">
+                    <label><input type="checkbox" id="toggle-hitbox"> Show Hitboxes</label><br>
+                    <label><input type="checkbox" id="toggle-ragdoll-colliders"> Show Ragdoll Overlay</label><br>
+                    <label>Collider Density: <span id="collider-density-val">8</span></label><br>
+                    <input type="range" id="collider-density-slider" min="4" max="32" step="2" value="8" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="msg-overlay">LEVEL COMPLETED!</div>
+    <div id="standup-indicator"></div>
+    <div id="json-modal">
+        <h3>Level JSON Data</h3>
+        <textarea id="json-textarea"></textarea>
+        <div>
+            <button id="btn-apply-json">Load JSON</button>
+            <button id="btn-close-json">Close</button>
+        </div>
+    </div>
+    <div id="jump-btn">JUMP</div>
+    <div id="build-btn">B</div>
+    <div id="hold-btn">HOLD</div>
+    <div id="carry-btn">CARRY</div>
+    <div id="drop-btn">DROP</div>
+    <div id="throw-btn">THROW</div>
+    
+    <div id="punch-btn">
+        PUNCH
+        <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">
+            <circle cx="38" cy="38" r="32" stroke="rgba(255, 255, 255, 0.15)" stroke-width="4" fill="transparent" />
+            <circle id="punch-ring-fill" cx="38" cy="38" r="32" stroke="#00ff00" stroke-width="4" fill="transparent" stroke-linecap="round" stroke-dasharray="201.06" stroke-dashoffset="201.06" />
+        </svg>
+    </div>
+    
+    <div id="reset-cam-btn"></div>
+    <div id="base-left" class="joystick-base">
+        <div id="ledge-hint-container" class="ledge-hint-container">
+            <div class="ledge-hint-line"></div>
+            <span class="ledge-hint up">CLIMB</span>
+            <span class="ledge-hint down">DROP</span>
+        </div>
+        <div id="push-pull-hint-container" class="ledge-hint-container">
+            <div class="ledge-hint-line" style="background: rgba(50, 150, 255, 0.2);"></div>
+            <span class="ledge-hint up">PUSH</span>
+            <span class="ledge-hint down">PULL</span>
+        </div>
+        <div id="stick-left" class="joystick-stick"></div>
+    </div>
+    <div id="base-right" class="joystick-base">
+        <div id="stick-right" class="joystick-stick"></div>
+    </div>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+        "fflate": "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js"
+      }
+    }
+    </script>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+        window.sacks = [];
+        window.combat = null;
+        window.hitEffects = [];
+        window.gameScene = null;
+        let isChargingPunch = false;
+        let punchPressTimer = null;
+        let charPunchButtonPressed = false;
+
+        window.createHitEffect = function(pos) {
+            if (!window.gameScene) return;
+            const hitGeo = new THREE.SphereGeometry(0.35, 8, 8);
+            const hitMat = new THREE.MeshBasicMaterial({ 
+                color: 0xffff00, 
+                transparent: true, 
+                opacity: 1.0,
+                depthTest: false, // Ensure it is not hidden inside meshes/sandbags
+                depthWrite: false
+            });
+            const hitMesh = new THREE.Mesh(hitGeo, hitMat);
+            hitMesh.position.copy(pos);
+            window.gameScene.add(hitMesh);
+            window.hitEffects.push({ mesh: hitMesh, life: 1.0 });
+        };
+
+        window.spawnHitEffect = function(pos) {
+            window.createHitEffect(pos);
+        };
+
+        export class Sandbag {
+            constructor(scene, position, collidables, debugHelpers, threeTone) {
+                this.group = new THREE.Group();
+                this.group.position.copy(position);
+                scene.add(this.group);
+                
+                this.bones = [];
+                this.recoilPosition = new THREE.Vector2();
+                this.recoilVelocity = new THREE.Vector2();
+                this.meshes = [];
+                this.flashTimer = 0;
+                this.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+                const loader = new FBXLoader();
+                loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
+                    fbx.scale.setScalar(0.0065);
+                    this.group.add(fbx);
+                    
+                    fbx.traverse(c => {
+                        if (c.isMesh) {
+                            const origMat = new THREE.MeshToonMaterial({ color: 0xd5c4a1, gradientMap: threeTone });
+                            c.material = origMat;
+                            c.castShadow = true;
+                            c.receiveShadow = true;
+                            this.meshes.push({ mesh: c, originalMaterial: origMat });
+                        }
+                        if (c.isBone && c.name.toLowerCase().includes('spine')) {
+                            this.bones.push({ bone: c, defaultQuat: c.quaternion.clone() });
+                        }
+                    });
+                });
+
+                this.colliderMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 2.2, 8), new THREE.MeshBasicMaterial({visible: false}));
+                this.colliderMesh.position.copy(position).setY(position.y + 1.1);
+                this.colliderMesh.userData.isMovable = false;
+                scene.add(this.colliderMesh);
+                collidables.push(this.colliderMesh);
+            }
+
+            checkHit(hitCenter, hitRadius) {
+                return this.colliderMesh.position.distanceTo(hitCenter) < (0.5 + hitRadius);
+            }
+
+            applyHit(direction, magnitude) {
+                let localDir = direction.clone().applyQuaternion(this.group.quaternion.clone().invert()).normalize();
+                this.recoilVelocity.x += localDir.x * magnitude * 0.3;
+                this.recoilVelocity.y += localDir.z * magnitude * 0.3;
+                this.flashTimer = 0.15;
+            }
+
+            update(delta) {
+                this.recoilVelocity.x -= this.recoilPosition.x * 250 * delta;
+                this.recoilVelocity.y -= this.recoilPosition.y * 250 * delta;
+                
+                let damping = Math.pow(0.02, delta);
+                this.recoilVelocity.x *= damping;
+                this.recoilVelocity.y *= damping;
+                
+                this.recoilPosition.x += this.recoilVelocity.x * delta;
+                this.recoilPosition.y += this.recoilVelocity.y * delta;
+
+                let displacementLen = Math.sqrt(this.recoilPosition.x * this.recoilPosition.x + this.recoilPosition.y * this.recoilPosition.y);
+                
+                if (displacementLen > 0.001) {
+                    const _tempVec1 = new THREE.Vector3(this.recoilPosition.y, 0, -this.recoilPosition.x).normalize();
+                    let angle = Math.min(displacementLen * 0.4, 1.2); 
+                    _tempVec1.applyQuaternion(this.group.quaternion);
+                    
+                    this.bones.forEach(bData => {
+                        const _tempQuat = new THREE.Quaternion();
+                        bData.bone.parent.getWorldQuaternion(_tempQuat);
+                        const _tempVec2 = _tempVec1.clone().applyQuaternion(_tempQuat.invert());
+                        const _tempQuat2 = new THREE.Quaternion().setFromAxisAngle(_tempVec2, angle);
+                        
+                        bData.bone.quaternion.copy(_tempQuat2).multiply(bData.defaultQuat);
+                        bData.bone.updateMatrixWorld(true);
+                    });
+                } else {
+                    this.bones.forEach(bData => {
+                        bData.bone.quaternion.copy(bData.defaultQuat);
+                        bData.bone.updateMatrixWorld(true);
+                    });
+                }
+
+                if (this.flashTimer > 0) {
+                    this.flashTimer -= delta;
+                    this.meshes.forEach(mObj => { mObj.mesh.material = this.whiteMat; });
+                } else {
+                    this.meshes.forEach(mObj => { mObj.mesh.material = mObj.originalMaterial; });
+                }
+            }
+        }
+
+        export class CombatController {
+            constructor(character) {
+                this.char = character;
+                this.punchState = 0;
+                this.punchTimer = 0;
+                this.nextPunchQueued = false;
+                this.punchesHitFlags = [false, false, false, false, false];
+            }
+
+            startChargePunch() {
+                this.punchState = 4;
+                this.punchTimer = 0;
+                this.char.fadeToAction('punch_charge_hold', 0.1);
+            }
+
+            releaseChargePunch() {
+                this.punchState = 5;
+                this.punchTimer = 0;
+                this.punchesHitFlags = [false, false, false, false, false];
+                this.char.fadeToAction('punch_charge_punch', 0.05);
+            }
+
+            triggerPunch() {
+                if (this.char.isRagdoll || this.char.isStandingUp || this.char.activeAction === this.char.actions['climb']) return;
+                
+                if (this.punchState === 0) {
+                    this.punchState = 1;
+                    this.punchTimer = 0;
+                    this.nextPunchQueued = false;
+                    this.punchesHitFlags = [false, false, false, false, false];
+                    this.char.fadeToAction('punch_left', 0.1);
+                } else if (this.punchState > 0 && this.punchState < 3) {
+                    let currentAnimName = this.punchState === 1 ? 'punch_left' : 'punch_right';
+                    let currentAction = this.char.actions[currentAnimName];
+                    if (currentAction) {
+                        let duration = currentAction.getClip().duration;
+                        let normalizedTime = this.punchTimer / duration;
+                        if (normalizedTime >= 0.1 && normalizedTime <= 0.9) {
+                            this.nextPunchQueued = true;
+                        }
+                    }
+                }
+            }
+
+            detectMeleeHits(sacks, hitIndex, createHitEffectCallback) {
+                let hitCenter = new THREE.Vector3();
+                let useLeftHand = (this.punchState === 1) || (this.punchState === 3 && (hitIndex === 0 || hitIndex === 2));
+
+                if (useLeftHand && this.char.leftHandBone) {
+                    this.char.leftHandBone.getWorldPosition(hitCenter);
+                } else if (!useLeftHand && this.char.rightHandBone) {
+                    this.char.rightHandBone.getWorldPosition(hitCenter);
+                } else {
+                    let chestPos = new THREE.Vector3().copy(this.char.group.position).setY(this.char.group.position.y + 1.2);
+                    let fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion).normalize();
+                    hitCenter = chestPos.addScaledVector(fwd, 0.8);
+                }
+
+                let hitRadius = 0.7; 
+                let fwdDir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion).normalize();
+
+                // Define combo parameters properly before utilizing them inside loop
+                let isFinalComboBlow = (this.punchState === 3 && hitIndex === 4);
+                let isChargePunch = (this.punchState === 5);
+                let forceMagnitude = isFinalComboBlow ? 55 : (isChargePunch ? 80 : 22);
+
+                sacks.forEach(sack => {
+                    if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) { 
+                        if (sack.checkHit(hitCenter, hitRadius)) {
+                            sack.applyHit(fwdDir, forceMagnitude);
+                            if (createHitEffectCallback) createHitEffectCallback(hitCenter);
+                        }
+                    }
+                });
+            }
+
+            update(delta, sacks, createHitEffectCallback) {
+                if (this.punchState > 0) {
+                    this.punchTimer += delta;
+
+                    if (this.punchState === 4) {
+                        this.updateUI(0.0);
+                        return;
+                    }
+
+                    let currentAnimName = 'punch_left';
+                    if (this.punchState === 1) currentAnimName = 'punch_left';
+                    else if (this.punchState === 2) currentAnimName = 'punch_right';
+                    else if (this.punchState === 3) currentAnimName = 'punch_combo';
+                    else if (this.punchState === 5) currentAnimName = 'punch_charge_punch';
+
+                    let currentAction = this.char.actions[currentAnimName];
+                    if (!currentAction) return;
+
+                    let duration = currentAction.getClip().duration;
+                    let normalizedTime = this.punchTimer / duration;
+
+                    this.updateUI(normalizedTime);
+
+                    if (this.punchState === 1 || this.punchState === 2 || this.punchState === 5) {
+                        if (normalizedTime >= 0.35 && normalizedTime <= 0.55 && !this.punchesHitFlags[0]) {
+                            this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
+                            this.punchesHitFlags[0] = true;
+                        }
+                    } else if (this.punchState === 3) {
+                        const comboHitTimes = [0.15, 0.32, 0.48, 0.65, 0.82];
+                        for (let i = 0; i < 5; i++) {
+                            if (normalizedTime >= comboHitTimes[i] && normalizedTime <= (comboHitTimes[i] + 0.15) && !this.punchesHitFlags[i]) {
+                                this.detectMeleeHits(sacks, i, createHitEffectCallback);
+                                this.punchesHitFlags[i] = true;
+                            }
+                        }
+                    }
+
+                    this.handleStateTransitions(normalizedTime);
+                }
+            }
+
+            updateUI(normalizedTime) {
+                const ringFill = document.getElementById('punch-ring-fill');
+                if (!ringFill) return;
+
+                const circumference = 201.06; // 2 * pi * r (32)
+                const remaining = 1.0 - Math.min(1.0, normalizedTime);
+                const offset = circumference * (1.0 - remaining);
+                ringFill.style.strokeDashoffset = offset;
+
+                let color = '#888888';
+                if (this.punchState < 3) {
+                    color = (normalizedTime >= 0.1 && normalizedTime <= 0.9) ? (this.nextPunchQueued ? '#0088ff' : '#00ff00') : '#888888';
+                } else if (this.punchState === 3) {
+                    color = '#ff8800'; 
+                } else if (this.punchState === 4) {
+                    color = '#ff00ff';
+                } else if (this.punchState === 5) {
+                    color = '#ff3333'; 
+                }
+                ringFill.style.stroke = color;
+            }
+
+            handleStateTransitions(normalizedTime) {
+                if (this.punchState < 3) {
+                    if (this.nextPunchQueued && normalizedTime >= 0.65) {
+                        this.punchState++;
+                        this.punchTimer = 0;
+                        this.nextPunchQueued = false;
+                        this.punchesHitFlags = [false, false, false, false, false];
+                        let nextAnimName = this.punchState === 2 ? 'punch_right' : 'punch_combo';
+                        this.char.fadeToAction(nextAnimName, 0.15); 
+                    } else if (normalizedTime >= 0.95) {
+                        this.resetState();
+                    }
+                } else if (normalizedTime >= 0.95) {
+                    this.resetState();
+                }
+            }
+
+            resetState() {
+                this.punchState = 0;
+                this.nextPunchQueued = false;
+                const ringFill = document.getElementById('punch-ring-fill');
+                if (ringFill) {
+                    ringFill.style.strokeDashoffset = 201.06;
+                }
+                this.char.fadeToAction('idle', 0.25);
+            }
+        }
+
+        const punchBtn = document.getElementById('punch-btn');
+        punchBtn.addEventListener('pointerdown', (e) => {
+            if (!window.combat || window.combat.char.isRagdoll || window.combat.char.isStandingUp) return;
+            e.preventDefault();
+            isChargingPunch = false;
+            charPunchButtonPressed = true;
+            punchPressTimer = setTimeout(() => {
+                if (charPunchButtonPressed) {
+                    isChargingPunch = true;
+                    window.combat.startChargePunch();
+                }
+            }, 200); 
+        });
+
+        window.addEventListener('pointerup', () => {
+            if (charPunchButtonPressed) {
+                charPunchButtonPressed = false;
+                clearTimeout(punchPressTimer);
+                if (isChargingPunch) {
+                    window.combat.releaseChargePunch();
+                } else {
+                    window.combat.triggerPunch();
+                }
+                isChargingPunch = false;
+            }
+        });
+
+        const _tempVec1 = new THREE.Vector3();
+        const _tempVec2 = new THREE.Vector3();
+        const _tempVec3 = new THREE.Vector3();
+        const _tempQuat = new THREE.Quaternion();
+        const _tempQuat2 = new THREE.Quaternion();
+        const _tempMat4 = new THREE.Matrix4();
+        const _fwdVec = new THREE.Vector3(0, 0, 1);
+
+        function isUpperBodyTrack(trackName) {
+            const lowerName = trackName.toLowerCase();
+            const upperKeywords = ['spine', 'neck', 'head', 'shoulder', 'arm', 'forearm', 'hand', 'finger', 'clavicle', 'chest'];
+            const lowerKeywords = ['upleg', 'leg', 'foot', 'toe', 'hips', 'pelvis'];
+            if (lowerKeywords.some(k => lowerName.includes(k))) return false;
+            return upperKeywords.some(k => lowerName.includes(k));
+        }
+
+        function makeLowerBodyClip(originalClip) {
+            const tracks = [];
+            originalClip.tracks.forEach(track => {
+                if (!isUpperBodyTrack(track.name)) tracks.push(track.clone());
+            });
+            return new THREE.AnimationClip(originalClip.name + '_lower', originalClip.duration, tracks);
+        }
+
+        function makeUpperBodyClip(originalClip, spineBlendFactor) {
+            const tracks = [];
+            originalClip.tracks.forEach(track => {
+                if (isUpperBodyTrack(track.name)) {
+                    const clonedTrack = track.clone();
+                    if (track.name.toLowerCase().includes('spine') && clonedTrack.ValueTypeName === 'quaternion') {
+                        for (let i = 0; i < clonedTrack.values.length; i += 4) {
+                            const x = clonedTrack.values[i];
+                            const y = clonedTrack.values[i+1];
+                            const z = clonedTrack.values[i+2];
+                            const w = clonedTrack.values[i+3];
+                            _tempQuat.set(x, y, z, w);
+                            _tempQuat2.set(0, 0, 0, 1).slerp(_tempQuat, spineBlendFactor);
+                            clonedTrack.values[i] = _tempQuat2.x;
+                            clonedTrack.values[i+1] = _tempQuat2.y;
+                            clonedTrack.values[i+2] = _tempQuat2.z;
+                            clonedTrack.values[i+3] = _tempQuat2.w;
+                        }
+                    }
+                    tracks.push(clonedTrack);
+                }
+            });
+            return new THREE.AnimationClip(originalClip.name + '_upper', originalClip.duration, tracks);
+        }
+
+        class Character {
+            constructor(scene, threeTone) {
+                this.group = new THREE.Group();
+                scene.add(this.group);
+                this.scene = scene;
+                window.gameScene = scene;
+
+                const hitboxGeo = new THREE.CapsuleGeometry(0.4, 1.0, 8, 16);
+                const hitboxMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true, transparent: true, opacity: 0.5 });
+                this.hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
+                this.hitbox.position.y = 0.9;
+                this.hitbox.visible = false;
+                this.group.add(this.hitbox);
+            
+                this.mixer = null;
+                this.actions = {};
+                this.activeAction = null;
+                this.activeUpperAction = null;
+                this.isLoaded = false;
+                this.fbxModel = null;
+                this.climbFinished = false;
+                this.hips = null;
+                this.spine = null;
+                this.spine1 = null;
+                this.neck = null;
+                this.climbSpeed = 1.6;
+                this.landSpeed = 2.4;
+                this.rootBone = null;
+                this.climbTransitionTimer = 0;
+                this.climbTransitionMax = 0.2;
+                this.transitionStartX = 0;
+                this.transitionStartY = 0;
+                this.transitionStartZ = 0;
+
+                this.isRagdoll = false;
+                this.ragdollParticles = [];
+                this.ragdollConstraints = [];
+                this.ragdollLinks = [];
+                this.ragdollColliderGroup = new THREE.Group();
+                this.ragdollColliderGroup.visible = false;
+                this.colliderDensity = 8;
+                scene.add(this.ragdollColliderGroup);
+                this.ragdollTimer = 0;
+                this.ragdollMaxTime = 2.5;
+                this.currentRagdollIntensity = 'high';
+
+                this.standUpDirection = 'none';
+                this.isStandingUp = false;
+                this.standUpFinished = false;
+
+                this.standupStartTime = 0.20;
+                this.standupSpeed = 1.2;
+                this.standupCrossfade = 0.45;
+                this.ragdollPoseDuration = 0.15;
+
+                this.originalClips = {};
+
+                this.recoilRotation = new THREE.Vector3(0, 0, 0);
+                this.recoilVelocity = new THREE.Vector3(0, 0, 0);  
+
+                this.stabilizeWeight = 1.0;
+
+                window.combat = new CombatController(this);
+                if (window.sacks.length === 0) {
+                    window.sacks.push(new Sandbag(scene, new THREE.Vector3(5, 0, -4), window.collidables || [], window.debugHelpers || [], threeTone));
+                }
+
+                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+                const loader = new FBXLoader();
+
+                loader.load(baseUrl + 'StickMan.fbx', (object) => {
+                    this.fbxModel = object;
+                    object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
+                    
+                    object.traverse((child) => {
+                        if (child.isMesh) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+                            if (child.material) {
+                                child.material = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
+                            }
+                        }
+                        if (child.isBone) {
+                            const name = child.name.toLowerCase();
+                            if (name.includes('hips') || name.includes('pelvis')) this.hips = child;
+                            if (name.includes('spine1')) this.spine1 = child;
+                            else if (name.includes('spine')) this.spine = child;
+                            if (name.includes('neck')) this.neck = child;
+                            if (name.includes('root')) this.rootBone = child;
+                        }
+                    });
+
+                    this.skeletonHelper = new THREE.SkeletonHelper(object);
+                    this.skeletonHelper.visible = false;
+                    scene.add(this.skeletonHelper);
+
+                    const markerGeo = new THREE.SphereGeometry(0.06, 12, 12);
+                    this.rootMarker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({color: 0x00ff00, depthTest: false}));
+                    this.rootMarker.visible = false;
+                    scene.add(this.rootMarker);
+                    
+                    this.hipsMarker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({color: 0xff4400, depthTest: false}));
+                    this.hipsMarker.visible = false;
+                    scene.add(this.hipsMarker);
+
+                    this.group.add(object);
+                    
+                    const findBone = (name) => {
+                        let res = null;
+                        object.traverse((child) => { if (child.isBone && !res && child.name.toLowerCase().includes(name)) res = child; });
+                        return res;
+                    };
+
+                    this.leftHandBone = findBone('lefthand');
+                    this.rightHandBone = findBone('righthand');
+
+                    const keyBones = [
+                        { id: 'hips', bone: this.hips, radius: 0.18, length: 0.15 },
+                        { id: 'spine', bone: findBone('spine1') || findBone('spine'), radius: 0.22, length: 0.25 },
+                        { id: 'head', bone: findBone('head'), radius: 0.45, length: 0.05, offsetY: 0.45 },
+                        { id: 'lShoulder', bone: findBone('leftarm') || findBone('leftshoulder'), radius: 0.1, length: 0.25 },
+                        { id: 'lElbow', bone: findBone('leftforearm'), radius: 0.08, length: 0.25 },
+                        { id: 'lHand', bone: this.leftHandBone, radius: 0.07, length: 0.1 },
+                        { id: 'rShoulder', bone: findBone('rightarm') || findBone('rightshoulder'), radius: 0.1, length: 0.25 },
+                        { id: 'rElbow', bone: findBone('rightforearm'), radius: 0.08, length: 0.25 },
+                        { id: 'rHand', bone: this.rightHandBone, radius: 0.07, length: 0.1 },
+                        { id: 'lThigh', bone: findBone('leftupleg'), radius: 0.12, length: 0.19 },
+                        { id: 'lKnee', bone: findBone('leftleg'), radius: 0.1, length: 0.2 },
+                        { id: 'lFoot', bone: findBone('leftfoot') || findBone('lefttoe'), radius: 0.09, length: 0.15 },
+                        { id: 'rThigh', bone: findBone('rightupleg'), radius: 0.12, length: 0.19 },
+                        { id: 'rKnee', bone: findBone('rightleg'), radius: 0.1, length: 0.2 },
+                        { id: 'rFoot', bone: findBone('rightfoot') || findBone('righttoe'), radius: 0.09, length: 0.15 }
+                    ];
+
+                    const mat = new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x0066ff, emissiveIntensity: 0.6, transparent: true, opacity: 0.5, depthTest: false, wireframe: false });
+
+                    keyBones.forEach((kb) => {
+                        if (kb.bone) {
+                            const geo = new THREE.CapsuleGeometry(kb.radius, kb.length, Math.max(1, Math.floor(this.colliderDensity / 2)), this.colliderDensity);
+                            const oy = kb.offsetY !== undefined ? kb.offsetY : kb.length / 2;
+                            geo.translate(0, oy, 0);
+                            const mesh = new THREE.Mesh(geo, mat);
+                            this.ragdollColliderGroup.add(mesh);
+                            
+                            this.ragdollParticles.push({
+                                id: kb.id, bone: kb.bone, pos: new THREE.Vector3(), oldPos: new THREE.Vector3(),
+                                radius: kb.radius, length: kb.length, offsetY: oy, mesh: mesh
+                            });
+                        }
+                    });
+
+                    this.mixer = new THREE.AnimationMixer(object);
+                    this.mixer.addEventListener('finished', (e) => {
+                        if (e.action === this.actions['climb']) this.climbFinished = true;
+                        if (e.action === this.actions['standup_front'] || e.action === this.actions['standup_back']) this.standUpFinished = true;
+                    });
+
+                    const anims = [
+                        { name: 'idle', file: 'Idle.fbx' }, { name: 'walk', file: 'Walking.fbx' }, { name: 'run', file: 'Running.fbx' },
+                        { name: 'jump_start', file: 'JumpStart.fbx' }, { name: 'fall', file: 'JumpMidAir.fbx' }, { name: 'land', file: 'Landing.fbx' },
+                        { name: 'hang_idle', file: 'Hanging%20Idle.fbx' }, { name: 'hang_left', file: 'Moving%20While%20Hanging%20Left.fbx' },
+                        { name: 'hang_right', file: 'Moving%20While%20Hanging%20Right.fbx' }, { name: 'climb', file: 'Freehang%20Climb.fbx' },
+                        { name: 'standup_front', file: 'StandUp_Front.fbx' }, { name: 'standup_back', file: 'StandUp_Back.fbx' },
+                        { name: 'push', file: 'Push.fbx' }, { name: 'pull', file: 'Pull.fbx' },
+                        { name: 'carry', file: 'Carry.fbx' }, { name: 'throw', file: 'Throw.fbx' },
+                        { name: 'carry_start', file: 'Carry_Start.fbx' },
+                        { name: 'punch_left', file: 'Combat/Punch_Left.fbx' }, 
+                        { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
+                        { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
+                        { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' }
+                    ];
+
+                    let loadedCount = 0;
+                    const processClip = (clip) => {
+                        let minTime = Infinity;
+                        clip.tracks.forEach(track => { if (track.times.length > 0) minTime = Math.min(minTime, track.times[0]); });
+                        if (minTime > 0 && minTime !== Infinity) {
+                            clip.tracks.forEach(track => { for (let i = 0; i < track.times.length; i++) track.times[i] -= minTime; });
+                            clip.duration -= minTime;
+                        }
+                        return clip;
+                    };
+
+                    anims.forEach(anim => {
+                        loader.load(baseUrl + anim.file, (animObj) => {
+                            if (animObj.animations.length > 0) {
+                                if (anim.name === 'punch_charge') {
+                                    if (animObj.animations.length >= 2) {
+                                        this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
+                                        this.originalClips['punch_charge_punch'] = processClip(animObj.animations[1]);
+                                    } else {
+                                        this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
+                                        this.originalClips['punch_charge_punch'] = processClip(animObj.animations[0]);
+                                    }
+                                } else {
+                                    this.originalClips[anim.name] = processClip(animObj.animations[0]);
+                                }
+                            }
+                            loadedCount++;
+                            if (loadedCount === anims.length) { 
+                                this.isLoaded = true; 
+                                this.buildClips();
+                                this.fadeToAction('idle', 0); 
+                            }
+                        }, undefined, () => {
+                            loadedCount++;
+                            if (loadedCount === anims.length) { 
+                                this.isLoaded = true; 
+                                this.buildClips();
+                                this.fadeToAction('idle', 0); 
+                            }
+                        });
+                    });
+                });
+            }
+
+            setupActionProperties(name, action) {
+                if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch'].some(k => name.includes(k))) {
+                    action.setLoop(THREE.LoopOnce);
+                    action.clampWhenFinished = true;
+                }
+            }
+
+            buildClips() {
+                if (!this.isLoaded) return;
+                const spineBlend = parseFloat(document.getElementById('spine-blend-slider').value);
+
+                for (let key in this.actions) {
+                    const action = this.actions[key];
+                    if (action) {
+                        action.stop();
+                        this.mixer.uncacheAction(action.getClip());
+                    }
+                }
+                this.actions = {};
+
+                for (let name in this.originalClips) {
+                    const clip = this.originalClips[name];
+
+                    const fullBodyAction = this.mixer.clipAction(clip);
+                    this.setupActionProperties(name, fullBodyAction);
+                    this.actions[name] = fullBodyAction;
+
+                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land'].includes(name)) {
+                        const lowerClip = makeLowerBodyClip(clip);
+                        const lowerAction = this.mixer.clipAction(lowerClip);
+                        this.setupActionProperties(name + '_lower', lowerAction);
+                        this.actions[name + '_lower'] = lowerAction;
+                    }
+
+                    if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch'].includes(name)) {
+                        const upperClip = makeUpperBodyClip(clip, spineBlend);
+                        const upperAction = this.mixer.clipAction(upperClip);
+                        this.setupActionProperties(name + '_upper', upperAction);
+                        this.actions[name + '_upper'] = upperAction;
+                    }
+                }
+            }
+
+            updateScale(val) {
+                if (this.fbxModel) this.fbxModel.scale.setScalar(val);
+                this.hitbox.scale.setScalar(val / 0.0065);
+            }
+
+            toggleHitbox(visible) { this.hitbox.visible = visible; }
+            toggleRagdollColliders(visible) { this.ragdollColliderGroup.visible = visible; }
+
+            updateColliderDensity(density) {
+                this.colliderDensity = density;
+                this.ragdollParticles.forEach(p => {
+                    if (p.mesh && p.bone) {
+                        p.mesh.geometry.dispose();
+                        const geo = new THREE.CapsuleGeometry(p.radius, p.length, Math.max(1, Math.floor(density / 2)), density);
+                        geo.translate(0, p.offsetY, 0);
+                        p.mesh.geometry = geo;
+                    }
+                });
+            }
+
+            updateClimbSpeed(val) {
+                this.climbSpeed = val;
+                if (this.activeAction === this.actions['climb']) this.activeAction.setEffectiveTimeScale(val);
+            }
+
+            updateLandSpeed(val) {
+                this.landSpeed = val;
+                if (this.activeAction === this.actions['land']) this.activeAction.setEffectiveTimeScale(val);
+            }
+
+            fadeToAction(name, duration = 0.2) {
+                if (!this.isLoaded) return;
+
+                const isCarrying = window.isCarryingObj;
+                let targetActionName = name;
+
+                if (isCarrying) {
+                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land'].includes(name)) {
+                        targetActionName = name + '_lower';
+                    }
+                }
+
+                const action = this.actions[targetActionName];
+                if (!action) return;
+                if (this.activeAction === action) return;
+
+                const previousAction = this.activeAction;
+                this.activeAction = action;
+
+                if (previousAction) {
+                    if (duration <= 0) previousAction.stop();
+                    else previousAction.fadeOut(duration);
+                }
+
+                let timeScale = 1.0;
+                if (targetActionName.includes('climb')) timeScale = this.climbSpeed;
+                else if (targetActionName.includes('land')) timeScale = this.landSpeed;
+
+                this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
+                if (duration > 0) this.activeAction.fadeIn(duration);
+                this.activeAction.play();
+            }
+
+            fadeToUpperAction(name, duration = 0.2) {
+                if (!this.isLoaded) return;
+
+                const action = this.actions[name];
+                if (!action) return;
+                if (this.activeUpperAction === action) return;
+
+                const previousAction = this.activeUpperAction;
+                this.activeUpperAction = action;
+
+                if (previousAction) {
+                    if (duration <= 0) previousAction.stop();
+                    else previousAction.fadeOut(duration);
+                }
+
+                let timeScale = 1.0;
+                this.activeUpperAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
+                if (duration > 0) this.activeUpperAction.fadeIn(duration);
+                this.activeUpperAction.play();
+            }
+
+            stopUpperAction(duration = 0.2) {
+                if (this.activeUpperAction) {
+                    if (duration <= 0) this.activeUpperAction.stop();
+                    else this.activeUpperAction.fadeOut(duration);
+                    this.activeUpperAction = null;
+                }
+            }
+
+            playCarryStart() {
+                const startAction = this.actions['carry_start'];
+                if (startAction) {
+                    startAction.reset();
+                    startAction.time = 0;
+                    startAction.setEffectiveTimeScale(1.0);
+                }
+                this.fadeToAction('carry_start', 0.1);
+            }
+
+            playCarryDrop() {
+                const dropAction = this.actions['carry_start'];
+                if (dropAction) {
+                    dropAction.reset();
+                    dropAction.time = dropAction.getClip().duration;
+                    dropAction.setEffectiveTimeScale(-1.0);
+                    dropAction.setEffectiveWeight(1);
+                    dropAction.play();
+                    this.activeAction = dropAction;
+                }
+            }
+
+            initRagdoll(initialVelocity = new THREE.Vector3(), intensity = 'high') {
+                if (!this.fbxModel || this.isRagdoll) return;
+
+                if (window.forceDropCarriedObject) {
+                    window.forceDropCarriedObject(initialVelocity.clone().multiplyScalar(1.5));
+                    window.isCarryingObj = false; 
+                }
+                
+                this.lastSpineWorld = null;
+                this.lastSpine1World = null;
+                this.lastNeckWorld = null;
+                this.lastGroupQuat = null;
+                this.stabilizeWeight = 1.0;
+
+                this.fbxModel.updateMatrixWorld(true);
+                this.currentRagdollIntensity = intensity;
+
+                let velocityModifier = 1.0;
+                if (intensity === 'low') {
+                    this.ragdollMaxTime = 0.02; 
+                    velocityModifier = 0.05; 
+                } else if (intensity === 'medium') {
+                    this.ragdollMaxTime = 0.4; 
+                    velocityModifier = 0.25;
+                } else if (intensity === 'medium_high') {
+                    this.ragdollMaxTime = 0.8;
+                    velocityModifier = 0.4;
+                } else {
+                    this.ragdollMaxTime = 1.6; 
+                    velocityModifier = 0.55;
+                }
+
+                const modifiedVelocity = initialVelocity.clone().multiplyScalar(velocityModifier);
+                modifiedVelocity.clampLength(0.0, 15.0);
+
+                this.ragdollParticles.forEach((p) => {
+                    if (p.bone) {
+                        p.bone.getWorldPosition(p.pos);
+                        const nX = (Math.random() - 0.5) * 2.0 * velocityModifier;
+                        const nY = (Math.random() - 0.5) * 2.0 * velocityModifier;
+                        const nZ = (Math.random() - 0.5) * 2.0 * velocityModifier;
+                        _tempVec1.set(nX, nY, nZ).add(modifiedVelocity).multiplyScalar(0.016);
+                        p.oldPos.copy(p.pos).sub(_tempVec1);
+                    }
+                });
+
+                this.ragdollConstraints = [];
+                const addDist = (id1, id2) => {
+                    const p1 = this.ragdollParticles.find(p => p.id === id1);
+                    const p2 = this.ragdollParticles.find(p => p.id === id2);
+                    if (p1 && p2 && p1.bone && p2.bone) this.ragdollConstraints.push({ p1, p2, dist: p1.pos.distanceTo(p2.pos) });
+                };
+
+                addDist('hips', 'spine'); addDist('spine', 'head');
+                addDist('spine', 'lShoulder'); addDist('lShoulder', 'lElbow'); addDist('lElbow', 'lHand');
+                addDist('spine', 'rShoulder'); addDist('rShoulder', 'rElbow'); addDist('rElbow', 'rHand');
+                addDist('hips', 'lThigh'); addDist('lThigh', 'lKnee'); addDist('lKnee', 'lFoot');
+                addDist('hips', 'rThigh'); addDist('rThigh', 'rKnee'); addDist('rKnee', 'rFoot');
+                addDist('lShoulder', 'rShoulder'); addDist('lThigh', 'rThigh');
+
+                const getBone = (id) => this.ragdollParticles.find(p => p.id === id)?.bone;
+
+                this.ragdollLinks = [
+                    { p1: 'hips', p2: 'spine', bone: getBone('hips') }, { p1: 'spine', p2: 'head', bone: getBone('spine') },
+                    { p1: 'lShoulder', p2: 'lElbow', bone: getBone('lShoulder') }, { p1: 'lElbow', p2: 'lHand', bone: getBone('lHand') },
+                    { p1: 'rShoulder', p2: 'rElbow', bone: getBone('rShoulder') }, { p1: 'rElbow', p2: 'rHand', bone: getBone('rHand') },
+                    { p1: 'lThigh', p2: 'lKnee', bone: getBone('lThigh') }, { p1: 'lKnee', p2: 'lFoot', bone: getBone('lFoot') },
+                    { p1: 'rThigh', p2: 'rKnee', bone: getBone('rThigh') }, { p1: 'rKnee', p2: 'rFoot', bone: getBone('rFoot') }
+                ];
+
+                this.ragdollLinks.forEach(link => {
+                    if (link.bone) {
+                        const p1 = this.ragdollParticles.find(p => p.id === link.p1);
+                        const p2 = this.ragdollParticles.find(p => p.id === link.p2);
+                        if (p1 && p2) {
+                            link.initialDir = p2.pos.clone().sub(p1.pos).normalize();
+                            link.initialQuat = link.bone.getWorldQuaternion(new THREE.Quaternion());
+                        } else link.bone = null;
+                    }
+                });
+
+                if (this.activeAction) this.activeAction.stop();
+                if (this.activeUpperAction) this.activeUpperAction.stop();
+                this.activeUpperAction = null;
+
+                this.isRagdoll = true; this.isStandingUp = false; this.standUpFinished = false; this.ragdollTimer = 0;
+            }
+
+            applyProceduralRecoil(projectileVelocity, intensity) {
+                const localVelocity = projectileVelocity.clone().applyQuaternion(this.group.quaternion.clone().invert());
+                const localDir = localVelocity.clone().normalize();
+                
+                let impulseMagnitude = 12.0;
+                if (intensity === 'low') impulseMagnitude = 6.0;
+                else if (intensity === 'medium') impulseMagnitude = 12.0;
+                else if (intensity === 'medium_high') {
+                    impulseMagnitude = parseFloat(document.getElementById('orange-recoil-slider').value);
+                    this.recoilVelocity.y += (Math.random() - 0.5) * 2.0 * impulseMagnitude * 1.2;
+                }
+
+                this.recoilVelocity.x += localDir.z * impulseMagnitude;
+                this.recoilVelocity.z += -localDir.x * impulseMagnitude;
+
+                this.lastSpineWorld = null;
+                this.lastSpine1World = null;
+                this.lastNeckWorld = null;
+                this.lastGroupQuat = null;
+                this.stabilizeWeight = 0.0;
+            }
+
+            updateRecoil(delta) {
+                this.recoilVelocity.lerp(new THREE.Vector3(), 15 * delta);
+                this.recoilRotation.lerp(new THREE.Vector3(), 10 * delta);
+                this.recoilRotation.add(this.recoilVelocity.clone().multiplyScalar(delta));
+            }
+
+            detectFallDirection() {
+                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
+                const spineP = this.ragdollParticles.find(p => p.id === 'spine');
+                const headP = this.ragdollParticles.find(p => p.id === 'head');
+                if (!hipsP || !spineP) return 'front';
+
+                _tempVec1.set(0, 0, 1).applyQuaternion(this.group.quaternion);
+                _tempVec1.y = 0; _tempVec1.normalize();
+
+                _tempVec2.subVectors(spineP.pos, hipsP.pos);
+                _tempVec2.y = 0; _tempVec2.normalize();
+
+                if (headP) {
+                    _tempVec3.subVectors(headP.pos, hipsP.pos);
+                    _tempVec3.y = 0; _tempVec3.normalize();
+                } else _tempVec3.copy(_tempVec2);
+
+                return _tempVec1.dot(_tempVec3) > 0 ? 'front' : 'back';
+            }
+
+            captureRagdollPose() {
+                const tracks = [];
+                const dur = this.ragdollPoseDuration;
+                this.fbxModel.traverse(child => {
+                    if (child.isBone) {
+                        const q = child.quaternion;
+                        tracks.push(new THREE.QuaternionKeyframeTrack(child.name + '.quaternion', [0, dur], [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w]));
+                        if (child === this.hips || child === this.rootBone) {
+                            const p = child.position;
+                            tracks.push(new THREE.VectorKeyframeTrack(child.name + '.position', [0, dur], [p.x, p.y, p.z, p.x, p.y, p.z]));
+                        }
+                    }
+                });
+                const clip = new THREE.AnimationClip('ragdoll_pose', dur, tracks);
+                const action = this.mixer.clipAction(clip);
+                action.setLoop(THREE.LoopOnce); action.clampWhenFinished = true;
+                return action;
+            }
+
+            beginStandUp(floorY) {
+                if (!this.isRagdoll) return;
+
+                if (this.currentRagdollIntensity === 'low') {
+                    this.isRagdoll = false; this.isStandingUp = false; this.standUpFinished = true;
+                    if (this.fbxModel) this.fbxModel.position.set(0, 0, 0);
+                    this.fadeToAction('idle', 0.1);
+                    return;
+                }
+
+                const direction = this.detectFallDirection();
+                this.standUpDirection = direction;
+
+                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
+                const spineP = this.ragdollParticles.find(p => p.id === 'spine');
+                
+                const globalTransforms = new Map();
+                this.fbxModel.traverse(c => {
+                    if (c.isBone) {
+                        globalTransforms.set(c, {
+                            pos: c.getWorldPosition(new THREE.Vector3()),
+                            quat: c.getWorldQuaternion(new THREE.Quaternion()),
+                            scl: c.getWorldScale(new THREE.Vector3())
+                        });
+                    }
+                });
+
+                const hipsWorldPos = hipsP ? hipsP.pos.clone() : this.group.position.clone();
+                this.group.position.set(hipsWorldPos.x, floorY, hipsWorldPos.z);
+
+                if (hipsP && spineP) {
+                    _tempVec1.subVectors(spineP.pos, hipsP.pos);
+                    _tempVec1.y = 0;
+                    if (_tempVec1.lengthSq() > 0.001) {
+                        _tempVec1.normalize();
+                        if (direction === 'back') _tempVec1.negate();
+                        this.group.quaternion.setFromUnitVectors(_fwdVec, _tempVec1);
+                    }
+                }
+                this.group.updateMatrixWorld(true);
+
+                this.fbxModel.traverse(c => {
+                    if (c.isBone) {
+                        const gt = globalTransforms.get(c);
+                        _tempMat4.copy(c.parent.matrixWorld).invert();
+                        const worldMat = new THREE.Matrix4().compose(gt.pos, gt.quat, gt.scl);
+                        const localMat = new THREE.Matrix4().multiplyMatrices(_tempMat4, worldMat);
+                        localMat.decompose(c.position, c.quaternion, new THREE.Vector3());
+                        c.updateMatrixWorld(true);
+                    }
+                });
+
+                if (this.fbxModel) {
+                    this.fbxModel.position.set(0, 0, 0);
+                    this.standUpTransStartX = 0; this.standUpTransStartY = 0; this.standUpTransStartZ = 0;
+                }
+
+                const ragdollAction = this.captureRagdollPose();
+                ragdollAction.play();
+
+                this.isRagdoll = false; this.isStandingUp = true; this.standUpFinished = false;
+                const animName = direction === 'front' ? 'standup_front' : 'standup_back';
+                if (!this.actions[animName]) {
+                    this.isStandingUp = false; this.standUpDirection = 'none'; return;
+                }
+
+                const standUpAction = this.actions[animName];
+                standUpAction.reset();
+                standUpAction.setEffectiveWeight(1);
+                standUpAction.setEffectiveTimeScale(this.standupSpeed);
+                standUpAction.time = Math.min(this.standupStartTime, standUpAction.getClip().duration - 0.1); 
+                standUpAction.play();
+                standUpAction.crossFadeFrom(ragdollAction, this.standupCrossfade, false);
+                this.activeAction = standUpAction;
+            }
+
+            applyHingeLimit(id1, id2, id3, minAngle, maxAngle, isKnee = false, isElbow = false, isHip = false) {
+                const p1 = this.ragdollParticles.find(p => p.id === id1);
+                const p2 = this.ragdollParticles.find(p => p.id === id2);
+                const p3 = this.ragdollParticles.find(p => p.id === id3);
+                if (!p1 || !p2 || !p3) return;
+
+                const v1 = new THREE.Vector3().subVectors(p1.pos, p2.pos);
+                const v2 = new THREE.Vector3().subVectors(p3.pos, p2.pos);
+                const d1 = v1.length();
+                const d2 = v2.length();
+                if (d1 < 0.001 || d2 < 0.001) return;
+
+                v1.normalize();
+                v2.normalize();
+
+                const pHips = this.ragdollParticles.find(p => p.id === 'hips');
+                const pSpine = this.ragdollParticles.find(p => p.id === 'spine');
+                const pLShoulder = this.ragdollParticles.find(p => p.id === 'lShoulder');
+                const pRShoulder = this.ragdollParticles.find(p => p.id === 'rShoulder');
+
+                let torsoForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
+                if (pHips && pSpine && pLShoulder && pRShoulder) {
+                    const torsoUp = _tempVec1.subVectors(pSpine.pos, pHips.pos).normalize();
+                    const torsoRight = _tempVec2.subVectors(pRShoulder.pos, pLShoulder.pos).normalize();
+                    torsoForward.crossVectors(torsoRight, torsoUp).normalize();
+                }
+
+                if (isKnee) {
+                    const dotForward = v2.dot(torsoForward);
+                    if (dotForward > 0.02) {
+                        v2.addScaledVector(torsoForward, -dotForward - 0.05).normalize();
+                    }
+                } else if (isElbow) {
+                    const dotForward = v2.dot(torsoForward);
+                    if (dotForward < -0.02) {
+                        v2.addScaledVector(torsoForward, -dotForward + 0.05).normalize();
+                    }
+                } else if (isHip) {
+                    const dotForward = v2.dot(torsoForward);
+                    if (dotForward < -0.15) {
+                        v2.addScaledVector(torsoForward, -dotForward - 0.15).normalize();
+                    }
+                }
+
+                const dot = v1.dot(v2);
+                const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+
+                if (angle < minAngle || angle > maxAngle) {
+                    const targetAngle = Math.max(minAngle, Math.min(maxAngle, angle));
+                    const axis = new THREE.Vector3().crossVectors(v1, v2).normalize();
+                    if (axis.lengthSq() < 0.001) axis.set(0, 1, 0);
+                    const q = new THREE.Quaternion().setFromAxisAngle(axis, targetAngle - angle);
+                    v2.applyQuaternion(q).normalize().multiplyScalar(d2);
+                    p3.pos.copy(p2.pos).add(v2);
+                }
+            }
+
+            updateRagdoll(delta, collidables, floorY) {
+                if (!this.isRagdoll) return;
+                this.ragdollTimer += delta;
+                const gravity = 30; const damping = 0.95;
+
+                this.ragdollParticles.forEach(p => {
+                    const tempX = p.pos.x, tempY = p.pos.y, tempZ = p.pos.z;
+                    let velX = (p.pos.x - p.oldPos.x) * damping;
+                    let velY = (p.pos.y - p.oldPos.y) * damping - gravity * delta * delta;
+                    let velZ = (p.pos.z - p.oldPos.z) * damping;
+
+                    const maxDisp = 0.3;
+                    const dispSq = velX*velX + velY*velY + velZ*velZ;
+                    if (dispSq > maxDisp * maxDisp) {
+                        const len = Math.sqrt(dispSq);
+                        velX = (velX / len) * maxDisp;
+                        velY = (velY / len) * maxDisp;
+                        velZ = (velZ / len) * maxDisp;
+                    }
+
+                    p.pos.x += velX;
+                    p.pos.y += velY;
+                    p.pos.z += velZ;
+                    p.oldPos.set(tempX, tempY, tempZ);
+                });
+
+                for (let iter = 0; iter < 20; iter++) {
+                    this.ragdollConstraints.forEach(c => {
+                        _tempVec1.subVectors(c.p2.pos, c.p1.pos);
+                        const dist = _tempVec1.length();
+                        if (dist > 0.0001) {
+                            const offset = _tempVec1.multiplyScalar(((dist - c.dist) / dist) * 0.5);
+                            c.p1.pos.add(offset);
+                            c.p2.pos.sub(offset);
+                        }
+                    });
+
+                    this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3, true, false, false); 
+                    this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3, true, false, false); 
+                    this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5, false, true, false); 
+                    this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5, false, true, false); 
+                    this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0, false, false, true); 
+                    this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0, false, false, true); 
+
+                    this.ragdollParticles.forEach(p => {
+                        if (p.pos.y < p.radius) {
+                            p.pos.y = p.radius;
+                            p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
+                            p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
+                        }
+                        
+                        const particleBox = new THREE.Box3();
+                        particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
+                        const obstacleBox = new THREE.Box3();
+
+                        collidables.forEach(obj => {
+                            if (obj === window.ground) return;
+
+                            if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
+                                const radius = obj.geometry.parameters.radius || 6;
+                                const dist = p.pos.distanceTo(obj.position);
+                                const minDist = radius + p.radius;
+                                if (dist < minDist) {
+                                    const prevPos = p.pos.clone();
+                                    const normal = _tempVec3.subVectors(p.pos, obj.position).normalize();
+                                    p.pos.copy(obj.position).addScaledVector(normal, minDist);
+                                    const displacement = _tempVec1.subVectors(p.pos, prevPos);
+                                    p.oldPos.add(displacement);
+                                }
+                                return;
+                            }
+
+                            if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
+                            
+                            if (particleBox.intersectsBox(obstacleBox)) {
+                                const prevPos = p.pos.clone();
+                                const overlapX = Math.min(particleBox.max.x - obstacleBox.min.x, obstacleBox.max.x - particleBox.min.x);
+                                const overlapY = Math.min(particleBox.max.y - obstacleBox.min.y, obstacleBox.max.y - particleBox.min.y);
+                                const overlapZ = Math.min(particleBox.max.z - obstacleBox.min.z, obstacleBox.max.z - particleBox.min.z);
+                                
+                                if (overlapX < overlapY && overlapX < overlapZ) {
+                                    p.pos.x += Math.sign(p.pos.x - obj.position.x) * overlapX;
+                                } else if (overlapY < overlapX && overlapY < overlapZ) {
+                                    p.pos.y += Math.sign(p.pos.y - obj.position.y) * overlapY;
+                                    if (Math.sign(p.pos.y - obj.position.y) > 0) {
+                                        p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
+                                        p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
+                                    }
+                                } else {
+                                    p.pos.z += Math.sign(p.pos.z - obj.position.z) * overlapZ;
+                                }
+
+                                const displacement = _tempVec3.subVectors(p.pos, prevPos);
+                                if (displacement.lengthSq() > 0.0001) p.oldPos.add(displacement);
+                                particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
+                            }
+                        });
+                    });
+                }
+
+                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
+                if (hipsP && this.hips) {
+                    this.hips.position.copy(this.hips.parent.worldToLocal(_tempVec1.copy(hipsP.pos)));
+                    this.hips.updateMatrixWorld(true);
+                }
+                
+                this.ragdollLinks.forEach(link => {
+                    if (link.bone) {
+                        const p1 = this.ragdollParticles.find(p => p.id === link.p1);
+                        const p2 = this.ragdollParticles.find(p => p.id === link.p2);
+                        if (p1 && p2) {
+                            _tempVec1.subVectors(p2.pos, p1.pos).normalize();
+                            if (link.initialDir && _tempVec1.lengthSq() > 0.1 && link.initialDir.lengthSq() > 0.1) {
+                                _tempQuat.setFromUnitVectors(link.initialDir, _tempVec1);
+                                _tempQuat.multiply(link.initialQuat);
+                                const parentWorldQuat = link.bone.parent.getWorldQuaternion(new THREE.Quaternion());
+                                link.bone.quaternion.copy(parentWorldQuat.invert().multiply(_tempQuat));
+                                link.bone.updateMatrixWorld(true);
+                            }
+                        }
+                    }
+                });
+            }
+
+            updateStandUp(delta) {
+                if (!this.isStandingUp) return false;
+                if (this.standUpFinished) {
+                    this.isStandingUp = false; this.standUpDirection = 'none'; this.standUpFinished = false;
+                    return true;
+                }
+                return false;
+            }
+
+            syncColliders() {
+                if (!this.ragdollColliderGroup.visible) return;
+                this.ragdollParticles.forEach(p => {
+                    if (p.mesh && p.bone) {
+                        if (!this.isRagdoll) p.bone.getWorldPosition(p.mesh.position);
+                        else p.mesh.position.copy(p.pos);
+                        p.bone.getWorldQuaternion(p.mesh.quaternion);
+                    }
+                });
+            }
+
+            animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
+                if (window.combat) {
+                    window.sacks.forEach(s => s.update(delta));
+                    window.combat.update(delta, window.sacks, window.spawnHitEffect);
+                }
+
+                // Update 3D sphere hit effects
+                if (window.hitEffects) {
+                    for (let i = window.hitEffects.length - 1; i >= 0; i--) {
+                        const fx = window.hitEffects[i];
+                        fx.life -= delta * 5.0; // Decay over ~0.2s
+                        fx.mesh.scale.setScalar(2.0 - fx.life);
+                        if (fx.mesh.material) {
+                            fx.mesh.material.opacity = fx.life;
+                        }
+                        if (fx.life <= 0) {
+                            if (window.gameScene) {
+                                window.gameScene.remove(fx.mesh);
+                            }
+                            fx.mesh.geometry.dispose();
+                            fx.mesh.material.dispose();
+                            window.hitEffects.splice(i, 1);
+                        }
+                    }
+                }
+
+                if (this.isRagdoll) return;
+
+                if (this.spine && this.defaultSpineQuat) this.spine.quaternion.copy(this.defaultSpineQuat);
+                if (this.spine1 && this.defaultSpine1Quat) this.spine1.quaternion.copy(this.defaultSpine1Quat);
+                if (this.neck && this.defaultNeckQuat) this.neck.quaternion.copy(this.defaultNeckQuat);
+
+                if (this.mixer) this.mixer.update(delta);
+                if (!this.isLoaded) return;
+
+                this.updateRecoil(delta);
+                
+                if (this.isStandingUp) {
+                    if (this.activeUpperAction) {
+                        this.activeUpperAction.stop();
+                        this.activeUpperAction = null;
+                    }
+                    if (this.rootMarker) this.rootMarker.position.copy(this.group.position);
+                    if (this.hipsMarker && this.hips) this.hips.getWorldPosition(this.hipsMarker.position);
+                    if (this.rootBone) { this.rootBone.position.set(0, 0, 0); this.rootBone.quaternion.set(0, 0, 1); }
+                    return;
+                }
+
+                if (this.rootMarker) this.rootMarker.position.copy(this.group.position);
+                if (this.hipsMarker && this.hips) this.hips.getWorldPosition(this.hipsMarker.position);
+                if (this.rootBone) { this.rootBone.position.set(0, 0, 0); this.rootBone.quaternion.set(0, 0, 0, 1); }
+
+                if (this.fbxModel) {
+                    if (state === 'climbing') {
+                        this.fbxModel.position.set(0, 0, 0);
+                    } else if (this.climbTransitionTimer > 0) {
+                        this.climbTransitionTimer -= delta;
+                        const t = Math.max(0, this.climbTransitionTimer / this.climbTransitionMax);
+                        this.fbxModel.position.set(this.transitionStartX * t, this.transitionStartY * t, this.transitionStartZ * t);
+                    } else {
+                        let targetZ = (state === 'air') ? -0.4 : 0.0;
+                        this.fbxModel.position.lerp(_tempVec1.set(0, 0, targetZ), 15 * delta);
+                    }
+                }
+
+                const dur = forceSnap ? 0 : 0.2;
+                let isPunching = window.combat && window.combat.punchState > 0;
+
+                if (state === 'climbing') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('climb', dur);
+                } else if (state === 'push') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('push', dur);
+                } else if (state === 'pull') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('pull', dur);
+                } else if (state === 'ledge') {
+                    this.stopUpperAction(dur);
+                    if (moveMag > 0.1) {
+                        if (moveDirX > 0.1) this.fadeToAction('hang_right', dur);
+                        else if (moveDirX < -0.1) this.fadeToAction('hang_left', dur);
+                        else this.fadeToAction('hang_idle', dur);
+                    } else this.fadeToAction('hang_idle', dur);
+                } else {
+                    let baseMoveState = 'idle';
+                    if (state === 'walk') {
+                        baseMoveState = (moveMag > 0.8) ? 'run' : 'walk';
+                    } else if (state === 'air') {
+                        baseMoveState = (yVelocity > 0) ? 'jump_start' : 'fall';
+                    } else if (state === 'landing') {
+                        baseMoveState = 'land';
+                    }
+
+                    if (window.isCarryStarting) {
+                        this.stopUpperAction(dur);
+                        this.fadeToAction('carry_start', dur);
+                    } else if (window.isCarryDropping) {
+                        this.stopUpperAction(dur);
+                        const dropAction = this.actions['carry_start'];
+                        if (dropAction && this.activeAction !== dropAction) {
+                            dropAction.reset();
+                            dropAction.time = dropAction.getClip().duration;
+                            dropAction.setEffectiveTimeScale(-1.0);
+                            dropAction.setEffectiveWeight(1);
+                            dropAction.play();
+                            this.activeAction = dropAction;
+                        }
+                    } else if (window.throwTimer > 0) {
+                        this.stopUpperAction(dur);
+                        const throwAction = this.actions['throw'];
+                        if (throwAction) {
+                            const throwSpeedMult = parseFloat(document.getElementById('throw-speed-slider').value);
+                            throwAction.setEffectiveTimeScale(throwSpeedMult);
+                        }
+                        this.fadeToAction('throw', dur);
+                    } else if (isPunching) {
+                        // Let fullbody combat animations play cleanly
+                    } else if (window.isCarryingObj) {
+                        this.fadeToAction(baseMoveState, dur);
+                        this.fadeToUpperAction('carry_upper', dur);
+                    } else {
+                        this.fadeToAction(baseMoveState, dur);
+                        this.stopUpperAction(dur);
+                    }
+                }
+
+                if (window.isCarryingObj && this.spine) {
+                    const stabilizeBlend = parseFloat(document.getElementById('spine-blend-slider').value);
+                    const dampFactor = stabilizeBlend * 0.85;
+
+                    const recoilMag = this.recoilRotation.length() + this.recoilVelocity.length();
+                    if (recoilMag > 0.15 || window.isCarryStarting || window.isCarryDropping || (window.throwTimer && window.throwTimer > 0)) {
+                        this.stabilizeWeight = 0.0;
+                        this.lastSpineWorld = null;
+                        this.lastSpine1World = null;
+                        this.lastNeckWorld = null;
+                        this.lastGroupQuat = null;
+                    } else {
+                        this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 5.0 * delta);
+                    }
+
+                    const activeDampFactor = dampFactor * this.stabilizeWeight;
+
+                    if (!this.lastGroupQuat) this.lastGroupQuat = this.group.quaternion.clone();
+                    const groupDeltaQuat = this.group.quaternion.clone().multiply(this.lastGroupQuat.clone().invert());
+
+                    const applyDamping = (bone, lastWorldRef) => {
+                        if (!bone) return;
+                        if (!this[lastWorldRef]) this[lastWorldRef] = bone.getWorldQuaternion(new THREE.Quaternion());
+                        else this[lastWorldRef].premultiply(groupDeltaQuat);
+                        
+                        bone.getWorldQuaternion(_tempQuat);
+                        _tempQuat.slerp(this[lastWorldRef], activeDampFactor);
+                        
+                        const parentWorld = bone.parent.getWorldQuaternion(_tempQuat2);
+                        bone.quaternion.copy(parentWorld.invert().multiply(_tempQuat));
+                        bone.updateMatrixWorld(true);
+                        
+                        this[lastWorldRef].copy(_tempQuat);
+                    };
+
+                    applyDamping(this.spine, 'lastSpineWorld');
+                    applyDamping(this.spine1, 'lastSpine1World');
+                    applyDamping(this.neck, 'lastNeckWorld');
+
+                    this.lastGroupQuat.copy(this.group.quaternion);
+                } else {
+                    if (this.spine && this.lastSpineWorld) this.spine.getWorldQuaternion(this.lastSpineWorld);
+                    if (this.spine1 && this.lastSpine1World) this.spine1.getWorldQuaternion(this.lastSpine1World);
+                    if (this.neck && this.lastNeckWorld) this.neck.getWorldQuaternion(this.lastNeckWorld);
+                    
+                    if (!this.lastGroupQuat) this.lastGroupQuat = new THREE.Quaternion();
+                    this.lastGroupQuat.copy(this.group.quaternion);
+                }
+
+                if (this.spine) {
+                    if (!this.defaultSpineQuat) this.defaultSpineQuat = new THREE.Quaternion();
+                    this.defaultSpineQuat.copy(this.spine.quaternion);
+                }
+                if (this.spine1) {
+                    if (!this.defaultSpine1Quat) this.defaultSpine1Quat = new THREE.Quaternion();
+                    this.defaultSpine1Quat.copy(this.spine1.quaternion);
+                }
+                if (this.neck) {
+                    if (!this.defaultNeckQuat) this.defaultNeckQuat = new THREE.Quaternion();
+                    this.defaultNeckQuat.copy(this.neck.quaternion);
+                }
+
+                if (this.spine) {
+                    const qOffset = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.recoilRotation.x, this.recoilRotation.y, this.recoilRotation.z));
+                    
+                    const spineQuat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.3);
+                    const spine1Quat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.5);
+                    const neckQuat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.2);
+
+                    this.spine.quaternion.multiply(spineQuat);
+                    if (this.spine1) this.spine1.quaternion.multiply(spine1Quat);
+                    if (this.neck) this.neck.quaternion.multiply(neckQuat);
+                    
+                    this.spine.updateMatrixWorld(true);
+                    if (this.spine1) this.spine1.updateMatrixWorld(true);
+                    if (this.neck) this.neck.updateMatrixWorld(true);
+                }
+
+                if (!this.lastGroupPos) {
+                    this.lastGroupPos = this.group.position.clone();
+                } else {
+                    if (window.combat && window.combat.punchState > 0) {
+                        const deltaPos = new THREE.Vector3().subVectors(this.group.position, this.lastGroupPos);
+                        const originalY = this.group.position.y;
+                        
+                        let speedFactor = 0.40; 
+                        if (window.combat.punchState === 4) {
+                            speedFactor = 0.15; 
+                        }
+
+                        deltaPos.x *= speedFactor;
+                        deltaPos.z *= speedFactor;
+
+                        this.group.position.copy(this.lastGroupPos).add(deltaPos);
+                        this.group.position.y = originalY; 
+                        this.group.updateMatrixWorld(true);
+                    }
+                    this.lastGroupPos.copy(this.group.position);
+                }
+            }
+        }
+
+        import { startGame } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/game_js.js';
+        startGame(Character);
+
+    </script>
+</body>
+</html>
