@@ -97,7 +97,7 @@ export const RagdollPhysics = {
         this.isRagdoll = true; this.isStandingUp = false; this.standUpFinished = false; this.ragdollTimer = 0;
     },
 
-    applyProceduralRecoil(projectileVelocity, intensity) {
+    applyProceduralRecoil(projectileVelocity, intensity, customOrangeRecoil = 35.0) {
         const localVelocity = projectileVelocity.clone().applyQuaternion(this.group.quaternion.clone().invert());
         const localDir = localVelocity.clone().normalize();
         
@@ -105,7 +105,7 @@ export const RagdollPhysics = {
         if (intensity === 'low') impulseMagnitude = 6.0;
         else if (intensity === 'medium') impulseMagnitude = 12.0;
         else if (intensity === 'medium_high') {
-            impulseMagnitude = parseFloat(document.getElementById('orange-recoil-slider').value);
+            impulseMagnitude = customOrangeRecoil;
             this.recoilVelocity.y += (Math.random() - 0.5) * 2.0 * impulseMagnitude * 1.2;
         }
 
