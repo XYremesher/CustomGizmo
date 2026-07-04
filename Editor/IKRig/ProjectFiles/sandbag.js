@@ -33,15 +33,13 @@ export class Sandbag {
                 });
 
                 // Kutu geometrisi ve doğru duvar/engel tanımlamaları eklendi
-                this.colliderMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.4, 1.2), new THREE.MeshBasicMaterial({visible: false}));
-                this.colliderMesh.position.copy(position).setY(position.y + 1.2);
-                
-                this.colliderMesh.updateMatrixWorld(true);
-                this.colliderMesh.geometry.computeBoundingBox();
-                
-                this.colliderMesh.userData.isMovable = false;
-                this.colliderMesh.userData.isObstacle = true;
-                this.colliderMesh.userData.isWall = true;
+this.colliderMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.4, 1.2), new THREE.MeshBasicMaterial({visible: false}));
+this.colliderMesh.position.copy(position).setY(position.y + 1.2);
+this.colliderMesh.updateMatrixWorld(true);
+this.colliderMesh.geometry.computeBoundingBox();
+this.colliderMesh.userData.isMovable = false;
+this.colliderMesh.userData.isObstacle = true;
+this.colliderMesh.userData.isWall = true;
                 
                 scene.add(this.colliderMesh);
                 
