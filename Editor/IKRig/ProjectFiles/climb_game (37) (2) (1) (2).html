@@ -1017,6 +1017,38 @@ updateClimbing(delta) {
                 }
             }
 
+            computeLedgeArrowTarget(forward) {
+                const raycaster = new THREE.Raycaster();
+                const rayStart = new THREE.Vector3().copy(this.group.position);
+                rayStart.addScaledVector(forward, 0.15);
+                rayStart.y += 3.5;
+
+                const rayDir = new THREE.Vector3(0, -1, 0);
+                raycaster.set(rayStart, rayDir);
+
+                const collidables = window.collidables || [];
+                const intersects = raycaster.intersectObjects(collidables, true);
+
+                let highestHitY = this.group.position.y + 1.5;
+                if (intersects.length > 0) {
+                    let maxHitY = -Infinity;
+                    for (let i = 0; i < intersects.length; i++) {
+                        if (intersects[i].point.y > maxHitY) {
+                            maxHitY = intersects[i].point.y;
+                        }
+                    }
+                    if (maxHitY !== -Infinity) {
+                        highestHitY = maxHitY;
+                    }
+                }
+
+                const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
+                const target = new THREE.Vector3().copy(this.group.position);
+                target.addScaledVector(forward, -0.3);
+                target.y = highestHitY + ledgeOffset;
+                return target;
+            }
+
             animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
                 if (window.combat) {
                     window.sacks.forEach(s => s.update(delta));
@@ -1288,36 +1320,8 @@ updateClimbing(delta) {
                     if (state === 'climbing') {
                         useWorldTarget = true;
                         if (!this.climbLockedWorldPos) {
-                            const raycaster = new THREE.Raycaster();
-                            const rayStart = new THREE.Vector3().copy(this.group.position);
                             const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
-                            
-                            rayStart.addScaledVector(forward, 0.15);
-                            rayStart.y += 3.5;
-                            
-                            const rayDir = new THREE.Vector3(0, -1, 0);
-                            raycaster.set(rayStart, rayDir);
-                            
-                            const collidables = window.collidables || [];
-                            const intersects = raycaster.intersectObjects(collidables, true);
-                            
-                            let highestHitY = this.group.position.y + 1.5;
-                            if (intersects.length > 0) {
-                                let maxHitY = -Infinity;
-                                for (let i = 0; i < intersects.length; i++) {
-                                    if (intersects[i].point.y > maxHitY) {
-                                        maxHitY = intersects[i].point.y;
-                                    }
-                                }
-                                if (maxHitY !== -Infinity) {
-                                    highestHitY = maxHitY;
-                                }
-                            }
-                            
-                            const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
-                            this.climbLockedWorldPos = new THREE.Vector3().copy(this.group.position);
-                            this.climbLockedWorldPos.addScaledVector(forward, -0.3);
-                            this.climbLockedWorldPos.y = highestHitY + ledgeOffset;
+                            this.climbLockedWorldPos = this.computeLedgeArrowTarget(forward);
                         }
                         targetWorldPos.copy(this.climbLockedWorldPos);
 
@@ -1328,37 +1332,9 @@ updateClimbing(delta) {
                     } else if (state === 'ledge') {
                         this.climbLockedWorldPos = null;
                         useWorldTarget = true;
-                        
-                        const raycaster = new THREE.Raycaster();
-                        const rayStart = new THREE.Vector3().copy(this.group.position);
+
                         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
-                        
-                        rayStart.addScaledVector(forward, 0.15);
-                        rayStart.y += 3.5;
-                        
-                        const rayDir = new THREE.Vector3(0, -1, 0);
-                        raycaster.set(rayStart, rayDir);
-                        
-                        const collidables = window.collidables || [];
-                        const intersects = raycaster.intersectObjects(collidables, true);
-                        
-                        let highestHitY = this.group.position.y + 1.5;
-                        if (intersects.length > 0) {
-                            let maxHitY = -Infinity;
-                            for (let i = 0; i < intersects.length; i++) {
-                                if (intersects[i].point.y > maxHitY) {
-                                    maxHitY = intersects[i].point.y;
-                                }
-                            }
-                            if (maxHitY !== -Infinity) {
-                                highestHitY = maxHitY;
-                            }
-                        }
-                        
-                        const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
-                        targetWorldPos.copy(this.group.position);
-                        targetWorldPos.addScaledVector(forward, -0.3);
-                        targetWorldPos.y = highestHitY + ledgeOffset;
+                        targetWorldPos.copy(this.computeLedgeArrowTarget(forward));
 
                     } else {
                         this.climbLockedWorldPos = null;

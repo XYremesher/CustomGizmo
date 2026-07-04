@@ -1351,7 +1351,8 @@ export function startGame(CharacterClass) {
                     
                     const targetHead = _tempVec1.copy(chest).setY(char.group.position.y + 2.0).add(mDir.clone().multiplyScalar(0.5));
                     const headRayFwd = new THREE.Raycaster(targetHead, charFwd);
-                    const isHeadBlocked = headRayFwd.intersectObjects(solidCollidables.filter(c => c !== ground)).length > 0 && headRayFwd.intersectObjects(solidCollidables.filter(c => c !== ground))[0].distance < 0.8;
+                    const headHits = headRayFwd.intersectObjects(solidCollidables.filter(c => c !== ground));
+                    const isHeadBlocked = headHits.length > 0 && headHits[0].distance < 0.8;
 
                     const sideRay = new THREE.Raycaster(chest, mDir);
                     const sH = sideRay.intersectObjects(solidCollidables);
@@ -1553,7 +1554,8 @@ export function startGame(CharacterClass) {
                 if (wH.length > 0 && wH[0].distance < 0.8) {
                     const n = wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld).setY(0).normalize();
                     rayFwd.set(_tempVec3.copy(chest).setY(chest.y + cubeSize), fwd);
-                    if (!(rayFwd.intersectObjects(collidables).length > 0 && rayFwd.intersectObjects(collidables)[0].distance < 0.8)) {
+                    const headClearHits = rayFwd.intersectObjects(collidables);
+                    if (!(headClearHits.length > 0 && headClearHits[0].distance < 0.8)) {
                         const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                         rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
                         if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
