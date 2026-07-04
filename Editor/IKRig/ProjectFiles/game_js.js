@@ -989,74 +989,37 @@ export function startGame(CharacterClass) {
             new THREE.Vector3(0.707, 0, 0.707), new THREE.Vector3(-0.707, 0, -0.707),
             new THREE.Vector3(0.707, 0, -0.707), new THREE.Vector3(-0.707, 0, 0.707)
         ];
-        // game_js.js içindeki mevcut penetrationRays döngüsünü bu şekilde güncelle:
-let pushOutVector = new THREE.Vector3(0, 0, 0);
-let hasPenetration = false;
-
-// 1. Standart ışınsal duvar itme kontrolü (Mevcut kod)
-for(let dir of penetrationRays) {
-    let testOrigin1 = _tempVec1.copy(char.group.position);
-    testOrigin1.y += 0.5; 
-    rayFwd.set(testOrigin1, dir);
-    let hits1 = rayFwd.intersectObjects(solidCollidables);
-    
-    let testOrigin2 = _tempVec2.copy(char.group.position);
-    testOrigin2.y += 1.5; 
-    rayFwd.set(testOrigin2, dir);
-    let hits2 = rayFwd.intersectObjects(solidCollidables);
-    
-    const processHits = (hits) => {
-        if (hits.length > 0 && hits[0].distance < capsuleRadius) {
-            // Eğer çarptığı nesne sandbag collider'ı ise ve ışın yetersiz kalıyorsa es geçebilir, aşağıda Box3 ile tam çözüm yapıyoruz
-            if (hits[0].object.userData && hits[0].object.userData.isObstacle) return;
+        
+        let pushOutVector = new THREE.Vector3(0, 0, 0);
+        let hasPenetration = false;
+        
+        for(let dir of penetrationRays) {
+            let testOrigin1 = _tempVec1.copy(char.group.position);
+            testOrigin1.y += 0.5; 
+            rayFwd.set(testOrigin1, dir);
+            let hits1 = rayFwd.intersectObjects(solidCollidables);
             
-            const overlap = capsuleRadius - hits[0].distance;
-            const normal = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
-            if (normal.lengthSq() > 0) {
-                pushOutVector.add(normal.multiplyScalar(overlap));
-                hasPenetration = true;
-            }
+            let testOrigin2 = _tempVec2.copy(char.group.position);
+            testOrigin2.y += 1.5; 
+            rayFwd.set(testOrigin2, dir);
+            let hits2 = rayFwd.intersectObjects(solidCollidables);
+            
+            const processHits = (hits) => {
+                if (hits.length > 0 && hits[0].distance < capsuleRadius) {
+                    const overlap = capsuleRadius - hits[0].distance;
+                    const normal = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
+                    if (normal.lengthSq() > 0) {
+                        pushOutVector.add(normal.multiplyScalar(overlap));
+                        hasPenetration = true;
+                    }
+                }
+            };
+            processHits(hits1); processHits(hits2);
         }
-    };
-    processHits(hits1); processHits(hits2);
-}
-
-// 2. Sandbag ve kutu tabanlı engeller için tam Box3 çarpışma çözücü (Yeni eklenen kısım)
-const playerBox = new THREE.Box3().setFromCenterAndSize(
-    _tempVec1.copy(char.group.position).setY(char.group.position.y + 1.0),
-    new THREE.Vector3(capsuleRadius * 2, 2.0, capsuleRadius * 2)
-);
-
-const obstacleBoxRef = new THREE.Box3();
-for (let j = 0; j < solidCollidables.length; j++) {
-    const obj = solidCollidables[j];
-    if (obj === ground || !obj.userData || !obj.userData.isObstacle) continue;
-
-    getObstacleBox(obj, obstacleBoxRef);
-
-    if (playerBox.intersectsBox(obstacleBoxRef)) {
-        // Yatay düzlemde en kısa itme yönünü hesapla
-        const overlapX1 = playerBox.max.x - obstacleBoxRef.min.x;
-        const overlapX2 = obstacleBoxRef.max.x - playerBox.min.x;
-        const overlapZ1 = playerBox.max.z - obstacleBoxRef.min.z;
-        const overlapZ2 = obstacleBoxRef.max.z - playerBox.min.z;
-
-        const overlapX = overlapX1 < overlapX2 ? overlapX1 : -overlapX2;
-        const overlapZ = overlapZ1 < overlapZ2 ? overlapZ1 : -overlapZ2;
-
-        if (Math.abs(overlapX) < Math.abs(overlapZ)) {
-            pushOutVector.x += overlapX;
-        } else {
-            pushOutVector.z += overlapZ;
+        
+        if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
+            pushOutVector.y = 0; char.group.position.add(pushOutVector.multiplyScalar(0.5)); 
         }
-        hasPenetration = true;
-    }
-}
-
-if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
-    pushOutVector.y = 0; 
-    char.group.position.add(pushOutVector.multiplyScalar(0.5)); 
-}
 
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
         dirLight.target.position.copy(lightTrack);
@@ -1654,26 +1617,6 @@ if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
         
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
-
-// Sol joystick üzerindeki okun yönünü kameraya göre döndür
-const leftArrow = document.getElementById('left-arrow');
-if (leftArrow) {
-    // Karakterin baktığı yön vektörü (+Z yönü)
-    const F = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion).normalize();
-    
-    // Kameranın yatay düzlemdeki ileri ve sağ yönleri
-    const camForward = new THREE.Vector3(-Math.sin(cameraTheta), 0, -Math.cos(cameraTheta)).normalize();
-    const camRight = new THREE.Vector3(Math.cos(cameraTheta), 0, -Math.sin(cameraTheta)).normalize();
-    
-    const fwdDot = F.dot(camForward);
-    const rgtDot = F.dot(camRight);
-    
-    // Ekrana göre açıyı hesapla ve oku döndür
-    const screenAngle = Math.atan2(rgtDot, fwdDot);
-    leftArrow.style.transform = `rotate(${screenAngle}rad)`;
-}
-
-
         renderer.render(scene, camera);
     }
 
