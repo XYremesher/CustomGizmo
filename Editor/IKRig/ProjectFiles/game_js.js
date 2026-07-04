@@ -1267,25 +1267,45 @@ export function startGame(CharacterClass) {
             let transitionNow = char.climbFinished;
             if (climbAction && ((climbAction.getClip().duration - climbAction.time) / char.climbSpeed) <= climbTransitionDuration) transitionNow = true;
 
-            if (transitionNow) {
-                const oldPos = char.group.position.clone();
-                char.group.position.copy(ledgeTarget);
-                _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-                char.group.position.add(_tempVec1.multiplyScalar(0.25)); 
-                
-                const moveDiff = char.group.position.clone().sub(oldPos);
-                moveDiff.applyQuaternion(char.group.quaternion.clone().invert());
-                
-                if (char.fbxModel) {
-                    char.fbxModel.position.sub(moveDiff);
-                    char.transitionStartX = char.fbxModel.position.x;
-                    char.transitionStartY = char.fbxModel.position.y;
-                    char.transitionStartZ = char.fbxModel.position.z;
-                }
+if (transitionNow) {
+    const oldPos = char.group.position.clone();
+    
+    // SABİT TARGET YERİNE ANLIK HİPS/GÖRSEL POZİSYONU ALIYORUZ
+    let visualPos = new THREE.Vector3();
+    if (char.hips) {
+        char.hips.getWorldPosition(visualPos);
+    } else {
+        _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
+        visualPos.copy(char.group.position).add(_tempVec1.multiplyScalar(0.5));
+    }
+    
+    // Karakter grubunu animasyonun bittiği güncel yatay konuma taşıyoruz
+    char.group.position.x = visualPos.x;
+    char.group.position.z = visualPos.z;
+    char.group.position.y = ledgeTarget.y; // Yüksekliği kilitliyoruz
+    
+    _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
+    char.group.position.add(_tempVec1.multiplyScalar(0.25)); 
+    
+    const moveDiff = char.group.position.clone().sub(oldPos);
+    moveDiff.applyQuaternion(char.group.quaternion.clone().invert());
+    
+    if (char.fbxModel) {
+        char.fbxModel.position.sub(moveDiff);
+        char.transitionStartX = char.fbxModel.position.x;
+        char.transitionStartY = char.fbxModel.position.y;
+        char.transitionStartZ = char.fbxModel.position.z;
+    }
 
-                char.climbTransitionTimer = climbTransitionDuration; char.climbTransitionMax = climbTransitionDuration;
-                isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0; ledgeGrabCooldown = 0.5;
-            }
+    char.climbTransitionTimer = climbTransitionDuration; 
+    char.climbTransitionMax = climbTransitionDuration;
+    isClimbingUp = false; 
+    char.climbFinished = false; 
+    yVelocity = 0; 
+    isGrounded = true; 
+    landingTimer = 0; 
+    ledgeGrabCooldown = 0.5;
+}
         } else if (isLedgeGrabbing) {
             yVelocity = 0; ledgeGrabTimer += delta;
             
