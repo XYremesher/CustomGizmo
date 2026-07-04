@@ -1356,7 +1356,19 @@ export function startGame(CharacterClass) {
                             ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
                         }
                     }
-                    if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) char.group.position.add(mDir.multiplyScalar(4*delta));
+                    if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
+                        char.group.position.add(mDir.multiplyScalar(4*delta));
+
+                        _tempVec2.copy(char.group.position).setY(char.group.position.y + 1.1);
+                        rayFwd.set(_tempVec2, charFwd);
+                        const freshWallHits = rayFwd.intersectObjects(solidCollidables);
+                        if (freshWallHits.length > 0 && freshWallHits[0].distance < 0.8) {
+                            _tempVec3.copy(freshWallHits[0].point).addScaledVector(charFwd, 0.2).setY(freshWallHits[0].point.y + 3.0);
+                            rayDown.set(_tempVec3, _downVec);
+                            const freshLedgeHits = rayDown.intersectObjects(solidCollidables);
+                            if (freshLedgeHits.length > 0) ledgeTarget.copy(freshLedgeHits[0].point);
+                        }
+                    }
                     else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
