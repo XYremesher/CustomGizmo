@@ -243,7 +243,7 @@
     <script type="module">
         import * as THREE from 'three';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
-        import { RagdollPhysics } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/ragdoll_physics.js';
+        import { RagdollPhysics } from './ragdoll_physics.js';
 
         const originalRender = THREE.WebGLRenderer.prototype.render;
         THREE.WebGLRenderer.prototype.render = function(scene, camera) {
@@ -1384,8 +1384,8 @@ updateClimbing(delta) {
         }
 
         Object.assign(Character.prototype, RagdollPhysics);
-import { Sandbag } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/sandbag.js';
-import { startGame } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/game_js.js';
+import { Sandbag } from './sandbag.js';
+import { startGame } from './game_js.js';
         startGame(Character);
 
     </script>
