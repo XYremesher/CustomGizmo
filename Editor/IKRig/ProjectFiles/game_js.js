@@ -1367,8 +1367,12 @@ export function startGame(CharacterClass) {
                             ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
                         }
                     }
-                    if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) char.group.position.add(mDir.multiplyScalar(4*delta));
-                    else if (isBlocked) currentPushS = 0;
+if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
+    char.group.position.add(mDir.multiplyScalar(4*delta));
+    // ledgeTarget pozisyonunu karakterle birlikte güncelle
+    ledgeTarget.copy(char.group.position);
+    ledgeTarget.y = char.group.position.y + 1.85; // Tırmanma kilit yüksekliği (ClimbGame.html'deki oranınıza göre 1.7 de yapabilirsiniz)
+}                    else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
             char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
