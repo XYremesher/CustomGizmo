@@ -1267,25 +1267,45 @@ export function startGame(CharacterClass) {
             let transitionNow = char.climbFinished;
             if (climbAction && ((climbAction.getClip().duration - climbAction.time) / char.climbSpeed) <= climbTransitionDuration) transitionNow = true;
 
-            if (transitionNow) {
-                const oldPos = char.group.position.clone();
-                char.group.position.copy(ledgeTarget);
-                _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-                char.group.position.add(_tempVec1.multiplyScalar(0.25)); 
-                
-                const moveDiff = char.group.position.clone().sub(oldPos);
-                moveDiff.applyQuaternion(char.group.quaternion.clone().invert());
-                
-                if (char.fbxModel) {
-                    char.fbxModel.position.sub(moveDiff);
-                    char.transitionStartX = char.fbxModel.position.x;
-                    char.transitionStartY = char.fbxModel.position.y;
-                    char.transitionStartZ = char.fbxModel.position.z;
-                }
+if (transitionNow) {
+    const oldPos = char.group.position.clone();
+    
+    // SABİT TARGET YERİNE ANLIK HİPS/GÖRSEL POZİSYONU ALIYORUZ
+    let visualPos = new THREE.Vector3();
+    if (char.hips) {
+        char.hips.getWorldPosition(visualPos);
+    } else {
+        _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
+        visualPos.copy(char.group.position).add(_tempVec1.multiplyScalar(0.5));
+    }
+    
+    // Karakter grubunu animasyonun bittiği güncel yatay konuma taşıyoruz
+    char.group.position.x = visualPos.x;
+    char.group.position.z = visualPos.z;
+    char.group.position.y = ledgeTarget.y; // Yüksekliği kilitliyoruz
+    
+    _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
+    char.group.position.add(_tempVec1.multiplyScalar(0.25)); 
+    
+    const moveDiff = char.group.position.clone().sub(oldPos);
+    moveDiff.applyQuaternion(char.group.quaternion.clone().invert());
+    
+    if (char.fbxModel) {
+        char.fbxModel.position.sub(moveDiff);
+        char.transitionStartX = char.fbxModel.position.x;
+        char.transitionStartY = char.fbxModel.position.y;
+        char.transitionStartZ = char.fbxModel.position.z;
+    }
 
-                char.climbTransitionTimer = climbTransitionDuration; char.climbTransitionMax = climbTransitionDuration;
-                isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0; ledgeGrabCooldown = 0.5;
-            }
+    char.climbTransitionTimer = climbTransitionDuration; 
+    char.climbTransitionMax = climbTransitionDuration;
+    isClimbingUp = false; 
+    char.climbFinished = false; 
+    yVelocity = 0; 
+    isGrounded = true; 
+    landingTimer = 0; 
+    ledgeGrabCooldown = 0.5;
+}
         } else if (isLedgeGrabbing) {
             yVelocity = 0; ledgeGrabTimer += delta;
             
@@ -1367,8 +1387,12 @@ export function startGame(CharacterClass) {
                             ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
                         }
                     }
-                    if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) char.group.position.add(mDir.multiplyScalar(4*delta));
-                    else if (isBlocked) currentPushS = 0;
+if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
+    char.group.position.add(mDir.multiplyScalar(4*delta));
+    // Hedef referans noktasını karakterle birlikte kaydırıyoruz
+    ledgeTarget.copy(char.group.position);
+    ledgeTarget.y = char.group.position.y + 1.85; 
+}                    else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
             char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
@@ -1617,6 +1641,26 @@ export function startGame(CharacterClass) {
         
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
+
+// Sol joystick üzerindeki okun yönünü kameraya göre döndür
+const leftArrow = document.getElementById('left-arrow');
+if (leftArrow) {
+    // Karakterin baktığı yön vektörü (+Z yönü)
+    const F = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion).normalize();
+    
+    // Kameranın yatay düzlemdeki ileri ve sağ yönleri
+    const camForward = new THREE.Vector3(-Math.sin(cameraTheta), 0, -Math.cos(cameraTheta)).normalize();
+    const camRight = new THREE.Vector3(Math.cos(cameraTheta), 0, -Math.sin(cameraTheta)).normalize();
+    
+    const fwdDot = F.dot(camForward);
+    const rgtDot = F.dot(camRight);
+    
+    // Ekrana göre açıyı hesapla ve oku döndür
+    const screenAngle = Math.atan2(rgtDot, fwdDot);
+    leftArrow.style.transform = `rotate(${screenAngle}rad)`;
+}
+
+
         renderer.render(scene, camera);
     }
 
