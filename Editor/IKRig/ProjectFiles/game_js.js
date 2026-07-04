@@ -1389,9 +1389,9 @@ if (transitionNow) {
                     }
 if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
     char.group.position.add(mDir.multiplyScalar(4*delta));
-    // ledgeTarget pozisyonunu karakterle birlikte güncelle
+    // Hedef referans noktasını karakterle birlikte kaydırıyoruz
     ledgeTarget.copy(char.group.position);
-    ledgeTarget.y = char.group.position.y + 1.85; // Tırmanma kilit yüksekliği (ClimbGame.html'deki oranınıza göre 1.7 de yapabilirsiniz)
+    ledgeTarget.y = char.group.position.y + 1.85; 
 }                    else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
