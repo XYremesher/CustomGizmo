@@ -989,75 +989,37 @@ export function startGame(CharacterClass) {
             new THREE.Vector3(0.707, 0, 0.707), new THREE.Vector3(-0.707, 0, -0.707),
             new THREE.Vector3(0.707, 0, -0.707), new THREE.Vector3(-0.707, 0, 0.707)
         ];
-        // game_js.js içindeki mevcut penetrationRays döngüsünü bu şekilde güncelle:
-let pushOutVector = new THREE.Vector3(0, 0, 0);
-let hasPenetration = false;
-
-// 1. Standart ışınsal duvar itme kontrolü (Mevcut kod)
-for(let dir of penetrationRays) {
-    let testOrigin1 = _tempVec1.copy(char.group.position);
-    testOrigin1.y += 0.5; 
-    rayFwd.set(testOrigin1, dir);
-    let hits1 = rayFwd.intersectObjects(solidCollidables);
-    
-    let testOrigin2 = _tempVec2.copy(char.group.position);
-    testOrigin2.y += 1.5; 
-    rayFwd.set(testOrigin2, dir);
-    let hits2 = rayFwd.intersectObjects(solidCollidables);
-    
-    const processHits = (hits) => {
-        if (hits.length > 0 && hits[0].distance < capsuleRadius) {
-            // Eğer çarptığı nesne sandbag collider'ı ise ve ışın yetersiz kalıyorsa es geçebilir, aşağıda Box3 ile tam çözüm yapıyoruz
-            if (hits[0].object.userData && hits[0].object.userData.isObstacle) return;
+        
+        let pushOutVector = new THREE.Vector3(0, 0, 0);
+        let hasPenetration = false;
+        
+        for(let dir of penetrationRays) {
+            let testOrigin1 = _tempVec1.copy(char.group.position);
+            testOrigin1.y += 0.5; 
+            rayFwd.set(testOrigin1, dir);
+            let hits1 = rayFwd.intersectObjects(solidCollidables);
             
-            const overlap = capsuleRadius - hits[0].distance;
-            const normal = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
-            if (normal.lengthSq() > 0) {
-                pushOutVector.add(normal.multiplyScalar(overlap));
-                hasPenetration = true;
-            }
+            let testOrigin2 = _tempVec2.copy(char.group.position);
+            testOrigin2.y += 1.5; 
+            rayFwd.set(testOrigin2, dir);
+            let hits2 = rayFwd.intersectObjects(solidCollidables);
+            
+            const processHits = (hits) => {
+                if (hits.length > 0 && hits[0].distance < capsuleRadius) {
+                    const overlap = capsuleRadius - hits[0].distance;
+                    const normal = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
+                    if (normal.lengthSq() > 0) {
+                        pushOutVector.add(normal.multiplyScalar(overlap));
+                        hasPenetration = true;
+                    }
+                }
+            };
+            processHits(hits1); processHits(hits2);
         }
-    };
-    processHits(hits1); processHits(hits2);
-}
-
-// 2. Sandbag ve kutu tabanlı engeller için tam Box3 çarpışma çözücü (Yeni eklenen kısım)
-const playerBox = new THREE.Box3().setFromCenterAndSize(
-    _tempVec1.copy(char.group.position).setY(char.group.position.y + 1.0),
-    new THREE.Vector3(capsuleRadius * 2, 2.0, capsuleRadius * 2)
-);
-
-const obstacleBoxRef = new THREE.Box3();
-for (let j = 0; j < solidCollidables.length; j++) {
-    const obj = solidCollidables[j];
-    if (obj === ground || !obj.userData || !obj.userData.isObstacle) continue;
-
-    getObstacleBox(obj, obstacleBoxRef);
-
-    if (playerBox.intersectsBox(obstacleBoxRef)) {
-        // Yatay düzlemde en kısa itme yönünü hesapla
-        const overlapX1 = playerBox.max.x - obstacleBoxRef.min.x;
-        const overlapX2 = obstacleBoxRef.max.x - playerBox.min.x;
-        const overlapZ1 = playerBox.max.z - obstacleBoxRef.min.z;
-        const overlapZ2 = obstacleBoxRef.max.z - playerBox.min.z;
-
-        const overlapX = overlapX1 < overlapX2 ? overlapX1 : -overlapX2;
-        const overlapZ = overlapZ1 < overlapZ2 ? overlapZ1 : -overlapZ2;
-
-        if (Math.abs(overlapX) < Math.abs(overlapZ)) {
-            pushOutVector.x += overlapX;
-        } else {
-            pushOutVector.z += overlapZ;
+        
+        if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
+            pushOutVector.y = 0; char.group.position.add(pushOutVector.multiplyScalar(0.5)); 
         }
-        hasPenetration = true;
-    }
-}
-
-if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
-    pushOutVector.y = 0; 
-    // BURADAKİ 0.5 ÇARPANINI 1.0 YAPTIK:
-    char.group.position.add(pushOutVector.multiplyScalar(1.0)); 
-}
 
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
         dirLight.target.position.copy(lightTrack);
@@ -1580,39 +1542,10 @@ if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
                     }
                 }
                 
-if (!isBuilding && actualSpeed > 0.05) {
-    // 1. İlerlemek istediğimiz yeni pozisyonu geçici olarak hesapla
-    const nextPos = _tempVec1.copy(char.group.position).add(finalMoveDir.clone().multiplyScalar(actualSpeed * delta));
-    
-    // 2. Bu yeni pozisyonda oyuncunun etrafında sanal bir kutu oluştur
-    const futurePlayerBox = new THREE.Box3().setFromCenterAndSize(
-        _tempVec2.copy(nextPos).setY(nextPos.y + 1.0),
-        new THREE.Vector3(0.8, 2.0, 0.8) // 0.8 genişlik, 2.0 yükseklik
-    );
-
-    let isBlockedByBox = false;
-    const obstacleBoxCheck = new THREE.Box3();
-
-    // 3. Etraftaki engellerle (sandbag vb.) çakışıyor mu kontrol et
-    for (let j = 0; j < solidCollidables.length; j++) {
-        const obj = solidCollidables[j];
-        if (obj === ground || !obj.userData || !obj.userData.isObstacle) continue;
-
-        getObstacleBox(obj, obstacleBoxCheck);
-        if (futurePlayerBox.intersectsBox(obstacleBoxCheck)) {
-            isBlockedByBox = true;
-            break;
-        }
-    }
-
-    // 4. Eğer önümüz açıksa ilerle, kapalıysa dur (duvara doğru koşmayı kes)
-    if (!isBlockedByBox) {
-        char.group.position.copy(nextPos);
-    } else {
-        actualSpeed = 0;
-    }
-}
-effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);            }
+                if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
+                effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
+                char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), 15*delta);
+            }
 
             if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
                 const chest = _tempVec2.copy(char.group.position).setY(char.group.position.y+1.1), fwd = _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
