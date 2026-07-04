@@ -31,15 +31,31 @@
         #base-left { left: 30px; } #base-right { right: 30px; }
         .joystick-stick { width: 50px; height: 50px; background: rgba(255, 255, 255, 0.6); border-radius: 50%; position: absolute; pointer-events: none; z-index: 5; }
         
+        .arrow-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 80px;
+            height: 80px;
+            margin: -40px 0 0 -40px;
+            background-image: url('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteArrow.png');
+            background-size: 100%;
+            background-position: center;
+            background-repeat: no-repeat;
+            pointer-events: none;
+            opacity: 0.5;
+            z-index: 2;
+        }
+        
         #jump-btn { position: absolute; bottom: 170px; right: 45px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
         #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
         #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
         #hold-btn:active { background: rgba(50, 150, 255, 0.9); }
         #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
-        #drop-btn { position: absolute; bottom: 110px; right: 220px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
-        #throw-btn { position: absolute; bottom: 50px; right: 190px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
-        #reset-cam-btn { position: absolute; bottom: 180px; left: 45px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 100, 255, 0.15); }
         
+        #drop-btn { position: absolute; bottom: 145px; right: 195px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
+        #throw-btn { position: absolute; bottom: 100px; right: 155px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
+        #reset-cam-btn { position: absolute; bottom: 180px; left: 45px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 100, 255, 0.15); }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
@@ -96,6 +112,13 @@
                     <input type="range" id="slip-dur-slider" min="0.05" max="2.0" step="0.05" value="0.05" style="width: 100%;"><br>
                     <label>Ledge Drop Pushback: <span id="drop-pushback-val">0.12</span></label><br>
                     <input type="range" id="drop-pushback-slider" min="0.0" max="1.0" step="0.01" value="0.12" style="width: 100%;"><br>
+                    
+                    <label>Player Arrow Scale: <span id="player-arrow-scale-val">1.3</span></label><br>
+                    <input type="range" id="player-arrow-scale-slider" min="0.2" max="3.0" step="0.1" value="1.3" style="width: 100%;"><br>
+                    <label>UI Arrow Scale: <span id="ui-arrow-scale-val">2.2</span></label><br>
+                    <input type="range" id="ui-arrow-scale-slider" min="0.5" max="5.0" step="0.1" value="2.2" style="width: 100%;"><br>
+                    <label>Ledge Arrow Height Offset: <span id="ledge-arrow-offset-val">0.40</span></label><br>
+                    <input type="range" id="ledge-arrow-offset-slider" min="-2.0" max="2.0" step="0.05" value="0.40" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -186,7 +209,11 @@
     </div>
     
     <div id="reset-cam-btn"></div>
+
     <div id="base-left" class="joystick-base">
+        <div id="left-arrow-scaler" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: flex; justify-content: center; align-items: center; z-index: 2;">
+            <div id="left-arrow" class="arrow-indicator"></div>
+        </div>
         <div id="ledge-hint-container" class="ledge-hint-container">
             <div class="ledge-hint-line"></div>
             <span class="ledge-hint up">CLIMB</span>
@@ -216,7 +243,17 @@
     <script type="module">
         import * as THREE from 'three';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { RagdollPhysics } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/ragdoll_physics.js';
 
+        const originalRender = THREE.WebGLRenderer.prototype.render;
+        THREE.WebGLRenderer.prototype.render = function(scene, camera) {
+            if (camera) {
+                window.activeCamera = camera;
+            }
+            originalRender.call(this, scene, camera);
+        };
+        
+        window.activeCamera = null;
         window.sacks = [];
         window.combat = null;
         window.hitEffects = [];
@@ -225,6 +262,36 @@
         let punchPressTimer = null;
         let charPunchButtonPressed = false;
 
+        const playerArrowScaleSlider = document.getElementById('player-arrow-scale-slider');
+        const playerArrowScaleVal = document.getElementById('player-arrow-scale-val');
+        const uiArrowScaleSlider = document.getElementById('ui-arrow-scale-slider');
+        const uiArrowScaleVal = document.getElementById('ui-arrow-scale-val');
+        const ledgeArrowOffsetSlider = document.getElementById('ledge-arrow-offset-slider');
+        const ledgeArrowOffsetVal = document.getElementById('ledge-arrow-offset-val');
+
+        function updateArrowSlidersUI() {
+            if (playerArrowScaleVal && playerArrowScaleSlider) {
+                playerArrowScaleVal.textContent = parseFloat(playerArrowScaleSlider.value).toFixed(1);
+            }
+            if (uiArrowScaleVal && uiArrowScaleSlider) {
+                const uiScale = parseFloat(uiArrowScaleSlider.value).toFixed(1);
+                uiArrowScaleVal.textContent = uiScale;
+                const scaler = document.getElementById('left-arrow-scaler');
+                if (scaler) {
+                    scaler.style.transform = `scale(${uiScale})`;
+                }
+            }
+            if (ledgeArrowOffsetVal && ledgeArrowOffsetSlider) {
+                ledgeArrowOffsetVal.textContent = parseFloat(ledgeArrowOffsetSlider.value).toFixed(2);
+            }
+        }
+
+        if (playerArrowScaleSlider) playerArrowScaleSlider.addEventListener('input', updateArrowSlidersUI);
+        if (uiArrowScaleSlider) uiArrowScaleSlider.addEventListener('input', updateArrowSlidersUI);
+        if (ledgeArrowOffsetSlider) ledgeArrowOffsetSlider.addEventListener('input', updateArrowSlidersUI);
+        
+        updateArrowSlidersUI();
+
         window.createHitEffect = function(pos) {
             if (!window.gameScene) return;
             const hitGeo = new THREE.SphereGeometry(0.35, 8, 8);
@@ -232,7 +299,7 @@
                 color: 0xffff00, 
                 transparent: true, 
                 opacity: 1.0,
-                depthTest: false, // Ensure it is not hidden inside meshes/sandbags
+                depthTest: false,
                 depthWrite: false
             });
             const hitMesh = new THREE.Mesh(hitGeo, hitMat);
@@ -244,99 +311,6 @@
         window.spawnHitEffect = function(pos) {
             window.createHitEffect(pos);
         };
-
-        export class Sandbag {
-            constructor(scene, position, collidables, debugHelpers, threeTone) {
-                this.group = new THREE.Group();
-                this.group.position.copy(position);
-                scene.add(this.group);
-                
-                this.bones = [];
-                this.recoilPosition = new THREE.Vector2();
-                this.recoilVelocity = new THREE.Vector2();
-                this.meshes = [];
-                this.flashTimer = 0;
-                this.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-
-                const loader = new FBXLoader();
-                loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
-                    fbx.scale.setScalar(0.0065);
-                    this.group.add(fbx);
-                    
-                    fbx.traverse(c => {
-                        if (c.isMesh) {
-                            const origMat = new THREE.MeshToonMaterial({ color: 0xd5c4a1, gradientMap: threeTone });
-                            c.material = origMat;
-                            c.castShadow = true;
-                            c.receiveShadow = true;
-                            this.meshes.push({ mesh: c, originalMaterial: origMat });
-                        }
-                        if (c.isBone && c.name.toLowerCase().includes('spine')) {
-                            this.bones.push({ bone: c, defaultQuat: c.quaternion.clone() });
-                        }
-                    });
-                });
-
-                this.colliderMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 2.2, 8), new THREE.MeshBasicMaterial({visible: false}));
-                this.colliderMesh.position.copy(position).setY(position.y + 1.1);
-                this.colliderMesh.userData.isMovable = false;
-                scene.add(this.colliderMesh);
-                collidables.push(this.colliderMesh);
-            }
-
-            checkHit(hitCenter, hitRadius) {
-                return this.colliderMesh.position.distanceTo(hitCenter) < (0.5 + hitRadius);
-            }
-
-            applyHit(direction, magnitude) {
-                let localDir = direction.clone().applyQuaternion(this.group.quaternion.clone().invert()).normalize();
-                this.recoilVelocity.x += localDir.x * magnitude * 0.3;
-                this.recoilVelocity.y += localDir.z * magnitude * 0.3;
-                this.flashTimer = 0.15;
-            }
-
-            update(delta) {
-                this.recoilVelocity.x -= this.recoilPosition.x * 250 * delta;
-                this.recoilVelocity.y -= this.recoilPosition.y * 250 * delta;
-                
-                let damping = Math.pow(0.02, delta);
-                this.recoilVelocity.x *= damping;
-                this.recoilVelocity.y *= damping;
-                
-                this.recoilPosition.x += this.recoilVelocity.x * delta;
-                this.recoilPosition.y += this.recoilVelocity.y * delta;
-
-                let displacementLen = Math.sqrt(this.recoilPosition.x * this.recoilPosition.x + this.recoilPosition.y * this.recoilPosition.y);
-                
-                if (displacementLen > 0.001) {
-                    const _tempVec1 = new THREE.Vector3(this.recoilPosition.y, 0, -this.recoilPosition.x).normalize();
-                    let angle = Math.min(displacementLen * 0.4, 1.2); 
-                    _tempVec1.applyQuaternion(this.group.quaternion);
-                    
-                    this.bones.forEach(bData => {
-                        const _tempQuat = new THREE.Quaternion();
-                        bData.bone.parent.getWorldQuaternion(_tempQuat);
-                        const _tempVec2 = _tempVec1.clone().applyQuaternion(_tempQuat.invert());
-                        const _tempQuat2 = new THREE.Quaternion().setFromAxisAngle(_tempVec2, angle);
-                        
-                        bData.bone.quaternion.copy(_tempQuat2).multiply(bData.defaultQuat);
-                        bData.bone.updateMatrixWorld(true);
-                    });
-                } else {
-                    this.bones.forEach(bData => {
-                        bData.bone.quaternion.copy(bData.defaultQuat);
-                        bData.bone.updateMatrixWorld(true);
-                    });
-                }
-
-                if (this.flashTimer > 0) {
-                    this.flashTimer -= delta;
-                    this.meshes.forEach(mObj => { mObj.mesh.material = this.whiteMat; });
-                } else {
-                    this.meshes.forEach(mObj => { mObj.mesh.material = mObj.originalMaterial; });
-                }
-            }
-        }
 
         export class CombatController {
             constructor(character) {
@@ -399,7 +373,6 @@
                 let hitRadius = 0.7; 
                 let fwdDir = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion).normalize();
 
-                // Define combo parameters properly before utilizing them inside loop
                 let isFinalComboBlow = (this.punchState === 3 && hitIndex === 4);
                 let isChargePunch = (this.punchState === 5);
                 let forceMagnitude = isFinalComboBlow ? 55 : (isChargePunch ? 80 : 22);
@@ -460,7 +433,7 @@
                 const ringFill = document.getElementById('punch-ring-fill');
                 if (!ringFill) return;
 
-                const circumference = 201.06; // 2 * pi * r (32)
+                const circumference = 201.06; 
                 const remaining = 1.0 - Math.min(1.0, normalizedTime);
                 const offset = circumference * (1.0 - remaining);
                 ringFill.style.strokeDashoffset = offset;
@@ -595,7 +568,11 @@
                 this.hitbox.position.y = 0.9;
                 this.hitbox.visible = false;
                 this.group.add(this.hitbox);
-            
+
+                this.playerArrowGroup = null;
+                this.smoothedArrowPos = null;
+                this.cachedLedgeY = null;
+
                 this.mixer = null;
                 this.actions = {};
                 this.activeAction = null;
@@ -643,6 +620,8 @@
                 this.recoilVelocity = new THREE.Vector3(0, 0, 0);  
 
                 this.stabilizeWeight = 1.0;
+                this.climbLockedWorldPos = null;
+                this.lastGroupPos = null;
 
                 window.combat = new CombatController(this);
                 if (window.sacks.length === 0) {
@@ -663,6 +642,20 @@
                             if (child.material) {
                                 child.material = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
                             }
+
+                            const xrayMaterial = new THREE.MeshBasicMaterial({
+                                color: 0x888888,
+                                transparent: true,
+                                opacity: 0.25,
+                                depthTest: false,
+                                depthWrite: false
+                            });
+                            const xrayClone = child.clone();
+                            xrayClone.material = xrayMaterial;
+                            if (child.isSkinnedMesh) {
+                                xrayClone.bind(child.skeleton, child.bindMatrix);
+                            }
+                            child.parent.add(xrayClone);
                         }
                         if (child.isBone) {
                             const name = child.name.toLowerCase();
@@ -754,7 +747,6 @@
                         { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' }
                     ];
 
-                    let loadedCount = 0;
                     const processClip = (clip) => {
                         let minTime = Infinity;
                         clip.tracks.forEach(track => { if (track.times.length > 0) minTime = Math.min(minTime, track.times[0]); });
@@ -765,35 +757,30 @@
                         return clip;
                     };
 
-                    anims.forEach(anim => {
-                        loader.load(baseUrl + anim.file, (animObj) => {
-                            if (animObj.animations.length > 0) {
-                                if (anim.name === 'punch_charge') {
-                                    if (animObj.animations.length >= 2) {
-                                        this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
-                                        this.originalClips['punch_charge_punch'] = processClip(animObj.animations[1]);
+                    Promise.all(anims.map(anim => {
+                        return loader.loadAsync(baseUrl + anim.file)
+                            .then(animObj => {
+                                if (animObj.animations.length > 0) {
+                                    if (anim.name === 'punch_charge') {
+                                        if (animObj.animations.length >= 2) {
+                                            this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
+                                            this.originalClips['punch_charge_punch'] = processClip(animObj.animations[1]);
+                                        } else {
+                                            this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
+                                            this.originalClips['punch_charge_punch'] = processClip(animObj.animations[0]);
+                                        }
                                     } else {
-                                        this.originalClips['punch_charge_hold'] = processClip(animObj.animations[0]);
-                                        this.originalClips['punch_charge_punch'] = processClip(animObj.animations[0]);
+                                        this.originalClips[anim.name] = processClip(animObj.animations[0]);
                                     }
-                                } else {
-                                    this.originalClips[anim.name] = processClip(animObj.animations[0]);
                                 }
-                            }
-                            loadedCount++;
-                            if (loadedCount === anims.length) { 
-                                this.isLoaded = true; 
-                                this.buildClips();
-                                this.fadeToAction('idle', 0); 
-                            }
-                        }, undefined, () => {
-                            loadedCount++;
-                            if (loadedCount === anims.length) { 
-                                this.isLoaded = true; 
-                                this.buildClips();
-                                this.fadeToAction('idle', 0); 
-                            }
-                        });
+                            })
+                            .catch(err => {
+                                console.error("Failed to load animation:", anim.name, err);
+                            });
+                    })).then(() => {
+                        this.isLoaded = true;
+                        this.buildClips();
+                        this.fadeToAction('idle', 0);
                     });
                 });
             }
@@ -954,437 +941,80 @@
                     this.activeAction = dropAction;
                 }
             }
+updateClimbing(delta) {
+    if (!this.isClimbing) return;
+    const raycaster = new THREE.Raycaster();
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
+    raycaster.set(this.group.position, forward);
 
-            initRagdoll(initialVelocity = new THREE.Vector3(), intensity = 'high') {
-                if (!this.fbxModel || this.isRagdoll) return;
+    const intersects = raycaster.intersectObjects(window.gameScene.children, true);
+    if (intersects.length > 0) {
+        this.currentSurfaceNormal = intersects[0].face.normal.clone();
+        this.currentSurfaceNormal.applyQuaternion(intersects[0].object.quaternion);
+        const targetPos = intersects[0].point.clone().add(this.currentSurfaceNormal.multiplyScalar(0.1));
+        this.group.position.lerp(targetPos, 0.2);
+    }
+}
+            reconstructArrows() {
+                if (!this.playerArrowGroup) {
+                    this.playerArrowGroup = new THREE.Group();
+                    this.group.add(this.playerArrowGroup);
 
-                if (window.forceDropCarriedObject) {
-                    window.forceDropCarriedObject(initialVelocity.clone().multiplyScalar(1.5));
-                    window.isCarryingObj = false; 
-                }
-                
-                this.lastSpineWorld = null;
-                this.lastSpine1World = null;
-                this.lastNeckWorld = null;
-                this.lastGroupQuat = null;
-                this.stabilizeWeight = 1.0;
-
-                this.fbxModel.updateMatrixWorld(true);
-                this.currentRagdollIntensity = intensity;
-
-                let velocityModifier = 1.0;
-                if (intensity === 'low') {
-                    this.ragdollMaxTime = 0.02; 
-                    velocityModifier = 0.05; 
-                } else if (intensity === 'medium') {
-                    this.ragdollMaxTime = 0.4; 
-                    velocityModifier = 0.25;
-                } else if (intensity === 'medium_high') {
-                    this.ragdollMaxTime = 0.8;
-                    velocityModifier = 0.4;
-                } else {
-                    this.ragdollMaxTime = 1.6; 
-                    velocityModifier = 0.55;
-                }
-
-                const modifiedVelocity = initialVelocity.clone().multiplyScalar(velocityModifier);
-                modifiedVelocity.clampLength(0.0, 15.0);
-
-                this.ragdollParticles.forEach((p) => {
-                    if (p.bone) {
-                        p.bone.getWorldPosition(p.pos);
-                        const nX = (Math.random() - 0.5) * 2.0 * velocityModifier;
-                        const nY = (Math.random() - 0.5) * 2.0 * velocityModifier;
-                        const nZ = (Math.random() - 0.5) * 2.0 * velocityModifier;
-                        _tempVec1.set(nX, nY, nZ).add(modifiedVelocity).multiplyScalar(0.016);
-                        p.oldPos.copy(p.pos).sub(_tempVec1);
-                    }
-                });
-
-                this.ragdollConstraints = [];
-                const addDist = (id1, id2) => {
-                    const p1 = this.ragdollParticles.find(p => p.id === id1);
-                    const p2 = this.ragdollParticles.find(p => p.id === id2);
-                    if (p1 && p2 && p1.bone && p2.bone) this.ragdollConstraints.push({ p1, p2, dist: p1.pos.distanceTo(p2.pos) });
-                };
-
-                addDist('hips', 'spine'); addDist('spine', 'head');
-                addDist('spine', 'lShoulder'); addDist('lShoulder', 'lElbow'); addDist('lElbow', 'lHand');
-                addDist('spine', 'rShoulder'); addDist('rShoulder', 'rElbow'); addDist('rElbow', 'rHand');
-                addDist('hips', 'lThigh'); addDist('lThigh', 'lKnee'); addDist('lKnee', 'lFoot');
-                addDist('hips', 'rThigh'); addDist('rThigh', 'rKnee'); addDist('rKnee', 'rFoot');
-                addDist('lShoulder', 'rShoulder'); addDist('lThigh', 'rThigh');
-
-                const getBone = (id) => this.ragdollParticles.find(p => p.id === id)?.bone;
-
-                this.ragdollLinks = [
-                    { p1: 'hips', p2: 'spine', bone: getBone('hips') }, { p1: 'spine', p2: 'head', bone: getBone('spine') },
-                    { p1: 'lShoulder', p2: 'lElbow', bone: getBone('lShoulder') }, { p1: 'lElbow', p2: 'lHand', bone: getBone('lHand') },
-                    { p1: 'rShoulder', p2: 'rElbow', bone: getBone('rShoulder') }, { p1: 'rElbow', p2: 'rHand', bone: getBone('rHand') },
-                    { p1: 'lThigh', p2: 'lKnee', bone: getBone('lThigh') }, { p1: 'lKnee', p2: 'lFoot', bone: getBone('lFoot') },
-                    { p1: 'rThigh', p2: 'rKnee', bone: getBone('rThigh') }, { p1: 'rKnee', p2: 'rFoot', bone: getBone('rFoot') }
-                ];
-
-                this.ragdollLinks.forEach(link => {
-                    if (link.bone) {
-                        const p1 = this.ragdollParticles.find(p => p.id === link.p1);
-                        const p2 = this.ragdollParticles.find(p => p.id === link.p2);
-                        if (p1 && p2) {
-                            link.initialDir = p2.pos.clone().sub(p1.pos).normalize();
-                            link.initialQuat = link.bone.getWorldQuaternion(new THREE.Quaternion());
-                        } else link.bone = null;
-                    }
-                });
-
-                if (this.activeAction) this.activeAction.stop();
-                if (this.activeUpperAction) this.activeUpperAction.stop();
-                this.activeUpperAction = null;
-
-                this.isRagdoll = true; this.isStandingUp = false; this.standUpFinished = false; this.ragdollTimer = 0;
-            }
-
-            applyProceduralRecoil(projectileVelocity, intensity) {
-                const localVelocity = projectileVelocity.clone().applyQuaternion(this.group.quaternion.clone().invert());
-                const localDir = localVelocity.clone().normalize();
-                
-                let impulseMagnitude = 12.0;
-                if (intensity === 'low') impulseMagnitude = 6.0;
-                else if (intensity === 'medium') impulseMagnitude = 12.0;
-                else if (intensity === 'medium_high') {
-                    impulseMagnitude = parseFloat(document.getElementById('orange-recoil-slider').value);
-                    this.recoilVelocity.y += (Math.random() - 0.5) * 2.0 * impulseMagnitude * 1.2;
-                }
-
-                this.recoilVelocity.x += localDir.z * impulseMagnitude;
-                this.recoilVelocity.z += -localDir.x * impulseMagnitude;
-
-                this.lastSpineWorld = null;
-                this.lastSpine1World = null;
-                this.lastNeckWorld = null;
-                this.lastGroupQuat = null;
-                this.stabilizeWeight = 0.0;
-            }
-
-            updateRecoil(delta) {
-                this.recoilVelocity.lerp(new THREE.Vector3(), 15 * delta);
-                this.recoilRotation.lerp(new THREE.Vector3(), 10 * delta);
-                this.recoilRotation.add(this.recoilVelocity.clone().multiplyScalar(delta));
-            }
-
-            detectFallDirection() {
-                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
-                const spineP = this.ragdollParticles.find(p => p.id === 'spine');
-                const headP = this.ragdollParticles.find(p => p.id === 'head');
-                if (!hipsP || !spineP) return 'front';
-
-                _tempVec1.set(0, 0, 1).applyQuaternion(this.group.quaternion);
-                _tempVec1.y = 0; _tempVec1.normalize();
-
-                _tempVec2.subVectors(spineP.pos, hipsP.pos);
-                _tempVec2.y = 0; _tempVec2.normalize();
-
-                if (headP) {
-                    _tempVec3.subVectors(headP.pos, hipsP.pos);
-                    _tempVec3.y = 0; _tempVec3.normalize();
-                } else _tempVec3.copy(_tempVec2);
-
-                return _tempVec1.dot(_tempVec3) > 0 ? 'front' : 'back';
-            }
-
-            captureRagdollPose() {
-                const tracks = [];
-                const dur = this.ragdollPoseDuration;
-                this.fbxModel.traverse(child => {
-                    if (child.isBone) {
-                        const q = child.quaternion;
-                        tracks.push(new THREE.QuaternionKeyframeTrack(child.name + '.quaternion', [0, dur], [q.x, q.y, q.z, q.w, q.x, q.y, q.z, q.w]));
-                        if (child === this.hips || child === this.rootBone) {
-                            const p = child.position;
-                            tracks.push(new THREE.VectorKeyframeTrack(child.name + '.position', [0, dur], [p.x, p.y, p.z, p.x, p.y, p.z]));
-                        }
-                    }
-                });
-                const clip = new THREE.AnimationClip('ragdoll_pose', dur, tracks);
-                const action = this.mixer.clipAction(clip);
-                action.setLoop(THREE.LoopOnce); action.clampWhenFinished = true;
-                return action;
-            }
-
-            beginStandUp(floorY) {
-                if (!this.isRagdoll) return;
-
-                if (this.currentRagdollIntensity === 'low') {
-                    this.isRagdoll = false; this.isStandingUp = false; this.standUpFinished = true;
-                    if (this.fbxModel) this.fbxModel.position.set(0, 0, 0);
-                    this.fadeToAction('idle', 0.1);
-                    return;
-                }
-
-                const direction = this.detectFallDirection();
-                this.standUpDirection = direction;
-
-                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
-                const spineP = this.ragdollParticles.find(p => p.id === 'spine');
-                
-                const globalTransforms = new Map();
-                this.fbxModel.traverse(c => {
-                    if (c.isBone) {
-                        globalTransforms.set(c, {
-                            pos: c.getWorldPosition(new THREE.Vector3()),
-                            quat: c.getWorldQuaternion(new THREE.Quaternion()),
-                            scl: c.getWorldScale(new THREE.Vector3())
-                        });
-                    }
-                });
-
-                const hipsWorldPos = hipsP ? hipsP.pos.clone() : this.group.position.clone();
-                this.group.position.set(hipsWorldPos.x, floorY, hipsWorldPos.z);
-
-                if (hipsP && spineP) {
-                    _tempVec1.subVectors(spineP.pos, hipsP.pos);
-                    _tempVec1.y = 0;
-                    if (_tempVec1.lengthSq() > 0.001) {
-                        _tempVec1.normalize();
-                        if (direction === 'back') _tempVec1.negate();
-                        this.group.quaternion.setFromUnitVectors(_fwdVec, _tempVec1);
-                    }
-                }
-                this.group.updateMatrixWorld(true);
-
-                this.fbxModel.traverse(c => {
-                    if (c.isBone) {
-                        const gt = globalTransforms.get(c);
-                        _tempMat4.copy(c.parent.matrixWorld).invert();
-                        const worldMat = new THREE.Matrix4().compose(gt.pos, gt.quat, gt.scl);
-                        const localMat = new THREE.Matrix4().multiplyMatrices(_tempMat4, worldMat);
-                        localMat.decompose(c.position, c.quaternion, new THREE.Vector3());
-                        c.updateMatrixWorld(true);
-                    }
-                });
-
-                if (this.fbxModel) {
-                    this.fbxModel.position.set(0, 0, 0);
-                    this.standUpTransStartX = 0; this.standUpTransStartY = 0; this.standUpTransStartZ = 0;
-                }
-
-                const ragdollAction = this.captureRagdollPose();
-                ragdollAction.play();
-
-                this.isRagdoll = false; this.isStandingUp = true; this.standUpFinished = false;
-                const animName = direction === 'front' ? 'standup_front' : 'standup_back';
-                if (!this.actions[animName]) {
-                    this.isStandingUp = false; this.standUpDirection = 'none'; return;
-                }
-
-                const standUpAction = this.actions[animName];
-                standUpAction.reset();
-                standUpAction.setEffectiveWeight(1);
-                standUpAction.setEffectiveTimeScale(this.standupSpeed);
-                standUpAction.time = Math.min(this.standupStartTime, standUpAction.getClip().duration - 0.1); 
-                standUpAction.play();
-                standUpAction.crossFadeFrom(ragdollAction, this.standupCrossfade, false);
-                this.activeAction = standUpAction;
-            }
-
-            applyHingeLimit(id1, id2, id3, minAngle, maxAngle, isKnee = false, isElbow = false, isHip = false) {
-                const p1 = this.ragdollParticles.find(p => p.id === id1);
-                const p2 = this.ragdollParticles.find(p => p.id === id2);
-                const p3 = this.ragdollParticles.find(p => p.id === id3);
-                if (!p1 || !p2 || !p3) return;
-
-                const v1 = new THREE.Vector3().subVectors(p1.pos, p2.pos);
-                const v2 = new THREE.Vector3().subVectors(p3.pos, p2.pos);
-                const d1 = v1.length();
-                const d2 = v2.length();
-                if (d1 < 0.001 || d2 < 0.001) return;
-
-                v1.normalize();
-                v2.normalize();
-
-                const pHips = this.ragdollParticles.find(p => p.id === 'hips');
-                const pSpine = this.ragdollParticles.find(p => p.id === 'spine');
-                const pLShoulder = this.ragdollParticles.find(p => p.id === 'lShoulder');
-                const pRShoulder = this.ragdollParticles.find(p => p.id === 'rShoulder');
-
-                let torsoForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
-                if (pHips && pSpine && pLShoulder && pRShoulder) {
-                    const torsoUp = _tempVec1.subVectors(pSpine.pos, pHips.pos).normalize();
-                    const torsoRight = _tempVec2.subVectors(pRShoulder.pos, pLShoulder.pos).normalize();
-                    torsoForward.crossVectors(torsoRight, torsoUp).normalize();
-                }
-
-                if (isKnee) {
-                    const dotForward = v2.dot(torsoForward);
-                    if (dotForward > 0.02) {
-                        v2.addScaledVector(torsoForward, -dotForward - 0.05).normalize();
-                    }
-                } else if (isElbow) {
-                    const dotForward = v2.dot(torsoForward);
-                    if (dotForward < -0.02) {
-                        v2.addScaledVector(torsoForward, -dotForward + 0.05).normalize();
-                    }
-                } else if (isHip) {
-                    const dotForward = v2.dot(torsoForward);
-                    if (dotForward < -0.15) {
-                        v2.addScaledVector(torsoForward, -dotForward - 0.15).normalize();
-                    }
-                }
-
-                const dot = v1.dot(v2);
-                const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
-
-                if (angle < minAngle || angle > maxAngle) {
-                    const targetAngle = Math.max(minAngle, Math.min(maxAngle, angle));
-                    const axis = new THREE.Vector3().crossVectors(v1, v2).normalize();
-                    if (axis.lengthSq() < 0.001) axis.set(0, 1, 0);
-                    const q = new THREE.Quaternion().setFromAxisAngle(axis, targetAngle - angle);
-                    v2.applyQuaternion(q).normalize().multiplyScalar(d2);
-                    p3.pos.copy(p2.pos).add(v2);
-                }
-            }
-
-            updateRagdoll(delta, collidables, floorY) {
-                if (!this.isRagdoll) return;
-                this.ragdollTimer += delta;
-                const gravity = 30; const damping = 0.95;
-
-                this.ragdollParticles.forEach(p => {
-                    const tempX = p.pos.x, tempY = p.pos.y, tempZ = p.pos.z;
-                    let velX = (p.pos.x - p.oldPos.x) * damping;
-                    let velY = (p.pos.y - p.oldPos.y) * damping - gravity * delta * delta;
-                    let velZ = (p.pos.z - p.oldPos.z) * damping;
-
-                    const maxDisp = 0.3;
-                    const dispSq = velX*velX + velY*velY + velZ*velZ;
-                    if (dispSq > maxDisp * maxDisp) {
-                        const len = Math.sqrt(dispSq);
-                        velX = (velX / len) * maxDisp;
-                        velY = (velY / len) * maxDisp;
-                        velZ = (velZ / len) * maxDisp;
-                    }
-
-                    p.pos.x += velX;
-                    p.pos.y += velY;
-                    p.pos.z += velZ;
-                    p.oldPos.set(tempX, tempY, tempZ);
-                });
-
-                for (let iter = 0; iter < 20; iter++) {
-                    this.ragdollConstraints.forEach(c => {
-                        _tempVec1.subVectors(c.p2.pos, c.p1.pos);
-                        const dist = _tempVec1.length();
-                        if (dist > 0.0001) {
-                            const offset = _tempVec1.multiplyScalar(((dist - c.dist) / dist) * 0.5);
-                            c.p1.pos.add(offset);
-                            c.p2.pos.sub(offset);
-                        }
-                    });
-
-                    this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3, true, false, false); 
-                    this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3, true, false, false); 
-                    this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5, false, true, false); 
-                    this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5, false, true, false); 
-                    this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0, false, false, true); 
-                    this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0, false, false, true); 
-
-                    this.ragdollParticles.forEach(p => {
-                        if (p.pos.y < p.radius) {
-                            p.pos.y = p.radius;
-                            p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
-                            p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
-                        }
+                    const textureLoader = new THREE.TextureLoader();
+                    const arrowTextureUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteArrow.png';
+                    textureLoader.load(arrowTextureUrl, (texture) => {
+                        const arrowGeo = new THREE.PlaneGeometry(2, 2);
                         
-                        const particleBox = new THREE.Box3();
-                        particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
-                        const obstacleBox = new THREE.Box3();
-
-                        collidables.forEach(obj => {
-                            if (obj === window.ground) return;
-
-                            if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
-                                const radius = obj.geometry.parameters.radius || 6;
-                                const dist = p.pos.distanceTo(obj.position);
-                                const minDist = radius + p.radius;
-                                if (dist < minDist) {
-                                    const prevPos = p.pos.clone();
-                                    const normal = _tempVec3.subVectors(p.pos, obj.position).normalize();
-                                    p.pos.copy(obj.position).addScaledVector(normal, minDist);
-                                    const displacement = _tempVec1.subVectors(p.pos, prevPos);
-                                    p.oldPos.add(displacement);
-                                }
-                                return;
-                            }
-
-                            if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
-                            
-                            if (particleBox.intersectsBox(obstacleBox)) {
-                                const prevPos = p.pos.clone();
-                                const overlapX = Math.min(particleBox.max.x - obstacleBox.min.x, obstacleBox.max.x - particleBox.min.x);
-                                const overlapY = Math.min(particleBox.max.y - obstacleBox.min.y, obstacleBox.max.y - particleBox.min.y);
-                                const overlapZ = Math.min(particleBox.max.z - obstacleBox.min.z, obstacleBox.max.z - particleBox.min.z);
-                                
-                                if (overlapX < overlapY && overlapX < overlapZ) {
-                                    p.pos.x += Math.sign(p.pos.x - obj.position.x) * overlapX;
-                                } else if (overlapY < overlapX && overlapY < overlapZ) {
-                                    p.pos.y += Math.sign(p.pos.y - obj.position.y) * overlapY;
-                                    if (Math.sign(p.pos.y - obj.position.y) > 0) {
-                                        p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
-                                        p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
-                                    }
-                                } else {
-                                    p.pos.z += Math.sign(p.pos.z - obj.position.z) * overlapZ;
-                                }
-
-                                const displacement = _tempVec3.subVectors(p.pos, prevPos);
-                                if (displacement.lengthSq() > 0.0001) p.oldPos.add(displacement);
-                                particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
-                            }
+                        const arrowMatVisible = new THREE.MeshBasicMaterial({ 
+                            map: texture, 
+                            transparent: true, 
+                            opacity: 0.9,
+                            depthTest: true,
+                            depthWrite: false,
+                            side: THREE.DoubleSide
                         });
+                        
+                        const arrowMatHidden = new THREE.MeshBasicMaterial({ 
+                            map: texture, 
+                            transparent: true, 
+                            opacity: 0.25,
+                            depthTest: false,
+                            depthWrite: false,
+                            side: THREE.DoubleSide
+                        });
+
+                        const visibleMesh = new THREE.Mesh(arrowGeo, arrowMatVisible);
+                        const hiddenMesh = new THREE.Mesh(arrowGeo, arrowMatHidden);
+
+                        visibleMesh.rotation.x = -Math.PI / 2;
+                        visibleMesh.rotation.z = Math.PI; 
+                        hiddenMesh.rotation.x = -Math.PI / 2;
+                        hiddenMesh.rotation.z = Math.PI; 
+
+                        hiddenMesh.renderOrder = 1;
+                        visibleMesh.renderOrder = 2;
+
+                        this.playerArrowGroup.add(hiddenMesh);
+                        this.playerArrowGroup.add(visibleMesh);
                     });
                 }
 
-                const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
-                if (hipsP && this.hips) {
-                    this.hips.position.copy(this.hips.parent.worldToLocal(_tempVec1.copy(hipsP.pos)));
-                    this.hips.updateMatrixWorld(true);
-                }
-                
-                this.ragdollLinks.forEach(link => {
-                    if (link.bone) {
-                        const p1 = this.ragdollParticles.find(p => p.id === link.p1);
-                        const p2 = this.ragdollParticles.find(p => p.id === link.p2);
-                        if (p1 && p2) {
-                            _tempVec1.subVectors(p2.pos, p1.pos).normalize();
-                            if (link.initialDir && _tempVec1.lengthSq() > 0.1 && link.initialDir.lengthSq() > 0.1) {
-                                _tempQuat.setFromUnitVectors(link.initialDir, _tempVec1);
-                                _tempQuat.multiply(link.initialQuat);
-                                const parentWorldQuat = link.bone.parent.getWorldQuaternion(new THREE.Quaternion());
-                                link.bone.quaternion.copy(parentWorldQuat.invert().multiply(_tempQuat));
-                                link.bone.updateMatrixWorld(true);
-                            }
-                        }
+                this.group.children.forEach(c => {
+                    if (c.isMesh && c.geometry && c.geometry.type === 'PlaneGeometry' && c.material && c.material.map) {
+                        c.visible = false;
                     }
                 });
-            }
 
-            updateStandUp(delta) {
-                if (!this.isStandingUp) return false;
-                if (this.standUpFinished) {
-                    this.isStandingUp = false; this.standUpDirection = 'none'; this.standUpFinished = false;
-                    return true;
-                }
-                return false;
-            }
-
-            syncColliders() {
-                if (!this.ragdollColliderGroup.visible) return;
-                this.ragdollParticles.forEach(p => {
-                    if (p.mesh && p.bone) {
-                        if (!this.isRagdoll) p.bone.getWorldPosition(p.mesh.position);
-                        else p.mesh.position.copy(p.pos);
-                        p.bone.getWorldQuaternion(p.mesh.quaternion);
+                let leftArrow = document.getElementById('left-arrow');
+                if (!leftArrow) {
+                    const baseLeft = document.getElementById('base-left');
+                    if (baseLeft) {
+                        leftArrow = document.createElement('div');
+                        leftArrow.id = 'left-arrow';
+                        leftArrow.className = 'arrow-indicator';
+                        baseLeft.insertBefore(leftArrow, baseLeft.firstChild);
                     }
-                });
+                }
             }
 
             animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
@@ -1393,11 +1023,10 @@
                     window.combat.update(delta, window.sacks, window.spawnHitEffect);
                 }
 
-                // Update 3D sphere hit effects
                 if (window.hitEffects) {
                     for (let i = window.hitEffects.length - 1; i >= 0; i--) {
                         const fx = window.hitEffects[i];
-                        fx.life -= delta * 5.0; // Decay over ~0.2s
+                        fx.life -= delta * 5.0; 
                         fx.mesh.scale.setScalar(2.0 - fx.life);
                         if (fx.mesh.material) {
                             fx.mesh.material.opacity = fx.life;
@@ -1414,6 +1043,46 @@
                 }
 
                 if (this.isRagdoll) return;
+
+                // Shift all cached grab and ledge target properties to align with character's lateral movement delta
+                if (!this.lastGroupPos) {
+                    this.lastGroupPos = this.group.position.clone();
+                }
+                const deltaX = this.group.position.x - this.lastGroupPos.x;
+                const deltaY = this.group.position.y - this.lastGroupPos.y;
+                const deltaZ = this.group.position.z - this.lastGroupPos.z;
+
+                if (state === 'ledge' && (deltaX !== 0 || deltaY !== 0 || deltaZ !== 0)) {
+                    for (let key in this) {
+                        if (key === 'position' || key === 'scale' || key === 'quaternion' || key === 'up' || 
+                            key === 'rotation' || key === 'matrix' || key === 'matrixWorld' || key === 'group' || 
+                            key === 'fbxModel' || key === 'mixer' || key === 'actions' || key === 'activeAction' || 
+                            key === 'activeUpperAction' || key === 'skeletonHelper' || key === 'rootMarker' || 
+                            key === 'hipsMarker' || key === 'rootBone' || key === 'leftHandBone' || 
+                            key === 'rightHandBone' || key === 'hitbox' || key === 'playerArrowGroup' || 
+                            key === 'smoothedArrowPos' || key === 'lastGroupPos') continue;
+
+                        const prop = this[key];
+                        if (!prop) continue;
+
+                        if (prop.isVector3) {
+                            const distHoriz = Math.sqrt(Math.pow(prop.x - this.group.position.x, 2) + Math.pow(prop.z - this.group.position.z, 2));
+                            if (distHoriz < 5.0) {
+                                prop.x += deltaX;
+                                prop.y += deltaY;
+                                prop.z += deltaZ;
+                            }
+                        } else if (typeof prop === 'object' && 'x' in prop && 'y' in prop && 'z' in prop && 
+                                   typeof prop.x === 'number' && typeof prop.y === 'number' && typeof prop.z === 'number') {
+                            const distHoriz = Math.sqrt(Math.pow(prop.x - this.group.position.x, 2) + Math.pow(prop.z - this.group.position.z, 2));
+                            if (distHoriz < 5.0) {
+                                prop.x += deltaX;
+                                prop.y += deltaY;
+                                prop.z += deltaZ;
+                            }
+                        }
+                    }
+                }
 
                 if (this.spine && this.defaultSpineQuat) this.spine.quaternion.copy(this.defaultSpineQuat);
                 if (this.spine1 && this.defaultSpine1Quat) this.spine1.quaternion.copy(this.defaultSpine1Quat);
@@ -1486,15 +1155,7 @@
                         this.fadeToAction('carry_start', dur);
                     } else if (window.isCarryDropping) {
                         this.stopUpperAction(dur);
-                        const dropAction = this.actions['carry_start'];
-                        if (dropAction && this.activeAction !== dropAction) {
-                            dropAction.reset();
-                            dropAction.time = dropAction.getClip().duration;
-                            dropAction.setEffectiveTimeScale(-1.0);
-                            dropAction.setEffectiveWeight(1);
-                            dropAction.play();
-                            this.activeAction = dropAction;
-                        }
+                        this.playCarryDrop();
                     } else if (window.throwTimer > 0) {
                         this.stopUpperAction(dur);
                         const throwAction = this.actions['throw'];
@@ -1504,7 +1165,7 @@
                         }
                         this.fadeToAction('throw', dur);
                     } else if (isPunching) {
-                        // Let fullbody combat animations play cleanly
+                        
                     } else if (window.isCarryingObj) {
                         this.fadeToAction(baseMoveState, dur);
                         this.fadeToUpperAction('carry_upper', dur);
@@ -1613,10 +1274,143 @@
                     }
                     this.lastGroupPos.copy(this.group.position);
                 }
+
+                this.reconstructArrows();
+
+                if (this.playerArrowGroup) {
+                    const playerScale = parseFloat(document.getElementById('player-arrow-scale-slider').value) || 1.3;
+                    this.playerArrowGroup.scale.setScalar(playerScale);
+
+                    let targetLocalPos = new THREE.Vector3(0, 0.05, 0);
+                    let useWorldTarget = false;
+                    let targetWorldPos = new THREE.Vector3();
+
+                    if (state === 'climbing') {
+                        useWorldTarget = true;
+                        if (!this.climbLockedWorldPos) {
+                            const raycaster = new THREE.Raycaster();
+                            const rayStart = new THREE.Vector3().copy(this.group.position);
+                            const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
+                            
+                            rayStart.addScaledVector(forward, 0.15);
+                            rayStart.y += 3.5;
+                            
+                            const rayDir = new THREE.Vector3(0, -1, 0);
+                            raycaster.set(rayStart, rayDir);
+                            
+                            const collidables = window.collidables || [];
+                            const intersects = raycaster.intersectObjects(collidables, true);
+                            
+                            let highestHitY = this.group.position.y + 1.5;
+                            if (intersects.length > 0) {
+                                let maxHitY = -Infinity;
+                                for (let i = 0; i < intersects.length; i++) {
+                                    if (intersects[i].point.y > maxHitY) {
+                                        maxHitY = intersects[i].point.y;
+                                    }
+                                }
+                                if (maxHitY !== -Infinity) {
+                                    highestHitY = maxHitY;
+                                }
+                            }
+                            
+                            const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
+                            this.climbLockedWorldPos = new THREE.Vector3().copy(this.group.position);
+                            this.climbLockedWorldPos.addScaledVector(forward, -0.3);
+                            this.climbLockedWorldPos.y = highestHitY + ledgeOffset;
+                        }
+                        targetWorldPos.copy(this.climbLockedWorldPos);
+
+                    } else if (this.climbTransitionTimer > 0 && this.climbLockedWorldPos) {
+                        useWorldTarget = true;
+                        targetWorldPos.copy(this.climbLockedWorldPos);
+
+                    } else if (state === 'ledge') {
+                        this.climbLockedWorldPos = null;
+                        useWorldTarget = true;
+                        
+                        const raycaster = new THREE.Raycaster();
+                        const rayStart = new THREE.Vector3().copy(this.group.position);
+                        const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
+                        
+                        rayStart.addScaledVector(forward, 0.15);
+                        rayStart.y += 3.5;
+                        
+                        const rayDir = new THREE.Vector3(0, -1, 0);
+                        raycaster.set(rayStart, rayDir);
+                        
+                        const collidables = window.collidables || [];
+                        const intersects = raycaster.intersectObjects(collidables, true);
+                        
+                        let highestHitY = this.group.position.y + 1.5;
+                        if (intersects.length > 0) {
+                            let maxHitY = -Infinity;
+                            for (let i = 0; i < intersects.length; i++) {
+                                if (intersects[i].point.y > maxHitY) {
+                                    maxHitY = intersects[i].point.y;
+                                }
+                            }
+                            if (maxHitY !== -Infinity) {
+                                highestHitY = maxHitY;
+                            }
+                        }
+                        
+                        const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
+                        targetWorldPos.copy(this.group.position);
+                        targetWorldPos.addScaledVector(forward, -0.3);
+                        targetWorldPos.y = highestHitY + ledgeOffset;
+
+                    } else {
+                        this.climbLockedWorldPos = null;
+                        this.cachedLedgeY = null;
+                        useWorldTarget = false;
+                    }
+
+                    if (useWorldTarget) {
+                        this.group.worldToLocal(targetWorldPos);
+                        targetLocalPos.copy(targetWorldPos);
+                    } else {
+                        targetLocalPos.set(0, 0.05, 0);
+                    }
+
+                    if (!this.smoothedArrowPos) {
+                        this.smoothedArrowPos = new THREE.Vector3().copy(targetLocalPos);
+                    }
+                    this.smoothedArrowPos.lerp(targetLocalPos, 12 * delta);
+                    this.playerArrowGroup.position.copy(this.smoothedArrowPos);
+                }
+
+                const leftArrow = document.getElementById('left-arrow');
+                let cam = window.activeCamera;
+                
+                if (!cam && window.gameScene) {
+                     window.gameScene.traverse((child) => {
+                         if (child.isPerspectiveCamera) cam = child;
+                     });
+                     window.activeCamera = cam;
+                }
+
+                if (leftArrow && cam) {
+                    const F = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
+                    const camForward = new THREE.Vector3();
+                    cam.getWorldDirection(camForward);
+                    camForward.y = 0;
+                    if (camForward.lengthSq() > 0.001) camForward.normalize();
+                    else camForward.set(0, 0, 1);
+
+                    const camRight = new THREE.Vector3(0, 1, 0).cross(camForward).normalize();
+                    const fwdDot = F.dot(camForward);
+                    const rgtDot = F.dot(camRight);
+                    const screenAngle = Math.atan2(rgtDot, fwdDot);
+                    
+                    leftArrow.style.transform = `rotate(${screenAngle}rad)`;
+                }
             }
         }
 
-        import { startGame } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/game_js.js';
+        Object.assign(Character.prototype, RagdollPhysics);
+import { Sandbag } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/sandbag.js';
+import { startGame } from 'https://raw.githack.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/game_js.js';
         startGame(Character);
 
     </script>
