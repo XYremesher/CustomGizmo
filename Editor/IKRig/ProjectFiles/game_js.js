@@ -1619,8 +1619,29 @@ if (wallHits.length > 0 && wallHits[0].distance < 1.0) {
         camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
         
+        
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
+
+// Sol joystick üzerindeki okun yönünü kameraya göre döndür
+const leftArrow = document.getElementById('left-arrow');
+if (leftArrow) {
+    // Karakterin baktığı yön vektörü (+Z yönü)
+    const F = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion).normalize();
+    
+    // Kameranın yatay düzlemdeki ileri ve sağ yönleri
+    const camForward = new THREE.Vector3(-Math.sin(cameraTheta), 0, -Math.cos(cameraTheta)).normalize();
+    const camRight = new THREE.Vector3(Math.cos(cameraTheta), 0, -Math.sin(cameraTheta)).normalize();
+    
+    const fwdDot = F.dot(camForward);
+    const rgtDot = F.dot(camRight);
+    
+    // Ekrana göre açıyı hesapla ve oku döndür
+    const screenAngle = Math.atan2(rgtDot, fwdDot);
+    leftArrow.style.transform = `rotate(${screenAngle}rad)`;
+}
+
+
         renderer.render(scene, camera);
     }
 
