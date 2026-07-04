@@ -82,9 +82,6 @@ export function startGame(CharacterClass) {
             else if (this.intensity === 'medium') color = 0xffff55;
             else if (this.intensity === 'medium_high') color = 0xffaa44;
 
-            const projSize = parseFloat(document.getElementById('proj-size-slider').value);
-            const projSpeed = parseFloat(document.getElementById('proj-speed-slider').value);
-
             const pMesh = new THREE.Mesh(new THREE.SphereGeometry(projSize), new THREE.MeshBasicMaterial({ color: color }));
             pMesh.position.copy(this.mesh.position);
             scene.add(pMesh);
@@ -713,26 +710,22 @@ export function startGame(CharacterClass) {
                 cObj.wasThrown = true;
                 _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
                 
-                const carryHeight = parseFloat(document.getElementById('carry-height-slider').value);
                 const boxHalfHeight = 0.5;
                 cObj.mesh.position.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + boxHalfHeight);
-                
-                const throwSpeedMult = parseFloat(document.getElementById('throw-speed-slider').value);
-                cObj.velocity.copy(_tempVec3).multiplyScalar(15.0 * throwSpeedMult).setY(8.0 * throwSpeedMult);
+
+                cObj.velocity.copy(_tempVec3).multiplyScalar(15.0 * window.throwSpeedMult).setY(8.0 * window.throwSpeedMult);
             }
-            
+
             const throwAction = char.actions['throw'];
             const throwClip = char.originalClips['throw'];
-            const throwSpeedMult = parseFloat(document.getElementById('throw-speed-slider').value);
-            const throwTrim = parseFloat(document.getElementById('throw-trim-slider').value);
 
             if (throwAction) {
                 throwAction.reset();
-                throwAction.time = throwTrim;
-                throwAction.setEffectiveTimeScale(throwSpeedMult);
+                throwAction.time = throwTrimStart;
+                throwAction.setEffectiveTimeScale(window.throwSpeedMult);
             }
 
-            window.throwTimer = throwClip ? ((throwClip.duration - throwTrim) / throwSpeedMult) : 0.5;
+            window.throwTimer = throwClip ? ((throwClip.duration - throwTrimStart) / window.throwSpeedMult) : 0.5;
 
             window.isCarryingObj = false;
             heldCarryable = null;
@@ -798,6 +791,10 @@ export function startGame(CharacterClass) {
     let slipTimer = 0;
     let ledgeSlipDuration = 0.05;
     let ledgeDropPushback = 0.12;
+    let carryHeight = 2.45, throwTrimStart = 0.25, projSize = 0.3, projSpeed = 20.0;
+    window.throwSpeedMult = 1.0;
+    window.spineBlendValue = 1.00;
+    window.orangeRecoilForce = 35.0;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
 
     document.getElementById('empty-stamina-btn').addEventListener('pointerdown', () => { stamina = 0; document.getElementById('stamina-bar').style.width = '0%'; });
@@ -855,18 +852,6 @@ export function startGame(CharacterClass) {
     const rayDown = new THREE.Raycaster(), rayFwd = new THREE.Raycaster();
     let camTarget = new THREE.Vector3(0, 5, -40);
 
-    const projSizeSlider = document.getElementById('proj-size-slider');
-    const projSizeVal = document.getElementById('proj-size-val');
-    projSizeSlider.addEventListener('input', () => { projSizeVal.innerText = projSizeSlider.value; });
-
-    const projSpeedSlider = document.getElementById('proj-speed-slider');
-    const projSpeedVal = document.getElementById('proj-speed-val');
-    projSpeedSlider.addEventListener('input', () => { projSpeedVal.innerText = projSpeedSlider.value; });
-
-    const orangeRecoilSlider = document.getElementById('orange-recoil-slider');
-    const orangeRecoilVal = document.getElementById('orange-recoil-val');
-    orangeRecoilSlider.addEventListener('input', () => { orangeRecoilVal.innerText = orangeRecoilSlider.value; });
-
     const uiBindings = [
         { id: 'ledge-force-slider', vId: 'force-val', func: v => ledgeJumpMultiplier = v },
         { id: 'scale-slider', vId: 'scale-val', func: v => char.updateScale(v), fix: 4 },
@@ -880,12 +865,16 @@ export function startGame(CharacterClass) {
         { id: 'standup-speed-slider', vId: 'standup-speed-val', func: v => char.standupSpeed = v, fix: 1 },
         { id: 'standup-fade-slider', vId: 'standup-fade-val', func: v => char.standupCrossfade = v },
         { id: 'pose-dur-slider', vId: 'pose-dur-val', func: v => char.ragdollPoseDuration = v },
-        { id: 'carry-height-slider', vId: 'carry-height-val', func: v => {} },
-        { id: 'throw-speed-slider', vId: 'throw-speed-val', func: v => {} },
-        { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => {} },
-        { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { char.buildClips(); } },
+        { id: 'carry-height-slider', vId: 'carry-height-val', func: v => carryHeight = v },
+        { id: 'throw-speed-slider', vId: 'throw-speed-val', func: v => window.throwSpeedMult = v },
+        { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => throwTrimStart = v },
+        { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { window.spineBlendValue = v; char.buildClips(); } },
         { id: 'slip-dur-slider', vId: 'slip-dur-val', func: v => ledgeSlipDuration = v },
-        { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v }
+        { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v },
+        { id: 'proj-size-slider', vId: 'proj-size-val', func: v => projSize = v, raw: true },
+        { id: 'proj-speed-slider', vId: 'proj-speed-val', func: v => projSpeed = v, raw: true },
+        { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
+        { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 }
     ];
 
     uiBindings.forEach(b => {
@@ -895,7 +884,7 @@ export function startGame(CharacterClass) {
                 const val = parseFloat(e.target.value);
                 b.func(val);
                 const displayEl = document.getElementById(b.vId);
-                if (displayEl) displayEl.innerText = val.toFixed(b.fix || 2);
+                if (displayEl) displayEl.innerText = b.raw ? e.target.value : val.toFixed(b.fix || 2);
             });
         }
     });
@@ -907,8 +896,7 @@ export function startGame(CharacterClass) {
         debugHelpers.forEach(h => { h.visible = checked; });
     });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
-    document.getElementById('collider-density-slider').addEventListener('input', e => { const val = parseInt(e.target.value); document.getElementById('collider-density-val').innerText = val; char.updateColliderDensity(val); });
-    
+
     let showJoints = false;
     document.getElementById('toggle-debug-joints').addEventListener('change', e => {
         showJoints = e.target.checked;
@@ -1422,7 +1410,6 @@ export function startGame(CharacterClass) {
                 handMidpoint.y += 0.5;
             } else {
                 _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
-                const carryHeight = parseFloat(document.getElementById('carry-height-slider').value);
                 handMidpoint.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + 0.5);
             }
 

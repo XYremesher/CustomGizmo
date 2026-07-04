@@ -794,7 +794,7 @@
 
             buildClips() {
                 if (!this.isLoaded) return;
-                const spineBlend = parseFloat(document.getElementById('spine-blend-slider').value);
+                const spineBlend = window.spineBlendValue;
 
                 for (let key in this.actions) {
                     const action = this.actions[key];
@@ -1192,8 +1192,7 @@ updateClimbing(delta) {
                         this.stopUpperAction(dur);
                         const throwAction = this.actions['throw'];
                         if (throwAction) {
-                            const throwSpeedMult = parseFloat(document.getElementById('throw-speed-slider').value);
-                            throwAction.setEffectiveTimeScale(throwSpeedMult);
+                            throwAction.setEffectiveTimeScale(window.throwSpeedMult);
                         }
                         this.fadeToAction('throw', dur);
                     } else if (isPunching) {
@@ -1208,7 +1207,7 @@ updateClimbing(delta) {
                 }
 
                 if (window.isCarryingObj && this.spine) {
-                    const stabilizeBlend = parseFloat(document.getElementById('spine-blend-slider').value);
+                    const stabilizeBlend = window.spineBlendValue;
                     const dampFactor = stabilizeBlend * 0.85;
 
                     const recoilMag = this.recoilRotation.length() + this.recoilVelocity.length();
