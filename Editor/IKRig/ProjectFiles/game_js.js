@@ -1314,16 +1314,12 @@ export function startGame(CharacterClass) {
             const charFwd = _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
             rayFwd.set(chest, charFwd);
             const wallHits = rayFwd.intersectObjects(solidCollidables);
-if (wallHits.length > 0 && wallHits[0].distance < 1.0) {
-    const n = wallHits[0].face.normal.clone().transformDirection(wallHits[0].object.matrixWorld).setY(0).normalize();
-    char.group.position.x = wallHits[0].point.x + n.x * ledgeOffset;
-    char.group.position.z = wallHits[0].point.z + n.z * ledgeOffset;
-    char.group.lookAt(_tempVec3.copy(char.group.position).sub(n));
-    
-    // Update horizontal target while hanging on the ledge
-    ledgeTarget.x = wallHits[0].point.x - n.x * 0.2;
-    ledgeTarget.z = wallHits[0].point.z - n.z * 0.2;
-}
+            if (wallHits.length > 0 && wallHits[0].distance < 1.0) {
+                const n = wallHits[0].face.normal.clone().transformDirection(wallHits[0].object.matrixWorld).setY(0).normalize();
+                char.group.position.x = wallHits[0].point.x + n.x * ledgeOffset;
+                char.group.position.z = wallHits[0].point.z + n.z * ledgeOffset;
+                char.group.lookAt(_tempVec3.copy(char.group.position).sub(n));
+            }
 
             const actualRgt = _tempVec3.set(1,0,0).applyQuaternion(char.group.quaternion);
             let hint = Math.PI - Math.atan2(charFwd.x, charFwd.z) + cameraTheta;
