@@ -1255,48 +1255,48 @@ export function startGame(CharacterClass) {
             if (char.updateStandUp(delta)) char.fadeToAction('idle', 0.3);
             if (char.mixer) char.mixer.update(delta);
 } else if (isClimbingUp) {
-    if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
-    else if (isGrounded && moveMag < 0.1 && yVelocity === 0) stamina += REGEN_RATE*delta;
-    else stamina -= CLIMB_COST*delta;
-    stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
-    document.getElementById('stamina-bar').style.width = stamina + '%';
+            if (isLedgeGrabbing) stamina -= HANG_DRAIN * delta;
+            else if (isGrounded && moveMag < 0.1 && yVelocity === 0) stamina += REGEN_RATE * delta;
+            else stamina -= CLIMB_COST * delta;
+            stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
+            document.getElementById('stamina-bar').style.width = stamina + '%';
 
-    char.animate(delta, 'climbing', 0, time, 0, 0);
-    
-    if (char.fbxModel) {
-        char.fbxModel.updateMatrixWorld(true);
-    }
-    
-    let visualPos = new THREE.Vector3();
-    if (char.hips) {
-        char.hips.getWorldPosition(visualPos);
-    } else {
-        _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-        visualPos.copy(char.group.position).add(_tempVec1.multiplyScalar(0.5));
-        visualPos.y = ledgeTarget.y;
-    }
-    
-    const climbAction = char.actions['climb'];
-    let transitionNow = char.climbFinished;
-    if (climbAction && ((climbAction.getClip().duration - climbAction.time) / char.climbSpeed) <= climbTransitionDuration) transitionNow = true;
+            char.animate(delta, 'climbing', 0, time, 0, 0);
+            
+            if (char.fbxModel) {
+                char.fbxModel.updateMatrixWorld(true);
+            }
+            
+            let visualPos = new THREE.Vector3();
+            if (char.hips) {
+                char.hips.getWorldPosition(visualPos);
+            } else {
+                _tempVec1.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+                visualPos.copy(char.group.position).add(_tempVec1.multiplyScalar(0.5));
+                visualPos.y = ledgeTarget.y;
+            }
+            
+            const climbAction = char.actions['climb'];
+            let transitionNow = char.climbFinished;
+            if (climbAction && ((climbAction.getClip().duration - climbAction.time) / char.climbSpeed) <= climbTransitionDuration) transitionNow = true;
 
-    if (transitionNow || char.climbFinished) {
-        char.group.position.x = visualPos.x;
-        char.group.position.z = visualPos.z;
-        char.group.position.y = ledgeTarget.y;
-        
-        isClimbingUp = false;
-        char.climbFinished = false;
-        yVelocity = 0;
-        isGrounded = true;
-        landingTimer = 0;
-        ledgeGrabCooldown = 0.5;
-        
-        char.fadeToAction('idle', 0);
-        if (char.mixer) char.mixer.update(0.001);
-        if (char.fbxModel) char.fbxModel.updateMatrixWorld(true);
-    }
-}            if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
+            if (transitionNow || char.climbFinished) {
+                char.group.position.x = visualPos.x;
+                char.group.position.z = visualPos.z;
+                char.group.position.y = ledgeTarget.y;
+                
+                isClimbingUp = false;
+                char.climbFinished = false;
+                yVelocity = 0;
+                isGrounded = true;
+                landingTimer = 0;
+                ledgeGrabCooldown = 0.5;
+                
+                char.fadeToAction('idle', 0);
+                if (char.mixer) char.mixer.update(0.001);
+                if (char.fbxModel) char.fbxModel.updateMatrixWorld(true);
+            }
+        }            if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
             else if (isGrounded && moveMag < 0.1 && yVelocity === 0) stamina += REGEN_RATE*delta;
             else stamina -= CLIMB_COST*delta;
             stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
@@ -1429,10 +1429,11 @@ if (transitionNow) {
                         }
                     }
 if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
-    char.group.position.add(mDir.multiplyScalar(4*delta));
-    ledgeTarget.copy(char.group.position);
-    ledgeTarget.y = char.group.position.y + 1.85; 
-}        
+                char.group.position.add(mDir.multiplyScalar(4 * delta));
+                char.group.updateMatrixWorld(true);
+                ledgeTarget.copy(char.group.position);
+                ledgeTarget.y = char.group.position.y + 1.85;
+            }      
          else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
