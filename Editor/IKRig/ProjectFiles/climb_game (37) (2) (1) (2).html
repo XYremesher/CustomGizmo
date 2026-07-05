@@ -365,6 +365,42 @@
             window.createHitEffect(pos);
         };
 
+        window.speedParticles = [];
+        let punchSpeedParticleGeometry = null;
+        const punchSpeedParticleTexture = new THREE.TextureLoader().load(
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchProjectileParticle.png'
+        );
+        new FBXLoader().load(
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchSpeedParticle.fbx',
+            (obj) => {
+                obj.traverse(child => {
+                    if (child.isMesh && !punchSpeedParticleGeometry) {
+                        punchSpeedParticleGeometry = child.geometry;
+                    }
+                });
+            }
+        );
+
+        window.spawnPunchSpeedParticle = function(position, direction) {
+            if (!punchSpeedParticleGeometry || !window.gameScene) return;
+            const mat = new THREE.MeshBasicMaterial({
+                map: punchSpeedParticleTexture,
+                transparent: true,
+                opacity: 0.85,
+                depthWrite: false,
+                side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(punchSpeedParticleGeometry, mat);
+            mesh.position.copy(position);
+            if (direction && direction.lengthSq() > 0.0001) {
+                mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+            }
+            const scale = 0.5 + Math.random() * 0.2;
+            mesh.scale.setScalar(scale);
+            window.gameScene.add(mesh);
+            window.speedParticles.push({ mesh, life: 1.0 });
+        };
+
         export class CombatController {
             constructor(character) {
                 this.char = character;
@@ -373,6 +409,43 @@
                 this.nextPunchQueued = false;
                 this.punchesHitFlags = [false, false, false, false, false];
                 this.chargeEffect = null;
+                this.lastLeftHandPos = null;
+                this.lastRightHandPos = null;
+                this.speedParticleCooldownLeft = 0;
+                this.speedParticleCooldownRight = 0;
+            }
+
+            updateSpeedParticles(delta) {
+                this.speedParticleCooldownLeft -= delta;
+                this.speedParticleCooldownRight -= delta;
+                const canSpawn = this.punchState > 0 && this.punchState !== 4;
+                const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
+
+                if (this.char.leftHandBone) {
+                    const pos = new THREE.Vector3();
+                    this.char.leftHandBone.getWorldPosition(pos);
+                    if (this.lastLeftHandPos) {
+                        const speed = pos.distanceTo(this.lastLeftHandPos) / delta;
+                        if (canSpawn && speed > 3.5 && this.speedParticleCooldownLeft <= 0 && window.spawnPunchSpeedParticle) {
+                            window.spawnPunchSpeedParticle(pos, forward);
+                            this.speedParticleCooldownLeft = 0.06;
+                        }
+                    }
+                    this.lastLeftHandPos = pos;
+                }
+
+                if (this.char.rightHandBone) {
+                    const pos = new THREE.Vector3();
+                    this.char.rightHandBone.getWorldPosition(pos);
+                    if (this.lastRightHandPos) {
+                        const speed = pos.distanceTo(this.lastRightHandPos) / delta;
+                        if (canSpawn && speed > 3.5 && this.speedParticleCooldownRight <= 0 && window.spawnPunchSpeedParticle) {
+                            window.spawnPunchSpeedParticle(pos, forward);
+                            this.speedParticleCooldownRight = 0.06;
+                        }
+                    }
+                    this.lastRightHandPos = pos;
+                }
             }
 
             startChargePunch() {
@@ -545,6 +618,7 @@
             }
 
             update(delta, sacks, createHitEffectCallback) {
+                this.updateSpeedParticles(delta);
                 if (this.punchState > 0) {
                     this.punchTimer += delta;
 
@@ -1299,6 +1373,20 @@ updateClimbing(delta) {
                                 fx.hiddenMesh.material.dispose();
                                 window.hitEffects.splice(i, 1);
                             }
+                        }
+                    }
+                }
+
+                if (window.speedParticles) {
+                    for (let i = window.speedParticles.length - 1; i >= 0; i--) {
+                        const sp = window.speedParticles[i];
+                        sp.life -= delta * 3.5;
+                        const t = Math.max(0, sp.life);
+                        sp.mesh.material.opacity = t * 0.85;
+                        if (sp.life <= 0) {
+                            if (window.gameScene) window.gameScene.remove(sp.mesh);
+                            sp.mesh.material.dispose();
+                            window.speedParticles.splice(i, 1);
                         }
                     }
                 }
