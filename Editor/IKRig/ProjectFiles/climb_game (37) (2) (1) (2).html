@@ -394,6 +394,7 @@
             mesh.position.copy(position);
             if (direction && direction.lengthSq() > 0.0001) {
                 mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+                mesh.rotateX(-Math.PI / 2);
             }
             const scale = 0.5 + Math.random() * 0.2;
             mesh.scale.setScalar(scale);
@@ -409,43 +410,30 @@
                 this.nextPunchQueued = false;
                 this.punchesHitFlags = [false, false, false, false, false];
                 this.chargeEffect = null;
-                this.lastLeftHandPos = null;
-                this.lastRightHandPos = null;
-                this.speedParticleCooldownLeft = 0;
-                this.speedParticleCooldownRight = 0;
             }
 
-            updateSpeedParticles(delta) {
-                this.speedParticleCooldownLeft -= delta;
-                this.speedParticleCooldownRight -= delta;
-                const canSpawn = this.punchState > 0 && this.punchState !== 4;
+            spawnSwingParticle() {
+                if (!window.spawnPunchSpeedParticle) return;
                 const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
+                const pos = new THREE.Vector3();
 
-                if (this.char.leftHandBone) {
-                    const pos = new THREE.Vector3();
+                if (this.char.leftHandBone && this.char.rightHandBone) {
+                    const leftPos = new THREE.Vector3();
+                    const rightPos = new THREE.Vector3();
+                    this.char.leftHandBone.getWorldPosition(leftPos);
+                    this.char.rightHandBone.getWorldPosition(rightPos);
+                    const leftReach = leftPos.clone().sub(this.char.group.position).dot(forward);
+                    const rightReach = rightPos.clone().sub(this.char.group.position).dot(forward);
+                    pos.copy(leftReach >= rightReach ? leftPos : rightPos);
+                } else if (this.char.leftHandBone) {
                     this.char.leftHandBone.getWorldPosition(pos);
-                    if (this.lastLeftHandPos) {
-                        const speed = pos.distanceTo(this.lastLeftHandPos) / delta;
-                        if (canSpawn && speed > 3.5 && this.speedParticleCooldownLeft <= 0 && window.spawnPunchSpeedParticle) {
-                            window.spawnPunchSpeedParticle(pos, forward);
-                            this.speedParticleCooldownLeft = 0.06;
-                        }
-                    }
-                    this.lastLeftHandPos = pos;
+                } else if (this.char.rightHandBone) {
+                    this.char.rightHandBone.getWorldPosition(pos);
+                } else {
+                    return;
                 }
 
-                if (this.char.rightHandBone) {
-                    const pos = new THREE.Vector3();
-                    this.char.rightHandBone.getWorldPosition(pos);
-                    if (this.lastRightHandPos) {
-                        const speed = pos.distanceTo(this.lastRightHandPos) / delta;
-                        if (canSpawn && speed > 3.5 && this.speedParticleCooldownRight <= 0 && window.spawnPunchSpeedParticle) {
-                            window.spawnPunchSpeedParticle(pos, forward);
-                            this.speedParticleCooldownRight = 0.06;
-                        }
-                    }
-                    this.lastRightHandPos = pos;
-                }
+                window.spawnPunchSpeedParticle(pos, forward);
             }
 
             startChargePunch() {
@@ -618,7 +606,6 @@
             }
 
             update(delta, sacks, createHitEffectCallback) {
-                this.updateSpeedParticles(delta);
                 if (this.punchState > 0) {
                     this.punchTimer += delta;
 
@@ -646,6 +633,7 @@
                     if (this.punchState === 1 || this.punchState === 2 || this.punchState === 5) {
                         if (normalizedTime >= 0.35 && normalizedTime <= 0.55 && !this.punchesHitFlags[0]) {
                             this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
+                            this.spawnSwingParticle();
                             this.punchesHitFlags[0] = true;
                         }
                     } else if (this.punchState === 3) {
@@ -653,6 +641,7 @@
                         for (let i = 0; i < 5; i++) {
                             if (normalizedTime >= comboHitTimes[i] && normalizedTime <= (comboHitTimes[i] + 0.15) && !this.punchesHitFlags[i]) {
                                 this.detectMeleeHits(sacks, i, createHitEffectCallback);
+                                this.spawnSwingParticle();
                                 this.punchesHitFlags[i] = true;
                             }
                         }
