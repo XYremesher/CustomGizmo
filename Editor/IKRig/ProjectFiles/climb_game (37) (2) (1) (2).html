@@ -200,8 +200,14 @@
                     <input type="range" id="charge-streak-base-radius-slider" min="0.2" max="2.5" step="0.05" value="0.55" style="width: 100%;"><br>
                     <label>Streak Radius Spread: <span id="charge-streak-radius-spread-val">0.50</span></label><br>
                     <input type="range" id="charge-streak-radius-spread-slider" min="0.0" max="1.5" step="0.05" value="0.5" style="width: 100%;"><br>
-                    <label>Punch Particle Scale: <span id="punch-particle-scale-val">0.60</span></label><br>
-                    <input type="range" id="punch-particle-scale-slider" min="0.1" max="2.0" step="0.05" value="0.6" style="width: 100%;"><br>
+                    <label>Punch Particle Scale: <span id="punch-particle-scale-val">0.70</span></label><br>
+                    <input type="range" id="punch-particle-scale-slider" min="0.1" max="2.0" step="0.05" value="0.7" style="width: 100%;"><br>
+                    <label>Punch Hit Timing: <span id="punch-hit-time-val">0.42</span></label><br>
+                    <input type="range" id="punch-hit-time-slider" min="0.0" max="0.7" step="0.01" value="0.42" style="width: 100%;"><br>
+                    <label>Charge Punch Hit Timing: <span id="charge-punch-hit-time-val">0.28</span></label><br>
+                    <input type="range" id="charge-punch-hit-time-slider" min="0.0" max="0.7" step="0.01" value="0.28" style="width: 100%;"><br>
+                    <label>Combo Hit 1 Timing: <span id="combo-hit1-time-val">0.15</span></label><br>
+                    <input type="range" id="combo-hit1-time-slider" min="0.0" max="0.5" step="0.01" value="0.15" style="width: 100%;"><br>
                 </div>
             </div>
         </div>
@@ -388,6 +394,7 @@
             const mat = new THREE.MeshBasicMaterial({
                 map: punchSpeedParticleTexture,
                 transparent: true,
+                alphaTest: 0.5,
                 opacity: 0.85,
                 depthWrite: false,
                 side: THREE.DoubleSide
@@ -635,13 +642,17 @@
                     this.updateUI(normalizedTime);
 
                     if (this.punchState === 1 || this.punchState === 2 || this.punchState === 5) {
-                        if (normalizedTime >= 0.35 && normalizedTime <= 0.55 && !this.punchesHitFlags[0]) {
+                        const hitStart = this.punchState === 5
+                            ? (window.chargePunchHitTime !== undefined ? window.chargePunchHitTime : 0.35)
+                            : (window.punchHitTime !== undefined ? window.punchHitTime : 0.35);
+                        const hitEnd = hitStart + 0.2;
+                        if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this.punchesHitFlags[0]) {
                             this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
                             this.spawnSwingParticle();
                             this.punchesHitFlags[0] = true;
                         }
                     } else if (this.punchState === 3) {
-                        const comboHitTimes = [0.15, 0.32, 0.48, 0.65, 0.82];
+                        const comboHitTimes = [window.comboHit1Time !== undefined ? window.comboHit1Time : 0.15, 0.32, 0.48, 0.65, 0.82];
                         for (let i = 0; i < 5; i++) {
                             if (normalizedTime >= comboHitTimes[i] && normalizedTime <= (comboHitTimes[i] + 0.15) && !this.punchesHitFlags[i]) {
                                 this.detectMeleeHits(sacks, i, createHitEffectCallback);

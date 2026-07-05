@@ -860,7 +860,10 @@ export function startGame(CharacterClass) {
     window.chargeStreakOpacity = 0.3;
     window.chargeStreakBaseRadius = 0.55;
     window.chargeStreakRadiusSpread = 0.5;
-    window.punchParticleScale = 0.6;
+    window.punchParticleScale = 0.7;
+    window.punchHitTime = 0.42;
+    window.chargePunchHitTime = 0.28;
+    window.comboHit1Time = 0.15;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
 
     document.getElementById('empty-stamina-btn').addEventListener('pointerdown', () => { stamina = 0; document.getElementById('stamina-bar').style.width = '0%'; });
@@ -952,7 +955,10 @@ export function startGame(CharacterClass) {
         { id: 'charge-streak-opacity-slider', vId: 'charge-streak-opacity-val', func: v => window.chargeStreakOpacity = v },
         { id: 'charge-streak-base-radius-slider', vId: 'charge-streak-base-radius-val', func: v => window.chargeStreakBaseRadius = v },
         { id: 'charge-streak-radius-spread-slider', vId: 'charge-streak-radius-spread-val', func: v => window.chargeStreakRadiusSpread = v },
-        { id: 'punch-particle-scale-slider', vId: 'punch-particle-scale-val', func: v => window.punchParticleScale = v }
+        { id: 'punch-particle-scale-slider', vId: 'punch-particle-scale-val', func: v => window.punchParticleScale = v },
+        { id: 'punch-hit-time-slider', vId: 'punch-hit-time-val', func: v => window.punchHitTime = v },
+        { id: 'charge-punch-hit-time-slider', vId: 'charge-punch-hit-time-val', func: v => window.chargePunchHitTime = v },
+        { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v }
     ];
 
     uiBindings.forEach(b => {
