@@ -8,7 +8,28 @@ const _tempQuat2 = new THREE.Quaternion();
 const _tempMat4 = new THREE.Matrix4();
 const _fwdVec = new THREE.Vector3(0, 0, 1);
 
+// Scratch objects reused by applyHingeLimit / updateRagdoll so the 20-iteration
+// constraint solver doesn't allocate fresh Vector3/Quaternion/Box3 every call.
+const _hingeV1 = new THREE.Vector3();
+const _hingeV2 = new THREE.Vector3();
+const _hingeAxis = new THREE.Vector3();
+const _hingeQuat = new THREE.Quaternion();
+const _torsoForward = new THREE.Vector3();
+const _torsoRight = new THREE.Vector3();
+const _particleBox = new THREE.Box3();
+const _obstacleBox = new THREE.Box3();
+const _prevPos = new THREE.Vector3();
+const _boxSize = new THREE.Vector3();
+
 export const RagdollPhysics = {
+    getParticle(id) {
+        if (!this._particleMap) {
+            this._particleMap = new Map();
+            this.ragdollParticles.forEach(p => this._particleMap.set(p.id, p));
+        }
+        return this._particleMap.get(id);
+    },
+
     initRagdoll(initialVelocity = new THREE.Vector3(), intensity = 'high') {
         if (!this.fbxModel || this.isRagdoll) return;
 
@@ -57,8 +78,8 @@ export const RagdollPhysics = {
 
         this.ragdollConstraints = [];
         const addDist = (id1, id2) => {
-            const p1 = this.ragdollParticles.find(p => p.id === id1);
-            const p2 = this.ragdollParticles.find(p => p.id === id2);
+            const p1 = this.getParticle(id1);
+            const p2 = this.getParticle(id2);
             if (p1 && p2 && p1.bone && p2.bone) this.ragdollConstraints.push({ p1, p2, dist: p1.pos.distanceTo(p2.pos) });
         };
 
@@ -69,7 +90,7 @@ export const RagdollPhysics = {
         addDist('hips', 'rThigh'); addDist('rThigh', 'rKnee'); addDist('rKnee', 'rFoot');
         addDist('lShoulder', 'rShoulder'); addDist('lThigh', 'rThigh');
 
-        const getBone = (id) => this.ragdollParticles.find(p => p.id === id)?.bone;
+        const getBone = (id) => this.getParticle(id)?.bone;
 
         this.ragdollLinks = [
             { p1: 'hips', p2: 'spine', bone: getBone('hips') }, { p1: 'spine', p2: 'head', bone: getBone('spine') },
@@ -81,8 +102,8 @@ export const RagdollPhysics = {
 
         this.ragdollLinks.forEach(link => {
             if (link.bone) {
-                const p1 = this.ragdollParticles.find(p => p.id === link.p1);
-                const p2 = this.ragdollParticles.find(p => p.id === link.p2);
+                const p1 = this.getParticle(link.p1);
+                const p2 = this.getParticle(link.p2);
                 if (p1 && p2) {
                     link.initialDir = p2.pos.clone().sub(p1.pos).normalize();
                     link.initialQuat = link.bone.getWorldQuaternion(new THREE.Quaternion());
@@ -126,9 +147,9 @@ export const RagdollPhysics = {
     },
 
     detectFallDirection() {
-        const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
-        const spineP = this.ragdollParticles.find(p => p.id === 'spine');
-        const headP = this.ragdollParticles.find(p => p.id === 'head');
+        const hipsP = this.getParticle('hips');
+        const spineP = this.getParticle('spine');
+        const headP = this.getParticle('head');
         if (!hipsP || !spineP) return 'front';
 
         _tempVec1.set(0, 0, 1).applyQuaternion(this.group.quaternion);
@@ -177,9 +198,9 @@ export const RagdollPhysics = {
         const direction = this.detectFallDirection();
         this.standUpDirection = direction;
 
-        const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
-        const spineP = this.ragdollParticles.find(p => p.id === 'spine');
-        
+        const hipsP = this.getParticle('hips');
+        const spineP = this.getParticle('spine');
+
         const globalTransforms = new Map();
         this.fbxModel.traverse(c => {
             if (c.isBone) {
@@ -240,32 +261,20 @@ export const RagdollPhysics = {
         this.activeAction = standUpAction;
     },
 
-    applyHingeLimit(id1, id2, id3, minAngle, maxAngle, isKnee = false, isElbow = false, isHip = false) {
-        const p1 = this.ragdollParticles.find(p => p.id === id1);
-        const p2 = this.ragdollParticles.find(p => p.id === id2);
-        const p3 = this.ragdollParticles.find(p => p.id === id3);
+    applyHingeLimit(id1, id2, id3, minAngle, maxAngle, isKnee = false, isElbow = false, isHip = false, torsoForward, torsoRight) {
+        const p1 = this.getParticle(id1);
+        const p2 = this.getParticle(id2);
+        const p3 = this.getParticle(id3);
         if (!p1 || !p2 || !p3) return;
 
-        const v1 = new THREE.Vector3().subVectors(p1.pos, p2.pos);
-        const v2 = new THREE.Vector3().subVectors(p3.pos, p2.pos);
+        const v1 = _hingeV1.subVectors(p1.pos, p2.pos);
+        const v2 = _hingeV2.subVectors(p3.pos, p2.pos);
         const d1 = v1.length();
         const d2 = v2.length();
         if (d1 < 0.001 || d2 < 0.001) return;
 
         v1.normalize();
         v2.normalize();
-
-        const pHips = this.ragdollParticles.find(p => p.id === 'hips');
-        const pSpine = this.ragdollParticles.find(p => p.id === 'spine');
-        const pLShoulder = this.ragdollParticles.find(p => p.id === 'lShoulder');
-        const pRShoulder = this.ragdollParticles.find(p => p.id === 'rShoulder');
-
-        let torsoForward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
-        if (pHips && pSpine && pLShoulder && pRShoulder) {
-            const torsoUp = _tempVec1.subVectors(pSpine.pos, pHips.pos).normalize();
-            const torsoRight = _tempVec2.subVectors(pRShoulder.pos, pLShoulder.pos).normalize();
-            torsoForward.crossVectors(torsoRight, torsoUp).normalize();
-        }
 
         if (isKnee) {
             const dotForward = v2.dot(torsoForward);
@@ -284,14 +293,26 @@ export const RagdollPhysics = {
             }
         }
 
+        if (isKnee || isElbow) {
+            const maxLateralDrift = 0.15;
+            const lat1 = v1.dot(torsoRight);
+            const lat2 = v2.dot(torsoRight);
+            const latDiff = lat2 - lat1;
+            if (Math.abs(latDiff) > maxLateralDrift) {
+                const stiffness = window.ragdollLateralStiffness !== undefined ? window.ragdollLateralStiffness : 0.5;
+                const excess = (latDiff - Math.sign(latDiff) * maxLateralDrift) * stiffness;
+                v2.addScaledVector(torsoRight, -excess).normalize();
+            }
+        }
+
         const dot = v1.dot(v2);
         const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
 
         if (angle < minAngle || angle > maxAngle) {
             const targetAngle = Math.max(minAngle, Math.min(maxAngle, angle));
-            const axis = new THREE.Vector3().crossVectors(v1, v2).normalize();
+            const axis = _hingeAxis.crossVectors(v1, v2).normalize();
             if (axis.lengthSq() < 0.001) axis.set(0, 1, 0);
-            const q = new THREE.Quaternion().setFromAxisAngle(axis, targetAngle - angle);
+            const q = _hingeQuat.setFromAxisAngle(axis, targetAngle - angle);
             v2.applyQuaternion(q).normalize().multiplyScalar(d2);
             p3.pos.copy(p2.pos).add(v2);
         }
@@ -300,7 +321,7 @@ export const RagdollPhysics = {
     updateRagdoll(delta, collidables, floorY) {
         if (!this.isRagdoll) return;
         this.ragdollTimer += delta;
-        const gravity = 30; const damping = 0.95;
+        const gravity = 30; const damping = window.ragdollDamping !== undefined ? window.ragdollDamping : 0.95;
 
         this.ragdollParticles.forEach(p => {
             const tempX = p.pos.x, tempY = p.pos.y, tempZ = p.pos.z;
@@ -334,12 +355,25 @@ export const RagdollPhysics = {
                 }
             });
 
-            this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3, true, false, false); 
-            this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3, true, false, false); 
-            this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5, false, true, false); 
-            this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5, false, true, false); 
-            this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0, false, false, true); 
-            this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0, false, false, true); 
+            const pHips = this.getParticle('hips');
+            const pSpine = this.getParticle('spine');
+            const pLShoulder = this.getParticle('lShoulder');
+            const pRShoulder = this.getParticle('rShoulder');
+
+            _torsoForward.set(0, 0, 1).applyQuaternion(this.group.quaternion);
+            _torsoRight.set(1, 0, 0).applyQuaternion(this.group.quaternion);
+            if (pHips && pSpine && pLShoulder && pRShoulder) {
+                const torsoUp = _tempVec2.subVectors(pSpine.pos, pHips.pos).normalize();
+                _torsoRight.subVectors(pRShoulder.pos, pLShoulder.pos).normalize();
+                _torsoForward.crossVectors(_torsoRight, torsoUp).normalize();
+            }
+
+            this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3, true, false, false, _torsoForward, _torsoRight);
+            this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3, true, false, false, _torsoForward, _torsoRight);
+            this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5, false, true, false, _torsoForward, _torsoRight);
+            this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5, false, true, false, _torsoForward, _torsoRight);
+            this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0, false, false, true, _torsoForward, _torsoRight);
+            this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0, false, false, true, _torsoForward, _torsoRight);
 
             this.ragdollParticles.forEach(p => {
                 if (p.pos.y < p.radius) {
@@ -348,9 +382,10 @@ export const RagdollPhysics = {
                     p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
                 }
                 
-                const particleBox = new THREE.Box3();
-                particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
-                const obstacleBox = new THREE.Box3();
+                const particleBox = _particleBox;
+                _boxSize.set(p.radius * 2, p.radius * 2, p.radius * 2);
+                particleBox.setFromCenterAndSize(p.pos, _boxSize);
+                const obstacleBox = _obstacleBox;
 
                 collidables.forEach(obj => {
                     if (obj === window.ground) return;
@@ -360,7 +395,7 @@ export const RagdollPhysics = {
                         const dist = p.pos.distanceTo(obj.position);
                         const minDist = radius + p.radius;
                         if (dist < minDist) {
-                            const prevPos = p.pos.clone();
+                            const prevPos = _prevPos.copy(p.pos);
                             const normal = _tempVec3.subVectors(p.pos, obj.position).normalize();
                             p.pos.copy(obj.position).addScaledVector(normal, minDist);
                             const displacement = _tempVec1.subVectors(p.pos, prevPos);
@@ -370,13 +405,13 @@ export const RagdollPhysics = {
                     }
 
                     if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
-                    
+
                     if (particleBox.intersectsBox(obstacleBox)) {
-                        const prevPos = p.pos.clone();
+                        const prevPos = _prevPos.copy(p.pos);
                         const overlapX = Math.min(particleBox.max.x - obstacleBox.min.x, obstacleBox.max.x - particleBox.min.x);
                         const overlapY = Math.min(particleBox.max.y - obstacleBox.min.y, obstacleBox.max.y - particleBox.min.y);
                         const overlapZ = Math.min(particleBox.max.z - obstacleBox.min.z, obstacleBox.max.z - particleBox.min.z);
-                        
+
                         if (overlapX < overlapY && overlapX < overlapZ) {
                             p.pos.x += Math.sign(p.pos.x - obj.position.x) * overlapX;
                         } else if (overlapY < overlapX && overlapY < overlapZ) {
@@ -391,13 +426,13 @@ export const RagdollPhysics = {
 
                         const displacement = _tempVec3.subVectors(p.pos, prevPos);
                         if (displacement.lengthSq() > 0.0001) p.oldPos.add(displacement);
-                        particleBox.setFromCenterAndSize(p.pos, new THREE.Vector3(p.radius * 2, p.radius * 2, p.radius * 2));
+                        particleBox.setFromCenterAndSize(p.pos, _boxSize);
                     }
                 });
             });
         }
 
-        const hipsP = this.ragdollParticles.find(p => p.id === 'hips');
+        const hipsP = this.getParticle('hips');
         if (hipsP && this.hips) {
             this.hips.position.copy(this.hips.parent.worldToLocal(_tempVec1.copy(hipsP.pos)));
             this.hips.updateMatrixWorld(true);
@@ -405,8 +440,8 @@ export const RagdollPhysics = {
         
         this.ragdollLinks.forEach(link => {
             if (link.bone) {
-                const p1 = this.ragdollParticles.find(p => p.id === link.p1);
-                const p2 = this.ragdollParticles.find(p => p.id === link.p2);
+                const p1 = this.getParticle(link.p1);
+                const p2 = this.getParticle(link.p2);
                 if (p1 && p2) {
                     _tempVec1.subVectors(p2.pos, p1.pos).normalize();
                     if (link.initialDir && _tempVec1.lengthSq() > 0.1 && link.initialDir.lengthSq() > 0.1) {

@@ -11,20 +11,53 @@ export class Sandbag {
                 this.recoilVelocity = new THREE.Vector2();
                 this.meshes = [];
                 this.flashTimer = 0;
-                this.whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                this.flashDuration = 0.15;
+                this.flashStrength = 1.0;
 
                 const loader = new FBXLoader();
                 loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
                     fbx.scale.setScalar(0.0065);
                     this.group.add(fbx);
-                    
+
                     fbx.traverse(c => {
                         if (c.isMesh) {
                             const origMat = new THREE.MeshToonMaterial({ color: 0xd5c4a1, gradientMap: threeTone });
+                            const rimUniform = { value: 0.0 };
+                            origMat.onBeforeCompile = (shader) => {
+                                shader.uniforms.rimIntensity = rimUniform;
+                                shader.vertexShader = shader.vertexShader
+                                    .replace(
+                                        '#include <common>',
+                                        `#include <common>
+                                        varying vec3 vRimNormal;
+                                        varying vec3 vRimViewDir;`
+                                    )
+                                    .replace(
+                                        '#include <project_vertex>',
+                                        `#include <project_vertex>
+                                        vRimNormal = normalize(transformedNormal);
+                                        vRimViewDir = normalize(-mvPosition.xyz);`
+                                    );
+                                shader.fragmentShader = shader.fragmentShader
+                                    .replace(
+                                        '#include <common>',
+                                        `#include <common>
+                                        uniform float rimIntensity;
+                                        varying vec3 vRimNormal;
+                                        varying vec3 vRimViewDir;`
+                                    )
+                                    .replace(
+                                        '#include <dithering_fragment>',
+                                        `#include <dithering_fragment>
+                                        float rimFactor = 1.0 - max(dot(normalize(vRimNormal), normalize(vRimViewDir)), 0.0);
+                                        rimFactor = pow(rimFactor, 2.0) * rimIntensity;
+                                        gl_FragColor.rgb += vec3(1.0) * rimFactor;`
+                                    );
+                            };
                             c.material = origMat;
                             c.castShadow = true;
                             c.receiveShadow = true;
-                            this.meshes.push({ mesh: c, originalMaterial: origMat });
+                            this.meshes.push({ mesh: c, originalMaterial: origMat, rimUniform });
                         }
                         if (c.isBone && c.name.toLowerCase().includes('spine')) {
                             this.bones.push({ bone: c, defaultQuat: c.quaternion.clone() });
@@ -61,7 +94,8 @@ this.colliderMesh.userData.isWall = true;
                 let localDir = direction.clone().applyQuaternion(this.group.quaternion.clone().invert()).normalize();
                 this.recoilVelocity.x += localDir.x * magnitude * 0.3;
                 this.recoilVelocity.y += localDir.z * magnitude * 0.3;
-                this.flashTimer = 0.15;
+                this.flashTimer = this.flashDuration;
+                this.flashStrength = Math.min(3.0, magnitude / 40);
             }
 
             update(delta) {
@@ -100,9 +134,10 @@ this.colliderMesh.userData.isWall = true;
 
                 if (this.flashTimer > 0) {
                     this.flashTimer -= delta;
-                    this.meshes.forEach(mObj => { mObj.mesh.material = this.whiteMat; });
+                    const t = (Math.max(0, this.flashTimer) / this.flashDuration) * this.flashStrength;
+                    this.meshes.forEach(mObj => { mObj.rimUniform.value = t; });
                 } else {
-                    this.meshes.forEach(mObj => { mObj.mesh.material = mObj.originalMaterial; });
+                    this.meshes.forEach(mObj => { mObj.rimUniform.value = 0; });
                 }
             }
         }

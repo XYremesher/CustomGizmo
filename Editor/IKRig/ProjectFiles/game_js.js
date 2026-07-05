@@ -121,6 +121,7 @@ export function startGame(CharacterClass) {
     scene.add(dirLight); scene.add(dirLight.target);
 
     const collidables = [];
+    window.collidables = collidables;
     const levelGroup = new THREE.Group();
     scene.add(levelGroup);
 
@@ -326,6 +327,41 @@ export function startGame(CharacterClass) {
     }
     window.getObstacleBox = getObstacleBox;
 
+    const _hangBox = new THREE.Box3();
+    const _hangObstacleBox = new THREE.Box3();
+    function isVerticalSpaceClear(x, bottomY, topY, z, excludeObj, excludeObj2, label) {
+        const bodyRadius = 0.45;
+        _hangBox.min.set(x - bodyRadius, bottomY, z - bodyRadius);
+        _hangBox.max.set(x + bodyRadius, topY, z + bodyRadius);
+        for (let k = 0; k < collidables.length; k++) {
+            const obj = collidables[k];
+            if (obj === ground || obj === excludeObj || obj === excludeObj2) continue;
+            getObstacleBox(obj, _hangObstacleBox);
+            if (_hangBox.intersectsBox(_hangObstacleBox)) {
+                if (label) console.log(`[ledge-debug] ${label} BLOCKED by`, obj.name || obj.uuid, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'obstacleBox', _hangObstacleBox.min.toArray(), _hangObstacleBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+                return false;
+            }
+        }
+        if (label) console.log(`[ledge-debug] ${label} CLEAR`, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+        return true;
+    }
+    function findNearestObstacle(x, y, z, maxDist) {
+        const point = new THREE.Vector3(x, y, z);
+        for (let k = 0; k < collidables.length; k++) {
+            const obj = collidables[k];
+            if (obj === ground) continue;
+            getObstacleBox(obj, _hangObstacleBox);
+            if (_hangObstacleBox.distanceToPoint(point) < maxDist) return obj;
+        }
+        return null;
+    }
+    function isHangPositionClear(x, groupY, z, excludeObj, excludeObj2) {
+        return isVerticalSpaceClear(x, groupY, groupY + 1.85 + 0.15, z, excludeObj, excludeObj2, 'HANG');
+    }
+    function isStandPositionClear(x, feetY, z, excludeObj, excludeObj2) {
+        return isVerticalSpaceClear(x, feetY, feetY + 1.8, z, excludeObj, excludeObj2, 'STAND');
+    }
+
     function buildLevelFromJson(data) {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
@@ -393,6 +429,18 @@ export function startGame(CharacterClass) {
         c.debugHelper = helperMesh;
     }
 
+    function buildNarrowLedgeTestRig(x, z, gap) {
+        const lower = new THREE.Mesh(boxGeoTemplate, platMat);
+        lower.position.set(x, cubeSize/2, z);
+        lower.castShadow = true; lower.receiveShadow = true;
+        levelGroup.add(lower); collidables.push(lower);
+
+        const upper = new THREE.Mesh(boxGeoTemplate, platMat);
+        upper.position.set(x, cubeSize + gap + cubeSize/2, z);
+        upper.castShadow = true; upper.receiveShadow = true;
+        levelGroup.add(upper); collidables.push(upper);
+    }
+
     function buildStairsLevel() {
         const hemisphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshToonMaterial({ color: 0xaa5555, gradientMap: threeTone }));
         hemisphere.position.set(10, 0, -10); hemisphere.castShadow = true; hemisphere.receiveShadow = true;
@@ -406,9 +454,14 @@ export function startGame(CharacterClass) {
         for (let i = 0; i < 6; i++) {
             const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
             mesh.position.set(0, cubeSize/2 + i * cubeSize * 0.9, -10 - i * cubeSize);
+            mesh.name = 'stair_' + i;
             mesh.castShadow = true; mesh.receiveShadow = true;
             levelGroup.add(mesh); collidables.push(mesh);
         }
+
+        buildNarrowLedgeTestRig(15, 8, 1.2);
+        buildNarrowLedgeTestRig(20, 8, 0.4);
+        buildNarrowLedgeTestRig(25, 8, 0);
 
         const sLow = new ShooterBox(levelGroup, 25, 1.0, 4.5, 'low');
         shooters.push(sLow); collidables.push(sLow.mesh);
@@ -508,6 +561,13 @@ export function startGame(CharacterClass) {
                     buildLevelFromJson(await res.json());
                 }
             } catch(e) { buildStairsLevel(); }
+        }
+
+        if (window.sacks) {
+            window.sacks.forEach(s => {
+                const c = s.getCollider ? s.getCollider() : null;
+                if (c && !collidables.includes(c)) collidables.push(c);
+            });
         }
     }
 
@@ -795,6 +855,11 @@ export function startGame(CharacterClass) {
     window.throwSpeedMult = 1.0;
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 35.0;
+    window.ragdollLateralStiffness = 0.0;
+    window.ragdollDamping = 0.93;
+    window.chargeStreakOpacity = 0.3;
+    window.chargeStreakBaseRadius = 0.55;
+    window.chargeStreakRadiusSpread = 0.5;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
 
     document.getElementById('empty-stamina-btn').addEventListener('pointerdown', () => { stamina = 0; document.getElementById('stamina-bar').style.width = '0%'; });
@@ -824,7 +889,13 @@ export function startGame(CharacterClass) {
             } else if (keys.w) isHoldingUp = true;
 
             if (isHoldingUp || mag < 0.3) {
-                isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false; 
+                const climbFwd = _tempVec1.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+                const standX = ledgeTarget.x + climbFwd.x * 0.25;
+                const standZ = ledgeTarget.z + climbFwd.z * 0.25;
+                const standFeetY = ledgeTarget.y + 0.05;
+                if (isStandPositionClear(standX, standFeetY, standZ, null)) {
+                    isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false;
+                }
             } else {
                 isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 10 * ledgeJumpMultiplier;
                 _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
@@ -874,7 +945,12 @@ export function startGame(CharacterClass) {
         { id: 'proj-size-slider', vId: 'proj-size-val', func: v => projSize = v, raw: true },
         { id: 'proj-speed-slider', vId: 'proj-speed-val', func: v => projSpeed = v, raw: true },
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
-        { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 }
+        { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
+        { id: 'ragdoll-lateral-stiffness-slider', vId: 'ragdoll-lateral-stiffness-val', func: v => window.ragdollLateralStiffness = v },
+        { id: 'ragdoll-damping-slider', vId: 'ragdoll-damping-val', func: v => window.ragdollDamping = v },
+        { id: 'charge-streak-opacity-slider', vId: 'charge-streak-opacity-val', func: v => window.chargeStreakOpacity = v },
+        { id: 'charge-streak-base-radius-slider', vId: 'charge-streak-base-radius-val', func: v => window.chargeStreakBaseRadius = v },
+        { id: 'charge-streak-radius-spread-slider', vId: 'charge-streak-radius-spread-val', func: v => window.chargeStreakRadiusSpread = v }
     ];
 
     uiBindings.forEach(b => {
@@ -908,7 +984,9 @@ export function startGame(CharacterClass) {
     function animate() {
         requestAnimationFrame(animate);
         const delta = Math.min(clock.getDelta(), 0.1), time = Date.now()*0.001;
-        
+
+        char.updateHitFlash(delta);
+
         const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
 
         if (Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05) {
@@ -962,10 +1040,15 @@ export function startGame(CharacterClass) {
             }
 
             if (hitAnything) {
-                floorY = highestY;
-                if (groundNormal.angleTo(_upVec) > Math.PI * 0.22 && isGrounded && !isLedgeGrabbing && !isClimbingUp) { 
-                    isSliding = true;
-                    char.group.position.add(_tempVec3.set(groundNormal.x, 0, groundNormal.z).normalize().multiplyScalar(15 * delta));
+                const isSteppingUp = highestY > char.group.position.y + 0.05;
+                if (isSteppingUp && !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null)) {
+                    floorY = char.group.position.y;
+                } else {
+                    floorY = highestY;
+                    if (groundNormal.angleTo(_upVec) > Math.PI * 0.22 && isGrounded && !isLedgeGrabbing && !isClimbingUp) {
+                        isSliding = true;
+                        char.group.position.add(_tempVec3.set(groundNormal.x, 0, groundNormal.z).normalize().multiplyScalar(15 * delta));
+                    }
                 }
             } else floorY = 0;
         }
@@ -1052,6 +1135,8 @@ export function startGame(CharacterClass) {
 
             const projRadius = p.radius || 0.3;
             if (!char.isRagdoll && p.mesh.position.distanceTo(targetPos) < (0.9 + projRadius)) {
+                const flashStrengthByIntensity = { low: 0.5, medium: 0.9, medium_high: 1.4, high: 2.5 };
+                char.triggerHitFlash(flashStrengthByIntensity[p.intensity] || 2.5);
                 if (p.intensity === 'high') {
                     char.initRagdoll(p.velocity, p.intensity);
                     isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 0;
@@ -1272,6 +1357,9 @@ export function startGame(CharacterClass) {
                 }
 
                 char.climbTransitionTimer = climbTransitionDuration; char.climbTransitionMax = climbTransitionDuration;
+                char.climbLockedWorldPos = null;
+                char.smoothedArrowPos = new THREE.Vector3(0, 0.05, 0);
+                if (char.playerArrowGroup) char.playerArrowGroup.position.copy(char.smoothedArrowPos);
                 isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0; ledgeGrabCooldown = 0.5;
             }
         } else if (isLedgeGrabbing) {
@@ -1324,8 +1412,15 @@ export function startGame(CharacterClass) {
                 if (!ledgeMoveLocked) currentPushS = pS;
                 
                 if (ledgeGrabTimer > 0.15) {
-                    if (pCD > 0.6) { isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false; }
-                    else if (pCD < -0.6) { 
+                    if (pCD > 0.6) {
+                        const standX = ledgeTarget.x + charFwd.x * 0.25;
+                        const standZ = ledgeTarget.z + charFwd.z * 0.25;
+                        const standFeetY = ledgeTarget.y + 0.05;
+                        if (isStandPositionClear(standX, standFeetY, standZ, null)) {
+                            isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false;
+                        }
+                    }
+                    else if (pCD < -0.6) {
                         isLedgeGrabbing = false; lockedHintAngle = null; yVelocity = -3; ledgeGrabCooldown = 0.5; 
                         const pushBackVec = _tempVec1.set(0, 0, -1).applyQuaternion(char.group.quaternion);
                         char.group.position.addScaledVector(pushBackVec, ledgeDropPushback);
@@ -1336,37 +1431,44 @@ export function startGame(CharacterClass) {
                 if (Math.abs(pS) > 0.1 && !ledgeMoveLocked) {
                     const mDir = actualRgt.clone().multiplyScalar(-Math.sign(pS));
                     let handled = false;
-                    
-                    const targetHead = _tempVec1.copy(chest).setY(char.group.position.y + 2.0).add(mDir.clone().multiplyScalar(0.5));
-                    const headRayFwd = new THREE.Raycaster(targetHead, charFwd);
-                    const headHits = headRayFwd.intersectObjects(solidCollidables.filter(c => c !== ground));
-                    const isHeadBlocked = headHits.length > 0 && headHits[0].distance < 0.8;
 
                     const sideRay = new THREE.Raycaster(chest, mDir);
                     const sH = sideRay.intersectObjects(solidCollidables);
                     const isBlockedByWall = sH.length > 0 && sH[0].distance < 0.65;
-                    const isBlocked = isHeadBlocked || (isBlockedByWall && !handled);
+                    const isBlocked = isBlockedByWall && !handled;
 
                     if (sH.length > 0 && sH[0].distance < 0.8 && !isBlocked) {
                         const n = sH[0].face.normal.clone().transformDirection(sH[0].object.matrixWorld).setY(0).normalize();
                         const top = sH[0].point.clone().add(n.clone().multiplyScalar(-0.2)).setY(sH[0].point.y+2.0);
                         rayDown.set(top, _downVec); const h = rayDown.intersectObjects(solidCollidables);
                         if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
-                            char.group.position.copy(sH[0].point.clone().add(n.clone().multiplyScalar(ledgeOffset)).setY(h[0].point.y-1.85));
-                            ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
+                            const candX = sH[0].point.x + n.x*ledgeOffset;
+                            const candZ = sH[0].point.z + n.z*ledgeOffset;
+                            const candGroupY = h[0].point.y - 1.85;
+                            const currentWallObj2 = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
+                            if (isHangPositionClear(candX, candGroupY, candZ, sH[0].object, currentWallObj2)) {
+                                char.group.position.set(candX, candGroupY, candZ);
+                                ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
+                            }
                         }
                     }
                     if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
-                        char.group.position.add(mDir.multiplyScalar(4*delta));
+                        _tempVec3.copy(char.group.position).addScaledVector(mDir, 4*delta);
+                        const currentWallObj = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
 
-                        _tempVec2.copy(char.group.position).setY(char.group.position.y + 1.1);
-                        rayFwd.set(_tempVec2, charFwd);
-                        const freshWallHits = rayFwd.intersectObjects(solidCollidables);
-                        if (freshWallHits.length > 0 && freshWallHits[0].distance < 0.8) {
-                            _tempVec3.copy(freshWallHits[0].point).addScaledVector(charFwd, 0.2).setY(freshWallHits[0].point.y + 3.0);
-                            rayDown.set(_tempVec3, _downVec);
-                            const freshLedgeHits = rayDown.intersectObjects(solidCollidables);
-                            if (freshLedgeHits.length > 0) ledgeTarget.copy(freshLedgeHits[0].point);
+                        if (isHangPositionClear(_tempVec3.x, _tempVec3.y, _tempVec3.z, currentWallObj)) {
+                            char.group.position.copy(_tempVec3);
+
+                            const freshFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion);
+                            _tempVec2.copy(char.group.position).setY(char.group.position.y + 1.1);
+                            rayFwd.set(_tempVec2, freshFwd);
+                            const freshWallHits = rayFwd.intersectObjects(solidCollidables);
+                            if (freshWallHits.length > 0 && freshWallHits[0].distance < 0.8) {
+                                _tempVec3.copy(freshWallHits[0].point).addScaledVector(freshFwd, 0.2).setY(freshWallHits[0].point.y + 3.0);
+                                rayDown.set(_tempVec3, _downVec);
+                                const freshLedgeHits = rayDown.intersectObjects(solidCollidables);
+                                if (freshLedgeHits.length > 0) ledgeTarget.copy(freshLedgeHits[0].point);
+                            }
                         }
                     }
                     else if (isBlocked) currentPushS = 0;
@@ -1552,16 +1654,18 @@ export function startGame(CharacterClass) {
                 rayFwd.set(chest, fwd); const wH = rayFwd.intersectObjects(solidCollidables);
                 if (wH.length > 0 && wH[0].distance < 0.8) {
                     const n = wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld).setY(0).normalize();
-                    rayFwd.set(_tempVec3.copy(chest).setY(chest.y + cubeSize), fwd);
-                    const headClearHits = rayFwd.intersectObjects(collidables);
-                    if (!(headClearHits.length > 0 && headClearHits[0].distance < 0.8)) {
-                        const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
-                        rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
-                        if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
+                    const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
+                    rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
+                    if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
+                        const hangX = wH[0].point.x + n.x*ledgeOffset;
+                        const hangZ = wH[0].point.z + n.z*ledgeOffset;
+                        const hangGroupY = lH[0].point.y - 1.85;
+
+                        if (isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
                             isLedgeGrabbing = true; ledgeMoveLocked = true;
                             if (yVelocity < -22) { isSlipping = true; slipTimer = 0; } else isSlipping = false;
                             yVelocity = 0; ledgeTarget.copy(lH[0].point);
-                            char.group.position.y = lH[0].point.y-1.85; char.group.position.x = wH[0].point.x + n.x*ledgeOffset; char.group.position.z = wH[0].point.z + n.z*ledgeOffset;
+                            char.group.position.y = hangGroupY; char.group.position.x = hangX; char.group.position.z = hangZ;
                             char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); jumpMomentum.set(0,0,0);
                         }
                     }
@@ -1570,9 +1674,20 @@ export function startGame(CharacterClass) {
             if (jumpMomentum.lengthSq() > 0.01) { char.group.position.add(_tempVec1.copy(jumpMomentum).multiplyScalar(delta)); jumpMomentum.lerp(_tempVec2.set(0,0,0), 4*delta); }
             
             let wasGrounded = isGrounded;
-            if (char.group.position.y + yVelocity*delta > floorY + 0.01) { 
-                yVelocity -= 30*delta; isGrounded = false; char.group.position.y += yVelocity*delta; 
-            } else { 
+            if (char.group.position.y + yVelocity*delta > floorY + 0.01) {
+                yVelocity -= 30*delta;
+                if (yVelocity > 0) {
+                    const headOrigin = _tempVec3.copy(char.group.position).setY(char.group.position.y + 1.7);
+                    const ceilRay = new THREE.Raycaster(headOrigin, _upVec);
+                    const ceilHits = ceilRay.intersectObjects(solidCollidables);
+                    const ceilThreshold = yVelocity*delta + 0.15;
+                    if (ceilHits.length > 0 && ceilHits[0].distance < ceilThreshold + 2.0) {
+                        console.log('[ceil-debug]', 'blocked=', ceilHits[0].distance < ceilThreshold, 'dist=', ceilHits[0].distance.toFixed(3), 'threshold=', ceilThreshold.toFixed(3), 'obj=', ceilHits[0].object.name || ceilHits[0].object.uuid, 'headOrigin=', headOrigin.toArray().map(n=>n.toFixed(2)), 'hitPoint=', ceilHits[0].point.toArray().map(n=>n.toFixed(2)));
+                    }
+                    if (ceilHits.length > 0 && ceilHits[0].distance < ceilThreshold) yVelocity = 0;
+                }
+                isGrounded = false; char.group.position.y += yVelocity*delta;
+            } else {
                 char.group.position.y = floorY; isGrounded = true; 
                 if (!wasGrounded) {
                     if (yVelocity < -22 && !char.isRagdoll) {

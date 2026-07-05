@@ -180,6 +180,28 @@
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label>
                 </div>
             </div>
+
+            <div class="category">
+                <div class="category-header">Ragdoll Tuning</div>
+                <div class="category-content">
+                    <label>Lateral Hinge Stiffness: <span id="ragdoll-lateral-stiffness-val">0.00</span></label><br>
+                    <input type="range" id="ragdoll-lateral-stiffness-slider" min="0.0" max="1.0" step="0.05" value="0.0" style="width: 100%;"><br>
+                    <label>Ragdoll Damping: <span id="ragdoll-damping-val">0.93</span></label><br>
+                    <input type="range" id="ragdoll-damping-slider" min="0.80" max="0.99" step="0.01" value="0.93" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">Charge Effect</div>
+                <div class="category-content">
+                    <label>Streak Opacity: <span id="charge-streak-opacity-val">0.30</span></label><br>
+                    <input type="range" id="charge-streak-opacity-slider" min="0.0" max="1.0" step="0.05" value="0.3" style="width: 100%;"><br>
+                    <label>Streak Base Radius: <span id="charge-streak-base-radius-val">0.55</span></label><br>
+                    <input type="range" id="charge-streak-base-radius-slider" min="0.2" max="2.5" step="0.05" value="0.55" style="width: 100%;"><br>
+                    <label>Streak Radius Spread: <span id="charge-streak-radius-spread-val">0.50</span></label><br>
+                    <input type="range" id="charge-streak-radius-spread-slider" min="0.0" max="1.5" step="0.05" value="0.5" style="width: 100%;"><br>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -294,10 +316,41 @@
 
         window.createHitEffect = function(pos) {
             if (!window.gameScene) return;
+            const hitGeo = new THREE.OctahedronGeometry(0.1, 0);
+
+            const visibleMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 1.0,
+                depthTest: true,
+                depthWrite: false
+            });
+            const hiddenMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.25,
+                depthTest: false,
+                depthWrite: false
+            });
+
+            const visibleMesh = new THREE.Mesh(hitGeo, visibleMat);
+            const hiddenMesh = new THREE.Mesh(hitGeo, hiddenMat);
+            visibleMesh.position.copy(pos);
+            hiddenMesh.position.copy(pos);
+            hiddenMesh.renderOrder = 1;
+            visibleMesh.renderOrder = 2;
+
+            window.gameScene.add(visibleMesh);
+            window.gameScene.add(hiddenMesh);
+            window.hitEffects.push({ visibleMesh, hiddenMesh, life: 1.0 });
+        };
+
+        window.createHandHitEffect = function(pos) {
+            if (!window.gameScene) return;
             const hitGeo = new THREE.SphereGeometry(0.35, 8, 8);
-            const hitMat = new THREE.MeshBasicMaterial({ 
-                color: 0xffff00, 
-                transparent: true, 
+            const hitMat = new THREE.MeshBasicMaterial({
+                color: 0xffff00,
+                transparent: true,
                 opacity: 1.0,
                 depthTest: false,
                 depthWrite: false
@@ -319,12 +372,14 @@
                 this.punchTimer = 0;
                 this.nextPunchQueued = false;
                 this.punchesHitFlags = [false, false, false, false, false];
+                this.chargeEffect = null;
             }
 
             startChargePunch() {
                 this.punchState = 4;
                 this.punchTimer = 0;
                 this.char.fadeToAction('punch_charge_hold', 0.1);
+                this.startChargeEffect();
             }
 
             releaseChargePunch() {
@@ -332,6 +387,93 @@
                 this.punchTimer = 0;
                 this.punchesHitFlags = [false, false, false, false, false];
                 this.char.fadeToAction('punch_charge_punch', 0.05);
+                this.stopChargeEffect();
+            }
+
+            startChargeEffect() {
+                if (this.chargeEffect || !window.gameScene) return;
+
+                const glowGeo = new THREE.SphereGeometry(0.18, 12, 12);
+                const glowMat = new THREE.MeshBasicMaterial({
+                    color: 0xffee44,
+                    transparent: true,
+                    opacity: 0.8,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+                const glow = new THREE.Mesh(glowGeo, glowMat);
+                window.gameScene.add(glow);
+
+                const streakGeo = new THREE.BoxGeometry(0.04, 0.04, 0.5);
+                const streakMat = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+
+                const streaks = [];
+                for (let i = 0; i < 8; i++) {
+                    const mesh = new THREE.Mesh(streakGeo, streakMat);
+                    window.gameScene.add(mesh);
+                    const streak = { mesh };
+                    this.resetStreak(streak);
+                    streak.progress = Math.random();
+                    streaks.push(streak);
+                }
+
+                this.chargeEffect = { glow, streaks, streakGeo, streakMat, time: 0 };
+            }
+
+            resetStreak(streak) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                streak.dir = new THREE.Vector3(
+                    Math.sin(phi) * Math.cos(theta),
+                    Math.sin(phi) * Math.sin(theta),
+                    Math.cos(phi)
+                );
+                const baseRadius = window.chargeStreakBaseRadius !== undefined ? window.chargeStreakBaseRadius : 0.55;
+                const radiusSpread = window.chargeStreakRadiusSpread !== undefined ? window.chargeStreakRadiusSpread : 0.5;
+                streak.radius = baseRadius + Math.random() * radiusSpread;
+                streak.progress = 0;
+                streak.speed = 0.8 + Math.random() * 0.6;
+            }
+
+            updateChargeEffect(delta) {
+                if (!this.chargeEffect || !this.char.rightHandBone) return;
+                const handPos = new THREE.Vector3();
+                this.char.rightHandBone.getWorldPosition(handPos);
+
+                this.chargeEffect.time += delta;
+                this.chargeEffect.glow.position.copy(handPos);
+                const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+                this.chargeEffect.glow.scale.setScalar(pulse);
+                this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
+
+                const streakPos = new THREE.Vector3();
+                this.chargeEffect.streaks.forEach(streak => {
+                    streak.progress += streak.speed * delta;
+                    if (streak.progress >= 1) this.resetStreak(streak);
+
+                    const dist = streak.radius * (1 - streak.progress);
+                    streakPos.copy(handPos).addScaledVector(streak.dir, dist);
+                    streak.mesh.position.copy(streakPos);
+                    streak.mesh.lookAt(handPos);
+                    streak.mesh.scale.set(1, 1, 1 - streak.progress * 0.3);
+                });
+            }
+
+            stopChargeEffect() {
+                if (!this.chargeEffect) return;
+                window.gameScene.remove(this.chargeEffect.glow);
+                this.chargeEffect.glow.geometry.dispose();
+                this.chargeEffect.glow.material.dispose();
+                this.chargeEffect.streaks.forEach(s => window.gameScene.remove(s.mesh));
+                this.chargeEffect.streakGeo.dispose();
+                this.chargeEffect.streakMat.dispose();
+                this.chargeEffect = null;
             }
 
             triggerPunch() {
@@ -358,11 +500,19 @@
 
             detectMeleeHits(sacks, hitIndex, createHitEffectCallback) {
                 let hitCenter = new THREE.Vector3();
-                let useLeftHand = (this.punchState === 1) || (this.punchState === 3 && (hitIndex === 0 || hitIndex === 2));
+                const fwdCheck = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion).normalize();
 
-                if (useLeftHand && this.char.leftHandBone) {
+                if (this.char.leftHandBone && this.char.rightHandBone) {
+                    const leftPos = new THREE.Vector3();
+                    const rightPos = new THREE.Vector3();
+                    this.char.leftHandBone.getWorldPosition(leftPos);
+                    this.char.rightHandBone.getWorldPosition(rightPos);
+                    const leftReach = leftPos.clone().sub(this.char.group.position).dot(fwdCheck);
+                    const rightReach = rightPos.clone().sub(this.char.group.position).dot(fwdCheck);
+                    hitCenter.copy(leftReach >= rightReach ? leftPos : rightPos);
+                } else if (this.char.leftHandBone) {
                     this.char.leftHandBone.getWorldPosition(hitCenter);
-                } else if (!useLeftHand && this.char.rightHandBone) {
+                } else if (this.char.rightHandBone) {
                     this.char.rightHandBone.getWorldPosition(hitCenter);
                 } else {
                     let chestPos = new THREE.Vector3().copy(this.char.group.position).setY(this.char.group.position.y + 1.2);
@@ -378,10 +528,17 @@
                 let forceMagnitude = isFinalComboBlow ? 55 : (isChargePunch ? 80 : 22);
 
                 sacks.forEach(sack => {
-                    if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) { 
+                    if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) {
                         if (sack.checkHit(hitCenter, hitRadius)) {
                             sack.applyHit(fwdDir, forceMagnitude);
-                            if (createHitEffectCallback) createHitEffectCallback(hitCenter);
+                            if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
+                            if (createHitEffectCallback) {
+                                const sackCenter = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
+                                const contactPoint = sackCenter.clone().add(
+                                    hitCenter.clone().sub(sackCenter).normalize().multiplyScalar(0.5)
+                                );
+                                createHitEffectCallback(contactPoint);
+                            }
                         }
                     }
                 });
@@ -392,7 +549,9 @@
                     this.punchTimer += delta;
 
                     if (this.punchState === 4) {
+                        if (this.char.isRagdoll) { this.resetState(); return; }
                         this.updateUI(0.0);
+                        this.updateChargeEffect(delta);
                         return;
                     }
 
@@ -471,6 +630,7 @@
             resetState() {
                 this.punchState = 0;
                 this.nextPunchQueued = false;
+                this.stopChargeEffect();
                 const ringFill = document.getElementById('punch-ring-fill');
                 if (ringFill) {
                     ringFill.style.strokeDashoffset = 201.06;
@@ -572,6 +732,11 @@
                 this.playerArrowGroup = null;
                 this.smoothedArrowPos = null;
                 this.cachedLedgeY = null;
+                this.xrayMaterials = [];
+                this.hitFlashUniforms = [];
+                this.hitFlashTimer = 0;
+                this.hitFlashDuration = 0.15;
+                this.hitFlashStrength = 1.0;
 
                 this.mixer = null;
                 this.actions = {};
@@ -640,7 +805,41 @@
                             child.castShadow = true;
                             child.receiveShadow = true;
                             if (child.material) {
-                                child.material = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
+                                const mainMat = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
+                                const rimUniform = { value: 0.0 };
+                                mainMat.onBeforeCompile = (shader) => {
+                                    shader.uniforms.rimIntensity = rimUniform;
+                                    shader.vertexShader = shader.vertexShader
+                                        .replace(
+                                            '#include <common>',
+                                            `#include <common>
+                                            varying vec3 vRimNormal;
+                                            varying vec3 vRimViewDir;`
+                                        )
+                                        .replace(
+                                            '#include <project_vertex>',
+                                            `#include <project_vertex>
+                                            vRimNormal = normalize(transformedNormal);
+                                            vRimViewDir = normalize(-mvPosition.xyz);`
+                                        );
+                                    shader.fragmentShader = shader.fragmentShader
+                                        .replace(
+                                            '#include <common>',
+                                            `#include <common>
+                                            uniform float rimIntensity;
+                                            varying vec3 vRimNormal;
+                                            varying vec3 vRimViewDir;`
+                                        )
+                                        .replace(
+                                            '#include <dithering_fragment>',
+                                            `#include <dithering_fragment>
+                                            float rimFactor = 1.0 - max(dot(normalize(vRimNormal), normalize(vRimViewDir)), 0.0);
+                                            rimFactor = pow(rimFactor, 2.0) * rimIntensity;
+                                            gl_FragColor.rgb += vec3(1.0) * rimFactor;`
+                                        );
+                                };
+                                child.material = mainMat;
+                                this.hitFlashUniforms.push(rimUniform);
                             }
 
                             const xrayMaterial = new THREE.MeshBasicMaterial({
@@ -650,6 +849,7 @@
                                 depthTest: false,
                                 depthWrite: false
                             });
+                            this.xrayMaterials.push(xrayMaterial);
                             const xrayClone = child.clone();
                             xrayClone.material = xrayMaterial;
                             if (child.isSkinnedMesh) {
@@ -836,6 +1036,11 @@
             toggleHitbox(visible) { this.hitbox.visible = visible; }
             toggleRagdollColliders(visible) { this.ragdollColliderGroup.visible = visible; }
 
+            triggerHitFlash(strength = 1.0) {
+                this.hitFlashTimer = this.hitFlashDuration;
+                this.hitFlashStrength = THREE.MathUtils.clamp(strength, 0, 3);
+            }
+
             updateColliderDensity(density) {
                 this.colliderDensity = density;
                 this.ragdollParticles.forEach(p => {
@@ -1017,7 +1222,7 @@ updateClimbing(delta) {
                 }
             }
 
-            computeLedgeArrowTarget(forward) {
+            computeLedgeArrowTarget(forward, pullBack = 0.3) {
                 const raycaster = new THREE.Raycaster();
                 const rayStart = new THREE.Vector3().copy(this.group.position);
                 rayStart.addScaledVector(forward, 0.15);
@@ -1044,9 +1249,19 @@ updateClimbing(delta) {
 
                 const ledgeOffset = parseFloat(document.getElementById('ledge-arrow-offset-slider').value) || 0.40;
                 const target = new THREE.Vector3().copy(this.group.position);
-                target.addScaledVector(forward, -0.3);
+                target.addScaledVector(forward, -pullBack);
                 target.y = highestHitY + ledgeOffset;
                 return target;
+            }
+
+            updateHitFlash(delta) {
+                if (this.hitFlashTimer > 0) {
+                    this.hitFlashTimer -= delta;
+                    const flashT = (Math.max(0, this.hitFlashTimer) / this.hitFlashDuration) * this.hitFlashStrength;
+                    this.hitFlashUniforms.forEach(u => { u.value = flashT; });
+                } else {
+                    this.hitFlashUniforms.forEach(u => { u.value = 0; });
+                }
             }
 
             animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
@@ -1058,18 +1273,32 @@ updateClimbing(delta) {
                 if (window.hitEffects) {
                     for (let i = window.hitEffects.length - 1; i >= 0; i--) {
                         const fx = window.hitEffects[i];
-                        fx.life -= delta * 5.0; 
-                        fx.mesh.scale.setScalar(2.0 - fx.life);
-                        if (fx.mesh.material) {
-                            fx.mesh.material.opacity = fx.life;
-                        }
-                        if (fx.life <= 0) {
-                            if (window.gameScene) {
-                                window.gameScene.remove(fx.mesh);
+                        if (fx.mesh) {
+                            fx.life -= delta * 5.0;
+                            const t = Math.max(0, fx.life);
+                            fx.mesh.scale.setScalar(2.0 - t);
+                            fx.mesh.material.opacity = t;
+                            if (fx.life <= 0) {
+                                if (window.gameScene) window.gameScene.remove(fx.mesh);
+                                fx.mesh.geometry.dispose();
+                                fx.mesh.material.dispose();
+                                window.hitEffects.splice(i, 1);
                             }
-                            fx.mesh.geometry.dispose();
-                            fx.mesh.material.dispose();
-                            window.hitEffects.splice(i, 1);
+                        } else {
+                            fx.life -= delta * 1.2;
+                            const t = Math.max(0, fx.life);
+                            fx.visibleMesh.material.opacity = t * 1.0;
+                            fx.hiddenMesh.material.opacity = t * 0.25;
+                            if (fx.life <= 0) {
+                                if (window.gameScene) {
+                                    window.gameScene.remove(fx.visibleMesh);
+                                    window.gameScene.remove(fx.hiddenMesh);
+                                }
+                                fx.visibleMesh.geometry.dispose();
+                                fx.visibleMesh.material.dispose();
+                                fx.hiddenMesh.material.dispose();
+                                window.hitEffects.splice(i, 1);
+                            }
                         }
                     }
                 }
@@ -1324,16 +1553,12 @@ updateClimbing(delta) {
                         }
                         targetWorldPos.copy(this.climbLockedWorldPos);
 
-                    } else if (this.climbTransitionTimer > 0 && this.climbLockedWorldPos) {
-                        useWorldTarget = true;
-                        targetWorldPos.copy(this.climbLockedWorldPos);
-
                     } else if (state === 'ledge') {
                         this.climbLockedWorldPos = null;
                         useWorldTarget = true;
 
                         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion).normalize();
-                        targetWorldPos.copy(this.computeLedgeArrowTarget(forward));
+                        targetWorldPos.copy(this.computeLedgeArrowTarget(forward, 0.1));
 
                     } else {
                         this.climbLockedWorldPos = null;
