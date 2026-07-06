@@ -114,6 +114,22 @@ export class RemoteAvatar {
         this.hitFlashDuration = 0.15;
         this.hitFlashStrength = 1.0;
 
+        // Set via setColor() once a broadcast tells us this player's assigned
+        // color (see MultiplayerClient) - stored even before the model loads
+        // so the very first material created already uses it, not the
+        // fallback blue, if the color arrives first.
+        this.bodyMaterials = [];
+        this.bodyColor = null;
+
+        // Cosmetic-only mirrors of CombatController's swing-particle/charge-glow
+        // effects in the HTML file: the local puncher already sends its punch
+        // animation state (punch_left/right/combo/punch_charge_hold/punch_charge_punch,
+        // see game_js.js's networkStateName), so this avatar can reproduce the same
+        // particle timing purely from its own mixer clock, no extra network data needed.
+        this.chargeEffect = null;
+        this._lastPunchAnim = null;
+        this._punchHitFlags = [false, false, false, false, false];
+
         // Ragdoll runs the same RagdollPhysics module Character uses, mixed into
         // this class below - triggered by a lightweight one-shot network event
         // (velocity + intensity, see MultiplayerClient._applyRagdollEvent), never
@@ -156,7 +172,8 @@ export class RemoteAvatar {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     if (child.material) {
-                        const mainMat = new THREE.MeshToonMaterial({ color: 0x66aaff, gradientMap: threeTone });
+                        const mainMat = new THREE.MeshToonMaterial({ color: this.bodyColor !== null ? this.bodyColor : 0x66aaff, gradientMap: threeTone });
+                        this.bodyMaterials.push(mainMat);
                         const rimUniform = { value: 0.0 };
                         mainMat.onBeforeCompile = (shader) => {
                             shader.uniforms.rimIntensity = rimUniform;
@@ -318,6 +335,166 @@ export class RemoteAvatar {
         }
     }
 
+    setColor(hexColor) {
+        this.bodyColor = hexColor;
+        this.bodyMaterials.forEach(m => m.color.setHex(hexColor));
+    }
+
+    spawnSwingParticle() {
+        if (!window.spawnPunchSpeedParticle) return;
+        const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
+        const pos = new THREE.Vector3();
+
+        if (this.leftHandBone && this.rightHandBone) {
+            const leftPos = new THREE.Vector3();
+            const rightPos = new THREE.Vector3();
+            this.leftHandBone.getWorldPosition(leftPos);
+            this.rightHandBone.getWorldPosition(rightPos);
+            const leftReach = leftPos.clone().sub(this.group.position).dot(forward);
+            const rightReach = rightPos.clone().sub(this.group.position).dot(forward);
+            pos.copy(leftReach >= rightReach ? leftPos : rightPos);
+        } else if (this.leftHandBone) {
+            this.leftHandBone.getWorldPosition(pos);
+        } else if (this.rightHandBone) {
+            this.rightHandBone.getWorldPosition(pos);
+        } else {
+            return;
+        }
+
+        window.spawnPunchSpeedParticle(pos, forward);
+    }
+
+    startChargeEffect() {
+        if (this.chargeEffect || !window.gameScene) return;
+
+        const glowGeo = new THREE.SphereGeometry(0.18, 12, 12);
+        const glowMat = new THREE.MeshBasicMaterial({
+            color: 0xffee44,
+            transparent: true,
+            opacity: 0.8,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+        const glow = new THREE.Mesh(glowGeo, glowMat);
+        window.gameScene.add(glow);
+
+        const streakGeo = new THREE.BoxGeometry(0.04, 0.04, 0.5);
+        const streakMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+
+        const streaks = [];
+        for (let i = 0; i < 8; i++) {
+            const mesh = new THREE.Mesh(streakGeo, streakMat);
+            window.gameScene.add(mesh);
+            const streak = { mesh };
+            this.resetStreak(streak);
+            streak.progress = Math.random();
+            streaks.push(streak);
+        }
+
+        this.chargeEffect = { glow, streaks, streakGeo, streakMat, time: 0 };
+    }
+
+    resetStreak(streak) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos((Math.random() * 2) - 1);
+        streak.dir = new THREE.Vector3(
+            Math.sin(phi) * Math.cos(theta),
+            Math.sin(phi) * Math.sin(theta),
+            Math.cos(phi)
+        );
+        const baseRadius = window.chargeStreakBaseRadius !== undefined ? window.chargeStreakBaseRadius : 0.55;
+        const radiusSpread = window.chargeStreakRadiusSpread !== undefined ? window.chargeStreakRadiusSpread : 0.5;
+        streak.radius = baseRadius + Math.random() * radiusSpread;
+        streak.progress = 0;
+        streak.speed = 0.8 + Math.random() * 0.6;
+    }
+
+    updateChargeEffect(delta) {
+        if (!this.chargeEffect || !this.rightHandBone) return;
+        const handPos = new THREE.Vector3();
+        this.rightHandBone.getWorldPosition(handPos);
+
+        this.chargeEffect.time += delta;
+        this.chargeEffect.glow.position.copy(handPos);
+        const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+        this.chargeEffect.glow.scale.setScalar(pulse);
+        this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
+
+        const streakPos = new THREE.Vector3();
+        this.chargeEffect.streaks.forEach(streak => {
+            streak.progress += streak.speed * delta;
+            if (streak.progress >= 1) this.resetStreak(streak);
+
+            const dist = streak.radius * (1 - streak.progress);
+            streakPos.copy(handPos).addScaledVector(streak.dir, dist);
+            streak.mesh.position.copy(streakPos);
+            streak.mesh.lookAt(handPos);
+            streak.mesh.scale.set(1, 1, 1 - streak.progress * 0.3);
+        });
+    }
+
+    stopChargeEffect() {
+        if (!this.chargeEffect) return;
+        window.gameScene.remove(this.chargeEffect.glow);
+        this.chargeEffect.glow.geometry.dispose();
+        this.chargeEffect.glow.material.dispose();
+        this.chargeEffect.streaks.forEach(s => window.gameScene.remove(s.mesh));
+        this.chargeEffect.streakGeo.dispose();
+        this.chargeEffect.streakMat.dispose();
+        this.chargeEffect = null;
+    }
+
+    // Mirrors CombatController.update()'s hit-frame-window particle spawning,
+    // driven off this avatar's own mixer clock instead of a local punchTimer -
+    // stateName/action.time already advance in lockstep with the exact same
+    // clips the puncher's own client is playing, so the swing-particle timing
+    // matches without needing extra network events per punch.
+    updatePunchEffects(delta) {
+        const stateName = this.stateName;
+
+        if (stateName === 'punch_charge_hold') {
+            this.startChargeEffect();
+            this.updateChargeEffect(delta);
+        } else if (this.chargeEffect) {
+            this.stopChargeEffect();
+        }
+
+        if (stateName !== this._lastPunchAnim) {
+            this._punchHitFlags = [false, false, false, false, false];
+            this._lastPunchAnim = stateName;
+        }
+
+        const action = this.actions[stateName];
+        if (!action) return;
+        const duration = action.getClip().duration;
+        const normalizedTime = action.time / duration;
+
+        if (stateName === 'punch_left' || stateName === 'punch_right' || stateName === 'punch_charge_punch') {
+            const hitStart = stateName === 'punch_charge_punch'
+                ? (window.chargePunchHitTime !== undefined ? window.chargePunchHitTime : 0.35)
+                : (window.punchHitTime !== undefined ? window.punchHitTime : 0.35);
+            const hitEnd = hitStart + 0.2;
+            if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this._punchHitFlags[0]) {
+                this.spawnSwingParticle();
+                this._punchHitFlags[0] = true;
+            }
+        } else if (stateName === 'punch_combo') {
+            const comboHitTimes = [window.comboHit1Time !== undefined ? window.comboHit1Time : 0.15, 0.32, 0.48, 0.65, 0.82];
+            for (let i = 0; i < 5; i++) {
+                if (normalizedTime >= comboHitTimes[i] && normalizedTime <= (comboHitTimes[i] + 0.15) && !this._punchHitFlags[i]) {
+                    this.spawnSwingParticle();
+                    this._punchHitFlags[i] = true;
+                }
+            }
+        }
+    }
+
     triggerHitFlash(strength = 1.0) {
         this.hitFlashTimer = this.hitFlashDuration;
         this.hitFlashStrength = THREE.MathUtils.clamp(strength, 0, 3);
@@ -410,6 +587,7 @@ export class RemoteAvatar {
         // position lerp and normal state-driven animation are skipped for their
         // whole duration - exactly like Character's own animate() dispatch.
         if (this.isRagdoll) {
+            if (this.chargeEffect) this.stopChargeEffect();
             const floorY = this._ragdollFloorY();
             this.updateRagdoll(delta, window.collidables || [], floorY);
             const hipsP = this.getParticle('hips');
@@ -427,6 +605,7 @@ export class RemoteAvatar {
             return;
         }
         if (this.isStandingUp) {
+            if (this.chargeEffect) this.stopChargeEffect();
             if (this.updateStandUp(delta)) {
                 this.fadeToAction('idle', 0.3);
                 // The sender stops broadcasting position while ragdolled/standing
@@ -462,6 +641,7 @@ export class RemoteAvatar {
         if (this.carryUpper) this.fadeToUpperAction('carry_upper', 0.2);
         else this.stopUpperAction(0.2);
 
+        this.updatePunchEffects(delta);
         this.updateCarryStabilize(delta);
         this.updateHeldMesh();
 
@@ -607,6 +787,7 @@ export class RemoteAvatar {
     dispose() {
         this.scene.remove(this.group);
         if (this.mixer) this.mixer.stopAllAction();
+        if (this.chargeEffect) this.stopChargeEffect();
     }
 }
 

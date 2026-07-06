@@ -175,8 +175,52 @@ export function startGame(CharacterClass) {
 
     const canvas = document.getElementById('gameCanvas');
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87ceeb);
-    scene.fog = new THREE.Fog(0x87ceeb, 10, 150);
+    // Exponential falloff instead of linear THREE.Fog: linear fog has a hard
+    // "far" distance beyond which everything is pure fog color, so from an
+    // elevated viewpoint (looking out across a lot of ground at once) a large
+    // chunk of the view hit that cutoff at once, reading as a stark white
+    // band butting up against the sky gradient instead of a smooth blend.
+    // Density is deliberately low - FogExp2 grows with distance squared, so
+    // even a small value here still fully whites out near the sky dome's
+    // horizon; too high (e.g. 0.008) and it starts visibly hazing nearby
+    // mid-ground before the player even gets close to the true horizon.
+    scene.fog = new THREE.FogExp2(0xffffff, 0.0045);
+
+    // Gradient sky dome (classic three.js "webgl_shaders_sky" approach):
+    // a huge inward-facing sphere shaded white at the horizon fading up to
+    // blue overhead. The fog color above is matched to the same horizon
+    // white so distant ground fades into the sky seamlessly instead of
+    // blending into a flat, uniformly-blue backdrop.
+    const skyGeo = new THREE.SphereGeometry(500, 32, 15);
+    const skyMat = new THREE.ShaderMaterial({
+        uniforms: {
+            topColor: { value: new THREE.Color(0x4d9be6) },
+            bottomColor: { value: new THREE.Color(0xffffff) },
+            offset: { value: 15 },
+            exponent: { value: 1.1 }
+        },
+        vertexShader: `
+            varying vec3 vWorldPosition;
+            void main() {
+                vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                vWorldPosition = worldPosition.xyz;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 topColor;
+            uniform vec3 bottomColor;
+            uniform float offset;
+            uniform float exponent;
+            varying vec3 vWorldPosition;
+            void main() {
+                float h = normalize(vWorldPosition + offset).y;
+                gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+            }
+        `,
+        side: THREE.BackSide
+    });
+    scene.add(new THREE.Mesh(skyGeo, skyMat));
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     
     const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
@@ -955,7 +999,7 @@ export function startGame(CharacterClass) {
     window.chargePunchHitTime = 0.28;
     window.comboHit1Time = 0.15;
     window.chargePunchForce = 80.0;
-    window.chargePunchKnockback = 20.0;
+    window.chargePunchKnockback = 15.0;
     window.chargePunchMaturityTime = 0.6;
     window.playerStagger = 100.0;
     window.playerStaggerMax = 100.0;
@@ -1103,6 +1147,58 @@ export function startGame(CharacterClass) {
             window.playerStaggerRegenCooldown -= delta;
         } else if (window.playerStagger < window.playerStaggerMax) {
             window.playerStagger = Math.min(window.playerStaggerMax, window.playerStagger + window.playerStaggerRegenRate * delta);
+        }
+
+        // Used to live inside Character.prototype.animate() in the HTML file,
+        // which the main loop below stops calling entirely while the local
+        // player is ragdolled/standing up - freezing every hit-effect/swing
+        // particle in the scene (including ones spawned by remote punches)
+        // until the local player recovered. Runs here unconditionally instead.
+        if (window.hitEffects) {
+            for (let i = window.hitEffects.length - 1; i >= 0; i--) {
+                const fx = window.hitEffects[i];
+                if (fx.mesh) {
+                    fx.life -= delta * 5.0;
+                    const t = Math.max(0, fx.life);
+                    fx.mesh.scale.setScalar(2.0 - t);
+                    fx.mesh.material.opacity = t;
+                    if (fx.life <= 0) {
+                        if (window.gameScene) window.gameScene.remove(fx.mesh);
+                        fx.mesh.geometry.dispose();
+                        fx.mesh.material.dispose();
+                        window.hitEffects.splice(i, 1);
+                    }
+                } else {
+                    fx.life -= delta * 1.2;
+                    const t = Math.max(0, fx.life);
+                    fx.visibleMesh.material.opacity = t * 1.0;
+                    fx.hiddenMesh.material.opacity = t * 0.25;
+                    if (fx.life <= 0) {
+                        if (window.gameScene) {
+                            window.gameScene.remove(fx.visibleMesh);
+                            window.gameScene.remove(fx.hiddenMesh);
+                        }
+                        fx.visibleMesh.geometry.dispose();
+                        fx.visibleMesh.material.dispose();
+                        fx.hiddenMesh.material.dispose();
+                        window.hitEffects.splice(i, 1);
+                    }
+                }
+            }
+        }
+
+        if (window.speedParticles) {
+            for (let i = window.speedParticles.length - 1; i >= 0; i--) {
+                const sp = window.speedParticles[i];
+                sp.life -= delta * 3.5;
+                const t = Math.max(0, sp.life);
+                sp.mesh.material.opacity = t * 0.85;
+                if (sp.life <= 0) {
+                    if (window.gameScene) window.gameScene.remove(sp.mesh);
+                    sp.mesh.material.dispose();
+                    window.speedParticles.splice(i, 1);
+                }
+            }
         }
 
         const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
@@ -1539,15 +1635,36 @@ export function startGame(CharacterClass) {
                 char.group.lookAt(_tempVec3.copy(char.group.position).sub(n));
             }
 
+            // Checked every frame while hanging (not just at the moment the
+            // player pushes up) so the CLIMB hint greys out proactively -
+            // e.g. the 3 stacked cube-pairs test level, where the ledge you'd
+            // stand on top of is already occupied and a climb attempt would
+            // otherwise just silently fail with no visual explanation why.
+            const climbStandX = ledgeTarget.x + charFwd.x * 0.25;
+            const climbStandZ = ledgeTarget.z + charFwd.z * 0.25;
+            const climbStandFeetY = ledgeTarget.y + 0.05;
+            const canClimbHere = isStandPositionClear(climbStandX, climbStandFeetY, climbStandZ, null);
+            const climbHintEl = document.getElementById('ledge-hint-climb');
+            if (climbHintEl) climbHintEl.classList.toggle('blocked', !canClimbHere);
+
             const actualRgt = _tempVec3.set(1,0,0).applyQuaternion(char.group.quaternion);
             let hint = Math.PI - Math.atan2(charFwd.x, charFwd.z) + cameraTheta;
-            if (lockedHintAngle === null) document.getElementById('ledge-hint-container').style.transform = `rotate(${hint}rad)`;
-            
+            // The hint arrow always tracks the character's live facing now -
+            // it used to freeze the instant the stick was pushed (matching
+            // lockedHintAngle below) and stay stuck showing the pre-turn
+            // direction for as long as the stick was held, e.g. while
+            // shimmying around a ledge corner. lockedHintAngle itself still
+            // stays frozen for the actual push-direction math right below,
+            // so a mid-hold facing change can't reinterpret an already-in-
+            // progress push as a new climb/drop - only the visual indicator
+            // is now live; releasing and pushing again still remaps normally.
+            document.getElementById('ledge-hint-container').style.transform = `rotate(${hint}rad)`;
+
             let currentPushS = 0;
             if (moveMag < 0.1) ledgeMoveLocked = false;
 
             if (moveMag > 0.1 && !isSlipping) {
-                if (lockedHintAngle === null) { lockedHintAngle = hint; document.getElementById('ledge-hint-container').style.transform = `rotate(${lockedHintAngle}rad)`; }
+                if (lockedHintAngle === null) lockedHintAngle = hint;
                 const stickVec = new THREE.Vector2(curX, curY).normalize(), uiUp = new THREE.Vector2(Math.sin(lockedHintAngle), -Math.cos(lockedHintAngle)).normalize(), uiRgt = new THREE.Vector2(Math.cos(lockedHintAngle), Math.sin(lockedHintAngle)).normalize();
                 const pCD = stickVec.dot(uiUp), pS = stickVec.dot(uiRgt);
             

@@ -210,6 +210,11 @@ export class MultiplayerClient {
         if (!he) return;
         const avatar = this.remotes.get(remoteId);
         if (avatar) avatar.triggerHitFlash(he.strength);
+        if (he.p) {
+            const pos = new THREE.Vector3(he.p[0], he.p[1], he.p[2]);
+            if (window.createHandHitEffect) window.createHandHitEffect(pos);
+            if (window.spawnHitEffect) window.spawnHitEffect(pos);
+        }
     }
 
     // One-shot event fired the instant the local player's own ragdoll trigger
@@ -265,6 +270,19 @@ export class MultiplayerClient {
         const char = window.localChar;
         if (!char || char.isRagdoll) return;
 
+        // The attacker's own client already shows its white hit-dot/yellow
+        // hand-flash locally (see detectMeleeHits in the HTML file) - those
+        // never reached the victim or any bystander before, since only the
+        // reaction (flash/recoil/ragdoll) was ever sent. Spawning the same
+        // pair of cosmetic effects here, at the impact point the attacker
+        // measured, closes that gap for the victim; sendHitEvent's broadcast
+        // below carries the same position so bystanders see it too.
+        const impactPos = pu.p ? new THREE.Vector3(pu.p[0], pu.p[1], pu.p[2]) : null;
+        if (impactPos) {
+            if (window.createHandHitEffect) window.createHandHitEffect(impactPos);
+            if (window.spawnHitEffect) window.spawnHitEffect(impactPos);
+        }
+
         const intensity = pu.m >= 70 ? 'high' : (pu.m >= 45 ? 'medium_high' : 'medium');
         // forceMagnitude (up to window.chargePunchForce for a mature charge
         // punch) is tuned for the sandbag's own hit response (wobble + flash),
@@ -279,7 +297,7 @@ export class MultiplayerClient {
         const strength = flashStrengthByIntensity[intensity] || 1.0;
 
         char.triggerHitFlash(strength);
-        this.sendHitEvent(strength);
+        this.sendHitEvent(strength, impactPos);
 
         if (intensity === 'high') {
             char.initRagdoll(velocity, intensity);
@@ -430,13 +448,13 @@ export class MultiplayerClient {
         }));
     }
 
-    sendHitEvent(strength) {
+    sendHitEvent(strength, position) {
         if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         this.ws.send(JSON.stringify({
             event: 'broadcast',
             data: {
                 id: this.id,
-                he: { strength }
+                he: position ? { strength, p: [position.x, position.y, position.z] } : { strength }
             }
         }));
     }
@@ -474,13 +492,15 @@ export class MultiplayerClient {
         }));
     }
 
-    sendPunchEvent(targetId, direction, magnitude) {
+    sendPunchEvent(targetId, direction, magnitude, position) {
         if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         this.ws.send(JSON.stringify({
             event: 'send',
             data: {
                 to: targetId,
-                pu: { d: [direction.x, direction.y, direction.z], m: magnitude }
+                pu: position
+                    ? { d: [direction.x, direction.y, direction.z], m: magnitude, p: [position.x, position.y, position.z] }
+                    : { d: [direction.x, direction.y, direction.z], m: magnitude }
             }
         }));
     }
