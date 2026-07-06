@@ -14,8 +14,6 @@ const _hingeV1 = new THREE.Vector3();
 const _hingeV2 = new THREE.Vector3();
 const _hingeAxis = new THREE.Vector3();
 const _hingeQuat = new THREE.Quaternion();
-const _torsoForward = new THREE.Vector3();
-const _torsoRight = new THREE.Vector3();
 const _particleBox = new THREE.Box3();
 const _obstacleBox = new THREE.Box3();
 const _prevPos = new THREE.Vector3();
@@ -33,9 +31,9 @@ export const RagdollPhysics = {
     initRagdoll(initialVelocity = new THREE.Vector3(), intensity = 'high') {
         if (!this.fbxModel || this.isRagdoll) return;
 
-        if (window.forceDropCarriedObject) {
+        if (this.isLocalPlayer && window.forceDropCarriedObject) {
             window.forceDropCarriedObject(initialVelocity.clone().multiplyScalar(1.5));
-            window.isCarryingObj = false; 
+            window.isCarryingObj = false;
         }
         
         this.lastSpineWorld = null;
@@ -261,7 +259,14 @@ export const RagdollPhysics = {
         this.activeAction = standUpAction;
     },
 
-    applyHingeLimit(id1, id2, id3, minAngle, maxAngle, isKnee = false, isElbow = false, isHip = false, torsoForward, torsoRight) {
+    // Simplified back to a plain angle-limit clamp (no torso-relative
+    // knee/elbow/hip bias, no lateral anti-splay correction) to match the
+    // known-stable reference build ("ClimbGame_better ragdoll.html") - that
+    // extra correction was tuned down to lateralStiffness=0 anyway (the user's
+    // preferred setting), so removing the mechanism entirely shouldn't change
+    // the feel, but does remove one more thing fighting the hinge/distance
+    // solver every iteration.
+    applyHingeLimit(id1, id2, id3, minAngle, maxAngle) {
         const p1 = this.getParticle(id1);
         const p2 = this.getParticle(id2);
         const p3 = this.getParticle(id3);
@@ -275,35 +280,6 @@ export const RagdollPhysics = {
 
         v1.normalize();
         v2.normalize();
-
-        if (isKnee) {
-            const dotForward = v2.dot(torsoForward);
-            if (dotForward > 0.02) {
-                v2.addScaledVector(torsoForward, -dotForward - 0.05).normalize();
-            }
-        } else if (isElbow) {
-            const dotForward = v2.dot(torsoForward);
-            if (dotForward < -0.02) {
-                v2.addScaledVector(torsoForward, -dotForward + 0.05).normalize();
-            }
-        } else if (isHip) {
-            const dotForward = v2.dot(torsoForward);
-            if (dotForward < -0.15) {
-                v2.addScaledVector(torsoForward, -dotForward - 0.15).normalize();
-            }
-        }
-
-        if (isKnee || isElbow) {
-            const maxLateralDrift = 0.15;
-            const lat1 = v1.dot(torsoRight);
-            const lat2 = v2.dot(torsoRight);
-            const latDiff = lat2 - lat1;
-            if (Math.abs(latDiff) > maxLateralDrift) {
-                const stiffness = window.ragdollLateralStiffness !== undefined ? window.ragdollLateralStiffness : 0.5;
-                const excess = (latDiff - Math.sign(latDiff) * maxLateralDrift) * stiffness;
-                v2.addScaledVector(torsoRight, -excess).normalize();
-            }
-        }
 
         const dot = v1.dot(v2);
         const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
@@ -321,26 +297,21 @@ export const RagdollPhysics = {
     updateRagdoll(delta, collidables, floorY) {
         if (!this.isRagdoll) return;
         this.ragdollTimer += delta;
-        const gravity = 30; const damping = window.ragdollDamping !== undefined ? window.ragdollDamping : 0.95;
+        // Matches the known-stable reference build ("ClimbGame_better ragdoll.html"):
+        // a light, uniform damping and no velocity/displacement clamp at all.
+        // Today's attempts to fix "falls from height look floaty" by
+        // decoupling gravity from damping (and later substepping to
+        // compensate) kept making the joints jitter/spin worse - turns out
+        // the simpler original approach was already the stable one; the
+        // floaty-fall complaint is instead handled by not letting
+        // beginStandUp fire until the character is actually near the ground.
+        const gravity = 30; const damping = window.ragdollDamping !== undefined ? window.ragdollDamping : 0.98;
 
         this.ragdollParticles.forEach(p => {
             const tempX = p.pos.x, tempY = p.pos.y, tempZ = p.pos.z;
-            let velX = (p.pos.x - p.oldPos.x) * damping;
-            let velY = (p.pos.y - p.oldPos.y) * damping - gravity * delta * delta;
-            let velZ = (p.pos.z - p.oldPos.z) * damping;
-
-            const maxDisp = 0.3;
-            const dispSq = velX*velX + velY*velY + velZ*velZ;
-            if (dispSq > maxDisp * maxDisp) {
-                const len = Math.sqrt(dispSq);
-                velX = (velX / len) * maxDisp;
-                velY = (velY / len) * maxDisp;
-                velZ = (velZ / len) * maxDisp;
-            }
-
-            p.pos.x += velX;
-            p.pos.y += velY;
-            p.pos.z += velZ;
+            p.pos.x += (p.pos.x - p.oldPos.x) * damping;
+            p.pos.y += (p.pos.y - p.oldPos.y) * damping - gravity * delta * delta;
+            p.pos.z += (p.pos.z - p.oldPos.z) * damping;
             p.oldPos.set(tempX, tempY, tempZ);
         });
 
@@ -355,81 +326,86 @@ export const RagdollPhysics = {
                 }
             });
 
-            const pHips = this.getParticle('hips');
-            const pSpine = this.getParticle('spine');
-            const pLShoulder = this.getParticle('lShoulder');
-            const pRShoulder = this.getParticle('rShoulder');
-
-            _torsoForward.set(0, 0, 1).applyQuaternion(this.group.quaternion);
-            _torsoRight.set(1, 0, 0).applyQuaternion(this.group.quaternion);
-            if (pHips && pSpine && pLShoulder && pRShoulder) {
-                const torsoUp = _tempVec2.subVectors(pSpine.pos, pHips.pos).normalize();
-                _torsoRight.subVectors(pRShoulder.pos, pLShoulder.pos).normalize();
-                _torsoForward.crossVectors(_torsoRight, torsoUp).normalize();
-            }
-
-            this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3, true, false, false, _torsoForward, _torsoRight);
-            this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3, true, false, false, _torsoForward, _torsoRight);
-            this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5, false, true, false, _torsoForward, _torsoRight);
-            this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5, false, true, false, _torsoForward, _torsoRight);
-            this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0, false, false, true, _torsoForward, _torsoRight);
-            this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0, false, false, true, _torsoForward, _torsoRight);
+            this.applyHingeLimit('lThigh', 'lKnee', 'lFoot', 0.1, 2.3);
+            this.applyHingeLimit('rThigh', 'rKnee', 'rFoot', 0.1, 2.3);
+            this.applyHingeLimit('lShoulder', 'lElbow', 'lHand', 0.1, 2.5);
+            this.applyHingeLimit('rShoulder', 'rElbow', 'rHand', 0.1, 2.5);
+            this.applyHingeLimit('spine', 'hips', 'lThigh', 0.5, 2.0);
+            this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0);
 
             this.ragdollParticles.forEach(p => {
-                if (p.pos.y < p.radius) {
-                    p.pos.y = p.radius;
-                    p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
-                    p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
-                }
-                
-                const particleBox = _particleBox;
-                _boxSize.set(p.radius * 2, p.radius * 2, p.radius * 2);
-                particleBox.setFromCenterAndSize(p.pos, _boxSize);
-                const obstacleBox = _obstacleBox;
-
-                collidables.forEach(obj => {
-                    if (obj === window.ground) return;
-
-                    if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
-                        const radius = obj.geometry.parameters.radius || 6;
-                        const dist = p.pos.distanceTo(obj.position);
-                        const minDist = radius + p.radius;
-                        if (dist < minDist) {
-                            const prevPos = _prevPos.copy(p.pos);
-                            const normal = _tempVec3.subVectors(p.pos, obj.position).normalize();
-                            p.pos.copy(obj.position).addScaledVector(normal, minDist);
-                            const displacement = _tempVec1.subVectors(p.pos, prevPos);
-                            p.oldPos.add(displacement);
-                        }
-                        return;
+                    if (p.pos.y < p.radius) {
+                        p.pos.y = p.radius;
+                        // Absorb the vertical velocity on landing instead of just
+                        // repositioning: oldPos.y still reflected the pre-landing
+                        // (falling) height, so next frame's implicit velocity
+                        // would still read as "falling", clamp again, forever -
+                        // a non-decaying jitter now that Y motion isn't damped.
+                        p.oldPos.y = p.pos.y;
+                        p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
+                        p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
                     }
 
-                    if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
+                    const particleBox = _particleBox;
+                    _boxSize.set(p.radius * 2, p.radius * 2, p.radius * 2);
+                    particleBox.setFromCenterAndSize(p.pos, _boxSize);
+                    const obstacleBox = _obstacleBox;
 
-                    if (particleBox.intersectsBox(obstacleBox)) {
-                        const prevPos = _prevPos.copy(p.pos);
-                        const overlapX = Math.min(particleBox.max.x - obstacleBox.min.x, obstacleBox.max.x - particleBox.min.x);
-                        const overlapY = Math.min(particleBox.max.y - obstacleBox.min.y, obstacleBox.max.y - particleBox.min.y);
-                        const overlapZ = Math.min(particleBox.max.z - obstacleBox.min.z, obstacleBox.max.z - particleBox.min.z);
+                    collidables.forEach(obj => {
+                        if (obj === window.ground) return;
 
-                        if (overlapX < overlapY && overlapX < overlapZ) {
-                            p.pos.x += Math.sign(p.pos.x - obj.position.x) * overlapX;
-                        } else if (overlapY < overlapX && overlapY < overlapZ) {
-                            p.pos.y += Math.sign(p.pos.y - obj.position.y) * overlapY;
-                            if (Math.sign(p.pos.y - obj.position.y) > 0) {
-                                p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
-                                p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
+                        if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
+                            const radius = obj.geometry.parameters.radius || 6;
+                            const dist = p.pos.distanceTo(obj.position);
+                            const minDist = radius + p.radius;
+                            if (dist < minDist) {
+                                const prevPos = _prevPos.copy(p.pos);
+                                const normal = _tempVec3.subVectors(p.pos, obj.position).normalize();
+                                p.pos.copy(obj.position).addScaledVector(normal, minDist);
+                                const displacement = _tempVec1.subVectors(p.pos, prevPos);
+                                p.oldPos.add(displacement);
+                                // Resting on top of a sphere is the only case that
+                                // matters here (same non-decaying jitter risk as
+                                // the floor/box cases below) - only kill vertical
+                                // velocity, horizontal contact should keep sliding.
+                                if (normal.y > 0.5) p.oldPos.y = p.pos.y;
                             }
-                        } else {
-                            p.pos.z += Math.sign(p.pos.z - obj.position.z) * overlapZ;
+                            return;
                         }
 
-                        const displacement = _tempVec3.subVectors(p.pos, prevPos);
-                        if (displacement.lengthSq() > 0.0001) p.oldPos.add(displacement);
-                        particleBox.setFromCenterAndSize(p.pos, _boxSize);
-                    }
+                        if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
+
+                        if (particleBox.intersectsBox(obstacleBox)) {
+                            const prevPos = _prevPos.copy(p.pos);
+                            const overlapX = Math.min(particleBox.max.x - obstacleBox.min.x, obstacleBox.max.x - particleBox.min.x);
+                            const overlapY = Math.min(particleBox.max.y - obstacleBox.min.y, obstacleBox.max.y - particleBox.min.y);
+                            const overlapZ = Math.min(particleBox.max.z - obstacleBox.min.z, obstacleBox.max.z - particleBox.min.z);
+
+                            let correctedY = false;
+                            if (overlapX < overlapY && overlapX < overlapZ) {
+                                p.pos.x += Math.sign(p.pos.x - obj.position.x) * overlapX;
+                            } else if (overlapY < overlapX && overlapY < overlapZ) {
+                                p.pos.y += Math.sign(p.pos.y - obj.position.y) * overlapY;
+                                correctedY = true;
+                                if (Math.sign(p.pos.y - obj.position.y) > 0) {
+                                    p.pos.x += (p.oldPos.x - p.pos.x) * 0.2;
+                                    p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
+                                }
+                            } else {
+                                p.pos.z += Math.sign(p.pos.z - obj.position.z) * overlapZ;
+                            }
+
+                            const displacement = _tempVec3.subVectors(p.pos, prevPos);
+                            if (displacement.lengthSq() > 0.0001) p.oldPos.add(displacement);
+                            // oldPos.add above preserves velocity through the
+                            // correction (fine for X/Z sliding), but for a Y (top
+                            // surface) landing that just perpetuates a non-decaying
+                            // bounce - kill vertical velocity here instead.
+                            if (correctedY) p.oldPos.y = p.pos.y;
+                            particleBox.setFromCenterAndSize(p.pos, _boxSize);
+                        }
+                    });
                 });
-            });
         }
 
         const hipsP = this.getParticle('hips');

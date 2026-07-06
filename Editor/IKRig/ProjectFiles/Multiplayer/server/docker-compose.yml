@@ -1,0 +1,22 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    volumes:
+      - ../data:/app/data
+      - ../client:/app/client
+    ports:
+      - 8000
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.er-web.rule=Host(`example.com`)"
+      - "traefik.http.routers.er-web.entrypoints=websecure"
+    networks:
+      default:
+      web:
+
+networks:
+  web:
+    external: true

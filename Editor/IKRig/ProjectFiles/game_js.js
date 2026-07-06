@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { MultiplayerClient } from './multiplayer.js';
 
 export function startGame(CharacterClass) {
     window.isCarryingObj = false;
@@ -29,6 +30,8 @@ export function startGame(CharacterClass) {
     const projectiles = [];
     const shooters = [];
     const carryables = [];
+    window.carryables = carryables;
+    let nextCarryNetId = 0;
     const debugHelpers = [];
     const activeShards = [];
 
@@ -40,6 +43,8 @@ export function startGame(CharacterClass) {
     const _tempQuat = new THREE.Quaternion();
     const _downVec = new THREE.Vector3(0, -1, 0);
     const _upVec = new THREE.Vector3(0, 1, 0);
+    const _shooterTargetPos = new THREE.Vector3();
+    const _remoteCollideNormal = new THREE.Vector3();
     const _cubeSizeVec = new THREE.Vector3(3.0, 3.0, 3.0);
     const _carrySizeVec = new THREE.Vector3(1.0, 1.0, 1.0);
 
@@ -51,6 +56,67 @@ export function startGame(CharacterClass) {
         transparent: true,
         opacity: 1.0
     });
+
+    function getSyncedTime() {
+        return window.multiplayerClient ? window.multiplayerClient.getSyncedTime() : Date.now();
+    }
+
+    // Each client only ever hit-tests a shooter's projectile against its own
+    // local character (RemoteAvatars aren't real collidables), so once shots
+    // are time-synced across clients the same shot could otherwise register a
+    // hit independently on every player standing along its fixed firing line,
+    // instead of stopping at the first one - like a bullet passing through.
+    // Since all players' positions are already known (local + broadcast remote
+    // positions), each client works out whether some other, closer-to-the-
+    // shooter known player sits in the projectile's path; once the projectile
+    // actually reaches that player's position, we treat the shot as consumed
+    // (removed) here too, without applying any hit effect to the local player -
+    // the closer player's own client is the one that registers a real hit on
+    // itself, the same way it always has.
+    function isProjectileConsumedByCloserPlayer(projectilePos, shooterPos, myPos, hitRadius) {
+        if (!window.multiplayerClient) return false;
+        const myDistToShooter = shooterPos.distanceTo(myPos);
+        for (const avatar of window.multiplayerClient.remotes.values()) {
+            if (!avatar.isLoaded || avatar.isRagdoll) continue;
+            const rp = avatar.getHitReferencePoint();
+            const perpDist = Math.sqrt((rp.y - shooterPos.y) ** 2 + (rp.z - shooterPos.z) ** 2);
+            if (perpDist > hitRadius) continue;
+            if (shooterPos.distanceTo(rp) >= myDistToShooter) continue;
+            if (projectilePos.distanceTo(rp) < hitRadius) return true;
+        }
+        return false;
+    }
+
+    // RemoteAvatars are purely cosmetic (never added to `collidables`), so
+    // without this, walking straight at another player never gets blocked -
+    // the raycast wall-check above only ever sees real level geometry. This
+    // is a simple circular clearance around each known remote's current body
+    // position (ragdoll-aware via getHitReferencePoint), redirecting the
+    // move direction the same way the wall-normal slide above does, rather
+    // than a full raycast against a mesh we don't have collision data for.
+    function resolveRemotePlayerCollision(currentPos, moveDir, actualSpeed) {
+        if (!window.multiplayerClient) return actualSpeed;
+        const COMBINED_RADIUS = 0.8;
+        window.multiplayerClient.remotes.forEach(avatar => {
+            if (!avatar.isLoaded || actualSpeed <= 0) return;
+            const rp = avatar.getHitReferencePoint();
+            const dx = currentPos.x - rp.x, dz = currentPos.z - rp.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist >= COMBINED_RADIUS) return;
+
+            _remoteCollideNormal.set(dx, 0, dz);
+            if (_remoteCollideNormal.lengthSq() < 0.0001) _remoteCollideNormal.set(1, 0, 0);
+            else _remoteCollideNormal.normalize();
+
+            const dot = moveDir.dot(_remoteCollideNormal);
+            if (dot < 0) {
+                moveDir.addScaledVector(_remoteCollideNormal, -dot);
+                if (moveDir.lengthSq() > 0.001) moveDir.normalize(); else moveDir.set(0, 0, 0);
+                actualSpeed *= Math.sqrt(Math.max(0, 1 - dot * dot));
+            }
+        });
+        return actualSpeed;
+    }
 
     class ShooterBox {
         constructor(parent, x, y, z, intensity = 'high') {
@@ -64,14 +130,22 @@ export function startGame(CharacterClass) {
             this.mesh.position.set(x, y, z);
             this.mesh.castShadow = true;
             parent.add(this.mesh);
-            this.timer = 0;
             this.fireInterval = 3.0;
+            // Synced-time cycle instead of a per-client elapsed-since-page-load
+            // timer: every connected client computes the same fire cycle at the
+            // same server-clock moment (see MultiplayerClient.getSyncedTime,
+            // offset from the server's own Date.now() sent in connectSuccess),
+            // so turrets fire in lockstep without any per-shot network message -
+            // this is what previously made shots appear at different
+            // times/positions on each screen, since every client's timer
+            // started counting from its own page-load instant.
+            this._lastFireCycle = Math.floor(getSyncedTime() / 1000 / this.fireInterval);
         }
 
         update(delta, targetPosition, scene) {
-            this.timer += delta;
-            if (this.timer >= this.fireInterval) {
-                this.timer = 0;
+            const cycle = Math.floor(getSyncedTime() / 1000 / this.fireInterval);
+            if (cycle !== this._lastFireCycle) {
+                this._lastFireCycle = cycle;
                 this.fire(targetPosition, scene);
             }
         }
@@ -145,7 +219,11 @@ export function startGame(CharacterClass) {
     scene.add(star);
     
     const char = new CharacterClass(scene, threeTone);
+    window.localChar = char;
     let currentLevel = "local_stairs";
+
+    const network = new MultiplayerClient(scene, threeTone);
+    window.multiplayerClient = network;
 
     let jarTemplate = null;
     let brokenJarTemplate = null;
@@ -368,6 +446,7 @@ export function startGame(CharacterClass) {
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
         carryables.length = 0;
+        nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
 
@@ -497,7 +576,7 @@ export function startGame(CharacterClass) {
         smallBox.castShadow = true; smallBox.receiveShadow = true;
         smallBox.userData.isCarryable = true;
         levelGroup.add(smallBox); collidables.push(smallBox);
-        const carry1 = { mesh: smallBox, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false };
+        const carry1 = { mesh: smallBox, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
         carryables.push(carry1); addCarryableDebugHelper(carry1);
 
         const cylGeo = new THREE.CylinderGeometry(0.5, 0.5, 1.0, 16);
@@ -506,7 +585,7 @@ export function startGame(CharacterClass) {
         cyl.castShadow = true; cyl.receiveShadow = true;
         cyl.userData.isCarryable = true;
         levelGroup.add(cyl); collidables.push(cyl);
-        const carry2 = { mesh: cyl, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false };
+        const carry2 = { mesh: cyl, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
         carryables.push(carry2); addCarryableDebugHelper(carry2);
 
         const sphGeo = new THREE.SphereGeometry(0.5, 16, 16);
@@ -515,7 +594,7 @@ export function startGame(CharacterClass) {
         sph.castShadow = true; sph.receiveShadow = true;
         sph.userData.isCarryable = true;
         levelGroup.add(sph); collidables.push(sph);
-        const carry3 = { mesh: sph, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false };
+        const carry3 = { mesh: sph, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
         carryables.push(carry3); addCarryableDebugHelper(carry3);
 
         if (jarTemplate) {
@@ -530,7 +609,7 @@ export function startGame(CharacterClass) {
                     jarMesh.userData.isJar = true; 
                     levelGroup.add(jarMesh);
                     collidables.push(jarMesh);
-                    const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false };
+                    const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
                     carryables.push(carryJar); addCarryableDebugHelper(carryJar);
                 }
             }
@@ -546,6 +625,7 @@ export function startGame(CharacterClass) {
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
         carryables.length = 0;
+        nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
 
@@ -755,6 +835,11 @@ export function startGame(CharacterClass) {
             dropTargetPos.y = detectedFloorY + objectHeightOffset;
             dropTargetRot.copy(char.group.quaternion);
 
+            if (network) {
+                const heldObj = carryables.find(c => c.mesh === heldCarryable);
+                if (heldObj) network.sendDropEvent(heldObj.netId, dropTargetPos, dropTargetRot);
+            }
+
             window.isCarryingObj = false;
             dropBtn.style.display = 'none';
             throwBtn.style.display = 'none';
@@ -774,6 +859,8 @@ export function startGame(CharacterClass) {
                 cObj.mesh.position.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + boxHalfHeight);
 
                 cObj.velocity.copy(_tempVec3).multiplyScalar(15.0 * window.throwSpeedMult).setY(8.0 * window.throwSpeedMult);
+
+                if (network) network.sendThrowEvent(cObj.netId, cObj.mesh.position, cObj.mesh.quaternion, cObj.velocity);
             }
 
             const throwAction = char.actions['throw'];
@@ -802,6 +889,7 @@ export function startGame(CharacterClass) {
                 cObj.wasThrown = false;
                 if (velocity) cObj.velocity.copy(velocity);
                 else cObj.velocity.set(0, 0, 0);
+                if (network) network.sendThrowEvent(cObj.netId, cObj.mesh.position, cObj.mesh.quaternion, cObj.velocity);
             }
             window.isCarryingObj = false;
             window.isCarryStarting = false;
@@ -843,6 +931,8 @@ export function startGame(CharacterClass) {
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
 
     let stamina = 100, isGrounded = false, isLedgeGrabbing = false, isClimbingUp = false, ledgeTarget = new THREE.Vector3(), jumpMomentum = new THREE.Vector3();
+    let networkStateName = 'idle';
+    let networkCarryUpper = false;
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0, initialLandingTimer = 0;
     let ledgeOffset = 0.06, ledgeMoveLocked = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
     let wallStopThreshold = 0.90;
@@ -856,7 +946,7 @@ export function startGame(CharacterClass) {
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 35.0;
     window.ragdollLateralStiffness = 0.0;
-    window.ragdollDamping = 0.93;
+    window.ragdollDamping = 0.98;
     window.chargeStreakOpacity = 0.3;
     window.chargeStreakBaseRadius = 0.55;
     window.chargeStreakRadiusSpread = 0.5;
@@ -864,9 +954,16 @@ export function startGame(CharacterClass) {
     window.punchHitTime = 0.42;
     window.chargePunchHitTime = 0.28;
     window.comboHit1Time = 0.15;
+    window.chargePunchForce = 80.0;
+    window.chargePunchKnockback = 20.0;
+    window.chargePunchMaturityTime = 0.6;
+    window.playerStagger = 100.0;
+    window.playerStaggerMax = 100.0;
+    window.playerStaggerRegenRate = 20.0;
+    window.playerStaggerRegenDelay = 2.5;
+    window.playerStaggerRegenCooldown = 0;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
 
-    document.getElementById('empty-stamina-btn').addEventListener('pointerdown', () => { stamina = 0; document.getElementById('stamina-bar').style.width = '0%'; });
 
     function handleJump() {
         if (char.isRagdoll || char.isStandingUp || isSlipping || isClimbingUp) return;
@@ -958,7 +1055,10 @@ export function startGame(CharacterClass) {
         { id: 'punch-particle-scale-slider', vId: 'punch-particle-scale-val', func: v => window.punchParticleScale = v },
         { id: 'punch-hit-time-slider', vId: 'punch-hit-time-val', func: v => window.punchHitTime = v },
         { id: 'charge-punch-hit-time-slider', vId: 'charge-punch-hit-time-val', func: v => window.chargePunchHitTime = v },
-        { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v }
+        { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v },
+        { id: 'charge-punch-force-slider', vId: 'charge-punch-force-val', func: v => window.chargePunchForce = v },
+        { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
+        { id: 'charge-punch-maturity-slider', vId: 'charge-punch-maturity-val', func: v => window.chargePunchMaturityTime = v }
     ];
 
     uiBindings.forEach(b => {
@@ -994,6 +1094,16 @@ export function startGame(CharacterClass) {
         const delta = Math.min(clock.getDelta(), 0.1), time = Date.now()*0.001;
 
         char.updateHitFlash(delta);
+
+        // Hidden poise/stagger pool (see MultiplayerClient._applyPunchEvent):
+        // regenerates back toward full once a bit of time has passed since
+        // the last non-ragdoll hit, so it only tracks a "flurry" of recent
+        // punches rather than permanently wearing the player down.
+        if (window.playerStaggerRegenCooldown > 0) {
+            window.playerStaggerRegenCooldown -= delta;
+        } else if (window.playerStagger < window.playerStaggerMax) {
+            window.playerStagger = Math.min(window.playerStaggerMax, window.playerStagger + window.playerStaggerRegenRate * delta);
+        }
 
         const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
 
@@ -1133,7 +1243,7 @@ export function startGame(CharacterClass) {
             }
         }
 
-        const targetPos = _tempVec1.copy(char.group.position).setY(char.group.position.y + 1.0);
+        const targetPos = _shooterTargetPos.copy(char.group.position).setY(char.group.position.y + 1.0);
         shooters.forEach(s => s.update(delta, targetPos, scene));
 
         for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -1142,14 +1252,25 @@ export function startGame(CharacterClass) {
             p.mesh.position.addScaledVector(p.velocity, delta);
 
             const projRadius = p.radius || 0.3;
-            if (!char.isRagdoll && p.mesh.position.distanceTo(targetPos) < (0.9 + projRadius)) {
+            const hitRadius = 0.9 + projRadius;
+
+            if (p.sender && isProjectileConsumedByCloserPlayer(p.mesh.position, p.sender.mesh.position, targetPos, hitRadius)) {
+                scene.remove(p.mesh); projectiles.splice(i, 1);
+                continue;
+            }
+
+            if (!char.isRagdoll && p.mesh.position.distanceTo(targetPos) < hitRadius) {
                 const flashStrengthByIntensity = { low: 0.5, medium: 0.9, medium_high: 1.4, high: 2.5 };
-                char.triggerHitFlash(flashStrengthByIntensity[p.intensity] || 2.5);
+                const hitStrength = flashStrengthByIntensity[p.intensity] || 2.5;
+                char.triggerHitFlash(hitStrength);
+                if (network) network.sendHitEvent(hitStrength);
                 if (p.intensity === 'high') {
                     char.initRagdoll(p.velocity, p.intensity);
+                    if (network) network.sendRagdollEvent(p.velocity, p.intensity);
                     isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 0;
                 } else {
                     char.applyProceduralRecoil(p.velocity, p.intensity);
+                    if (network) network.sendRecoilEvent(p.velocity, p.intensity);
                 }
                 scene.remove(p.mesh); projectiles.splice(i, 1);
                 continue;
@@ -1327,9 +1448,21 @@ export function startGame(CharacterClass) {
 
         if (char.isRagdoll) {
             char.updateRagdoll(delta, collidables, floorY);
-            if (char.ragdollTimer > char.ragdollMaxTime) {
-                const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
-                char.beginStandUp(hipsP ? Math.max(0, hipsP.pos.y - 0.5) : 0);
+            const ragdollHipsP = char.ragdollParticles.find(p => p.id === 'hips');
+            // Ragdoll's own per-frame displacement is capped (see maxDisp in
+            // ragdoll_physics.js), so a hit from up high can still be well
+            // above the floor once ragdollMaxTime elapses. beginStandUp
+            // re-anchors the group to roughly the current hips height and
+            // lets the standup animation's crossfade cover the remaining gap -
+            // fine for a few inches, but over a real height difference that
+            // crossfade reads as an unnaturally slow float down instead of a
+            // fall. Keep simulating the actual (capped-speed but continuous)
+            // ragdoll fall until they're actually near the ground, with a
+            // generous absolute cap so a bad floor read can't ragdoll forever.
+            const nearFloor = !ragdollHipsP || (ragdollHipsP.pos.y - floorY) < 1.0;
+            if (char.ragdollTimer > char.ragdollMaxTime && (nearFloor || char.ragdollTimer > char.ragdollMaxTime + 5.0)) {
+                char.beginStandUp(ragdollHipsP ? Math.max(0, ragdollHipsP.pos.y - 0.5) : 0);
+                if (network) network.sendStandupEvent(char.group.position, char.group.quaternion);
                 yVelocity = 0; jumpMomentum.set(0, 0, 0); isGrounded = true;
             }
         } else if (char.isStandingUp) {
@@ -1343,7 +1476,8 @@ export function startGame(CharacterClass) {
             document.getElementById('stamina-bar').style.width = stamina + '%';
 
             char.animate(delta, 'climbing', 0, time, 0, 0);
-            
+            networkStateName = 'climb';
+
             const climbAction = char.actions['climb'];
             let transitionNow = char.climbFinished;
             if (climbAction && ((climbAction.getClip().duration - climbAction.time) / char.climbSpeed) <= climbTransitionDuration) transitionNow = true;
@@ -1483,6 +1617,7 @@ export function startGame(CharacterClass) {
                 }
             } else lockedHintAngle = null;
             char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
+            networkStateName = 'hang_idle';
         } else {
             if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
             else if (isGrounded && moveMag < 0.1 && yVelocity === 0) stamina += REGEN_RATE*delta;
@@ -1651,7 +1786,9 @@ export function startGame(CharacterClass) {
                         }
                     }
                 }
-                
+
+                actualSpeed = resolveRemotePlayerCollision(char.group.position, finalMoveDir, actualSpeed);
+
                 if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
                 char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), 15*delta);
@@ -1718,14 +1855,39 @@ export function startGame(CharacterClass) {
             if (landingTimer > 0) landingTimer -= delta;
             
             if (isGrounded) {
-                if (pushPullState === 'push') char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0);
-                else if (pushPullState === 'pull') char.animate(delta, 'pull', effectiveMoveMag, time, yVelocity, 0);
-                else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0);
-                else if (effectiveMoveMag > 0.05) char.animate(delta, 'walk', effectiveMoveMag, time, yVelocity, 0);
-                else char.animate(delta, 'idle', 0, time, 0, 0);
-            } else char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0);
+                if (pushPullState === 'push') { char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'push'; }
+                else if (pushPullState === 'pull') { char.animate(delta, 'pull', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'pull'; }
+                else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
+                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', effectiveMoveMag, time, yVelocity, 0); networkStateName = effectiveMoveMag > 0.8 ? 'run' : 'walk'; }
+                else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
+            } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
+
+            networkCarryUpper = false;
+            if (window.isCarryStarting) networkStateName = 'carry_start';
+            else if (window.isCarryDropping) networkStateName = 'carry_start';
+            else if (window.throwTimer > 0) networkStateName = 'throw';
+            else if (window.combat && window.combat.punchState > 0) {
+                const ps = window.combat.punchState;
+                if (ps === 1) networkStateName = 'punch_left';
+                else if (ps === 2) networkStateName = 'punch_right';
+                else if (ps === 3) networkStateName = 'punch_combo';
+                else if (ps === 4) networkStateName = 'punch_charge_hold';
+                else if (ps === 5) networkStateName = 'punch_charge_punch';
+            } else if (window.isCarryingObj) networkCarryUpper = true;
         }
-        
+
+        if (network) {
+            if (!char.isRagdoll && !char.isStandingUp) {
+                let heldNetId = null;
+                if (window.isCarryingObj && heldCarryable) {
+                    const heldObj = carryables.find(c => c.mesh === heldCarryable);
+                    if (heldObj) heldNetId = heldObj.netId;
+                }
+                network.sendLocalState(char.group.position, char.group.quaternion, networkStateName, networkCarryUpper, heldNetId, delta);
+            }
+            network.update(delta);
+        }
+
         let trackingPoint = _tempVec1;
         if (char.hips && (isClimbingUp || char.isRagdoll || char.isStandingUp)) char.hips.getWorldPosition(trackingPoint);
         else { trackingPoint.copy(char.group.position); trackingPoint.y += 1.1; }
