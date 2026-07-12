@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, viewport-fit=cover">
+    <!-- iOS Safari has no working Element.requestFullscreen() for regular
+         pages (WebKit only supports it for <video>), so the on-screen
+         fullscreen button can't do anything there. This is the only way to
+         get a chrome-less fullscreen game on iPhone: Share -> Add to Home
+         Screen, then launch from that home-screen icon instead of Safari. -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Climb Game</title>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
@@ -29,6 +37,10 @@
         #hud-connect-btn.connected { background: rgba(0, 200, 80, 0.7); }
         #hud-connect-btn img { height: 22px; width: auto; display: block; pointer-events: none; }
         #hud-connected-info { display: none; align-items: center; gap: 5px; }
+
+        #fullscreen-btn { position: absolute; top: 55px; right: 10px; width: 34px; height: 34px; padding: 0; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 4px; cursor: pointer; z-index: 100; display: flex; align-items: center; justify-content: center; }
+        #fullscreen-btn:active { background: rgba(0, 0, 0, 0.7); }
+        #fullscreen-btn svg { width: 18px; height: 18px; fill: white; pointer-events: none; }
 
         .joystick-base { position: absolute; bottom: 30px; width: 120px; height: 120px; background: rgba(255, 255, 255, 0.1); border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); display: flex; justify-content: center; align-items: center; touch-action: none; z-index: 10; }
         #base-left { left: 30px; } #base-right { right: 30px; }
@@ -95,7 +107,10 @@
             <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Multiplayer/ConnectedIcon.png" alt="Connected">
         </span>
     </button>
-    
+    <button id="fullscreen-btn" title="Fullscreen">
+        <svg id="fullscreen-icon" viewBox="0 0 24 24"><path d="M4 4h6V2H2v8h2V4zm14 0v6h2V2h-8v2h6zM4 14H2v8h8v-2H4v-6zm14 6h-6v2h8v-8h-2v6z"/></svg>
+    </button>
+
     <div id="ui" class="collapsed">
         <button id="dock-btn">▶</button>
         <div class="ui-controls">
@@ -233,6 +248,10 @@
                 <div class="category-content">
                     <label>Server Address:</label><br>
                     <input type="text" id="mp-server-input" value="ws://localhost:8080" style="width: 100%; box-sizing: border-box;"><br>
+                    <div style="font-size: 9px; opacity: 0.6; margin-top: 4px;">eduroam</div>
+                    <button class="mp-server-quickfill-btn" style="width: 100%;">ws://172.16.19.116:8080</button>
+                    <div style="font-size: 9px; opacity: 0.6; margin-top: 4px;">S&amp;S</div>
+                    <button class="mp-server-quickfill-btn" style="width: 100%;">ws://192.168.178.192:8080</button>
                     <button id="mp-connect-btn" style="width: 100%; margin-top: 6px;">Connect</button>
                     <div id="mp-status" style="margin-top: 6px; opacity: 0.8;">disconnected</div>
                 </div>
@@ -1758,6 +1777,23 @@ import { startGame } from './game_js.js';
 
         const mpConnectBtn = document.getElementById('mp-connect-btn');
         const mpServerInput = document.getElementById('mp-server-input');
+        // Fills the address field without focusing it, so tapping one of
+        // these buttons never opens the on-screen keyboard - avoids the
+        // whole iOS pan/shift issue above instead of just recovering from it.
+        document.querySelectorAll('.mp-server-quickfill-btn').forEach((btn) => {
+            if (mpServerInput) btn.addEventListener('click', () => { mpServerInput.value = btn.textContent; });
+        });
+        if (mpServerInput) {
+            // Belt-and-suspenders alongside the visualViewport listener in
+            // game_js.js: iOS Safari can leave the page panned upward after
+            // this input's keyboard closes, and the timing of when it
+            // actually snaps back varies, so retry a couple of times.
+            mpServerInput.addEventListener('blur', () => {
+                setTimeout(() => window.scrollTo(0, 0), 50);
+                setTimeout(() => window.scrollTo(0, 0), 300);
+                setTimeout(() => window.scrollTo(0, 0), 600);
+            });
+        }
         const mpStatus = document.getElementById('mp-status');
         const hudConnectBtn = document.getElementById('hud-connect-btn');
         const hudConnectIcon = document.getElementById('hud-connect-icon');
@@ -1784,6 +1820,33 @@ import { startGame } from './game_js.js';
 
         if (mpConnectBtn) {
             mpConnectBtn.addEventListener('click', doMpConnect);
+        }
+
+        // Mobile browsers can shift the page's visual viewport upward once the
+        // on-screen keyboard used to type the server address closes (address
+        // bar/chrome not reclaiming its space right away), pushing fixed HUD
+        // buttons like #hud-connect-btn off the top of the screen. Fullscreen
+        // removes that browser chrome entirely so there's nothing to shift.
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const fullscreenIcon = document.getElementById('fullscreen-icon');
+        const EXPAND_PATH = 'M4 4h6V2H2v8h2V4zm14 0v6h2V2h-8v2h6zM4 14H2v8h8v-2H4v-6zm14 6h-6v2h8v-8h-2v6z';
+        const COMPRESS_PATH = 'M8 4H2v2h6V4zm0 14H2v2h6v-2zM22 6V4h-6v2h6zM16 18v2h6v-2h-6zM10 2H8v6H2v2h8V2zm4 8h8V8h-6V2h-2v8zM2 14v2h6v6h2v-8H2zm12 8h2v-6h6v-2h-8v8z';
+
+        function updateFullscreenIcon() {
+            if (!fullscreenIcon) return;
+            fullscreenIcon.querySelector('path').setAttribute('d', document.fullscreenElement ? COMPRESS_PATH : EXPAND_PATH);
+        }
+
+        if (fullscreenBtn) {
+            fullscreenBtn.addEventListener('pointerdown', (e) => {
+                e.stopPropagation();
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(() => {});
+                } else {
+                    document.exitFullscreen().catch(() => {});
+                }
+            });
+            document.addEventListener('fullscreenchange', updateFullscreenIcon);
         }
 
     </script>

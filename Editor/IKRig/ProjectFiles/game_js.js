@@ -2045,7 +2045,17 @@ if (leftArrow) {
 
     animate();
     
-    window.addEventListener('resize', () => { 
-        camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); 
-    });
+    // iOS Safari doesn't fire 'resize' when the on-screen keyboard opens/closes
+    // (it pans the visual viewport instead, leaving window.innerHeight/scrollY
+    // untouched) - and after tapping a text input like the multiplayer server
+    // address box, it doesn't always restore that pan once the keyboard closes,
+    // leaving the whole page visibly shifted up. visualViewport's own resize
+    // event does fire reliably for this, and re-snapping scroll to (0,0) undoes
+    // the leftover pan.
+    function handleViewportResize() {
+        window.scrollTo(0, 0);
+        camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener('resize', handleViewportResize);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', handleViewportResize);
 }
