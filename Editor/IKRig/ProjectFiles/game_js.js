@@ -510,6 +510,94 @@ export function startGame(CharacterClass) {
         brokenJarTemplate = pivotGroup;
     });
 
+    // StarKey.fbx contains both a key and a lock (LockBase/LockStarContainer
+    // for the lock, KeyBase/KeyStarContainer for the key) plus a single
+    // shared "Star" mesh, all authored as flat siblings in the source file.
+    // Only the key half is used for now.
+    let keyTemplateParts = null;
+    const activeKeyStars = []; // billboarded toward the camera every frame, see the main loop
+    const activeKeyGroups = []; // rescaled live by the Key Scale slider
+    window.keyScale = 2.0;
+    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.fbx', (object) => {
+        let keyBase = null, keyStarContainer = null, star = null;
+        object.traverse((child) => {
+            if (!child.isMesh) return;
+            if (child.name === 'KeyBase') keyBase = child;
+            else if (child.name === 'KeyStarContainer') keyStarContainer = child;
+            else if (child.name === 'Star') star = child;
+        });
+        if (keyBase && keyStarContainer && star) {
+            // KeyBase/KeyStarContainer share the exact same local position in
+            // the source file - normalize the whole assembly's scale off
+            // their combined size, same 1/maxDim approach Jar.fbx uses above,
+            // so it isn't a guessed constant tied to this one model's units.
+            const box = new THREE.Box3().setFromObject(keyBase).union(new THREE.Box3().setFromObject(keyStarContainer));
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = maxDim > 0 ? 1.0 / maxDim : 1;
+            keyTemplateParts = { keyBase, keyStarContainer, star, scale };
+            if (currentLevel === "local_stairs") buildLevel();
+        }
+    });
+
+    function createKeyInstance() {
+        if (!keyTemplateParts) return null;
+        const { keyBase, keyStarContainer, star, scale } = keyTemplateParts;
+        const center = keyBase.position.clone();
+        const group = new THREE.Group();
+
+        const baseClone = keyBase.clone();
+        baseClone.position.copy(keyBase.position).sub(center).multiplyScalar(scale);
+        baseClone.scale.multiplyScalar(scale);
+
+        const containerClone = keyStarContainer.clone();
+        containerClone.position.copy(keyStarContainer.position).sub(center).multiplyScalar(scale);
+        containerClone.scale.multiplyScalar(scale);
+
+        // Star's own authored position in the file is off to the side (not
+        // meaningful - it's shared between the key and lock containers and
+        // meant to be hand-placed into whichever one it belongs to). What the
+        // model actually wants is the star sitting at the container's own
+        // geometric center of mass, as a real child of the container.
+        // geometry.boundingBox is in the container mesh's raw local vertex
+        // space - i.e. already the correct frame for a child's local
+        // position once containerClone becomes its parent, so no extra
+        // scale/offset math against containerClone's transform is needed here.
+        keyStarContainer.geometry.computeBoundingBox();
+        const containerLocalCenter = new THREE.Vector3();
+        keyStarContainer.geometry.boundingBox.getCenter(containerLocalCenter);
+
+        const starClone = star.clone();
+        starClone.position.copy(containerLocalCenter);
+        // Star's own original scale is divided by the container's original
+        // scale so that once containerClone's scale (container.scale *
+        // normalize scale) applies on top via the parent-child transform,
+        // the star ends up at exactly star.scale * normalize scale - the
+        // same absolute size every other part gets.
+        starClone.scale.copy(star.scale).divide(keyStarContainer.scale);
+        // Flat/unlit material: since the star billboards toward the camera
+        // every frame (see activeKeyStars in the main loop), its normals spin
+        // independently of the rest of the key, which would make a lit
+        // material's shading flicker unnaturally as it rotates. A flat color
+        // sidesteps that and just always reads as the star's true color.
+        const starSrcMat = Array.isArray(star.material) ? star.material[0] : star.material;
+        starClone.material = new THREE.MeshBasicMaterial({
+            color: starSrcMat && starSrcMat.color ? starSrcMat.color.clone() : 0xffffff,
+            map: starSrcMat && starSrcMat.map ? starSrcMat.map : null,
+            transparent: true,
+            alphaTest: 0.5
+        });
+        containerClone.add(starClone);
+
+        [baseClone, containerClone, starClone].forEach(m => { m.castShadow = true; m.receiveShadow = true; });
+        group.add(baseClone, containerClone);
+        group.scale.setScalar(window.keyScale);
+        activeKeyStars.push(starClone);
+        activeKeyGroups.push(group);
+        return group;
+    }
+
     function shatterJar(position, impactVelocity) {
         const shardCount = 14;
 
@@ -582,8 +670,23 @@ export function startGame(CharacterClass) {
         if (index !== -1) carryables.splice(index, 1);
         const collIndex = collidables.indexOf(jarMesh);
         if (collIndex !== -1) collidables.splice(collIndex, 1);
+        const spawnKey = !!jarMesh.userData.containsKey;
+        const spawnPos = jarMesh.position.clone();
         levelGroup.remove(jarMesh);
         scene.remove(jarMesh);
+
+        if (spawnKey) {
+            const keyGroup = createKeyInstance();
+            if (keyGroup) {
+                keyGroup.position.copy(spawnPos);
+                keyGroup.userData.isCarryable = true;
+                keyGroup.userData.isKey = true;
+                levelGroup.add(keyGroup);
+                collidables.push(keyGroup);
+                const carryKey = { mesh: keyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+                carryables.push(carryKey); addCarryableDebugHelper(carryKey);
+            }
+        }
     }
 
     function addHemisphereDebugHelper(mesh) {
@@ -834,13 +937,29 @@ export function startGame(CharacterClass) {
                     const jarMesh = jarTemplate.clone();
                     jarMesh.position.set(startX + r * spacing, 0.5, startZ + c * spacing); 
                     jarMesh.userData.isCarryable = true;
-                    jarMesh.userData.isJar = true; 
+                    jarMesh.userData.isJar = true;
+                    // Exactly one jar in the grid holds the key - checked in
+                    // destroyJarCarryable once this one actually shatters.
+                    if (r === 0 && c === 0) jarMesh.userData.containsKey = true;
                     levelGroup.add(jarMesh);
                     collidables.push(jarMesh);
                     const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
                     carryables.push(carryJar); addCarryableDebugHelper(carryJar);
                 }
             }
+        }
+
+        // Test-only key instance, sitting out in the open near spawn so it
+        // can be inspected/picked up without having to break a jar first.
+        const testKeyGroup = createKeyInstance();
+        if (testKeyGroup) {
+            testKeyGroup.position.set(0, 1.0, -3);
+            testKeyGroup.userData.isCarryable = true;
+            testKeyGroup.userData.isKey = true;
+            levelGroup.add(testKeyGroup);
+            collidables.push(testKeyGroup);
+            const carryTestKey = { mesh: testKeyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+            carryables.push(carryTestKey); addCarryableDebugHelper(carryTestKey);
         }
 
         star.position.set(0, (5 * cubeSize * 0.9) + cubeSize + 2, -10 - 5 * cubeSize); star.visible = true;
@@ -1417,6 +1536,13 @@ export function startGame(CharacterClass) {
         document.getElementById('fill-light-intensity-val').textContent = v.toFixed(2);
     });
 
+    document.getElementById('key-scale-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.keyScale = v;
+        document.getElementById('key-scale-val').textContent = v.toFixed(2);
+        activeKeyGroups.forEach(g => g.scale.setScalar(v));
+    });
+
     let showJoints = false;
     document.getElementById('toggle-debug-joints').addEventListener('change', e => {
         showJoints = e.target.checked;
@@ -1492,6 +1618,17 @@ export function startGame(CharacterClass) {
                 }
             }
         }
+
+        // Star inside the key always faces the camera - unlike the charge
+        // projectile below, it's nested inside a group that itself moves/
+        // rotates (carried, thrown, sitting in the level), so its target
+        // world rotation has to be converted into a LOCAL rotation relative
+        // to that parent instead of just copying camera.quaternion directly.
+        activeKeyStars.forEach(star => {
+            if (!star.parent) return;
+            star.parent.getWorldQuaternion(_tempQuat);
+            star.quaternion.copy(_tempQuat.invert().multiply(camera.quaternion));
+        });
 
         if (window.chargeAttackProjectiles) {
             for (let i = window.chargeAttackProjectiles.length - 1; i >= 0; i--) {
