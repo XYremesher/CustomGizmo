@@ -2277,7 +2277,6 @@ export function startGame(CharacterClass) {
                     char.transitionStartY = char.fbxModel.position.y;
                     char.transitionStartZ = char.fbxModel.position.z;
                 }
-
                 char.climbTransitionTimer = climbTransitionDuration; char.climbTransitionMax = climbTransitionDuration;
                 char.climbLockedWorldPos = null;
                 char.smoothedArrowPos = new THREE.Vector3(0, 0.05, 0);
