@@ -236,7 +236,7 @@ export function startGame(CharacterClass) {
     dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 150;
     dirLight.shadow.camera.left = -40; dirLight.shadow.camera.right = 40;
     dirLight.shadow.camera.top = 40; dirLight.shadow.camera.bottom = -40;
-    dirLight.shadow.bias = -0.0001; dirLight.shadow.normalBias = 0.05;
+    dirLight.shadow.bias = -0.0001; dirLight.shadow.normalBias = 0.02;
     scene.add(dirLight); scene.add(dirLight.target);
 
     // Second, angled "fill" light - no shadow map (the expensive part of a
@@ -554,6 +554,22 @@ export function startGame(CharacterClass) {
         const containerClone = keyStarContainer.clone();
         containerClone.position.copy(keyStarContainer.position).sub(center).multiplyScalar(scale);
         containerClone.scale.multiplyScalar(scale);
+        // Normals were fixed back to correct/outward in Blender (they were
+        // flipped before, which faked "see-through" by making the shell get
+        // backface-culled from outside - but that also broke raycasting/
+        // collision against it). Now that the shell renders solid+opaque, the
+        // star sitting inside it needs real transparency instead, done here
+        // in the material rather than in geometry. Clone the ORIGINAL
+        // material (not rebuild one from scratch) so whatever look/maps it
+        // already had are kept - only transparency/depth behavior is added.
+        // depthWrite is turned off so the shell's own depth values never
+        // block the star drawing through it, regardless of transparent-pass
+        // sort order between the two.
+        containerClone.material = (Array.isArray(keyStarContainer.material) ? keyStarContainer.material[0] : keyStarContainer.material).clone();
+        containerClone.material.transparent = true;
+        containerClone.material.opacity = 0.35;
+        containerClone.material.side = THREE.DoubleSide;
+        containerClone.material.depthWrite = false;
 
         // Star's own authored position in the file is off to the side (not
         // meaningful - it's shared between the key and lock containers and
