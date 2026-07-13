@@ -513,18 +513,20 @@ export function startGame(CharacterClass) {
     // StarKey.fbx contains both a key and a lock (LockBase/LockStarContainer
     // for the lock, KeyBase/KeyStarContainer for the key) plus a single
     // shared "Star" mesh, all authored as flat siblings in the source file.
-    // Only the key half is used for now.
     let keyTemplateParts = null;
+    let stairsLevelBuilt = false; // set once buildStairsLevel() has run at least once
     const activeKeyStars = []; // billboarded toward the camera every frame, see the main loop
-    const activeKeyGroups = []; // rescaled live by the Key Scale slider
+    const activeKeyGroups = []; // rescaled live by the Key Scale slider (key + lock share it)
     window.keyScale = 2.0;
     fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.fbx', (object) => {
-        let keyBase = null, keyStarContainer = null, star = null;
+        let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
             if (!child.isMesh) return;
             if (child.name === 'KeyBase') keyBase = child;
             else if (child.name === 'KeyStarContainer') keyStarContainer = child;
             else if (child.name === 'Star') star = child;
+            else if (child.name === 'LockBase') lockBase = child;
+            else if (child.name === 'LockStarContainer') lockStarContainer = child;
         });
         if (keyBase && keyStarContainer && star) {
             // KeyBase/KeyStarContainer share the exact same local position in
@@ -536,38 +538,144 @@ export function startGame(CharacterClass) {
             box.getSize(size);
             const maxDim = Math.max(size.x, size.y, size.z);
             const scale = maxDim > 0 ? 1.0 / maxDim : 1;
-            keyTemplateParts = { keyBase, keyStarContainer, star, scale };
-            if (currentLevel === "local_stairs") buildLevel();
+            keyTemplateParts = { keyBase, keyStarContainer, star, scale, lockBase, lockStarContainer };
+            // Used to just call the full buildLevel() again here whenever
+            // this (large, slow-to-fetch) FBX finished loading after the
+            // level had already been built once - but a full rebuild while
+            // the player might already be mid-climb/mid-carry resets
+            // collidables/carryables out from under them (lost ledge grabs,
+            // vanished carryables, falling through geometry). If the level's
+            // already up, just add the test key/lock on top of it instead.
+            if (currentLevel === "local_stairs" && stairsLevelBuilt) spawnTestKeyAndLock();
         }
     });
 
-    function createKeyInstance() {
-        if (!keyTemplateParts) return null;
-        const { keyBase, keyStarContainer, star, scale } = keyTemplateParts;
-        const center = keyBase.position.clone();
+    function spawnTestKeyAndLock() {
+        // Test-only key instance, sitting out in the open near spawn so it
+        // can be inspected/picked up without having to break a jar first.
+        const testKeyGroup = createKeyInstance();
+        if (testKeyGroup) {
+            // Sit exactly on the ground (y=0) instead of a guessed y=1.0 -
+            // the group's origin is the container's mass center, not the
+            // model's base, so the correct ground Y depends on floorOffset.
+            testKeyGroup.position.set(0, testKeyGroup.userData.floorOffset * window.keyScale, -3);
+            testKeyGroup.userData.isCarryable = true;
+            testKeyGroup.userData.isKey = true;
+            levelGroup.add(testKeyGroup);
+            collidables.push(testKeyGroup);
+            const carryTestKey = { mesh: testKeyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+            carryables.push(carryTestKey); addCarryableDebugHelper(carryTestKey);
+        }
+
+        // Test-only lock instance next to the key - fixed in place (not
+        // carryable), just to see it in the level; no unlock puzzle wired
+        // up yet.
+        const testLockGroup = createLockInstance();
+        if (testLockGroup) {
+            testLockGroup.position.set(-3, testLockGroup.userData.floorOffset * window.keyScale, -3);
+            levelGroup.add(testLockGroup);
+            collidables.push(testLockGroup);
+            window.debugTestLockGroup = testLockGroup; // L key triggers revealLockStar() on this, see keydown handler
+        }
+    }
+
+    // Shared by both the key and the lock - same base+container+star
+    // construction, just with different source meshes. `scale` is always
+    // the KEY's own normalize factor (not a separately-computed one for the
+    // lock), so the lock keeps its true size relative to the key instead of
+    // both getting independently normalized to the same 1-unit footprint.
+    // Box3.setFromObject() also expands by every morph target's position
+    // range, not just the base geometry - LockStarContainer has a leftover
+    // shape key with NaN vertex data (from the Blender normal-flip edit)
+    // that poisons the box even though the mesh doesn't actually use that
+    // shape. Computing straight from the base position attribute sidesteps
+    // that entirely.
+    function safeWorldBox(mesh) {
+        const posAttr = mesh.geometry.attributes.position;
+        const box = new THREE.Box3();
+        const v = new THREE.Vector3();
+        for (let i = 0; i < posAttr.count; i++) {
+            v.fromBufferAttribute(posAttr, i);
+            box.expandByPoint(v);
+        }
+        mesh.updateWorldMatrix(true, false);
+        box.applyMatrix4(mesh.matrixWorld);
+        return box;
+    }
+    function meshWorldCenter(mesh) {
+        return safeWorldBox(mesh).getCenter(new THREE.Vector3());
+    }
+    // Object3D.clone() shares the SAME geometry object (incl. morph
+    // attributes) with the source - so even though buildStarAssembly's own
+    // math avoids the corrupted shape key, any OTHER system that computes a
+    // bounding box on the cloned mesh (e.g. the ledge-grab obstacle check,
+    // which iterates all collidables) hits the same NaN. LockStarContainer's
+    // "Key1" shape key is an intentional part of the lock/key gameplay (open
+    // by default so no star shows; animated to 0 once the key goes in, to
+    // reveal it) - not something to permanently strip. But its vertex data
+    // is currently corrupted (NaN) in the exported FBX, and geometry with
+    // morph targets always gets its bounding box expanded to cover the FULL
+    // morph range regardless of current influence - so until that's fixed in
+    // Blender, keeping it live re-breaks every bounding-box check in the
+    // game (that's the ledge-grab bug from before). Only strip it if NaN is
+    // actually present; once the source data is clean this stops firing on
+    // its own and Key1 starts working without needing another code change.
+    function cloneMeshClean(node) {
+        const clone = node.clone();
+        const morphPos = clone.geometry.morphAttributes && clone.geometry.morphAttributes.position;
+        if (morphPos && morphPos.length > 0) {
+            // Two ways this data has shown up broken so far: literal NaN
+            // values, and (the shape key's actual name is "Key 1", with a
+            // space) a target with 0 vertices - an empty/mismatched morph
+            // attribute still confuses Three's bounding box/sphere math into
+            // producing NaN, same end result. Check both instead of just one.
+            const baseCount = clone.geometry.attributes.position.count;
+            const invalid = morphPos.some(attr => attr.count !== baseCount || attr.array.some(v => !Number.isFinite(v)));
+            if (invalid) {
+                console.error(`"${node.name}": shape key data is invalid (wrong vertex count or non-finite values) - stripping morph targets until fixed in Blender.`);
+                clone.geometry = clone.geometry.clone();
+                clone.geometry.morphAttributes = {};
+                clone.geometry.computeBoundingBox();
+                clone.geometry.computeBoundingSphere();
+                clone.morphTargetInfluences = undefined;
+                clone.morphTargetDictionary = undefined;
+            } else if (clone.morphTargetDictionary && 'Key 1' in clone.morphTargetDictionary) {
+                // Default state: Key 1 = 1 (closed up, no star visible).
+                clone.morphTargetInfluences[clone.morphTargetDictionary['Key 1']] = 1.0;
+            }
+        }
+        return clone;
+    }
+
+    function buildStarAssembly(baseNode, containerNode, starNode, scale) {
+        // Group origin is the container's own geometric/mass center (its
+        // world-space bounding box center), not the base mesh's arbitrary
+        // pivot - that's what the group is positioned/held/thrown by, so it
+        // should be anchored on the star container, not wherever the
+        // handle's pivot happens to sit.
+        const center = meshWorldCenter(containerNode);
+        if (!Number.isFinite(center.x) || !Number.isFinite(center.y) || !Number.isFinite(center.z)) {
+            // Belt-and-suspenders: bail out instead of letting a NaN
+            // position/matrix leak into the scene graph if the base geometry
+            // itself is ever the problem too - that's what was silently
+            // breaking spawn position and ledge grabs elsewhere in the level.
+            console.error(`buildStarAssembly: "${containerNode.name}" has a non-finite bounding box - skipping this instance.`);
+            return null;
+        }
         const group = new THREE.Group();
 
-        const baseClone = keyBase.clone();
-        baseClone.position.copy(keyBase.position).sub(center).multiplyScalar(scale);
+        const baseClone = cloneMeshClean(baseNode);
+        baseClone.position.copy(baseNode.position).sub(center).multiplyScalar(scale);
         baseClone.scale.multiplyScalar(scale);
 
-        const containerClone = keyStarContainer.clone();
-        containerClone.position.copy(keyStarContainer.position).sub(center).multiplyScalar(scale);
+        const containerClone = cloneMeshClean(containerNode);
+        containerClone.position.copy(containerNode.position).sub(center).multiplyScalar(scale);
         containerClone.scale.multiplyScalar(scale);
-        // Normals were fixed back to correct/outward in Blender (they were
-        // flipped before, which faked "see-through" by making the shell get
-        // backface-culled from outside - but that also broke raycasting/
-        // collision against it). Now that the shell renders solid+opaque, the
-        // star sitting inside it needs real transparency instead, done here
-        // in the material rather than in geometry. Clone the ORIGINAL
-        // material (not rebuild one from scratch) so whatever look/maps it
-        // already had are kept - only transparency/depth behavior is added.
-        // depthWrite is turned off so the shell's own depth values never
-        // block the star drawing through it, regardless of transparent-pass
-        // sort order between the two.
-        containerClone.material = (Array.isArray(keyStarContainer.material) ? keyStarContainer.material[0] : keyStarContainer.material).clone();
+        // Fancy shader attempts (fresnel, additive glow) didn't land - kept
+        // simple instead: the original material, just made see-through.
+        containerClone.material = (Array.isArray(containerNode.material) ? containerNode.material[0] : containerNode.material).clone();
         containerClone.material.transparent = true;
-        containerClone.material.opacity = 0.35;
+        containerClone.material.opacity = 0.5;
         containerClone.material.side = THREE.DoubleSide;
         containerClone.material.depthWrite = false;
 
@@ -576,28 +684,35 @@ export function startGame(CharacterClass) {
         // meant to be hand-placed into whichever one it belongs to). What the
         // model actually wants is the star sitting at the container's own
         // geometric center of mass, as a real child of the container.
-        // geometry.boundingBox is in the container mesh's raw local vertex
-        // space - i.e. already the correct frame for a child's local
-        // position once containerClone becomes its parent, so no extra
-        // scale/offset math against containerClone's transform is needed here.
-        keyStarContainer.geometry.computeBoundingBox();
-        const containerLocalCenter = new THREE.Vector3();
-        keyStarContainer.geometry.boundingBox.getCenter(containerLocalCenter);
+        // Raw local vertex-space center of the container mesh - i.e. already
+        // the correct frame for a child's local position once containerClone
+        // becomes its parent, so no extra scale/offset math against
+        // containerClone's transform is needed here. Computed the same
+        // morph-target-ignoring way as meshWorldCenter (just without the
+        // matrixWorld transform) for the same reason - geometry.computeBoundingBox()
+        // would otherwise pick up LockStarContainer's corrupted shape key.
+        const containerLocalCenter = (() => {
+            const posAttr = containerNode.geometry.attributes.position;
+            const box = new THREE.Box3();
+            const v = new THREE.Vector3();
+            for (let i = 0; i < posAttr.count; i++) box.expandByPoint(v.fromBufferAttribute(posAttr, i));
+            return box.getCenter(new THREE.Vector3());
+        })();
 
-        const starClone = star.clone();
+        const starClone = cloneMeshClean(starNode);
         starClone.position.copy(containerLocalCenter);
         // Star's own original scale is divided by the container's original
         // scale so that once containerClone's scale (container.scale *
         // normalize scale) applies on top via the parent-child transform,
         // the star ends up at exactly star.scale * normalize scale - the
         // same absolute size every other part gets.
-        starClone.scale.copy(star.scale).divide(keyStarContainer.scale);
+        starClone.scale.copy(starNode.scale).divide(containerNode.scale);
         // Flat/unlit material: since the star billboards toward the camera
         // every frame (see activeKeyStars in the main loop), its normals spin
         // independently of the rest of the key, which would make a lit
         // material's shading flicker unnaturally as it rotates. A flat color
         // sidesteps that and just always reads as the star's true color.
-        const starSrcMat = Array.isArray(star.material) ? star.material[0] : star.material;
+        const starSrcMat = Array.isArray(starNode.material) ? starNode.material[0] : starNode.material;
         starClone.material = new THREE.MeshBasicMaterial({
             color: starSrcMat && starSrcMat.color ? starSrcMat.color.clone() : 0xffffff,
             map: starSrcMat && starSrcMat.map ? starSrcMat.map : null,
@@ -611,7 +726,44 @@ export function startGame(CharacterClass) {
         group.scale.setScalar(window.keyScale);
         activeKeyStars.push(starClone);
         activeKeyGroups.push(group);
+        group.userData.containerMesh = containerClone; // for revealLockStar()
+
+        // How far below the group's own origin (the container's mass
+        // center) the model's lowest point sits, in the group's local space
+        // BEFORE the window.keyScale multiplier - callers use this to sit
+        // the object exactly on the ground instead of guessing a Y value,
+        // since the origin moved off the base mesh's pivot onto the
+        // container's center.
+        const combinedBox = safeWorldBox(baseNode).union(safeWorldBox(containerNode));
+        group.userData.floorOffset = (center.y - combinedBox.min.y) * scale;
+
         return group;
+    }
+
+    function createKeyInstance() {
+        if (!keyTemplateParts) return null;
+        const { keyBase, keyStarContainer, star, scale } = keyTemplateParts;
+        return buildStarAssembly(keyBase, keyStarContainer, star, scale);
+    }
+
+    function createLockInstance() {
+        if (!keyTemplateParts || !keyTemplateParts.lockBase || !keyTemplateParts.lockStarContainer) return null;
+        const { lockBase, lockStarContainer, star, scale } = keyTemplateParts;
+        return buildStarAssembly(lockBase, lockStarContainer, star, scale);
+    }
+
+    // Animates the lock's "Key1" shape key from its current influence down
+    // to 0 over `duration` seconds, revealing the star inside - meant to run
+    // once the real "key inserted into lock" gameplay trigger exists. No
+    // such trigger is wired up yet, so for now this is only reachable via
+    // the L key debug binding below. No-ops safely if Key1 isn't live
+    // (e.g. still stripped because the shape key's source data has NaN).
+    const activeMorphTweens = [];
+    function revealLockStar(lockGroup, duration = 0.4) {
+        const mesh = lockGroup && lockGroup.userData.containerMesh;
+        if (!mesh || !mesh.morphTargetDictionary || !('Key 1' in mesh.morphTargetDictionary)) return;
+        const idx = mesh.morphTargetDictionary['Key 1'];
+        activeMorphTweens.push({ mesh, idx, from: mesh.morphTargetInfluences[idx], to: 0, duration, elapsed: 0 });
     }
 
     function shatterJar(position, impactVelocity) {
@@ -965,21 +1117,21 @@ export function startGame(CharacterClass) {
             }
         }
 
-        // Test-only key instance, sitting out in the open near spawn so it
-        // can be inspected/picked up without having to break a jar first.
-        const testKeyGroup = createKeyInstance();
-        if (testKeyGroup) {
-            testKeyGroup.position.set(0, 1.0, -3);
-            testKeyGroup.userData.isCarryable = true;
-            testKeyGroup.userData.isKey = true;
-            levelGroup.add(testKeyGroup);
-            collidables.push(testKeyGroup);
-            const carryTestKey = { mesh: testKeyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
-            carryables.push(carryTestKey); addCarryableDebugHelper(carryTestKey);
-        }
-
         star.position.set(0, (5 * cubeSize * 0.9) + cubeSize + 2, -10 - 5 * cubeSize); star.visible = true;
         char.group.position.set(0, cubeSize, 0); char.group.rotation.y = Math.PI;
+        stairsLevelBuilt = true;
+
+        // Runs last, after everything the player actually needs (spawn
+        // position, stairs, ledges) is already in place - if anything about
+        // the key/lock props throws, it can no longer take the rest of the
+        // level down with it (that's what was leaving the player stuck
+        // inside the start box with no ledge grabs: an exception here used
+        // to abort the rest of buildStairsLevel before it ran).
+        try {
+            spawnTestKeyAndLock();
+        } catch (e) {
+            console.error('spawnTestKeyAndLock failed:', e);
+        }
     }
 
     async function buildLevel() {
@@ -1395,7 +1547,7 @@ export function startGame(CharacterClass) {
         }
     }
 
-    window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = true; if (e.code === 'Space') handleJump(); });
+    window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = true; if (e.code === 'Space') handleJump(); if (k === 'l' && window.debugTestLockGroup) revealLockStar(window.debugTestLockGroup); });
     window.addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = false; });
     document.getElementById('jump-btn').addEventListener('pointerdown', handleJump);
 
@@ -1645,6 +1797,14 @@ export function startGame(CharacterClass) {
             star.parent.getWorldQuaternion(_tempQuat);
             star.quaternion.copy(_tempQuat.invert().multiply(camera.quaternion));
         });
+
+        for (let i = activeMorphTweens.length - 1; i >= 0; i--) {
+            const t = activeMorphTweens[i];
+            t.elapsed += delta;
+            const p = Math.min(1, t.elapsed / t.duration);
+            t.mesh.morphTargetInfluences[t.idx] = t.from + (t.to - t.from) * p;
+            if (p >= 1) activeMorphTweens.splice(i, 1);
+        }
 
         if (window.chargeAttackProjectiles) {
             for (let i = window.chargeAttackProjectiles.length - 1; i >= 0; i--) {
