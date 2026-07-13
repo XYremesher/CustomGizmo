@@ -1223,6 +1223,21 @@ export function startGame(CharacterClass) {
             }
         }
 
+        if (window.chargeAttackProjectiles) {
+            for (let i = window.chargeAttackProjectiles.length - 1; i >= 0; i--) {
+                const cp = window.chargeAttackProjectiles[i];
+                cp.mesh.position.addScaledVector(cp.velocity, delta);
+                cp.life -= delta * 0.8;
+                cp.mesh.material.opacity = Math.max(0, cp.life);
+                if (cp.life <= 0) {
+                    if (window.gameScene) window.gameScene.remove(cp.mesh);
+                    cp.mesh.geometry.dispose();
+                    cp.mesh.material.dispose();
+                    window.chargeAttackProjectiles.splice(i, 1);
+                }
+            }
+        }
+
         const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
 
         if (Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05) {

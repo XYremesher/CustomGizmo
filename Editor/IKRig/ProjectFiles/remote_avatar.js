@@ -430,9 +430,20 @@ export class RemoteAvatar {
         // animation state, not a separately-tracked timer.
         const holdAction = this.actions['punch_charge_hold'];
         const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
-        const growth = 0.4 + 0.6 * growthT;
-        const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+        const isMature = growthT >= 1.0;
+        let growth, pulse;
+        if (isMature) {
+            growth = 1.3;
+            pulse = 1.0 + Math.sin(this.chargeEffect.time * 14) * 0.18;
+        } else {
+            growth = 0.4 + 0.6 * growthT;
+            pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+        }
         this.chargeEffect.glow.scale.setScalar(growth * pulse);
+        if (isMature !== this.chargeEffect.isMature) {
+            this.chargeEffect.glow.material.color.setHex(isMature ? 0xff4400 : 0xffee44);
+            this.chargeEffect.isMature = isMature;
+        }
         this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
         const streakPos = new THREE.Vector3();
@@ -471,6 +482,18 @@ export class RemoteAvatar {
             this.startChargeEffect();
             this.updateChargeEffect(delta);
         } else if (this.chargeEffect) {
+            // Mirrors releaseChargePunch's projectile spawn: this avatar's own
+            // chargeEffect.isMature already tracked whether its own
+            // punch_charge_hold clip reached its last frame (same synced
+            // animation clock as the real puncher), so bystanders get the
+            // same "only a full charge throws the projectile" payoff without
+            // needing the puncher to send an extra network message for it.
+            if (this.chargeEffect.isMature && stateName === 'punch_charge_punch' && window.spawnChargeAttackProjectile && this.rightHandBone) {
+                const handPos = new THREE.Vector3();
+                this.rightHandBone.getWorldPosition(handPos);
+                const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
+                window.spawnChargeAttackProjectile(handPos, fwd);
+            }
             this.stopChargeEffect();
         }
 

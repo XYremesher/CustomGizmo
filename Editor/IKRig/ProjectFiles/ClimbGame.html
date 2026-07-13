@@ -457,6 +457,34 @@
             window.speedParticles.push({ mesh, life: 1.0 });
         };
 
+        // Fired once, only on a fully-matured charge punch release (see
+        // CombatController.releaseChargePunch) - a distinct, bigger visual
+        // payoff for actually holding the charge to completion, unlike the
+        // small per-hit swing particles every punch type spawns.
+        window.chargeAttackProjectiles = [];
+        const chargeAttackTexture = new THREE.TextureLoader().load(
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/ChargeAttackProjectile.png'
+        );
+        window.spawnChargeAttackProjectile = function(position, direction) {
+            if (!window.gameScene) return;
+            const geo = new THREE.PlaneGeometry(1.1, 1.1);
+            const mat = new THREE.MeshBasicMaterial({
+                map: chargeAttackTexture,
+                transparent: true,
+                alphaTest: 0.4,
+                opacity: 1.0,
+                depthWrite: false,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.position.copy(position);
+            const dir = (direction && direction.lengthSq() > 0.0001) ? direction.clone().normalize() : new THREE.Vector3(0, 0, 1);
+            mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+            window.gameScene.add(mesh);
+            window.chargeAttackProjectiles.push({ mesh, velocity: dir.multiplyScalar(16), life: 1.0 });
+        };
+
         export class CombatController {
             constructor(character) {
                 this.char = character;
@@ -510,6 +538,17 @@
                 // keep in sync with the actual animation.
                 const holdAction = this.char.actions['punch_charge_hold'];
                 this.chargeMaturity = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+
+                // Only a fully-matured release earns the projectile - an
+                // early release is a weaker, ordinary-looking punch (see the
+                // isMatureCharge gate in detectMeleeHits), so it shouldn't get
+                // the same dramatic payoff as one actually held to completion.
+                if (this.chargeMaturity >= 1.0 && window.spawnChargeAttackProjectile && this.char.rightHandBone) {
+                    const handPos = new THREE.Vector3();
+                    this.char.rightHandBone.getWorldPosition(handPos);
+                    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
+                    window.spawnChargeAttackProjectile(handPos, fwd);
+                }
 
                 this.punchState = 5;
                 this.punchTimer = 0;
@@ -582,11 +621,26 @@
                 // reaches full size right as the hold animation reaches (and
                 // clamps on) its last frame, so the ball visibly finishing
                 // its growth is the same moment a release counts as mature.
+                // Once mature, it switches to a bigger, hotter-colored pulse
+                // instead of just holding at 1.0x - an unmistakable "ready,
+                // this release will throw the projectile" cue, distinct from
+                // "still charging," for as long as the button stays held.
                 const holdAction = this.char.actions['punch_charge_hold'];
                 const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
-                const growth = 0.4 + 0.6 * growthT;
-                const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+                const isMature = growthT >= 1.0;
+                let growth, pulse;
+                if (isMature) {
+                    growth = 1.3;
+                    pulse = 1.0 + Math.sin(this.chargeEffect.time * 14) * 0.18;
+                } else {
+                    growth = 0.4 + 0.6 * growthT;
+                    pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
+                }
                 this.chargeEffect.glow.scale.setScalar(growth * pulse);
+                if (isMature !== this.chargeEffect.isMature) {
+                    this.chargeEffect.glow.material.color.setHex(isMature ? 0xff4400 : 0xffee44);
+                    this.chargeEffect.isMature = isMature;
+                }
                 this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
                 const streakPos = new THREE.Vector3();
