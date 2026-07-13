@@ -978,7 +978,7 @@ export function startGame(CharacterClass) {
     let networkStateName = 'idle';
     let networkCarryUpper = false;
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0, initialLandingTimer = 0;
-    let ledgeOffset = 0.06, ledgeMoveLocked = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
+    let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
     let wallStopThreshold = 0.90;
     let carryTargetObj = null;
     let isSlipping = false;
@@ -1000,7 +1000,6 @@ export function startGame(CharacterClass) {
     window.comboHit1Time = 0.15;
     window.chargePunchForce = 80.0;
     window.chargePunchKnockback = 15.0;
-    window.chargePunchMaturityTime = 0.6;
     window.playerStagger = 100.0;
     window.playerStaggerMax = 100.0;
     window.playerStaggerRegenRate = 20.0;
@@ -1017,34 +1016,58 @@ export function startGame(CharacterClass) {
         }
         if (stamina < JUMP_COST || landingTimer > 0) return;
         if (isGrounded && !isLedgeGrabbing && !isClimbingUp) { stamina -= JUMP_COST; yVelocity = 10; isGrounded = false; landingTimer = 0; }
-        else if (isLedgeGrabbing || isClimbingUp || (!isGrounded && ledgeGrabCooldown > 0.1)) {
-            if (stamina < LEDGE_JUMP_COST) return; 
-            stamina -= LEDGE_JUMP_COST;
+        // Used to also fire whenever airborne with ledgeGrabCooldown > 0.1,
+        // regardless of isLedgeGrabbing - meant to let a jump-away-from-ledge
+        // keep responding to jump briefly, but it let this whole climb-attempt
+        // branch run using whatever ledgeTarget was left over from the ledge
+        // you just left, since nothing here re-detects a new wall. Jump right
+        // after mantling (isGrounded, cooldown still ticking) would launch you
+        // up, immediately re-enter this branch mid-air, and re-mantle to that
+        // same stale ledgeTarget - the "climbs back onto where it just was,
+        // seemingly forever" bug. Only a genuinely active hang should trust
+        // ledgeTarget enough to attempt a climb from it.
+        else if (isLedgeGrabbing) {
+            if (stamina < LEDGE_JUMP_COST) return;
             const curX = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
             const curY = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
             const mag = Math.sqrt(curX * curX + curY * curY);
+            const keyboardDriven = Math.abs(input.left.x) <= 0.1 && Math.abs(input.left.y) <= 0.1;
             let isHoldingUp = false;
-            
-            if (mag > 0.3) {
+
+            // Same fix as the main ledge-hang loop below: a keyboard W-press
+            // has no analog angle, so it shouldn't be judged against the
+            // camera-relative uiUp cone (which it can easily fall just short
+            // of depending on camera rotation) - it's an unambiguous climb
+            // intent on its own.
+            if (keyboardDriven) {
+                isHoldingUp = keys.w;
+            } else if (mag > 0.3) {
                 _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
                 let refAngle = lockedHintAngle === null ? (Math.PI - Math.atan2(_tempVec1.x, _tempVec1.z) + cameraTheta) : lockedHintAngle;
                 const stickVec = new THREE.Vector2(curX, curY).normalize();
                 const uiUp = new THREE.Vector2(Math.sin(refAngle), -Math.cos(refAngle)).normalize();
                 if (stickVec.dot(uiUp) > 0.4) isHoldingUp = true;
-            } else if (keys.w) isHoldingUp = true;
+            }
 
+            // Stamina is only spent once the action actually happens - it used
+            // to be deducted unconditionally up front, so pressing jump while
+            // hanging somewhere unclimbable (isStandPositionClear failing)
+            // burned LEDGE_JUMP_COST for nothing, every single press.
             if (isHoldingUp || mag < 0.3) {
                 const climbFwd = _tempVec1.set(0, 0, 1).applyQuaternion(char.group.quaternion);
                 const standX = ledgeTarget.x + climbFwd.x * 0.25;
                 const standZ = ledgeTarget.z + climbFwd.z * 0.25;
                 const standFeetY = ledgeTarget.y + 0.05;
-                if (isStandPositionClear(standX, standFeetY, standZ, null)) {
+                const clear = isStandPositionClear(standX, standFeetY, standZ, null);
+                if (clear) {
+                    stamina -= LEDGE_JUMP_COST;
                     isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false;
                 }
             } else {
+                stamina -= LEDGE_JUMP_COST;
                 isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 10 * ledgeJumpMultiplier;
                 _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-                jumpMomentum.copy(_tempVec1.negate().multiplyScalar(15 * ledgeJumpMultiplier)); 
+                jumpMomentum.copy(_tempVec1.negate().multiplyScalar(15 * ledgeJumpMultiplier));
                 lockedHintAngle = null; ledgeGrabCooldown = 0.5;
             }
         }
@@ -1101,8 +1124,7 @@ export function startGame(CharacterClass) {
         { id: 'charge-punch-hit-time-slider', vId: 'charge-punch-hit-time-val', func: v => window.chargePunchHitTime = v },
         { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v },
         { id: 'charge-punch-force-slider', vId: 'charge-punch-force-val', func: v => window.chargePunchForce = v },
-        { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
-        { id: 'charge-punch-maturity-slider', vId: 'charge-punch-maturity-val', func: v => window.chargePunchMaturityTime = v }
+        { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v }
     ];
 
     uiBindings.forEach(b => {
@@ -1582,8 +1604,8 @@ export function startGame(CharacterClass) {
                 const oldPos = char.group.position.clone();
                 char.group.position.copy(ledgeTarget);
                 _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-                char.group.position.add(_tempVec1.multiplyScalar(0.25)); 
-                
+                char.group.position.add(_tempVec1.multiplyScalar(0.25));
+
                 const moveDiff = char.group.position.clone().sub(oldPos);
                 moveDiff.applyQuaternion(char.group.quaternion.clone().invert());
                 
@@ -1645,7 +1667,9 @@ export function startGame(CharacterClass) {
             const climbStandFeetY = ledgeTarget.y + 0.05;
             const canClimbHere = isStandPositionClear(climbStandX, climbStandFeetY, climbStandZ, null);
             const climbHintEl = document.getElementById('ledge-hint-climb');
-            if (climbHintEl) climbHintEl.classList.toggle('blocked', !canClimbHere);
+            const dropHintEl = document.getElementById('ledge-hint-drop');
+            if (climbHintEl) climbHintEl.classList.toggle('blocked', !canClimbHere || ledgeSidewaysGesture);
+            if (dropHintEl) dropHintEl.classList.toggle('blocked', ledgeSidewaysGesture);
 
             const actualRgt = _tempVec3.set(1,0,0).applyQuaternion(char.group.quaternion);
             let hint = Math.PI - Math.atan2(charFwd.x, charFwd.z) + cameraTheta;
@@ -1661,17 +1685,40 @@ export function startGame(CharacterClass) {
             document.getElementById('ledge-hint-container').style.transform = `rotate(${hint}rad)`;
 
             let currentPushS = 0;
-            if (moveMag < 0.1) ledgeMoveLocked = false;
+            if (moveMag < 0.1) { ledgeMoveLocked = false; ledgeSidewaysGesture = false; }
 
             if (moveMag > 0.1 && !isSlipping) {
                 if (lockedHintAngle === null) lockedHintAngle = hint;
                 const stickVec = new THREE.Vector2(curX, curY).normalize(), uiUp = new THREE.Vector2(Math.sin(lockedHintAngle), -Math.cos(lockedHintAngle)).normalize(), uiRgt = new THREE.Vector2(Math.cos(lockedHintAngle), Math.sin(lockedHintAngle)).normalize();
                 const pCD = stickVec.dot(uiUp), pS = stickVec.dot(uiRgt);
-            
+
                 if (!ledgeMoveLocked) currentPushS = pS;
-                
-                if (ledgeGrabTimer > 0.15) {
-                    if (pCD > 0.6) {
+
+                // Once a sideways shimmy has actually started this hold, climb/
+                // drop stay locked out for the rest of it (even if the stick's
+                // angle later drifts back toward vertical while still held) -
+                // otherwise, as the controller's rotating hint kept turning to
+                // match the character mid-shimmy (see the live-rotation comment
+                // above), climb/drop could end up right under a finger that
+                // never moved, firing from a push the player only meant as
+                // "keep walking sideways." Release below the deadzone (moveMag
+                // < 0.1 above) to re-arm climb/drop.
+                if (Math.abs(pS) > 0.1 && !ledgeMoveLocked) ledgeSidewaysGesture = true;
+
+                // Keyboard can only push curX/curY at 8 fixed directions
+                // (WASD combos), never at the exact angle analog stick users
+                // can - and pCD's threshold is measured against lockedHintAngle,
+                // which bakes in the camera's current rotation. Whichever of
+                // those 8 directions "W" happens to land on can easily fall
+                // just short of 0.6 depending on where the camera was facing
+                // at that moment, so climb/drop would intermittently just not
+                // register despite clearly pressing W/S. A bare W/S press has
+                // no "angle" to it in the first place - it's an unambiguous
+                // climb/drop intent - so keyboard bypasses the angle check
+                // entirely instead of trying to land in the same narrow cone.
+                const keyboardDriven = Math.abs(input.left.x) <= 0.1 && Math.abs(input.left.y) <= 0.1;
+                if (ledgeGrabTimer > 0.15 && !ledgeSidewaysGesture) {
+                    if (pCD > 0.6 || (keyboardDriven && keys.w)) {
                         const standX = ledgeTarget.x + charFwd.x * 0.25;
                         const standZ = ledgeTarget.z + charFwd.z * 0.25;
                         const standFeetY = ledgeTarget.y + 0.05;
@@ -1679,7 +1726,7 @@ export function startGame(CharacterClass) {
                             isLedgeGrabbing = false; isClimbingUp = true; lockedHintAngle = null; char.climbFinished = false;
                         }
                     }
-                    else if (pCD < -0.6) {
+                    else if (pCD < -0.6 || (keyboardDriven && keys.s)) {
                         isLedgeGrabbing = false; lockedHintAngle = null; yVelocity = -3; ledgeGrabCooldown = 0.5; 
                         const pushBackVec = _tempVec1.set(0, 0, -1).applyQuaternion(char.group.quaternion);
                         char.group.position.addScaledVector(pushBackVec, ledgeDropPushback);
@@ -1929,6 +1976,17 @@ export function startGame(CharacterClass) {
                             yVelocity = 0; ledgeTarget.copy(lH[0].point);
                             char.group.position.y = hangGroupY; char.group.position.x = hangX; char.group.position.z = hangZ;
                             char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); jumpMomentum.set(0,0,0);
+                            // Force-finish any still-fading-out visual offset from a
+                            // previous mantle (its 0.2s climbTransitionTimer lerp,
+                            // see Character.animate in the HTML file) instead of
+                            // leaving it mid-transition - grabbing and mantling a new
+                            // ledge quickly enough (jump right after a climb) could
+                            // otherwise have the new climb's landing-position math
+                            // subtract against a stale, not-yet-settled fbxModel
+                            // offset, visibly popping back toward the previous climb's
+                            // position once the new one finished.
+                            char.climbTransitionTimer = 0;
+                            if (char.fbxModel) char.fbxModel.position.set(0, 0, 0);
                         }
                     }
                 }

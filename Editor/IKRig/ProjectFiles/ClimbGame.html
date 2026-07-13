@@ -238,8 +238,6 @@
                     <input type="range" id="charge-punch-force-slider" min="20.0" max="150.0" step="1.0" value="80.0" style="width: 100%;"><br>
                     <label>Charge Punch Push Force: <span id="charge-punch-knockback-val">15.0</span></label><br>
                     <input type="range" id="charge-punch-knockback-slider" min="5.0" max="50.0" step="1.0" value="15.0" style="width: 100%;"><br>
-                    <label>Charge Punch Maturity Time: <span id="charge-punch-maturity-val">0.60</span>s</label><br>
-                    <input type="range" id="charge-punch-maturity-slider" min="0.1" max="2.0" step="0.05" value="0.60" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -293,7 +291,7 @@
         <div id="ledge-hint-container" class="ledge-hint-container">
             <div class="ledge-hint-line"></div>
             <span id="ledge-hint-climb" class="ledge-hint up">CLIMB</span>
-            <span class="ledge-hint down">DROP</span>
+            <span id="ledge-hint-drop" class="ledge-hint down">DROP</span>
         </div>
         <div id="push-pull-hint-container" class="ledge-hint-container">
             <div class="ledge-hint-line" style="background: rgba(50, 150, 255, 0.2);"></div>
@@ -502,13 +500,16 @@
             }
 
             releaseChargePunch() {
-                // punchTimer has been counting up since startChargePunch() reset
-                // it to 0 - read it now (before it's reset again below) as how
-                // long the charge was actually held, so a punch released just
-                // past the initial 200ms hold-detection threshold doesn't hit
-                // as hard as one held to full maturity.
-                const maturityTime = window.chargePunchMaturityTime !== undefined ? window.chargePunchMaturityTime : 0.6;
-                this.chargeMaturity = maturityTime > 0 ? Math.min(1, this.punchTimer / maturityTime) : 1;
+                // Maturity now follows the punch_charge_hold clip's own
+                // playback instead of a separately-tuned timer value: that
+                // clip is LoopOnce + clampWhenFinished (see
+                // setupActionProperties), so it naturally plays through once
+                // and freezes on its last frame - releasing at or after that
+                // point is exactly "fully charged," and the ratio before that
+                // gives a smooth 0-1 progress with no separate duration to
+                // keep in sync with the actual animation.
+                const holdAction = this.char.actions['punch_charge_hold'];
+                this.chargeMaturity = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
 
                 this.punchState = 5;
                 this.punchTimer = 0;
@@ -575,8 +576,17 @@
 
                 this.chargeEffect.time += delta;
                 this.chargeEffect.glow.position.copy(handPos);
+
+                // Grows in step with the same punch_charge_hold clip progress
+                // releaseChargePunch reads for maturity - starts small and
+                // reaches full size right as the hold animation reaches (and
+                // clamps on) its last frame, so the ball visibly finishing
+                // its growth is the same moment a release counts as mature.
+                const holdAction = this.char.actions['punch_charge_hold'];
+                const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+                const growth = 0.4 + 0.6 * growthT;
                 const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
-                this.chargeEffect.glow.scale.setScalar(pulse);
+                this.chargeEffect.glow.scale.setScalar(growth * pulse);
                 this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
                 const streakPos = new THREE.Vector3();
@@ -892,6 +902,13 @@
                 this.hitbox = new THREE.Mesh(hitboxGeo, hitboxMat);
                 this.hitbox.position.y = 0.9;
                 this.hitbox.visible = false;
+                // THREE.Raycaster ignores .visible entirely, so without this,
+                // this debug-only capsule (a child of this.group, sitting right
+                // at the player's own body) was still hit-testable by any
+                // scene-wide raycast - including updateClimbing()'s own
+                // window.gameScene.children scan for the climbing surface,
+                // which could then treat the player's own body as "the wall."
+                this.hitbox.raycast = () => {};
                 this.group.add(this.hitbox);
 
                 this.playerArrowGroup = null;
@@ -1036,17 +1053,25 @@
                         }
                     });
 
+                    // All of these debug-only helpers below are added directly to
+                    // `scene` and only ever meant to be seen, never collided with -
+                    // but THREE.Raycaster ignores .visible, so every one of them
+                    // needs raycast() disabled explicitly or a scene-wide raycast
+                    // (like updateClimbing()'s wall-surface scan) can hit them.
                     this.skeletonHelper = new THREE.SkeletonHelper(object);
                     this.skeletonHelper.visible = false;
+                    this.skeletonHelper.raycast = () => {};
                     scene.add(this.skeletonHelper);
 
                     const markerGeo = new THREE.SphereGeometry(0.06, 12, 12);
                     this.rootMarker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({color: 0x00ff00, depthTest: false}));
                     this.rootMarker.visible = false;
+                    this.rootMarker.raycast = () => {};
                     scene.add(this.rootMarker);
-                    
+
                     this.hipsMarker = new THREE.Mesh(markerGeo, new THREE.MeshBasicMaterial({color: 0xff4400, depthTest: false}));
                     this.hipsMarker.visible = false;
+                    this.hipsMarker.raycast = () => {};
                     scene.add(this.hipsMarker);
 
                     this.group.add(object);
@@ -1086,6 +1111,13 @@
                             const oy = kb.offsetY !== undefined ? kb.offsetY : kb.length / 2;
                             geo.translate(0, oy, 0);
                             const mesh = new THREE.Mesh(geo, mat);
+                            // Same THREE.Raycaster-ignores-.visible issue as the
+                            // hitbox capsule above - this group sits directly in
+                            // the scene (not gated behind any other check) and
+                            // follows the character's own bones, so without this
+                            // it's another way updateClimbing()'s scene-wide
+                            // raycast could hit the player's own body.
+                            mesh.raycast = () => {};
                             this.ragdollColliderGroup.add(mesh);
                             
                             this.ragdollParticles.push({
@@ -1367,6 +1399,13 @@ updateClimbing(delta) {
 
                         const visibleMesh = new THREE.Mesh(arrowGeo, arrowMatVisible);
                         const hiddenMesh = new THREE.Mesh(arrowGeo, arrowMatHidden);
+                        // A large (2x2) plane riding on the player's own group -
+                        // same raycast-ignores-.visible risk as the debug capsules
+                        // above, but this one is always visible, so it was an even
+                        // more reliable way to accidentally "hit a wall" that's
+                        // actually just this UI arrow.
+                        visibleMesh.raycast = () => {};
+                        hiddenMesh.raycast = () => {};
 
                         visibleMesh.rotation.x = -Math.PI / 2;
                         visibleMesh.rotation.z = Math.PI; 

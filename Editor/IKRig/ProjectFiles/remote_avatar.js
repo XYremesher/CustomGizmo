@@ -422,8 +422,17 @@ export class RemoteAvatar {
 
         this.chargeEffect.time += delta;
         this.chargeEffect.glow.position.copy(handPos);
+
+        // Mirrors CombatController.updateChargeEffect in the HTML file, so
+        // bystanders see the same growing energy ball a puncher sees on their
+        // own screen - both read the same punch_charge_hold clip progress,
+        // which is already in lockstep since it's driven by the synced
+        // animation state, not a separately-tracked timer.
+        const holdAction = this.actions['punch_charge_hold'];
+        const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+        const growth = 0.4 + 0.6 * growthT;
         const pulse = 1.0 + Math.sin(this.chargeEffect.time * 10) * 0.15;
-        this.chargeEffect.glow.scale.setScalar(pulse);
+        this.chargeEffect.glow.scale.setScalar(growth * pulse);
         this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
         const streakPos = new THREE.Vector3();
