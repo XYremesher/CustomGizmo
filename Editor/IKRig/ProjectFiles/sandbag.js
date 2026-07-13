@@ -86,6 +86,24 @@ this.colliderMesh.userData.isWall = true;
                 return this.colliderMesh;
             }
 
+            // Mirrors Character.setDynamicShading in ClimbGame.html - the
+            // sandbag swings/wobbles when hit, so it counts as "dynamic" for
+            // the Phong/Lambert shading test.
+            setDynamicShading(enabled) {
+                this.meshes.forEach(mObj => {
+                    const mesh = mObj.mesh;
+                    if (enabled) {
+                        if (!mesh.userData.phongMat) {
+                            const src = mObj.originalMaterial;
+                            mesh.userData.phongMat = new THREE.MeshPhongMaterial({ color: src.color.clone(), map: src.map || null, shininess: 30 });
+                        }
+                        mesh.material = mesh.userData.phongMat;
+                    } else {
+                        mesh.material = mObj.originalMaterial;
+                    }
+                });
+            }
+
             checkHit(hitCenter, hitRadius) {
                 return this.colliderMesh.position.distanceTo(hitCenter) < (0.5 + hitRadius);
             }

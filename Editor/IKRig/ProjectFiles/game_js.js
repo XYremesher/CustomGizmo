@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { MultiplayerClient } from './multiplayer.js';
+import { RemoteAvatar } from './remote_avatar.js';
 
 export function startGame(CharacterClass) {
     window.isCarryingObj = false;
@@ -228,8 +229,8 @@ export function startGame(CharacterClass) {
     renderer.shadowMap.enabled = true;
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(0.1, 40, 0.1); 
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(0.1, 40, 0.1);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
     dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 150;
@@ -237,6 +238,15 @@ export function startGame(CharacterClass) {
     dirLight.shadow.camera.top = 40; dirLight.shadow.camera.bottom = -40;
     dirLight.shadow.bias = -0.0001; dirLight.shadow.normalBias = 0.05;
     scene.add(dirLight); scene.add(dirLight.target);
+
+    // Second, angled "fill" light - no shadow map (the expensive part of a
+    // light, not the lighting math itself), so it's cheap to have a second
+    // directional source giving depth/rim definition from the side instead
+    // of everything being lit from directly overhead.
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    fillLight.position.set(-25, 15, -20);
+    fillLight.castShadow = false;
+    scene.add(fillLight); scene.add(fillLight.target);
 
     const collidables = [];
     window.collidables = collidables;
@@ -268,6 +278,180 @@ export function startGame(CharacterClass) {
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
+
+    // Reuses RemoteAvatar as-is (same rendering/animation, ragdoll, hit
+    // reactions a real networked player gets) but drives it locally with
+    // simple wander AI instead of MultiplayerClient network messages - no
+    // server/connection involved, so it works offline and doesn't touch the
+    // multiplayer system at all. Not created until spawnAiBot() runs (panel
+    // button) so it doesn't wander into every normal test session uninvited.
+    let aiBot = null;
+    const AI_WANDER_SPEED = 5.0, AI_CHASE_SPEED = 6.5;
+    const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
+    const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
+    const aiBotState = {
+        mode: 'wander', // 'wander' | 'chase' | 'punch' | 'cooldown'
+        target: new THREE.Vector3(char.group.position.x + 4, char.group.position.y, char.group.position.z + 4),
+        waitTimer: 0,
+        punchTimer: 0,
+        punchHasHit: false,
+        cooldownTimer: 0
+    };
+    function pickNewAiWanderTarget() {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 3 + Math.random() * 6;
+        aiBotState.target.set(
+            aiBot.group.position.x + Math.cos(angle) * dist,
+            aiBot.group.position.y,
+            aiBot.group.position.z + Math.sin(angle) * dist
+        );
+    }
+    // Moves aiBot's group position toward destTarget at the given speed, with
+    // the same reactive obstacle-avoidance and ground-snapping the plain
+    // wander uses, reused for both wander and chase movement.
+    function moveAiBotToward(destTarget, speed, delta) {
+        const pos = aiBot.group.position;
+        const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
+        const dist = toTarget.length();
+        if (dist < 0.001) return dist;
+        toTarget.normalize();
+
+        rayFwd.set(_tempVec2.copy(pos).setY(pos.y + 1.0), toTarget);
+        const wallHits = rayFwd.intersectObjects(collidables);
+        if (wallHits.length > 0 && wallHits[0].distance < 1.0) return -1;
+
+        // toTarget (_tempVec1) is done being read after this - facingQuat
+        // below needs it too, so it's captured into its own quaternion before
+        // _tempVec1 gets reused for the ground-check ray origin.
+        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), toTarget);
+
+        const nextPos = _tempVec3.copy(pos).addScaledVector(toTarget, speed * delta);
+        rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
+        const groundHits = rayDown.intersectObjects(collidables);
+        if (groundHits.length > 0) nextPos.y = groundHits[0].point.y;
+
+        aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'walk', false);
+        return dist;
+    }
+    function updateAiBot(delta) {
+        if (!aiBot || !aiBot.isLoaded) return;
+        if (aiBot.isRagdoll || aiBot.isStandingUp) { aiBot.update(delta); return; }
+
+        const pos = aiBot.group.position;
+        const distToPlayer = pos.distanceTo(char.group.position);
+        const playerAvailable = !char.isRagdoll && !char.isStandingUp;
+
+        // Combat mode transitions - punch/cooldown run their own timers below
+        // and aren't interrupted by distance checks mid-swing.
+        if (aiBotState.mode === 'wander' && playerAvailable && distToPlayer < AI_CHASE_RADIUS) {
+            aiBotState.mode = 'chase';
+        } else if (aiBotState.mode === 'chase' && (!playerAvailable || distToPlayer > AI_CHASE_GIVEUP_RADIUS)) {
+            aiBotState.mode = 'wander';
+            pickNewAiWanderTarget();
+        }
+
+        if (aiBotState.mode === 'punch') {
+            aiBotState.punchTimer += delta;
+            const facingDir = _tempVec1.set(char.group.position.x - pos.x, 0, char.group.position.z - pos.z);
+            if (facingDir.lengthSq() > 0.0001) {
+                facingDir.normalize();
+                const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
+                aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'punch_left', false);
+            }
+
+            if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_PUNCH_HIT_TIME) {
+                aiBotState.punchHasHit = true;
+                if (playerAvailable && pos.distanceTo(char.group.position) < AI_PUNCH_RANGE + 0.6) {
+                    const velocity = _tempVec2.set(char.group.position.x - pos.x, 0, char.group.position.z - pos.z).normalize().multiplyScalar(AI_PUNCH_FORCE);
+                    const hitPoint = char.group.position.clone().setY(char.group.position.y + 1.2);
+                    char.triggerHitFlash(0.9);
+                    char.applyProceduralRecoil(velocity, 'medium');
+                    if (network) { network.sendHitEvent(0.9, hitPoint); network.sendRecoilEvent(velocity, 'medium'); }
+                    if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
+                    if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
+                }
+            }
+            if (aiBotState.punchTimer >= AI_PUNCH_DURATION) {
+                aiBotState.mode = 'cooldown';
+                aiBotState.cooldownTimer = AI_PUNCH_COOLDOWN;
+            }
+            aiBot.update(delta);
+            return;
+        }
+
+        if (aiBotState.mode === 'cooldown') {
+            aiBotState.cooldownTimer -= delta;
+            aiBot.setNetworkState([pos.x, pos.y, pos.z], [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'idle', false);
+            if (aiBotState.cooldownTimer <= 0) aiBotState.mode = (playerAvailable && distToPlayer < AI_CHASE_RADIUS) ? 'chase' : 'wander';
+            aiBot.update(delta);
+            return;
+        }
+
+        if (aiBotState.mode === 'chase') {
+            if (distToPlayer < AI_PUNCH_RANGE) {
+                aiBotState.mode = 'punch';
+                aiBotState.punchTimer = 0;
+                aiBotState.punchHasHit = false;
+                aiBot.update(delta);
+                return;
+            }
+            if (moveAiBotToward(char.group.position, AI_CHASE_SPEED, delta) < 0) pickNewAiWanderTarget();
+            aiBot.update(delta);
+            return;
+        }
+
+        // --- wander ---
+        if (aiBotState.waitTimer > 0) {
+            aiBotState.waitTimer -= delta;
+            aiBot.setNetworkState([pos.x, pos.y, pos.z], [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'idle', false);
+            aiBot.update(delta);
+            return;
+        }
+        const distLeft = moveAiBotToward(aiBotState.target, AI_WANDER_SPEED, delta);
+        if (distLeft < 0.3) {
+            aiBotState.waitTimer = 1.0 + Math.random() * 2.0;
+            pickNewAiWanderTarget();
+        }
+        aiBot.update(delta);
+    }
+
+    function spawnAiBot() {
+        if (aiBot) return;
+        aiBot = new RemoteAvatar(scene, threeTone, 'ai-bot-1');
+        window.aiBot = aiBot;
+        const spawnPos = char.group.position;
+        aiBotState.mode = 'wander';
+        aiBotState.target.set(spawnPos.x + 4, spawnPos.y, spawnPos.z + 4);
+        aiBotState.waitTimer = 0;
+        aiBotState.cooldownTimer = 0;
+        aiBot.group.position.copy(spawnPos).add(new THREE.Vector3(3, 0, 3));
+
+        const spawnBtn = document.getElementById('ai-bot-spawn-btn');
+        const despawnBtn = document.getElementById('ai-bot-despawn-btn');
+        const statusEl = document.getElementById('ai-bot-status');
+        if (spawnBtn) spawnBtn.style.display = 'none';
+        if (despawnBtn) despawnBtn.style.display = 'block';
+        if (statusEl) statusEl.textContent = 'spawned';
+    }
+
+    function despawnAiBot() {
+        if (!aiBot) return;
+        aiBot.dispose();
+        aiBot = null;
+        window.aiBot = null;
+
+        const spawnBtn = document.getElementById('ai-bot-spawn-btn');
+        const despawnBtn = document.getElementById('ai-bot-despawn-btn');
+        const statusEl = document.getElementById('ai-bot-status');
+        if (spawnBtn) spawnBtn.style.display = 'block';
+        if (despawnBtn) despawnBtn.style.display = 'none';
+        if (statusEl) statusEl.textContent = 'not spawned';
+    }
+
+    const aiBotSpawnBtn = document.getElementById('ai-bot-spawn-btn');
+    const aiBotDespawnBtn = document.getElementById('ai-bot-despawn-btn');
+    if (aiBotSpawnBtn) aiBotSpawnBtn.addEventListener('pointerdown', spawnAiBot);
+    if (aiBotDespawnBtn) aiBotDespawnBtn.addEventListener('pointerdown', despawnAiBot);
 
     let jarTemplate = null;
     let brokenJarTemplate = null;
@@ -1000,6 +1184,9 @@ export function startGame(CharacterClass) {
     window.comboHit1Time = 0.15;
     window.chargePunchForce = 80.0;
     window.chargePunchKnockback = 15.0;
+    window.chargeAttackProjectileSpeed = 5.0;
+    window.chargeAttackProjectileFadeRate = 3.0;
+    window.chargeAttackProjectileHitCutoff = 0.3;
     window.playerStagger = 100.0;
     window.playerStaggerMax = 100.0;
     window.playerStaggerRegenRate = 20.0;
@@ -1088,7 +1275,7 @@ export function startGame(CharacterClass) {
     document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { cameraTheta = char.group.rotation.y + Math.PI; cameraPhi = Math.PI/3; });
 
     const clock = new THREE.Clock();
-    const rayDown = new THREE.Raycaster(), rayFwd = new THREE.Raycaster();
+    const rayDown = new THREE.Raycaster(), rayFwd = new THREE.Raycaster(), xrayRaycaster = new THREE.Raycaster();
     let camTarget = new THREE.Vector3(0, 5, -40);
 
     const uiBindings = [
@@ -1124,7 +1311,10 @@ export function startGame(CharacterClass) {
         { id: 'charge-punch-hit-time-slider', vId: 'charge-punch-hit-time-val', func: v => window.chargePunchHitTime = v },
         { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v },
         { id: 'charge-punch-force-slider', vId: 'charge-punch-force-val', func: v => window.chargePunchForce = v },
-        { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v }
+        { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
+        { id: 'charge-proj-speed-slider', vId: 'charge-proj-speed-val', func: v => window.chargeAttackProjectileSpeed = v },
+        { id: 'charge-proj-fade-slider', vId: 'charge-proj-fade-val', func: v => window.chargeAttackProjectileFadeRate = v },
+        { id: 'charge-proj-hit-cutoff-slider', vId: 'charge-proj-hit-cutoff-val', func: v => window.chargeAttackProjectileHitCutoff = v }
     ];
 
     uiBindings.forEach(b => {
@@ -1146,6 +1336,86 @@ export function startGame(CharacterClass) {
         debugHelpers.forEach(h => { h.visible = checked; });
     });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
+
+    window.toonOutlineEnabled = false;
+    window.toonOutlineThickness = 0.02;
+    document.getElementById('toggle-toon-outline').addEventListener('change', e => {
+        window.toonOutlineEnabled = e.target.checked;
+        char.setOutlineEnabled(e.target.checked);
+    });
+    document.getElementById('toon-outline-thickness-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.toonOutlineThickness = v;
+        document.getElementById('toon-outline-thickness-val').textContent = v.toFixed(3);
+        char.setOutlineThickness(v);
+    });
+
+    // Phong/Lambert shading test: static level geometry (ground, stairs,
+    // boxes, obstacles - anything in `collidables` that isn't carryable/
+    // movable) swaps to Lambert; the player, remote players, and the AI bot
+    // (all "dynamic") swap to Phong via their own setDynamicShading. Same
+    // swap-cached-material-on-mesh pattern as Character's, so toggling back
+    // to toon is instant and the two looks can be compared live.
+    window.phongLambertEnabled = false;
+    function setStaticShading(enabled) {
+        collidables.forEach(mesh => {
+            if (!mesh.isMesh) return;
+            const isToon = mesh.material && mesh.material.isMeshToonMaterial;
+            if (!isToon && !mesh.userData.toonMat) return;
+            if (mesh.userData.isMovable || mesh.userData.isCarryable) return; // handled as dynamic elsewhere
+            if (!mesh.userData.toonMat) mesh.userData.toonMat = mesh.material;
+            if (enabled) {
+                if (!mesh.userData.lambertMat) {
+                    const src = mesh.userData.toonMat;
+                    mesh.userData.lambertMat = new THREE.MeshLambertMaterial({ color: src.color.clone(), map: src.map || null });
+                }
+                mesh.material = mesh.userData.lambertMat;
+            } else {
+                mesh.material = mesh.userData.toonMat;
+            }
+        });
+    }
+    // Carryables (boxes/cylinder/sphere/jars) are "dynamic" too - excluded
+    // from setStaticShading above via isMovable/isCarryable specifically so
+    // they'd land here instead.
+    function setCarryablesShading(enabled) {
+        carryables.forEach(c => {
+            const mesh = c.mesh;
+            const isToon = mesh.material && mesh.material.isMeshToonMaterial;
+            if (!isToon && !mesh.userData.toonMat) return;
+            if (!mesh.userData.toonMat) mesh.userData.toonMat = mesh.material;
+            if (enabled) {
+                if (!mesh.userData.phongMat) {
+                    const src = mesh.userData.toonMat;
+                    mesh.userData.phongMat = new THREE.MeshPhongMaterial({ color: src.color.clone(), map: src.map || null, shininess: 30 });
+                }
+                mesh.material = mesh.userData.phongMat;
+            } else {
+                mesh.material = mesh.userData.toonMat;
+            }
+        });
+    }
+    function setPhongLambertEnabled(enabled) {
+        window.phongLambertEnabled = enabled;
+        setStaticShading(enabled);
+        setCarryablesShading(enabled);
+        char.setDynamicShading(enabled);
+        network.remotes.forEach(avatar => { if (avatar.setDynamicShading) avatar.setDynamicShading(enabled); });
+        if (aiBot) aiBot.setDynamicShading(enabled);
+        if (window.sacks) window.sacks.forEach(s => { if (s.setDynamicShading) s.setDynamicShading(enabled); });
+    }
+    document.getElementById('toggle-phong-lambert').addEventListener('change', e => setPhongLambertEnabled(e.target.checked));
+
+    document.getElementById('light-intensity-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        dirLight.intensity = v;
+        document.getElementById('light-intensity-val').textContent = v.toFixed(2);
+    });
+    document.getElementById('fill-light-intensity-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        fillLight.intensity = v;
+        document.getElementById('fill-light-intensity-val').textContent = v.toFixed(2);
+    });
 
     let showJoints = false;
     document.getElementById('toggle-debug-joints').addEventListener('change', e => {
@@ -1227,9 +1497,73 @@ export function startGame(CharacterClass) {
             for (let i = window.chargeAttackProjectiles.length - 1; i >= 0; i--) {
                 const cp = window.chargeAttackProjectiles[i];
                 cp.mesh.position.addScaledVector(cp.velocity, delta);
-                cp.life -= delta * 0.8;
+                // Billboard toward the camera every frame - a flat plane kept
+                // at a fixed travel-direction rotation goes edge-on (nearly
+                // invisible) whenever viewed from the side, so it's re-faced
+                // to the camera instead, the same way sprite-based particles
+                // always read as having "volume" regardless of view angle.
+                cp.mesh.quaternion.copy(camera.quaternion);
+                // Spin it around that camera-facing axis so the sprite's own
+                // "up" (its wide/rounded end, per the source texture) points
+                // along however the travel direction projects onto the
+                // screen right now - otherwise every projectile shows the
+                // same fixed orientation no matter which way it's flying.
+                const camRight = _tempVec1.set(1, 0, 0).applyQuaternion(camera.quaternion);
+                const camUp = _tempVec2.set(0, 1, 0).applyQuaternion(camera.quaternion);
+                const screenAngle = Math.atan2(cp.velocity.dot(camRight), cp.velocity.dot(camUp));
+                cp.mesh.rotateZ(-screenAngle);
+                const fadeRate = window.chargeAttackProjectileFadeRate !== undefined ? window.chargeAttackProjectileFadeRate : 1.3;
+                cp.life -= delta * fadeRate;
                 cp.mesh.material.opacity = Math.max(0, cp.life);
-                if (cp.life <= 0) {
+
+                // Same targets/reaction detectMeleeHits already lands with a
+                // mature charge punch (sandbags, remote players via a
+                // targeted send), just checked against the flying projectile
+                // instead of the puncher's own hand each frame - so the
+                // charge punch's reach isn't capped at melee range anymore.
+                // Hit checks stop once life drops below hitCutoff (a separate,
+                // earlier threshold than full removal at life<=0) - without
+                // it, a projectile that's already visually almost gone could
+                // still land a hit slightly ahead of where it looks like
+                // nothing is there anymore.
+                let consumed = false;
+                const hitCutoff = window.chargeAttackProjectileHitCutoff !== undefined ? window.chargeAttackProjectileHitCutoff : 0.4;
+                if (cp.life > hitCutoff) {
+                    const chargeHitRadius = 0.9;
+                    const impactDir = _tempVec3.copy(cp.velocity).normalize();
+                    const chargeForce = window.chargePunchForce !== undefined ? window.chargePunchForce : 80;
+
+                    if (window.sacks) {
+                        for (const sack of window.sacks) {
+                            if (sack.checkHit(cp.mesh.position, chargeHitRadius)) {
+                                sack.applyHit(impactDir, chargeForce);
+                                if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
+                                if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
+                                if (network) {
+                                    const sackIdx = window.sacks.indexOf(sack);
+                                    if (sackIdx !== -1) network.sendSandbagHitEvent(sackIdx, impactDir, chargeForce);
+                                }
+                                consumed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!consumed && window.multiplayerClient) {
+                        window.multiplayerClient.remotes.forEach((avatar, remoteId) => {
+                            if (consumed || !avatar.isLoaded || avatar.isRagdoll) return;
+                            const avatarHitPos = avatar.getHitReferencePoint();
+                            if (avatarHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
+                                if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
+                                if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
+                                window.multiplayerClient.sendPunchEvent(remoteId, impactDir, chargeForce, cp.mesh.position);
+                                consumed = true;
+                            }
+                        });
+                    }
+                }
+
+                if (consumed || cp.life <= 0) {
                     if (window.gameScene) window.gameScene.remove(cp.mesh);
                     cp.mesh.geometry.dispose();
                     cp.mesh.material.dispose();
@@ -1706,6 +2040,7 @@ export function startGame(CharacterClass) {
                 if (lockedHintAngle === null) lockedHintAngle = hint;
                 const stickVec = new THREE.Vector2(curX, curY).normalize(), uiUp = new THREE.Vector2(Math.sin(lockedHintAngle), -Math.cos(lockedHintAngle)).normalize(), uiRgt = new THREE.Vector2(Math.cos(lockedHintAngle), Math.sin(lockedHintAngle)).normalize();
                 const pCD = stickVec.dot(uiUp), pS = stickVec.dot(uiRgt);
+                console.log(`[ledge-input-debug] keys w/a/s/d=${keys.w}/${keys.a}/${keys.s}/${keys.d} curX=${curX.toFixed(2)} curY=${curY.toFixed(2)} lockedHintAngle=${(lockedHintAngle*180/Math.PI).toFixed(1)}deg pCD=${pCD.toFixed(2)} pS=${pS.toFixed(2)} sidewaysGesture=${ledgeSidewaysGesture}`);
 
                 if (!ledgeMoveLocked) currentPushS = pS;
 
@@ -1718,7 +2053,15 @@ export function startGame(CharacterClass) {
                 // never moved, firing from a push the player only meant as
                 // "keep walking sideways." Release below the deadzone (moveMag
                 // < 0.1 above) to re-arm climb/drop.
-                if (Math.abs(pS) > 0.1 && !ledgeMoveLocked) ledgeSidewaysGesture = true;
+                // Threshold raised from 0.1: keyboard only has 8 fixed WASD
+                // directions, so a diagonal press aimed at climb (e.g. W+A)
+                // can still land up to ~22.5 degrees off the wheel's exact
+                // climb angle, leaving a residual sideways component as high
+                // as ~0.38 even though the player clearly meant to climb, not
+                // shimmy. 0.1 caught that noise and locked climb out almost
+                // every time; a real sideways-only press (just A or D, no W)
+                // still lands far above this either way (~0.6-1.0).
+                if (Math.abs(pS) > 0.45 && !ledgeMoveLocked) ledgeSidewaysGesture = true;
 
                 // Keyboard can only push curX/curY at 8 fixed directions
                 // (WASD combos), never at the exact angle analog stick users
@@ -1758,10 +2101,12 @@ export function startGame(CharacterClass) {
                     const isBlockedByWall = sH.length > 0 && sH[0].distance < 0.65;
                     const isBlocked = isBlockedByWall && !handled;
 
+                    let debugBranch = 'none', debugHeightDiff = null;
                     if (sH.length > 0 && sH[0].distance < 0.8 && !isBlocked) {
                         const n = sH[0].face.normal.clone().transformDirection(sH[0].object.matrixWorld).setY(0).normalize();
                         const top = sH[0].point.clone().add(n.clone().multiplyScalar(-0.2)).setY(sH[0].point.y+2.0);
                         rayDown.set(top, _downVec); const h = rayDown.intersectObjects(solidCollidables);
+                        if (h.length > 0) debugHeightDiff = Math.abs(h[0].point.y - (char.group.position.y + 1.85));
                         if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
                             const candX = sH[0].point.x + n.x*ledgeOffset;
                             const candZ = sH[0].point.z + n.z*ledgeOffset;
@@ -1770,9 +2115,12 @@ export function startGame(CharacterClass) {
                             if (isHangPositionClear(candX, candGroupY, candZ, sH[0].object, currentWallObj2)) {
                                 char.group.position.set(candX, candGroupY, candZ);
                                 ledgeTarget.copy(h[0].point); char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); handled = true;
-                            }
-                        }
-                    }
+                                debugBranch = 'wrap-success';
+                            } else debugBranch = 'wrap-blocked-by-hangPositionClear';
+                        } else debugBranch = h.length > 0 ? 'wrap-failed-height' : 'wrap-failed-no-downhit';
+                    } else if (isBlocked) debugBranch = 'blocked-close-wall';
+                    else debugBranch = 'no-side-hit';
+                    console.log(`[ledge-corner-debug] sideHit=${sH.length > 0 ? sH[0].distance.toFixed(2) : 'none'} branch=${debugBranch} heightDiff=${debugHeightDiff !== null ? debugHeightDiff.toFixed(2) : 'n/a'}`);
                     if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
                         _tempVec3.copy(char.group.position).addScaledVector(mDir, 4*delta);
                         const currentWallObj = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
@@ -2077,6 +2425,7 @@ export function startGame(CharacterClass) {
             }
             network.update(delta);
         }
+        updateAiBot(delta);
 
         let trackingPoint = _tempVec1;
         if (char.hips && (isClimbingUp || char.isRagdoll || char.isStandingUp)) char.hips.getWorldPosition(trackingPoint);
@@ -2090,7 +2439,22 @@ export function startGame(CharacterClass) {
 
         camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
-        
+
+        // X-ray: if a wall sits between the camera and the player (camera
+        // orbits at a fixed radius with no collision of its own, so this can
+        // happen any time it swings behind geometry), show the always-on-top
+        // faint gray xray body instead of just losing the player behind it.
+        const toPlayer = _tempVec3.copy(trackingPoint).sub(camera.position);
+        const distToPlayer = toPlayer.length();
+        let playerOccluded = false;
+        if (distToPlayer > 0.01) {
+            xrayRaycaster.set(camera.position, toPlayer.normalize());
+            xrayRaycaster.far = distToPlayer - 0.3;
+            const occluders = xrayRaycaster.intersectObjects(collidables);
+            playerOccluded = occluders.length > 0;
+        }
+        char.setXrayVisible(playerOccluded);
+
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
 

@@ -119,6 +119,7 @@ export class RemoteAvatar {
         // so the very first material created already uses it, not the
         // fallback blue, if the color arrives first.
         this.bodyMaterials = [];
+        this.bodyMeshes = [];
         this.bodyColor = null;
 
         // Cosmetic-only mirrors of CombatController's swing-particle/charge-glow
@@ -127,6 +128,7 @@ export class RemoteAvatar {
         // see game_js.js's networkStateName), so this avatar can reproduce the same
         // particle timing purely from its own mixer clock, no extra network data needed.
         this.chargeEffect = null;
+        this._pendingChargeMature = false;
         this._lastPunchAnim = null;
         this._punchHitFlags = [false, false, false, false, false];
 
@@ -174,6 +176,7 @@ export class RemoteAvatar {
                     if (child.material) {
                         const mainMat = new THREE.MeshToonMaterial({ color: this.bodyColor !== null ? this.bodyColor : 0x66aaff, gradientMap: threeTone });
                         this.bodyMaterials.push(mainMat);
+                        this.bodyMeshes.push(child);
                         const rimUniform = { value: 0.0 };
                         mainMat.onBeforeCompile = (shader) => {
                             shader.uniforms.rimIntensity = rimUniform;
@@ -338,6 +341,24 @@ export class RemoteAvatar {
     setColor(hexColor) {
         this.bodyColor = hexColor;
         this.bodyMaterials.forEach(m => m.color.setHex(hexColor));
+        this.bodyMeshes.forEach(mesh => { if (mesh.userData.phongMat) mesh.userData.phongMat.color.setHex(hexColor); });
+    }
+
+    // Mirrors Character.setDynamicShading in the HTML file - remote players
+    // (and the AI bot, which is also a RemoteAvatar) are "dynamic" for the
+    // Phong/Lambert shading test the same way the local player is.
+    setDynamicShading(enabled) {
+        this.bodyMeshes.forEach((mesh, i) => {
+            if (enabled) {
+                if (!mesh.userData.phongMat) {
+                    const src = this.bodyMaterials[i];
+                    mesh.userData.phongMat = new THREE.MeshPhongMaterial({ color: src.color.clone(), map: src.map || null, shininess: 30 });
+                }
+                mesh.material = mesh.userData.phongMat;
+            } else {
+                mesh.material = this.bodyMaterials[i];
+            }
+        });
     }
 
     spawnSwingParticle() {
@@ -378,6 +399,20 @@ export class RemoteAvatar {
         const glow = new THREE.Mesh(glowGeo, glowMat);
         window.gameScene.add(glow);
 
+        // Bigger, softer yellow aura around the (now orange-red) core once
+        // mature - only shown then, see updateChargeEffect.
+        const outerGlowGeo = new THREE.SphereGeometry(0.18, 12, 12);
+        const outerGlowMat = new THREE.MeshBasicMaterial({
+            color: 0xffee44,
+            transparent: true,
+            opacity: 0.35,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+        const outerGlow = new THREE.Mesh(outerGlowGeo, outerGlowMat);
+        outerGlow.visible = false;
+        window.gameScene.add(outerGlow);
+
         const streakGeo = new THREE.BoxGeometry(0.04, 0.04, 0.5);
         const streakMat = new THREE.MeshBasicMaterial({
             color: 0xffffff,
@@ -397,7 +432,7 @@ export class RemoteAvatar {
             streaks.push(streak);
         }
 
-        this.chargeEffect = { glow, streaks, streakGeo, streakMat, time: 0 };
+        this.chargeEffect = { glow, outerGlow, streaks, streakGeo, streakMat, time: 0 };
     }
 
     resetStreak(streak) {
@@ -444,6 +479,11 @@ export class RemoteAvatar {
             this.chargeEffect.glow.material.color.setHex(isMature ? 0xff4400 : 0xffee44);
             this.chargeEffect.isMature = isMature;
         }
+        this.chargeEffect.outerGlow.visible = isMature;
+        if (isMature) {
+            this.chargeEffect.outerGlow.position.copy(handPos);
+            this.chargeEffect.outerGlow.scale.setScalar(2.2 * pulse);
+        }
         this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
         const streakPos = new THREE.Vector3();
@@ -464,6 +504,9 @@ export class RemoteAvatar {
         window.gameScene.remove(this.chargeEffect.glow);
         this.chargeEffect.glow.geometry.dispose();
         this.chargeEffect.glow.material.dispose();
+        window.gameScene.remove(this.chargeEffect.outerGlow);
+        this.chargeEffect.outerGlow.geometry.dispose();
+        this.chargeEffect.outerGlow.material.dispose();
         this.chargeEffect.streaks.forEach(s => window.gameScene.remove(s.mesh));
         this.chargeEffect.streakGeo.dispose();
         this.chargeEffect.streakMat.dispose();
@@ -482,18 +525,13 @@ export class RemoteAvatar {
             this.startChargeEffect();
             this.updateChargeEffect(delta);
         } else if (this.chargeEffect) {
-            // Mirrors releaseChargePunch's projectile spawn: this avatar's own
-            // chargeEffect.isMature already tracked whether its own
+            // chargeEffect.isMature tracked whether this avatar's own
             // punch_charge_hold clip reached its last frame (same synced
-            // animation clock as the real puncher), so bystanders get the
-            // same "only a full charge throws the projectile" payoff without
-            // needing the puncher to send an extra network message for it.
-            if (this.chargeEffect.isMature && stateName === 'punch_charge_punch' && window.spawnChargeAttackProjectile && this.rightHandBone) {
-                const handPos = new THREE.Vector3();
-                this.rightHandBone.getWorldPosition(handPos);
-                const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
-                window.spawnChargeAttackProjectile(handPos, fwd);
-            }
+            // animation clock as the real puncher) - stashed here since
+            // chargeEffect itself is gone by the time the hit-frame-window
+            // check below (once punch_charge_punch actually reaches it) is
+            // ready to spawn the projectile.
+            this._pendingChargeMature = this.chargeEffect.isMature;
             this.stopChargeEffect();
         }
 
@@ -514,6 +552,14 @@ export class RemoteAvatar {
             const hitEnd = hitStart + 0.2;
             if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this._punchHitFlags[0]) {
                 this.spawnSwingParticle();
+                // Only a fully-matured hold earns the projectile - mirrors the
+                // isMatureCharge gate in the puncher's own detectMeleeHits.
+                if (stateName === 'punch_charge_punch' && this._pendingChargeMature && window.spawnChargeAttackProjectile && this.rightHandBone) {
+                    const handPos = new THREE.Vector3();
+                    this.rightHandBone.getWorldPosition(handPos);
+                    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
+                    window.spawnChargeAttackProjectile(handPos, fwd);
+                }
                 this._punchHitFlags[0] = true;
             }
         } else if (stateName === 'punch_combo') {

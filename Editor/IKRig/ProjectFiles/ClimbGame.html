@@ -208,6 +208,29 @@
             </div>
 
             <div class="category">
+                <div class="category-header">Shader Test</div>
+                <div class="category-content">
+                    <label><input type="checkbox" id="toggle-toon-outline"> Cell + Outline</label><br>
+                    <label>Outline Thickness: <span id="toon-outline-thickness-val">0.02</span></label><br>
+                    <input type="range" id="toon-outline-thickness-slider" min="0.0" max="0.08" step="0.005" value="0.02" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-phong-lambert"> Phong (dynamic) / Lambert (static)</label><br>
+                    <label>Light Intensity: <span id="light-intensity-val">1.00</span></label><br>
+                    <input type="range" id="light-intensity-slider" min="0.0" max="3.0" step="0.05" value="1.00" style="width: 100%;"><br>
+                    <label>Fill Light Intensity: <span id="fill-light-intensity-val">0.40</span></label><br>
+                    <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="0.40" style="width: 100%;">
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">AI Bot</div>
+                <div class="category-content">
+                    <button id="ai-bot-spawn-btn" style="width: 100%;">Spawn AI Bot</button>
+                    <button id="ai-bot-despawn-btn" style="width: 100%; margin-top: 6px; display: none;">Remove AI Bot</button>
+                    <div id="ai-bot-status" style="margin-top: 6px; opacity: 0.8;">not spawned</div>
+                </div>
+            </div>
+
+            <div class="category">
                 <div class="category-header">Ragdoll Tuning</div>
                 <div class="category-content">
                     <label>Lateral Hinge Stiffness: <span id="ragdoll-lateral-stiffness-val">0.00</span></label><br>
@@ -238,6 +261,12 @@
                     <input type="range" id="charge-punch-force-slider" min="20.0" max="150.0" step="1.0" value="80.0" style="width: 100%;"><br>
                     <label>Charge Punch Push Force: <span id="charge-punch-knockback-val">15.0</span></label><br>
                     <input type="range" id="charge-punch-knockback-slider" min="5.0" max="50.0" step="1.0" value="15.0" style="width: 100%;"><br>
+                    <label>Charge Projectile Speed: <span id="charge-proj-speed-val">5.0</span></label><br>
+                    <input type="range" id="charge-proj-speed-slider" min="2.0" max="20.0" step="0.5" value="5.0" style="width: 100%;"><br>
+                    <label>Charge Projectile Fade Rate: <span id="charge-proj-fade-val">3.00</span></label><br>
+                    <input type="range" id="charge-proj-fade-slider" min="0.3" max="5.0" step="0.05" value="3.00" style="width: 100%;"><br>
+                    <label>Charge Projectile Hit Cutoff: <span id="charge-proj-hit-cutoff-val">0.30</span></label><br>
+                    <input type="range" id="charge-proj-hit-cutoff-slider" min="0.0" max="1.0" step="0.05" value="0.30" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -467,7 +496,7 @@
         );
         window.spawnChargeAttackProjectile = function(position, direction) {
             if (!window.gameScene) return;
-            const geo = new THREE.PlaneGeometry(1.1, 1.1);
+            const geo = new THREE.PlaneGeometry(1.7, 1.7);
             const mat = new THREE.MeshBasicMaterial({
                 map: chargeAttackTexture,
                 transparent: true,
@@ -479,10 +508,14 @@
             });
             const mesh = new THREE.Mesh(geo, mat);
             mesh.position.copy(position);
+            // No fixed orientation here - it's billboarded to face the camera
+            // every frame instead (see the chargeAttackProjectiles update loop
+            // in game_js.js), since a flat plane rotated to face its travel
+            // direction reads as a near-invisible sliver from the side.
             const dir = (direction && direction.lengthSq() > 0.0001) ? direction.clone().normalize() : new THREE.Vector3(0, 0, 1);
-            mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+            const speed = window.chargeAttackProjectileSpeed !== undefined ? window.chargeAttackProjectileSpeed : 6.0;
             window.gameScene.add(mesh);
-            window.chargeAttackProjectiles.push({ mesh, velocity: dir.multiplyScalar(16), life: 1.0 });
+            window.chargeAttackProjectiles.push({ mesh, velocity: dir.multiplyScalar(speed), life: 1.0 });
         };
 
         export class CombatController {
@@ -538,17 +571,12 @@
                 // keep in sync with the actual animation.
                 const holdAction = this.char.actions['punch_charge_hold'];
                 this.chargeMaturity = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
-
-                // Only a fully-matured release earns the projectile - an
-                // early release is a weaker, ordinary-looking punch (see the
-                // isMatureCharge gate in detectMeleeHits), so it shouldn't get
-                // the same dramatic payoff as one actually held to completion.
-                if (this.chargeMaturity >= 1.0 && window.spawnChargeAttackProjectile && this.char.rightHandBone) {
-                    const handPos = new THREE.Vector3();
-                    this.char.rightHandBone.getWorldPosition(handPos);
-                    const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
-                    window.spawnChargeAttackProjectile(handPos, fwd);
-                }
+                // Projectile itself is NOT spawned here - releasing just starts
+                // the punch_charge_punch clip, and the fist doesn't actually
+                // reach forward until partway through it. Spawning here threw
+                // it before the punch motion had even begun; it's spawned in
+                // update() instead, at the same hit-frame window detectMeleeHits/
+                // spawnSwingParticle already use for this punch state.
 
                 this.punchState = 5;
                 this.punchTimer = 0;
@@ -571,6 +599,20 @@
                 const glow = new THREE.Mesh(glowGeo, glowMat);
                 window.gameScene.add(glow);
 
+                // Bigger, softer yellow aura around the (now orange-red) core
+                // once mature - only shown then, see updateChargeEffect.
+                const outerGlowGeo = new THREE.SphereGeometry(0.18, 12, 12);
+                const outerGlowMat = new THREE.MeshBasicMaterial({
+                    color: 0xffee44,
+                    transparent: true,
+                    opacity: 0.35,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                });
+                const outerGlow = new THREE.Mesh(outerGlowGeo, outerGlowMat);
+                outerGlow.visible = false;
+                window.gameScene.add(outerGlow);
+
                 const streakGeo = new THREE.BoxGeometry(0.04, 0.04, 0.5);
                 const streakMat = new THREE.MeshBasicMaterial({
                     color: 0xffffff,
@@ -590,7 +632,7 @@
                     streaks.push(streak);
                 }
 
-                this.chargeEffect = { glow, streaks, streakGeo, streakMat, time: 0 };
+                this.chargeEffect = { glow, outerGlow, streaks, streakGeo, streakMat, time: 0 };
             }
 
             resetStreak(streak) {
@@ -641,6 +683,11 @@
                     this.chargeEffect.glow.material.color.setHex(isMature ? 0xff4400 : 0xffee44);
                     this.chargeEffect.isMature = isMature;
                 }
+                this.chargeEffect.outerGlow.visible = isMature;
+                if (isMature) {
+                    this.chargeEffect.outerGlow.position.copy(handPos);
+                    this.chargeEffect.outerGlow.scale.setScalar(2.2 * pulse);
+                }
                 this.chargeEffect.streakMat.opacity = window.chargeStreakOpacity !== undefined ? window.chargeStreakOpacity : 0.3;
 
                 const streakPos = new THREE.Vector3();
@@ -661,6 +708,9 @@
                 window.gameScene.remove(this.chargeEffect.glow);
                 this.chargeEffect.glow.geometry.dispose();
                 this.chargeEffect.glow.material.dispose();
+                window.gameScene.remove(this.chargeEffect.outerGlow);
+                this.chargeEffect.outerGlow.geometry.dispose();
+                this.chargeEffect.outerGlow.material.dispose();
                 this.chargeEffect.streaks.forEach(s => window.gameScene.remove(s.mesh));
                 this.chargeEffect.streakGeo.dispose();
                 this.chargeEffect.streakMat.dispose();
@@ -765,6 +815,28 @@
                         }
                     });
                 }
+
+                // AI bot is local-only (no socket/id), so its reaction is
+                // applied directly instead of going through sendPunchEvent -
+                // same intensity mapping/reaction _applyPunchEvent uses for a
+                // real targeted punch (see multiplayer.js), just skipping the
+                // network round-trip since there's nothing to send it to.
+                if (window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
+                    const botHitPos = window.aiBot.getHitReferencePoint();
+                    if (botHitPos.distanceTo(hitCenter) < hitRadius + 1.0) {
+                        if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
+                        if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
+                        const intensity = forceMagnitude >= 70 ? 'high' : (forceMagnitude >= 45 ? 'medium_high' : 'medium');
+                        const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
+                        const strength = flashStrengthByIntensity[intensity] || 1.0;
+                        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                        const magnitudeForRagdoll = intensity === 'high' ? knockback : forceMagnitude;
+                        const velocity = fwdDir.clone().multiplyScalar(magnitudeForRagdoll);
+                        window.aiBot.triggerHitFlash(strength);
+                        if (intensity === 'high') window.aiBot.initRagdoll(velocity, intensity);
+                        else window.aiBot.applyProceduralRecoil(velocity, intensity);
+                    }
+                }
             }
 
             update(delta, sacks, createHitEffectCallback) {
@@ -773,7 +845,12 @@
 
                     if (this.punchState === 4) {
                         if (this.char.isRagdoll) { this.resetState(); return; }
-                        this.updateUI(0.0);
+                        // Same clip-progress ratio driving the energy ball's
+                        // growth (see updateChargeEffect) - the ring now fills
+                        // in step with it instead of sitting frozen at 0%.
+                        const holdAction = this.char.actions['punch_charge_hold'];
+                        const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+                        this.updateUI(growthT);
                         this.updateChargeEffect(delta);
                         return;
                     }
@@ -800,6 +877,17 @@
                         if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this.punchesHitFlags[0]) {
                             this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
                             this.spawnSwingParticle();
+                            // Only a fully-matured release earns the projectile -
+                            // an early release is a weaker, ordinary-looking punch
+                            // (see the isMatureCharge gate in detectMeleeHits), so
+                            // it shouldn't get the same dramatic payoff as one
+                            // actually held to completion.
+                            if (this.punchState === 5 && this.chargeMaturity >= 1.0 && window.spawnChargeAttackProjectile && this.char.rightHandBone) {
+                                const handPos = new THREE.Vector3();
+                                this.char.rightHandBone.getWorldPosition(handPos);
+                                const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
+                                window.spawnChargeAttackProjectile(handPos, fwd);
+                            }
                             this.punchesHitFlags[0] = true;
                         }
                     } else if (this.punchState === 3) {
@@ -969,8 +1057,17 @@
                 this.smoothedArrowPos = null;
                 this.cachedLedgeY = null;
                 this.xrayMaterials = [];
+                this.xrayMeshes = [];
                 this.bodyMaterials = [];
+                this.bodyMeshes = [];
                 this.bodyColor = null;
+                // Cell+outline shader test (toggleable, see setOutlineEnabled) -
+                // an inverted-hull duplicate of each mesh, same technique as
+                // xrayClone below: pushed out along its own normals and only its
+                // back faces rendered, so it reads as a rim silhouette around the
+                // model instead of a solid double.
+                this.outlineMeshes = [];
+                this.outlineUniforms = [];
                 this.hitFlashUniforms = [];
                 this.hitFlashTimer = 0;
                 this.hitFlashDuration = 0.15;
@@ -1046,6 +1143,7 @@
                             if (child.material) {
                                 const mainMat = new THREE.MeshToonMaterial({ color: this.bodyColor !== null ? this.bodyColor : 0xdddddd, gradientMap: threeTone });
                                 this.bodyMaterials.push(mainMat);
+                                this.bodyMeshes.push(child);
                                 const rimUniform = { value: 0.0 };
                                 mainMat.onBeforeCompile = (shader) => {
                                     shader.uniforms.rimIntensity = rimUniform;
@@ -1092,10 +1190,67 @@
                             this.xrayMaterials.push(xrayMaterial);
                             const xrayClone = child.clone();
                             xrayClone.material = xrayMaterial;
+                            // Nothing in the codebase ever toggles this back on
+                            // (no camera-occlusion check wires it up) - it was
+                            // rendering always-on, depthTest:false, right on
+                            // top of the normal body, reading as a permanent
+                            // faint gray transparency over the whole character.
+                            xrayClone.visible = false;
                             if (child.isSkinnedMesh) {
                                 xrayClone.bind(child.skeleton, child.bindMatrix);
                             }
+                            this.xrayMeshes.push(xrayClone);
                             child.parent.add(xrayClone);
+
+                            // Outline uniform is created before shader compile so
+                            // we keep a stable handle to update thickness live
+                            // (see setOutlineThickness) - same pattern as
+                            // rimUniform above, which onBeforeCompile also only
+                            // wires up once, lazily, on first compile.
+                            const outlineUniform = { value: window.toonOutlineThickness !== undefined ? window.toonOutlineThickness : 0.02 };
+                            const outlineMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+                            outlineMat.onBeforeCompile = (shader) => {
+                                shader.uniforms.outlineThickness = outlineUniform;
+                                // Inflating in local/object space (the old
+                                // approach) got scaled down by the mesh's own
+                                // transform before reaching the screen - this
+                                // character's FBX uses a tiny ~0.0065 scale
+                                // factor, shrinking the offset to about
+                                // 1/150th of the intended size, effectively
+                                // invisible regardless of the slider. Pushing
+                                // the vertex out in view space instead (after
+                                // modelViewMatrix, using the already
+                                // view-space transformedNormal) makes the
+                                // thickness a fixed amount in world meters,
+                                // the same for every object no matter its own
+                                // local scale.
+                                shader.vertexShader = shader.vertexShader
+                                    .replace(
+                                        '#include <common>',
+                                        `#include <common>
+                                        uniform float outlineThickness;`
+                                    )
+                                    .replace(
+                                        '#include <project_vertex>',
+                                        `vec4 mvPosition = vec4( transformed, 1.0 );
+                                        mvPosition = modelViewMatrix * mvPosition;
+                                        // objectNormal (post-skinning, pre-FLIP_SIDED) instead of
+                                        // transformedNormal - FLIP_SIDED negates the latter for a
+                                        // BackSide material, which would push this shell inward
+                                        // instead of outward and hide it inside the character.
+                                        mvPosition.xyz += normalize( normalMatrix * objectNormal ) * outlineThickness;
+                                        gl_Position = projectionMatrix * mvPosition;`
+                                    );
+                            };
+                            this.outlineUniforms.push(outlineUniform);
+                            const outlineClone = child.clone();
+                            outlineClone.material = outlineMat;
+                            outlineClone.visible = !!window.toonOutlineEnabled;
+                            if (child.isSkinnedMesh) {
+                                outlineClone.bind(child.skeleton, child.bindMatrix);
+                            }
+                            this.outlineMeshes.push(outlineClone);
+                            child.parent.add(outlineClone);
                         }
                         if (child.isBone) {
                             const name = child.name.toLowerCase();
@@ -1294,10 +1449,35 @@
             setBodyColor(hexColor) {
                 this.bodyColor = hexColor;
                 this.bodyMaterials.forEach(m => m.color.setHex(hexColor));
+                this.bodyMeshes.forEach(mesh => { if (mesh.userData.phongMat) mesh.userData.phongMat.color.setHex(hexColor); });
             }
 
             toggleHitbox(visible) { this.hitbox.visible = visible; }
             toggleRagdollColliders(visible) { this.ragdollColliderGroup.visible = visible; }
+            setOutlineEnabled(enabled) { this.outlineMeshes.forEach(m => m.visible = enabled); }
+            setOutlineThickness(val) { this.outlineUniforms.forEach(u => u.value = val); }
+            // depthTest:false on xrayMaterials means this renders straight
+            // through whatever's currently occluding the normal body mesh -
+            // driven from game_js.js's per-frame camera->player raycast.
+            setXrayVisible(visible) { this.xrayMeshes.forEach(m => m.visible = visible); }
+
+            // Player is always "dynamic" for the Phong/Lambert shading test -
+            // swaps each mesh's active material rather than mutating the toon
+            // one in place, so toggling back to toon is instant/free (no
+            // rebuild) and the two can be compared live.
+            setDynamicShading(enabled) {
+                this.bodyMeshes.forEach((mesh, i) => {
+                    if (enabled) {
+                        if (!mesh.userData.phongMat) {
+                            const src = this.bodyMaterials[i];
+                            mesh.userData.phongMat = new THREE.MeshPhongMaterial({ color: src.color.clone(), map: src.map || null, shininess: 30 });
+                        }
+                        mesh.material = mesh.userData.phongMat;
+                    } else {
+                        mesh.material = this.bodyMaterials[i];
+                    }
+                });
+            }
 
             triggerHitFlash(strength = 1.0) {
                 this.hitFlashTimer = this.hitFlashDuration;
