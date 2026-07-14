@@ -1,8 +1,12 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 export function startGame(CharacterClass) {
     window.isCarryingObj = false;
@@ -223,10 +227,40 @@ export function startGame(CharacterClass) {
     });
     scene.add(new THREE.Mesh(skyGeo, skyMat));
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    
+    window.gameCamera = camera;
+
+    // Orthographic camera test, toggled from the settings panel - all the
+    // existing follow/orbit/raycast/billboard logic below keeps driving the
+    // perspective `camera` exactly as before (it's the one thing everything
+    // else in the file reads), this one just copies its position/rotation
+    // every frame and is swapped in at render time only, so nothing else
+    // needs to know which camera is actually on screen.
+    window.orthoCameraEnabled = false;
+    window.orthoViewSize = 10;
+    const orthoCamera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 1000);
+    function updateOrthoFrustum() {
+        const aspect = window.innerWidth / window.innerHeight;
+        const size = window.orthoViewSize;
+        orthoCamera.left = -size * aspect;
+        orthoCamera.right = size * aspect;
+        orthoCamera.top = size;
+        orthoCamera.bottom = -size;
+        orthoCamera.updateProjectionMatrix();
+    }
+    updateOrthoFrustum();
+
     const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
+
+    // Pixelation post-processing test (https://threejs.org/examples/webgl_postprocessing_pixel.html)
+    // - off by default, toggled from the settings panel. Built once up front
+    // rather than lazily on first enable, so the toggle is instant either way.
+    window.pixelEffectEnabled = false;
+    const composer = new EffectComposer(renderer);
+    const renderPixelatedPass = new RenderPixelatedPass(6, scene, camera);
+    composer.addPass(renderPixelatedPass);
+    composer.addPass(new OutputPass());
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
@@ -510,15 +544,27 @@ export function startGame(CharacterClass) {
         brokenJarTemplate = pivotGroup;
     });
 
-    // StarKey.fbx contains both a key and a lock (LockBase/LockStarContainer
+    // StarKey.glb contains both a key and a lock (LockBase/LockStarContainer
     // for the lock, KeyBase/KeyStarContainer for the key) plus a single
     // shared "Star" mesh, all authored as flat siblings in the source file.
+    // Loaded as glTF, not FBX: the lock's shape key (used to hide/reveal the
+    // star, see buildStarAssembly) exported with valid vertex deltas in glTF
+    // every time, but came back completely empty (0 vertices) from FBX in
+    // every export attempt across both Blender and Maya - a known rough edge
+    // in how well FBX interchange preserves blend shapes versus glTF's more
+    // standardized, better-tested encoding (and three.js's GLTFLoader support
+    // for it).
     let keyTemplateParts = null;
     let stairsLevelBuilt = false; // set once buildStairsLevel() has run at least once
     const activeKeyStars = []; // billboarded toward the camera every frame, see the main loop
+    // Star.glb's flat plane faces local +Y, not +Z - see the billboard update
+    // in the main loop for why this correction is needed.
+    const starFrontFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
     const activeKeyGroups = []; // rescaled live by the Key Scale slider (key + lock share it)
     window.keyScale = 2.0;
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.fbx', (object) => {
+    const gltfLoader = new GLTFLoader();
+    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.glb', (gltf) => {
+        const object = gltf.scene;
         let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
             if (!child.isMesh) return;
@@ -565,6 +611,7 @@ export function startGame(CharacterClass) {
             collidables.push(testKeyGroup);
             const carryTestKey = { mesh: testKeyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
             carryables.push(carryTestKey); addCarryableDebugHelper(carryTestKey);
+            window.debugTestKeyGroup = testKeyGroup;
         }
 
         // Test-only lock instance next to the key - fixed in place (not
@@ -575,6 +622,7 @@ export function startGame(CharacterClass) {
             testLockGroup.position.set(-3, testLockGroup.userData.floorOffset * window.keyScale, -3);
             levelGroup.add(testLockGroup);
             collidables.push(testLockGroup);
+            activeLockInstances.push(testLockGroup);
             window.debugTestLockGroup = testLockGroup; // L key triggers revealLockStar() on this, see keydown handler
         }
     }
@@ -624,30 +672,35 @@ export function startGame(CharacterClass) {
         const clone = node.clone();
         const morphPos = clone.geometry.morphAttributes && clone.geometry.morphAttributes.position;
         if (morphPos && morphPos.length > 0) {
-            // Two ways this data has shown up broken so far: literal NaN
-            // values, and (the shape key's actual name is "Key 1", with a
-            // space) a target with 0 vertices - an empty/mismatched morph
-            // attribute still confuses Three's bounding box/sphere math into
-            // producing NaN, same end result. Check both instead of just one.
+            // Two ways this data has shown up broken so far (both from FBX
+            // exports - the glTF export doesn't have this problem, that's
+            // why this asset loads as .glb now): literal NaN values, and a
+            // target with 0 vertices - an empty/mismatched morph attribute
+            // still confuses Three's bounding box/sphere math into producing
+            // NaN, same end result. Check both instead of just one.
             const baseCount = clone.geometry.attributes.position.count;
             const invalid = morphPos.some(attr => attr.count !== baseCount || attr.array.some(v => !Number.isFinite(v)));
             if (invalid) {
-                console.error(`"${node.name}": shape key data is invalid (wrong vertex count or non-finite values) - stripping morph targets until fixed in Blender.`);
+                console.error(`"${node.name}": shape key data is invalid (wrong vertex count or non-finite values) - stripping morph targets until fixed in the source file.`);
                 clone.geometry = clone.geometry.clone();
                 clone.geometry.morphAttributes = {};
                 clone.geometry.computeBoundingBox();
                 clone.geometry.computeBoundingSphere();
                 clone.morphTargetInfluences = undefined;
                 clone.morphTargetDictionary = undefined;
-            } else if (clone.morphTargetDictionary && 'Key 1' in clone.morphTargetDictionary) {
-                // Default state: Key 1 = 1 (closed up, no star visible).
-                clone.morphTargetInfluences[clone.morphTargetDictionary['Key 1']] = 1.0;
+            } else if (clone.morphTargetInfluences && clone.morphTargetInfluences.length > 0) {
+                // Default state: fully-weighted (closed up, no star visible).
+                // Index 0, not by name - Blender's own export naming for this
+                // one shape key has changed ("Key1"/"Key 1"/"LockStarContainer.001")
+                // across re-exports, but the container only ever has the one
+                // morph target regardless of what it's currently called.
+                clone.morphTargetInfluences[0] = 1.0;
             }
         }
         return clone;
     }
 
-    function buildStarAssembly(baseNode, containerNode, starNode, scale) {
+    function buildStarAssembly(baseNode, containerNode, starNode, scale, hideStarInitially) {
         // Group origin is the container's own geometric/mass center (its
         // world-space bounding box center), not the base mesh's arbitrary
         // pivot - that's what the group is positioned/held/thrown by, so it
@@ -717,7 +770,8 @@ export function startGame(CharacterClass) {
             color: starSrcMat && starSrcMat.color ? starSrcMat.color.clone() : 0xffffff,
             map: starSrcMat && starSrcMat.map ? starSrcMat.map : null,
             transparent: true,
-            alphaTest: 0.5
+            alphaTest: 0.5,
+            side: THREE.DoubleSide // flat plane - a one-sided material would go invisible if the billboard-facing correction is ever off by 180 degrees
         });
         containerClone.add(starClone);
 
@@ -727,6 +781,14 @@ export function startGame(CharacterClass) {
         activeKeyStars.push(starClone);
         activeKeyGroups.push(group);
         group.userData.containerMesh = containerClone; // for revealLockStar()
+        group.userData.starClone = starClone; // for the key-insertion sequence
+
+        // The lock's star starts hidden (scale 0, not just occluded by the
+        // closed container) and is only revealed once a key gets inserted -
+        // see triggerKeyInsertion. starFullScale is captured here (before
+        // hiding it) so that reveal knows what size to grow back to.
+        group.userData.starFullScale = starClone.scale.x;
+        if (hideStarInitially) starClone.scale.setScalar(0);
 
         // How far below the group's own origin (the container's mass
         // center) the model's lowest point sits, in the group's local space
@@ -743,28 +805,151 @@ export function startGame(CharacterClass) {
     function createKeyInstance() {
         if (!keyTemplateParts) return null;
         const { keyBase, keyStarContainer, star, scale } = keyTemplateParts;
-        return buildStarAssembly(keyBase, keyStarContainer, star, scale);
+        return buildStarAssembly(keyBase, keyStarContainer, star, scale, false);
     }
 
     function createLockInstance() {
         if (!keyTemplateParts || !keyTemplateParts.lockBase || !keyTemplateParts.lockStarContainer) return null;
         const { lockBase, lockStarContainer, star, scale } = keyTemplateParts;
-        return buildStarAssembly(lockBase, lockStarContainer, star, scale);
+        return buildStarAssembly(lockBase, lockStarContainer, star, scale, true);
     }
 
-    // Animates the lock's "Key1" shape key from its current influence down
-    // to 0 over `duration` seconds, revealing the star inside - meant to run
-    // once the real "key inserted into lock" gameplay trigger exists. No
-    // such trigger is wired up yet, so for now this is only reachable via
-    // the L key debug binding below. No-ops safely if Key1 isn't live
-    // (e.g. still stripped because the shape key's source data has NaN).
+    // Animates the lock's shape key from its current influence down to 0
+    // over `duration` seconds, revealing the star inside. Also reachable
+    // directly via the L key debug binding below for testing without needing
+    // to actually carry a key over to a lock.
     const activeMorphTweens = [];
-    function revealLockStar(lockGroup, duration = 0.4) {
+    function revealLockStar(lockGroup, duration = 0.4, onComplete, delay = 0) {
         const mesh = lockGroup && lockGroup.userData.containerMesh;
-        if (!mesh || !mesh.morphTargetDictionary || !('Key 1' in mesh.morphTargetDictionary)) return;
-        const idx = mesh.morphTargetDictionary['Key 1'];
-        activeMorphTweens.push({ mesh, idx, from: mesh.morphTargetInfluences[idx], to: 0, duration, elapsed: 0 });
+        if (!mesh || !mesh.morphTargetInfluences || mesh.morphTargetInfluences.length === 0) {
+            if (onComplete) onComplete();
+            return;
+        }
+        const idx = 0;
+        activeMorphTweens.push({ mesh, idx, from: mesh.morphTargetInfluences[idx], to: 0, duration, elapsed: -delay, onComplete });
     }
+
+    // Generic scalar scale tween, used by the key-insertion sequence below
+    // (key shrinking away, its star lingering a beat longer, the lock's own
+    // star growing in at the end) - kept scalar/uniform rather than
+    // per-axis since every scale in this system already is (window.keyScale,
+    // the normalize scale, etc). `delay` holds the tween at `from` for that
+    // many seconds before it starts easing toward `to` (elapsed just counts
+    // down through negative territory first).
+    const activeScaleTweens = [];
+    function tweenScaleScalar(obj, from, to, duration, onComplete, delay = 0) {
+        activeScaleTweens.push({ obj, from, to, duration, elapsed: -delay, onComplete });
+    }
+
+    // Detaches a child (e.g. the key's star) from its parent while preserving
+    // its current WORLD transform, so it can keep animating independently of
+    // whatever happens to the parent afterward (the parent's own shrink-to-0
+    // would otherwise drag a still-nested star's world scale to 0 with it,
+    // regardless of the star's own separate tween's progress).
+    function detachPreservingWorldTransform(child, newParent) {
+        const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scale = new THREE.Vector3();
+        child.getWorldPosition(pos);
+        child.getWorldQuaternion(quat);
+        child.getWorldScale(scale);
+        newParent.add(child);
+        child.position.copy(pos);
+        child.quaternion.copy(quat);
+        child.scale.copy(scale);
+    }
+
+    const activeLockInstances = [];
+    const KEY_INSERT_DISTANCE = 2.0;
+
+    // Fires when a carried key is brought close enough to a lock (see the
+    // proximity check next to the carry-position update below). Not sure yet
+    // whether this should eventually require an explicit drop instead of
+    // triggering automatically on proximity - going with automatic for now.
+    function triggerKeyInsertion(keyMesh, lockGroup) {
+        lockGroup.userData.keyInserted = true;
+
+        const cIdx = carryables.findIndex(c => c.mesh === keyMesh);
+        if (cIdx !== -1) carryables.splice(cIdx, 1);
+        const collIdx = collidables.indexOf(keyMesh);
+        if (collIdx !== -1) collidables.splice(collIdx, 1);
+
+        window.isCarryingObj = false;
+        window.isCarryStarting = false;
+        window.isCarryDropping = false;
+        heldCarryable = null;
+        dropBtn.style.display = 'none';
+        throwBtn.style.display = 'none';
+        if (char) char.stopUpperAction(0.2);
+
+        // KeyStarContainer/LockStarContainer sit at their own (different)
+        // authored positions in the shared source-file coordinate space -
+        // not a coincidence, that's the artist's reference for exactly how
+        // the key sits seated in the lock's socket once inserted. Reproduce
+        // that same relative offset here instead of just snapping the key to
+        // the lock's raw origin, scaled/rotated to match this lock instance's
+        // actual placement (normalize scale + window.keyScale, its current
+        // world rotation).
+        const { keyStarContainer, lockStarContainer, scale } = keyTemplateParts;
+        const seatOffset = meshWorldCenter(keyStarContainer).sub(meshWorldCenter(lockStarContainer))
+            .multiplyScalar(scale * window.keyScale)
+            .applyQuaternion(lockGroup.quaternion);
+        keyMesh.position.copy(lockGroup.position).add(seatOffset);
+        keyMesh.quaternion.copy(lockGroup.quaternion);
+
+        let keyStarGone = false, lockMorphDone = false;
+        const tryRevealLockStar = () => {
+            if (!keyStarGone || !lockMorphDone) return;
+            const lockStar = lockGroup.userData.starClone;
+            const fullScale = lockGroup.userData.starFullScale;
+            if (lockStar && fullScale !== undefined) tweenScaleScalar(lockStar, 0, fullScale, 0.5);
+        };
+
+        // Only the container (the star-container "ball") shrinks, in place,
+        // to 70% of its own size - the base/handle and the rest of the key
+        // group are left alone. The star stays a child of the container for
+        // this part (not detached yet) - the container's own origin isn't at
+        // its visual center, so it visibly shifts as it scales down, and the
+        // star needs to keep riding along with that shift rather than sit
+        // fixed in world space while the container moves out from under it.
+        const keyContainer = keyMesh.userData.containerMesh;
+        const keyStar = keyMesh.userData.starClone;
+        if (keyContainer) {
+            const fromScale = keyContainer.scale.x;
+            tweenScaleScalar(keyContainer, fromScale, fromScale * 0.7, 0.5, () => {
+                // Only once the container's own shrink is done does the star
+                // detach and continue shrinking further (to 0) on its own -
+                // by now it's inherited the container's 70% scale via the
+                // parent-child relationship, so its current world scale is
+                // exactly where the container's shrink left it.
+                if (keyStar) {
+                    detachPreservingWorldTransform(keyStar, levelGroup);
+                    const startScale = keyStar.scale.x;
+                    tweenScaleScalar(keyStar, startScale, 0, 0.5, () => {
+                        levelGroup.remove(keyStar);
+                        keyStarGone = true;
+                        tryRevealLockStar();
+                    });
+                } else {
+                    keyStarGone = true;
+                    tryRevealLockStar();
+                }
+            });
+        } else if (keyStar) {
+            detachPreservingWorldTransform(keyStar, levelGroup);
+            tweenScaleScalar(keyStar, keyStar.scale.x, 0, 0.5, () => {
+                levelGroup.remove(keyStar);
+                keyStarGone = true;
+                tryRevealLockStar();
+            });
+        } else {
+            keyStarGone = true;
+        }
+
+        // The lock's own shape-key transition runs at the same time, over
+        // roughly the same total span as the container-then-star shrink
+        // (0.5s + 0.5s) so both finish together.
+        revealLockStar(lockGroup, 1.0, () => { lockMorphDone = true; tryRevealLockStar(); });
+    }
+    window.debugTriggerKeyInsertion = triggerKeyInsertion;
 
     function shatterJar(position, impactVelocity) {
         const shardCount = 14;
@@ -1210,13 +1395,24 @@ export function startGame(CharacterClass) {
         buildStartY = e.clientY; buildHeightOffset = 0; buildActivePointerId = e.pointerId; buildBtn.setPointerCapture(e.pointerId);
     });
     buildBtn.addEventListener('pointermove', (e) => { if (isBuilding && e.pointerId === buildActivePointerId) buildHeightOffset = Math.round((buildStartY - e.clientY) / 30) * cubeSize; });
+    function placeCube(position) {
+        const newCube = new THREE.Mesh(boxGeoTemplate, platMat.clone());
+        newCube.position.copy(position); newCube.castShadow = true; newCube.receiveShadow = true;
+        levelGroup.add(newCube); collidables.push(newCube);
+        return newCube;
+    }
+    // Called by MultiplayerClient when another player's build-cube broadcast
+    // arrives - placeCube's own local levelGroup/collidables aren't reachable
+    // from multiplayer.js, so it goes through this window global instead,
+    // same pattern as spawnHitEffect/spawnChargeAttackProjectile etc.
+    window.placeNetworkCube = (posArray) => placeCube(new THREE.Vector3(posArray[0], posArray[1], posArray[2]));
+
     buildBtn.addEventListener('pointerup', (e) => {
         if (isBuilding && e.pointerId === buildActivePointerId) {
             buildBtn.releasePointerCapture(e.pointerId);
             if (canPlace) {
-                const newCube = new THREE.Mesh(boxGeoTemplate, platMat.clone());
-                newCube.position.copy(buildPreview.position); newCube.castShadow = true; newCube.receiveShadow = true;
-                levelGroup.add(newCube); collidables.push(newCube);
+                placeCube(buildPreview.position);
+                if (network) network.sendBuildCubeEvent(buildPreview.position);
             }
             isBuilding = false; buildPreview.visible = false; gridHelper.visible = false; buildHeightOffset = 0;
         }
@@ -1369,11 +1565,18 @@ export function startGame(CharacterClass) {
                 cObj.isCarried = false;
                 cObj.wasThrown = true;
                 _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
-                
-                const boxHalfHeight = 0.5;
-                cObj.mesh.position.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + boxHalfHeight);
 
-                cObj.velocity.copy(_tempVec3).multiplyScalar(15.0 * window.throwSpeedMult).setY(8.0 * window.throwSpeedMult);
+                // Launch from wherever it's actually being held right now
+                // (tracks the real hand bones during carry, not carryHeight -
+                // that's just the pickup animation's target) - just nudged
+                // slightly forward to clear the character's own hitbox.
+                // Snapping to a carryHeight-based Y here used to cause a
+                // visible upward pop at the moment of throwing even with
+                // throwVerticalSpeed at 0, independent of the actual launch
+                // velocity.
+                cObj.mesh.position.addScaledVector(_tempVec3, 0.15);
+
+                cObj.velocity.copy(_tempVec3).multiplyScalar(window.throwHorizontalSpeed).setY(window.throwVerticalSpeed);
 
                 if (network) network.sendThrowEvent(cObj.netId, cObj.mesh.position, cObj.mesh.quaternion, cObj.velocity);
             }
@@ -1381,9 +1584,15 @@ export function startGame(CharacterClass) {
             const throwAction = char.actions['throw'];
             const throwClip = char.originalClips['throw'];
 
+            // Not setting throwAction.time here anymore - char.animate()'s
+            // fadeToAction('throw', ...) call (in ClimbGame.html) runs on the
+            // very next frame and calls action.reset() internally, which
+            // clobbers time back to 0 regardless of what's set here. That
+            // used to cause a one-frame pose flicker (this frame showing the
+            // trimmed-start pose, next frame snapping back to frame 0) and
+            // effectively play the untrimmed windup every time. The trim is
+            // applied once, after that reset, in ClimbGame.html instead.
             if (throwAction) {
-                throwAction.reset();
-                throwAction.time = throwTrimStart;
                 throwAction.setEffectiveTimeScale(window.throwSpeedMult);
             }
 
@@ -1457,7 +1666,10 @@ export function startGame(CharacterClass) {
     let ledgeSlipDuration = 0.05;
     let ledgeDropPushback = 0.12;
     let carryHeight = 2.45, throwTrimStart = 0.25, projSize = 0.3, projSpeed = 20.0;
+    window.throwTrimStart = throwTrimStart; // mirrored for ClimbGame.html's Character.animate() to read
     window.throwSpeedMult = 1.0;
+    window.throwHorizontalSpeed = 10.0;
+    window.throwVerticalSpeed = 1.0;
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 35.0;
     window.ragdollLateralStiffness = 0.0;
@@ -1580,7 +1792,9 @@ export function startGame(CharacterClass) {
         { id: 'pose-dur-slider', vId: 'pose-dur-val', func: v => char.ragdollPoseDuration = v },
         { id: 'carry-height-slider', vId: 'carry-height-val', func: v => carryHeight = v },
         { id: 'throw-speed-slider', vId: 'throw-speed-val', func: v => window.throwSpeedMult = v },
-        { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => throwTrimStart = v },
+        { id: 'throw-horizontal-slider', vId: 'throw-horizontal-val', func: v => window.throwHorizontalSpeed = v, fix: 1 },
+        { id: 'throw-vertical-slider', vId: 'throw-vertical-val', func: v => window.throwVerticalSpeed = v, fix: 1 },
+        { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => { throwTrimStart = v; window.throwTrimStart = v; } },
         { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { window.spineBlendValue = v; char.buildClips(); } },
         { id: 'slip-dur-slider', vId: 'slip-dur-val', func: v => ledgeSlipDuration = v },
         { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v },
@@ -1704,6 +1918,35 @@ export function startGame(CharacterClass) {
         document.getElementById('fill-light-intensity-val').textContent = v.toFixed(2);
     });
 
+    document.getElementById('toggle-pixel-effect').addEventListener('change', e => {
+        window.pixelEffectEnabled = e.target.checked;
+    });
+    document.getElementById('pixel-size-slider').addEventListener('input', e => {
+        const v = parseInt(e.target.value, 10);
+        renderPixelatedPass.setPixelSize(v);
+        document.getElementById('pixel-size-val').textContent = v;
+    });
+    document.getElementById('pixel-normal-edge-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        renderPixelatedPass.normalEdgeStrength = v;
+        document.getElementById('pixel-normal-edge-val').textContent = v.toFixed(2);
+    });
+    document.getElementById('pixel-depth-edge-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        renderPixelatedPass.depthEdgeStrength = v;
+        document.getElementById('pixel-depth-edge-val').textContent = v.toFixed(2);
+    });
+
+    document.getElementById('toggle-ortho-camera').addEventListener('change', e => {
+        window.orthoCameraEnabled = e.target.checked;
+    });
+    document.getElementById('ortho-zoom-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.orthoViewSize = v;
+        updateOrthoFrustum();
+        document.getElementById('ortho-zoom-val').textContent = v;
+    });
+
     document.getElementById('key-scale-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
         window.keyScale = v;
@@ -1795,7 +2038,13 @@ export function startGame(CharacterClass) {
         activeKeyStars.forEach(star => {
             if (!star.parent) return;
             star.parent.getWorldQuaternion(_tempQuat);
-            star.quaternion.copy(_tempQuat.invert().multiply(camera.quaternion));
+            // The star mesh is authored flat with its face along local +Y
+            // (lying down), not the +Z a plain camera.quaternion copy
+            // assumes as "forward" - without starFrontFix the star tracks
+            // the camera's rotation correctly (facing math checks out) but
+            // shows its top/edge rather than its face. starFrontFix rotates
+            // +Y to +Z first so the rest of the billboard math lines up.
+            star.quaternion.copy(_tempQuat.invert().multiply(camera.quaternion).multiply(starFrontFix));
         });
 
         for (let i = activeMorphTweens.length - 1; i >= 0; i--) {
@@ -1803,7 +2052,21 @@ export function startGame(CharacterClass) {
             t.elapsed += delta;
             const p = Math.min(1, t.elapsed / t.duration);
             t.mesh.morphTargetInfluences[t.idx] = t.from + (t.to - t.from) * p;
-            if (p >= 1) activeMorphTweens.splice(i, 1);
+            if (p >= 1) {
+                activeMorphTweens.splice(i, 1);
+                if (t.onComplete) t.onComplete();
+            }
+        }
+
+        for (let i = activeScaleTweens.length - 1; i >= 0; i--) {
+            const t = activeScaleTweens[i];
+            t.elapsed += delta;
+            const p = Math.min(1, t.elapsed / t.duration);
+            t.obj.scale.setScalar(t.from + (t.to - t.from) * p);
+            if (p >= 1) {
+                activeScaleTweens.splice(i, 1);
+                if (t.onComplete) t.onComplete();
+            }
         }
 
         if (window.chargeAttackProjectiles) {
@@ -1864,6 +2127,13 @@ export function startGame(CharacterClass) {
 
                     if (!consumed && window.multiplayerClient) {
                         window.multiplayerClient.remotes.forEach((avatar, remoteId) => {
+                            // A bystander's client spawns a visual-only copy of
+                            // someone else's charge projectile (see RemoteAvatar.
+                            // updatePunchEffects) starting right at that player's
+                            // own hand - without this it could immediately
+                            // register as a hit against its own thrower's remote
+                            // avatar and send a punch event back to them.
+                            if (remoteId === cp.ownerId) return;
                             if (consumed || !avatar.isLoaded || avatar.isRagdoll) return;
                             const avatarHitPos = avatar.getHitReferencePoint();
                             if (avatarHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
@@ -2538,6 +2808,16 @@ export function startGame(CharacterClass) {
                 }
             } else if (window.isCarryingObj && heldCarryable) {
                 heldCarryable.position.copy(handMidpoint); heldCarryable.quaternion.copy(char.group.quaternion);
+
+                if (heldCarryable.userData.isKey) {
+                    for (const lockGroup of activeLockInstances) {
+                        if (lockGroup.userData.keyInserted) continue;
+                        if (heldCarryable.position.distanceTo(lockGroup.position) <= KEY_INSERT_DISTANCE) {
+                            triggerKeyInsertion(heldCarryable, lockGroup);
+                            break;
+                        }
+                    }
+                }
             } else if (window.isCarryDropping && heldCarryable) {
                 carryStartElapsed += delta;
                 const duration = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 1.0;
@@ -2738,6 +3018,12 @@ export function startGame(CharacterClass) {
             network.update(delta);
         }
         updateAiBot(delta);
+        // Broadcasts under a fixed id ('ai-bot-1') so every connected client
+        // renders the same bot, driven by whoever spawned it - not
+        // synced/cleaned up if that person disconnects, it just stays put
+        // wherever it last was on everyone else's screen (simple, matches
+        // what was asked for; no ownership handoff or despawn-on-leave).
+        if (aiBot && network) network.sendAiBotState(aiBot.group.position, aiBot.group.quaternion, aiBot.stateName, delta);
 
         let trackingPoint = _tempVec1;
         if (char.hips && (isClimbingUp || char.isRagdoll || char.isStandingUp)) char.hips.getWorldPosition(trackingPoint);
@@ -2751,6 +3037,8 @@ export function startGame(CharacterClass) {
 
         camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
+        orthoCamera.position.copy(camera.position);
+        orthoCamera.quaternion.copy(camera.quaternion);
 
         // X-ray: if a wall sits between the camera and the player (camera
         // orbits at a fixed radius with no collision of its own, so this can
@@ -2789,7 +3077,13 @@ if (leftArrow) {
 }
 
 
-        renderer.render(scene, camera);
+        const activeCamera = window.orthoCameraEnabled ? orthoCamera : camera;
+        if (window.pixelEffectEnabled) {
+            renderPixelatedPass.camera = activeCamera;
+            composer.render();
+        } else {
+            renderer.render(scene, activeCamera);
+        }
     }
 
     animate();
@@ -2804,6 +3098,8 @@ if (leftArrow) {
     function handleViewportResize() {
         window.scrollTo(0, 0);
         camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+        updateOrthoFrustum();
     }
     window.addEventListener('resize', handleViewportResize);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', handleViewportResize);

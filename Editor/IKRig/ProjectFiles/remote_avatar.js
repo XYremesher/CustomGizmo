@@ -558,7 +558,7 @@ export class RemoteAvatar {
                     const handPos = new THREE.Vector3();
                     this.rightHandBone.getWorldPosition(handPos);
                     const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.group.quaternion);
-                    window.spawnChargeAttackProjectile(handPos, fwd);
+                    window.spawnChargeAttackProjectile(handPos, fwd, this.id);
                 }
                 this._punchHitFlags[0] = true;
             }

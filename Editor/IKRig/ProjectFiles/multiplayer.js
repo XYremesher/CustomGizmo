@@ -20,6 +20,15 @@ export class MultiplayerClient {
         this.onStatusChange = null;
         this.remoteHeldIdx = new Map(); // carryable index -> remote player id currently holding it
 
+        // Kept separate from `remotes` (not just another entry in that map)
+        // because `remotes` gets pruned on every occupantsChanged event
+        // against the server's real socket-id list - the bot's fixed id
+        // ('ai-bot-1') would never match a real occupant and get disposed
+        // the moment anyone joined or left. Also why it's never cleaned up
+        // if whoever spawned it disconnects - simple, on purpose.
+        this.aiBotAvatar = null;
+        this.aiBotSendTimer = 0;
+
         // uws-server.js already stamps `connectSuccess` with its own Date.now()
         // (joinedTime) - we use that single sample as a client/server clock
         // offset so time-based logic (e.g. shooter fire cycles) lines up across
@@ -142,6 +151,14 @@ export class MultiplayerClient {
         }
         if (data.su) {
             this._applyStandupEvent(data.id, data.su);
+            return;
+        }
+        if (data.bc) {
+            this._applyBuildCubeEvent(data.bc);
+            return;
+        }
+        if (data.ab) {
+            this._applyAiBotState(data.ab);
             return;
         }
 
@@ -348,6 +365,24 @@ export class MultiplayerClient {
         if (avatar) avatar.setStandupOrientation(su.p, su.q);
     }
 
+    // One-shot event fired when a player places a build-mode cube (B
+    // button) - was purely local before (never broadcast at all), so other
+    // players never saw cubes someone else placed.
+    _applyBuildCubeEvent(bc) {
+        if (!bc || !bc.p || !window.placeNetworkCube) return;
+        window.placeNetworkCube(bc.p);
+    }
+
+    // Repeating state broadcast for the AI bot (see game_js.js's updateAiBot
+    // call site) - whoever spawned it runs the actual wander/chase logic
+    // locally and just streams the result, same as a real player's own
+    // sendLocalState, just under the bot's fixed id instead of this.id.
+    _applyAiBotState(ab) {
+        if (!ab) return;
+        if (!this.aiBotAvatar) this.aiBotAvatar = new RemoteAvatar(this.scene, this.threeTone, 'ai-bot-1');
+        this.aiBotAvatar.setNetworkState(ab.p, ab.q, ab.s, false);
+    }
+
     // A carryable is a shared level object (box/cylinder/jar), not something
     // networked per-player. While a remote player holds one, we freeze its
     // local physics (same "isCarried" gate the local pickup uses) and let
@@ -516,7 +551,33 @@ export class MultiplayerClient {
         }));
     }
 
+    sendBuildCubeEvent(position) {
+        if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({
+            event: 'broadcast',
+            data: {
+                id: this.id,
+                bc: { p: [position.x, position.y, position.z] }
+            }
+        }));
+    }
+
+    sendAiBotState(position, quaternion, stateName, delta) {
+        if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.aiBotSendTimer -= delta;
+        if (this.aiBotSendTimer > 0) return;
+        this.aiBotSendTimer = SEND_RATE;
+        this.ws.send(JSON.stringify({
+            event: 'broadcast',
+            data: {
+                id: this.id,
+                ab: { p: [position.x, position.y, position.z], q: [quaternion.x, quaternion.y, quaternion.z, quaternion.w], s: stateName }
+            }
+        }));
+    }
+
     update(delta) {
         this.remotes.forEach(avatar => avatar.update(delta));
+        if (this.aiBotAvatar) this.aiBotAvatar.update(delta);
     }
 }
