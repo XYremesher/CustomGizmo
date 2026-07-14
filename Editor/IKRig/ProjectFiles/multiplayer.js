@@ -189,6 +189,11 @@ export class MultiplayerClient {
 
         cObj.isCarried = false;
         cObj.wasThrown = true;
+        // See the matching comment on the local throw handler in game_js.js -
+        // skipped in the thrown-object hit check so this client doesn't
+        // register the object hitting its own thrower the instant it spawns
+        // right next to them.
+        cObj.throwOwnerId = remoteId;
         cObj.mesh.position.set(te.p[0], te.p[1], te.p[2]);
         cObj.mesh.quaternion.set(te.q[0], te.q[1], te.q[2], te.q[3]);
         cObj.velocity.set(te.v[0], te.v[1], te.v[2]);

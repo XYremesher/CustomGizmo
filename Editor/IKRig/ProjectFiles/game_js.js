@@ -331,6 +331,59 @@ export function startGame(CharacterClass) {
         punchHasHit: false,
         cooldownTimer: 0
     };
+    window.aiBotPathVisible = true;
+    // Two lines, not one: goalLine (yellow) is where the bot is ultimately
+    // trying to get to (the player in chase, a random point while
+    // wandering); stepLine (cyan) is the direction it's actually walking
+    // this frame. They only diverge while avoidance (see moveAiBotToward)
+    // is steering around something - seeing them split apart is the visual
+    // confirmation avoidance is doing something, not just decoration.
+    let aiBotGoalLine = null, aiBotStepLine = null;
+    function createAiBotPathLines() {
+        const goalGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        aiBotGoalLine = new THREE.Line(goalGeo, new THREE.LineBasicMaterial({ color: 0xffcc00 }));
+        aiBotGoalLine.frustumCulled = false;
+        scene.add(aiBotGoalLine);
+
+        const stepGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        aiBotStepLine = new THREE.Line(stepGeo, new THREE.LineBasicMaterial({ color: 0x00e5ff }));
+        aiBotStepLine.frustumCulled = false;
+        scene.add(aiBotStepLine);
+    }
+    function disposeAiBotPathLines() {
+        [aiBotGoalLine, aiBotStepLine].forEach(line => {
+            if (!line) return;
+            scene.remove(line);
+            line.geometry.dispose();
+            line.material.dispose();
+        });
+        aiBotGoalLine = null; aiBotStepLine = null;
+    }
+    // Just rewrites the existing two-point BufferGeometry each call (no
+    // alloc/dispose per frame) - updateAiBot only calls this while
+    // window.aiBotPathVisible is on and the bot exists, so the cost when
+    // it's off (or no bot) is a single boolean check.
+    function updateAiBotPathVisual(botPos, goalPos, stepPos) {
+        if (!aiBotGoalLine || !aiBotStepLine) return;
+        aiBotGoalLine.visible = window.aiBotPathVisible;
+        aiBotStepLine.visible = window.aiBotPathVisible;
+        if (!window.aiBotPathVisible) return;
+        const goalY = botPos.y + 0.1;
+        aiBotGoalLine.geometry.setFromPoints([
+            new THREE.Vector3(botPos.x, goalY, botPos.z),
+            new THREE.Vector3(goalPos.x, goalY, goalPos.z)
+        ]);
+        aiBotStepLine.geometry.setFromPoints([
+            new THREE.Vector3(botPos.x, goalY, botPos.z),
+            new THREE.Vector3(stepPos.x, goalY, stepPos.z)
+        ]);
+    }
+    const aiBotPathToggle = document.getElementById('ai-bot-path-toggle');
+    if (aiBotPathToggle) {
+        window.aiBotPathVisible = aiBotPathToggle.checked;
+        aiBotPathToggle.addEventListener('change', () => { window.aiBotPathVisible = aiBotPathToggle.checked; });
+    }
+
     function pickNewAiWanderTarget() {
         const angle = Math.random() * Math.PI * 2;
         const dist = 3 + Math.random() * 6;
@@ -340,9 +393,29 @@ export function startGame(CharacterClass) {
             aiBot.group.position.z + Math.sin(angle) * dist
         );
     }
-    // Moves aiBot's group position toward destTarget at the given speed, with
-    // the same reactive obstacle-avoidance and ground-snapping the plain
-    // wander uses, reused for both wander and chase movement.
+    // Candidate steering angles (degrees) tried in order when the direct
+    // line to the target is blocked - 0 first (so the common unblocked
+    // case costs exactly the one raycast it always did), then increasingly
+    // wide turns to either side. This is what makes the bot go around a
+    // jar/box instead of walking straight into it and stopping dead the
+    // way the old single-ray "wallHits[0].distance < 1.0 -> bail" check did.
+    const AI_AVOID_ANGLES = [0, 25, -25, 50, -50, 75, -75, 100, -100];
+    const AI_AVOID_LOOKAHEAD = 1.8;
+    // Roughly the bot's own half-width - a single centerline ray can find a
+    // direction "clear" while still grazing an obstacle's edge close enough
+    // for the bot's actual body to clip it, which showed up as walking
+    // right next to (and partly onto, via the separate ground-snap ray
+    // picking up the obstacle's own top face) a jar instead of around it.
+    // Two extra rays offset sideways from the same origin, parallel to the
+    // candidate direction, approximate a capsule sweep cheaply.
+    const AI_AVOID_RADIUS = 0.45;
+    const _aiAvoidPerp = new THREE.Vector3();
+    const _aiAvoidSideOrigin = new THREE.Vector3();
+
+    // Moves aiBot's group position toward destTarget at the given speed,
+    // steering around anything in the way (see AI_AVOID_ANGLES) instead of
+    // just refusing to move, with the same ground-snapping the plain wander
+    // uses, reused for both wander and chase movement.
     function moveAiBotToward(destTarget, speed, delta) {
         const pos = aiBot.group.position;
         const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
@@ -350,16 +423,46 @@ export function startGame(CharacterClass) {
         if (dist < 0.001) return dist;
         toTarget.normalize();
 
-        rayFwd.set(_tempVec2.copy(pos).setY(pos.y + 1.0), toTarget);
-        const wallHits = rayFwd.intersectObjects(collidables);
-        if (wallHits.length > 0 && wallHits[0].distance < 1.0) return -1;
+        // 0.5, not the "chest height" 1.0 the old single-ray check used -
+        // getObstacleBox treats every isCarryable object (jars included) as
+        // a fixed 1x1x1 box centered on its own position (see game_js.js's
+        // getObstacleBox), and jars sit at y=0.5, so their box only spans
+        // y:[0,1.0]. A ray at y=1.0 just skims that box's very top edge
+        // instead of passing through it - which is exactly why the bot was
+        // walking straight over jars specifically while still correctly
+        // avoiding taller things like the sandbag/movable boxes.
+        const rayOrigin = _tempVec2.copy(pos).setY(pos.y + 0.5);
+        let moveDir = null;
+        for (const angleDeg of AI_AVOID_ANGLES) {
+            const candidate = _tempQuat.setFromAxisAngle(_upVec, angleDeg * Math.PI / 180);
+            // _tempVec3 is also this function's nextPos scratch further
+            // down, but that's only written after this loop is done with it.
+            _tempVec3.copy(toTarget).applyQuaternion(candidate);
 
-        // toTarget (_tempVec1) is done being read after this - facingQuat
-        // below needs it too, so it's captured into its own quaternion before
-        // _tempVec1 gets reused for the ground-check ray origin.
-        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), toTarget);
+            _aiAvoidPerp.set(-_tempVec3.z, 0, _tempVec3.x);
+            let clear = true;
+            for (const sideMul of [0, 1, -1]) {
+                _aiAvoidSideOrigin.copy(rayOrigin);
+                if (sideMul !== 0) _aiAvoidSideOrigin.addScaledVector(_aiAvoidPerp, sideMul * AI_AVOID_RADIUS);
+                rayFwd.set(_aiAvoidSideOrigin, _tempVec3);
+                const hits = rayFwd.intersectObjects(collidables);
+                if (hits.length > 0 && hits[0].distance <= AI_AVOID_LOOKAHEAD) { clear = false; break; }
+            }
+            if (clear) {
+                moveDir = _tempVec3.clone();
+                break;
+            }
+        }
+        if (window.aiBotPathVisible) {
+            updateAiBotPathVisual(pos, destTarget, moveDir ? _tempVec2.copy(pos).addScaledVector(moveDir, 3) : pos);
+        }
+        // Every candidate angle is blocked within lookahead - genuinely
+        // boxed in, not just "one direction happens to be blocked".
+        if (!moveDir) return -1;
 
-        const nextPos = _tempVec3.copy(pos).addScaledVector(toTarget, speed * delta);
+        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), moveDir);
+
+        const nextPos = _tempVec3.copy(pos).addScaledVector(moveDir, speed * delta);
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
         const groundHits = rayDown.intersectObjects(collidables);
         if (groundHits.length > 0) nextPos.y = groundHits[0].point.y;
@@ -459,6 +562,7 @@ export function startGame(CharacterClass) {
         aiBotState.waitTimer = 0;
         aiBotState.cooldownTimer = 0;
         aiBot.group.position.copy(spawnPos).add(new THREE.Vector3(3, 0, 3));
+        createAiBotPathLines();
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
@@ -473,6 +577,7 @@ export function startGame(CharacterClass) {
         aiBot.dispose();
         aiBot = null;
         window.aiBot = null;
+        disposeAiBotPathLines();
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
@@ -1564,6 +1669,12 @@ export function startGame(CharacterClass) {
             if (cObj) {
                 cObj.isCarried = false;
                 cObj.wasThrown = true;
+                // Who threw it - skipped in the thrown-object hit check
+                // (like chargeAttackProjectiles' own ownerId) so a bystander
+                // client, whose local physics sim of this same object starts
+                // right next to the thrower's own hand, doesn't immediately
+                // register that as the thrower hitting themselves.
+                cObj.throwOwnerId = window.multiplayerClient ? window.multiplayerClient.id : null;
                 _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
 
                 // Launch from wherever it's actually being held right now
@@ -1670,6 +1781,8 @@ export function startGame(CharacterClass) {
     window.throwSpeedMult = 1.0;
     window.throwHorizontalSpeed = 10.0;
     window.throwVerticalSpeed = 1.0;
+    window.throwHitForce = 35;
+    window.throwHitRadius = 0.8;
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 35.0;
     window.ragdollLateralStiffness = 0.0;
@@ -1795,6 +1908,8 @@ export function startGame(CharacterClass) {
         { id: 'throw-horizontal-slider', vId: 'throw-horizontal-val', func: v => window.throwHorizontalSpeed = v, fix: 1 },
         { id: 'throw-vertical-slider', vId: 'throw-vertical-val', func: v => window.throwVerticalSpeed = v, fix: 1 },
         { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => { throwTrimStart = v; window.throwTrimStart = v; } },
+        { id: 'throw-hit-force-slider', vId: 'throw-hit-force-val', func: v => window.throwHitForce = v, fix: 0 },
+        { id: 'throw-hit-radius-slider', vId: 'throw-hit-radius-val', func: v => window.throwHitRadius = v, fix: 2 },
         { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { window.spineBlendValue = v; char.buildClips(); } },
         { id: 'slip-dur-slider', vId: 'slip-dur-val', func: v => ledgeSlipDuration = v },
         { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v },
@@ -2144,6 +2259,32 @@ export function startGame(CharacterClass) {
                             }
                         });
                     }
+
+                    // AI bot is local-only (no socket/id) - same reaction
+                    // detectMeleeHits already applies for a regular/charge
+                    // punch landing on it (ClimbGame.html), applied directly
+                    // instead of through sendPunchEvent since there's no
+                    // remote to send it to. This projectile only ever fires
+                    // from the local player's own charge attack, so unlike
+                    // the remotes check above there's no bystander-mirror
+                    // self-hit case to guard against here.
+                    if (!consumed && window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
+                        const botHitPos = window.aiBot.getHitReferencePoint();
+                        if (botHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
+                            if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
+                            if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
+                            const intensity = chargeForce >= 70 ? 'high' : (chargeForce >= 45 ? 'medium_high' : 'medium');
+                            const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
+                            const strength = flashStrengthByIntensity[intensity] || 1.0;
+                            const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                            const magnitudeForRagdoll = intensity === 'high' ? knockback : chargeForce;
+                            const botVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
+                            window.aiBot.triggerHitFlash(strength);
+                            if (intensity === 'high') window.aiBot.initRagdoll(botVelocity, intensity);
+                            else window.aiBot.applyProceduralRecoil(botVelocity, intensity);
+                            consumed = true;
+                        }
+                    }
                 }
 
                 if (consumed || cp.life <= 0) {
@@ -2395,6 +2536,23 @@ export function startGame(CharacterClass) {
             }
             if (c.isCarried) return;
 
+            // Captured before the substep physics below can touch it - the
+            // generic obstacle-bounce collision response a few lines down
+            // (velocity *= -0.25 on any solid collidable, including the
+            // sandbag's own hitbox) already cuts a thrown object's speed by
+            // 75% the instant it makes contact, same frame the hit check
+            // further below would otherwise run. Gating that check on the
+            // POST-bounce velocity meant a throw that actually connected
+            // almost always read as "already below the speed threshold" by
+            // the time it was checked - it never got credit for having just
+            // hit something. Using the incoming (pre-bounce) velocity/speed
+            // for both the gate and the impact direction fixes that, and
+            // also better matches the object's real point-of-impact motion
+            // rather than its post-bounce rebound.
+            const incomingWasThrown = c.wasThrown;
+            const incomingVelocity = incomingWasThrown ? c.velocity.clone() : null;
+            const incomingSpeedSq = incomingVelocity ? incomingVelocity.lengthSq() : 0;
+
             const subSteps = 4;
             const subDelta = delta / subSteps;
             const carryBox = new THREE.Box3();
@@ -2420,7 +2578,7 @@ export function startGame(CharacterClass) {
                         const overlapX = Math.min(carryBox.max.x - obstacleBox.min.x, obstacleBox.max.x - carryBox.min.x);
                         const dirX = Math.sign(c.mesh.position.x - obj.position.x);
                         c.mesh.position.x += (dirX !== 0 ? dirX : 1) * (overlapX + 0.001);
-                        c.velocity.x *= -0.25; 
+                        c.velocity.x *= -0.25;
                         carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
                     }
                 });
@@ -2484,6 +2642,100 @@ export function startGame(CharacterClass) {
                     }
                 });
                 if (earlyExit) break;
+            }
+
+            // Thrown objects land like a punch, on sandbags and on other
+            // players - mirrors the charge-attack projectile's own hit
+            // check further up (same checkHit/applyHit + getHitReferencePoint/
+            // sendPunchEvent calls), just gated on c.wasThrown/velocity
+            // instead of a projectile's lifespan. Physics for carryables runs
+            // identically on every client (see _applyThrowEvent's own
+            // comment - deterministic, seeded once from the throw event),
+            // so this check runs locally on every client the same way the
+            // charge projectile's does, including the thrower's own.
+            if (incomingWasThrown) {
+                // Below this it's rolled/settled to a stop, not flying -
+                // shouldn't keep landing hits just from resting nearby.
+                if (incomingSpeedSq > 1.0) {
+                    const hitRadius = window.throwHitRadius !== undefined ? window.throwHitRadius : 0.8;
+                    const hitForce = window.throwHitForce !== undefined ? window.throwHitForce : 35;
+                    const impactDir = _tempVec3.copy(incomingVelocity).normalize();
+                    let consumed = false;
+
+                    if (window.sacks) {
+                        for (const sack of window.sacks) {
+                            if (sack.checkHit(c.mesh.position, hitRadius)) {
+                                sack.applyHit(impactDir, hitForce);
+                                if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
+                                if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
+                                if (network) {
+                                    const sackIdx = window.sacks.indexOf(sack);
+                                    if (sackIdx !== -1) network.sendSandbagHitEvent(sackIdx, impactDir, hitForce);
+                                }
+                                consumed = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!consumed && window.multiplayerClient) {
+                        window.multiplayerClient.remotes.forEach((avatar, remoteId) => {
+                            if (remoteId === c.throwOwnerId) return;
+                            if (consumed || !avatar.isLoaded || avatar.isRagdoll) return;
+                            const avatarHitPos = avatar.getHitReferencePoint();
+                            if (avatarHitPos.distanceTo(c.mesh.position) < hitRadius + 1.0) {
+                                if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
+                                if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
+                                window.multiplayerClient.sendPunchEvent(remoteId, impactDir, hitForce, c.mesh.position);
+                                consumed = true;
+                            }
+                        });
+                    }
+
+                    // AI bot is local-only (no socket/id) - same reaction
+                    // detectMeleeHits already applies for a regular/charge
+                    // punch landing on it (ClimbGame.html), applied directly
+                    // instead of through sendPunchEvent since there's no
+                    // remote to send it to.
+                    if (!consumed && window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
+                        const botHitPos = window.aiBot.getHitReferencePoint();
+                        if (botHitPos.distanceTo(c.mesh.position) < hitRadius + 1.0) {
+                            if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
+                            if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
+                            const intensity = hitForce >= 70 ? 'high' : (hitForce >= 45 ? 'medium_high' : 'medium');
+                            const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
+                            const strength = flashStrengthByIntensity[intensity] || 1.0;
+                            const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                            const magnitudeForRagdoll = intensity === 'high' ? knockback : hitForce;
+                            const botVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
+                            window.aiBot.triggerHitFlash(strength);
+                            if (intensity === 'high') window.aiBot.initRagdoll(botVelocity, intensity);
+                            else window.aiBot.applyProceduralRecoil(botVelocity, intensity);
+                            consumed = true;
+                        }
+                    }
+
+                    // A thrown jar shatters on any of these hits too, same
+                    // as it already does hitting a wall in the collision
+                    // loop above (speed > 5.0 there) - this check only ever
+                    // runs while incomingSpeedSq > 1.0, well above walking
+                    // speed, so no extra speed gate needed here. destroyJarCarryable
+                    // removes it from `carryables` (this same array being
+                    // iterated) same as the wall-collision path already does
+                    // from inside this same forEach - accepted existing
+                    // behavior, not something new introduced here.
+                    if (consumed && c.mesh.userData.isJar) {
+                        shatterJar(c.mesh.position.clone(), incomingVelocity.clone());
+                        destroyJarCarryable(c.mesh);
+                    }
+
+                    // One hit per throw, same as a punch's own punchesHitFlags -
+                    // a thrown box resting against a target shouldn't keep
+                    // dealing damage every frame it's still touching them.
+                    if (consumed) c.wasThrown = false;
+                } else {
+                    c.wasThrown = false;
+                }
             }
         });
 
@@ -3001,7 +3253,7 @@ export function startGame(CharacterClass) {
                 if (ps === 1) networkStateName = 'punch_left';
                 else if (ps === 2) networkStateName = 'punch_right';
                 else if (ps === 3) networkStateName = 'punch_combo';
-                else if (ps === 4) networkStateName = 'punch_charge_hold';
+                else if (ps === 4) networkStateName = window.combat.chargeHoldAnimName || 'punch_charge_hold';
                 else if (ps === 5) networkStateName = 'punch_charge_punch';
             } else if (window.isCarryingObj) networkCarryUpper = true;
         }

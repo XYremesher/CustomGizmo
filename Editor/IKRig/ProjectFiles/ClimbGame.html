@@ -183,6 +183,10 @@
                     <input type="range" id="throw-vertical-slider" min="0.0" max="10.0" step="0.2" value="1.0" style="width: 100%;"><br>
                     <label>Throw Trim Start: <span id="throw-trim-val">0.25</span>s</label><br>
                     <input type="range" id="throw-trim-slider" min="0.0" max="1.0" step="0.05" value="0.25" style="width: 100%;"><br>
+                    <label>Throw Hit Force: <span id="throw-hit-force-val">35</span></label><br>
+                    <input type="range" id="throw-hit-force-slider" min="5" max="100" step="1" value="35" style="width: 100%;"><br>
+                    <label>Throw Hit Radius: <span id="throw-hit-radius-val">0.8</span></label><br>
+                    <input type="range" id="throw-hit-radius-slider" min="0.3" max="2.0" step="0.05" value="0.8" style="width: 100%;"><br>
                     <label>Spine Stabilize Blend: <span id="spine-blend-val">1.00</span></label><br>
                     <input type="range" id="spine-blend-slider" min="0.0" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
                 </div>
@@ -249,6 +253,7 @@
                     <button id="ai-bot-spawn-btn" style="width: 100%;">Spawn AI Bot</button>
                     <button id="ai-bot-despawn-btn" style="width: 100%; margin-top: 6px; display: none;">Remove AI Bot</button>
                     <div id="ai-bot-status" style="margin-top: 6px; opacity: 0.8;">not spawned</div>
+                    <label style="display: block; margin-top: 6px;"><input type="checkbox" id="ai-bot-path-toggle" checked> Show AI Bot Path</label>
                 </div>
             </div>
 
@@ -560,6 +565,23 @@
                 this.punchesHitFlags = [false, false, false, false, false];
                 this.chargeEffect = null;
                 this.chargeMaturity = 0;
+                this.chargeDuration = 1; // real value set in startChargePunch()
+                // Which clip is actually driving the charge-hold pose right
+                // now - 'punch_charge_hold' while standing still, 'punch_walk'
+                // while moving (see update()'s punchState===4 branch). Every
+                // place that reads charge growth/maturity off "the" hold
+                // action goes through this instead of a hardcoded name, so it
+                // keeps working correctly across a mid-charge switch.
+                this.chargeHoldAnimName = 'punch_charge_hold';
+                // Counts up while moveMag reads as "not moving" during a
+                // charge - only switches back to punch_charge_hold once this
+                // clears a short grace window (see update()), not the instant
+                // moveMag dips. Changing direction (letting go of one WASD key
+                // a frame or two before pressing the next) reads as a brief
+                // moveMag=0 gap even though the player never actually stopped,
+                // and switching immediately caused a visible stop/reset of the
+                // walk cycle every time that happened.
+                this.chargeWalkStopTimer = 0;
             }
 
             spawnSwingParticle() {
@@ -589,21 +611,37 @@
             startChargePunch() {
                 this.punchState = 4;
                 this.punchTimer = 0;
+                this.chargeHoldAnimName = 'punch_charge_hold';
+                this.chargeWalkStopTimer = 0;
+                // Fixed reference for "fully charged," captured once here -
+                // NOT re-read from whichever clip happens to be playing.
+                // punch_walk loops (has to, for a sustained walk cycle), so
+                // its own .time cycles back to 0 repeatedly; reading maturity
+                // off "the active clip's time" the way this used to work
+                // would make the charge visibly reset every stride while
+                // moving. punchTimer (below) already accumulates correctly
+                // across a mid-charge punch_charge_hold<->punch_walk switch,
+                // so maturity is just that against this fixed duration now.
+                const holdClip = this.char.actions['punch_charge_hold'] && this.char.actions['punch_charge_hold'].getClip();
+                this.chargeDuration = holdClip ? holdClip.duration : 1;
                 this.char.fadeToAction('punch_charge_hold', 0.1);
+                // punch_charge_hold/punch_walk is a full-body swap, not an
+                // upper/lower split - if this fires mid-combo (a punch's
+                // _upper track still active, e.g. punch_right_upper),
+                // nothing else was going to fade that out on its own, since
+                // the punch's own end-of-combo path (resetState) is what
+                // normally does that and this skips straight past it. Left
+                // alone it would keep blending its own spine/arm rotation on
+                // top of punch_charge_hold's, fighting it every frame.
+                this.char.stopUpperAction(0.1);
                 this.startChargeEffect();
             }
 
             releaseChargePunch() {
-                // Maturity now follows the punch_charge_hold clip's own
-                // playback instead of a separately-tuned timer value: that
-                // clip is LoopOnce + clampWhenFinished (see
-                // setupActionProperties), so it naturally plays through once
-                // and freezes on its last frame - releasing at or after that
-                // point is exactly "fully charged," and the ratio before that
-                // gives a smooth 0-1 progress with no separate duration to
-                // keep in sync with the actual animation.
-                const holdAction = this.char.actions['punch_charge_hold'];
-                this.chargeMaturity = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+                // See the comment in startChargePunch - punchTimer against
+                // the fixed chargeDuration captured there, not the active
+                // clip's own (possibly looping) time.
+                this.chargeMaturity = Math.min(1, this.punchTimer / (this.chargeDuration || 1));
                 // Projectile itself is NOT spawned here - releasing just starts
                 // the punch_charge_punch clip, and the fist doesn't actually
                 // reach forward until partway through it. Spawning here threw
@@ -614,7 +652,7 @@
                 this.punchState = 5;
                 this.punchTimer = 0;
                 this.punchesHitFlags = [false, false, false, false, false];
-                this.char.fadeToAction('punch_charge_punch', 0.05);
+                this.playPunchPose('punch_charge_punch', 0.05);
                 this.stopChargeEffect();
             }
 
@@ -691,17 +729,17 @@
                 this.chargeEffect.time += delta;
                 this.chargeEffect.glow.position.copy(handPos);
 
-                // Grows in step with the same punch_charge_hold clip progress
-                // releaseChargePunch reads for maturity - starts small and
-                // reaches full size right as the hold animation reaches (and
-                // clamps on) its last frame, so the ball visibly finishing
-                // its growth is the same moment a release counts as mature.
-                // Once mature, it switches to a bigger, hotter-colored pulse
+                // Grows in step with the same punchTimer/chargeDuration ratio
+                // releaseChargePunch reads for maturity (see the comment in
+                // startChargePunch for why it's not the active clip's own
+                // time) - starts small and reaches full size right as the
+                // charge is fully mature, so the ball visibly finishing its
+                // growth is the same moment a release counts as mature. Once
+                // mature, it switches to a bigger, hotter-colored pulse
                 // instead of just holding at 1.0x - an unmistakable "ready,
                 // this release will throw the projectile" cue, distinct from
                 // "still charging," for as long as the button stays held.
-                const holdAction = this.char.actions['punch_charge_hold'];
-                const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+                const growthT = Math.min(1, this.punchTimer / (this.chargeDuration || 1));
                 const isMature = growthT >= 1.0;
                 let growth, pulse;
                 if (isMature) {
@@ -750,15 +788,34 @@
                 this.chargeEffect = null;
             }
 
+            // Plays a punch on the upper-body-only track (so the lower body
+            // stays free to keep walking/idling, driven separately every
+            // frame by Character.animate()'s isPunching branch) if an
+            // "_upper" variant exists for it - same idea as carry_upper, and
+            // the same clips already generated for these punch names in
+            // buildClips(), just unused until now. Falls back to the old
+            // full-body clip (and explicitly clears any stale upper action)
+            // if one doesn't exist, so animate()'s dispatch can reliably tell
+            // which mode is active just by checking this.char.activeUpperAction.
+            playPunchPose(fullBodyName, duration) {
+                const upperName = fullBodyName + '_upper';
+                if (this.char.actions[upperName]) {
+                    this.char.fadeToUpperAction(upperName, duration);
+                } else {
+                    this.char.stopUpperAction(duration);
+                    this.char.fadeToAction(fullBodyName, duration);
+                }
+            }
+
             triggerPunch() {
                 if (this.char.isRagdoll || this.char.isStandingUp || this.char.activeAction === this.char.actions['climb']) return;
-                
+
                 if (this.punchState === 0) {
                     this.punchState = 1;
                     this.punchTimer = 0;
                     this.nextPunchQueued = false;
                     this.punchesHitFlags = [false, false, false, false, false];
-                    this.char.fadeToAction('punch_left', 0.1);
+                    this.playPunchPose('punch_left', 0.1);
                 } else if (this.punchState > 0 && this.punchState < 3) {
                     let currentAnimName = this.punchState === 1 ? 'punch_left' : 'punch_right';
                     let currentAction = this.char.actions[currentAnimName];
@@ -872,17 +929,42 @@
                 }
             }
 
-            update(delta, sacks, createHitEffectCallback) {
+            update(delta, sacks, createHitEffectCallback, moveMag = 0) {
                 if (this.punchState > 0) {
                     this.punchTimer += delta;
 
                     if (this.punchState === 4) {
                         if (this.char.isRagdoll) { this.resetState(); return; }
-                        // Same clip-progress ratio driving the energy ball's
-                        // growth (see updateChargeEffect) - the ring now fills
-                        // in step with it instead of sitting frozen at 0%.
-                        const holdAction = this.char.actions['punch_charge_hold'];
-                        const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+
+                        // Switches the hold pose to a walking variant while
+                        // the player is actually moving during the charge,
+                        // and back once they stop - same 0.05 threshold
+                        // game_js.js uses to tell walk from idle. Carries the
+                        // charge progress across the switch (as a fraction of
+                        // each clip's own duration) so starting/stopping mid-
+                        // charge doesn't visibly reset the energy ball/UI ring.
+                        const isMovingNow = moveMag > 0.05 && !!this.char.actions['punch_walk'];
+                        if (isMovingNow) this.chargeWalkStopTimer = 0;
+                        else this.chargeWalkStopTimer += delta;
+                        // Grace window before actually switching back to the
+                        // stationary pose - see the comment on
+                        // chargeWalkStopTimer in the constructor.
+                        const wantWalkAnim = isMovingNow || (this.chargeHoldAnimName === 'punch_walk' && this.chargeWalkStopTimer < 0.2);
+                        const desiredHoldName = wantWalkAnim ? 'punch_walk' : 'punch_charge_hold';
+                        if (desiredHoldName !== this.chargeHoldAnimName) {
+                            const prevAction = this.char.actions[this.chargeHoldAnimName];
+                            const prevProgress = prevAction ? Math.min(1, prevAction.time / prevAction.getClip().duration) : 0;
+                            this.chargeHoldAnimName = desiredHoldName;
+                            this.char.fadeToAction(desiredHoldName, 0.15);
+                            const newAction = this.char.actions[desiredHoldName];
+                            if (newAction) newAction.time = prevProgress * newAction.getClip().duration;
+                        }
+
+                        // Same punchTimer/chargeDuration ratio driving the
+                        // energy ball's growth (see updateChargeEffect) - the
+                        // ring now fills in step with it instead of sitting
+                        // frozen at 0%.
+                        const growthT = Math.min(1, this.punchTimer / (this.chargeDuration || 1));
                         this.updateUI(growthT);
                         this.updateChargeEffect(delta);
                         return;
@@ -968,7 +1050,7 @@
                         this.nextPunchQueued = false;
                         this.punchesHitFlags = [false, false, false, false, false];
                         let nextAnimName = this.punchState === 2 ? 'punch_right' : 'punch_combo';
-                        this.char.fadeToAction(nextAnimName, 0.15); 
+                        this.playPunchPose(nextAnimName, 0.15);
                     } else if (normalizedTime >= 0.95) {
                         this.resetState();
                     }
@@ -1021,6 +1103,8 @@
         const _tempVec3 = new THREE.Vector3();
         const _tempQuat = new THREE.Quaternion();
         const _tempQuat2 = new THREE.Quaternion();
+        const _tempQuat3 = new THREE.Quaternion();
+        const _tempQuat4 = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
 
@@ -1063,6 +1147,23 @@
                 }
             });
             return new THREE.AnimationClip(originalClip.name + '_upper', originalClip.duration, tracks);
+        }
+
+        // The full (unsplit) punch clips still carry their own Hips track
+        // (Hips is excluded from the _upper split, see isUpperBodyTrack) -
+        // this reads that original authored Hips rotation at a given time
+        // without touching the mixer/skeleton, purely to use as a reference
+        // in Character.animate()'s punch-aim correction.
+        function sampleHipsQuatFromClip(clip, time, outQuat) {
+            for (const track of clip.tracks) {
+                const lowerName = track.name.toLowerCase();
+                if (lowerName.includes('hips') && lowerName.endsWith('.quaternion')) {
+                    const values = track.createInterpolant().evaluate(time);
+                    outQuat.set(values[0], values[1], values[2], values[3]);
+                    return true;
+                }
+            }
+            return false;
         }
 
         class Character {
@@ -1387,7 +1488,8 @@
                         { name: 'punch_left', file: 'Combat/Punch_Left.fbx' }, 
                         { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
                         { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
-                        { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' }
+                        { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
+                        { name: 'punch_walk', file: 'PunchWalk.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -1429,6 +1531,10 @@
             }
 
             setupActionProperties(name, action) {
+                // punch_walk deliberately excluded - it's a walk cycle that
+                // needs to keep looping for as long as the player keeps
+                // moving during a charge, not freeze on its last frame after
+                // one stride the way the stationary charge-hold pose should.
                 if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch'].some(k => name.includes(k))) {
                     action.setLoop(THREE.LoopOnce);
                     action.clampWhenFinished = true;
@@ -1455,7 +1561,7 @@
                     this.setupActionProperties(name, fullBodyAction);
                     this.actions[name] = fullBodyAction;
 
-                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land'].includes(name)) {
+                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land', 'punch_walk'].includes(name)) {
                         const lowerClip = makeLowerBodyClip(clip);
                         const lowerAction = this.mixer.clipAction(lowerClip);
                         this.setupActionProperties(name + '_lower', lowerAction);
@@ -1599,6 +1705,25 @@
                     else this.activeUpperAction.fadeOut(duration);
                     this.activeUpperAction = null;
                 }
+            }
+
+            // Reads what a punch's OWN Hips rotation would have been at this
+            // action's current time (from the still-intact, unsplit sibling
+            // clip - see sampleHipsQuatFromClip) relative to the real hips
+            // bone's current rotation, and writes the result into outQuat.
+            // Returns false (outQuat untouched) if action isn't a punch
+            // upper action or has no matching full clip.
+            getPunchHipCorrection(action, outQuat) {
+                if (!action) return false;
+                let upperActionKey = null;
+                for (const k in this.actions) {
+                    if (this.actions[k] === action) { upperActionKey = k; break; }
+                }
+                const baseName = upperActionKey && upperActionKey.endsWith('_upper') ? upperActionKey.slice(0, -'_upper'.length) : null;
+                const fullAction = baseName ? this.actions[baseName] : null;
+                if (!fullAction || !sampleHipsQuatFromClip(fullAction.getClip(), action.time, _tempQuat)) return false;
+                outQuat.copy(this.hips.quaternion).invert().multiply(_tempQuat);
+                return true;
             }
 
             playCarryStart() {
@@ -1750,7 +1875,7 @@ updateClimbing(delta) {
             animate(delta, state, moveMag, time, yVelocity, moveDirX, forceSnap = false) {
                 if (window.combat) {
                     window.sacks.forEach(s => s.update(delta));
-                    window.combat.update(delta, window.sacks, window.spawnHitEffect);
+                    window.combat.update(delta, window.sacks, window.spawnHitEffect, moveMag);
                 }
 
                 if (this.isRagdoll) return;
@@ -1884,8 +2009,66 @@ updateClimbing(delta) {
                         if (isNewThrow && window.throwTrimStart) {
                             throwAction.time = window.throwTrimStart;
                         }
+                    } else if (window.combat && window.combat.punchState === 4) {
+                        // punch_charge_hold/punch_walk (charge-hold, state 4)
+                        // deliberately does nothing here - it's a full-body
+                        // swap driven entirely by CombatController's own
+                        // chargeHoldAnimName switching (already ran via
+                        // combat.update() at the top of this function, a
+                        // plain fadeToAction on this.activeAction), not the
+                        // upper/lower split the isPunching branch below
+                        // manages. Falling through to either of those here
+                        // would fight what combat.update() just set: the
+                        // isPunching branch by needlessly holding
+                        // activeUpperAction on some now-stale punch (see
+                        // startChargePunch's stopUpperAction call, added for
+                        // the same reason, for when charge starts mid-combo),
+                        // or the plain else below by yanking activeAction
+                        // back to idle/walk every single frame.
                     } else if (isPunching) {
-                        
+                        // Only when playPunchPose actually put the punch on
+                        // the upper-only track (activeUpperAction set) - if
+                        // it fell back to a full-body clip instead (missing
+                        // "_upper" variant), that clip already drives the
+                        // lower body itself and this would fight it.
+                        if (this.activeUpperAction) {
+                            // While actually moving, reuse punch_walk's own
+                            // leg motion (split off the same way as idle/
+                            // walk/run, see buildClips) instead of the plain
+                            // walk/run_lower - same combat-stance stride
+                            // charge-hold's punch_walk already uses, so a
+                            // regular left/right/combo punch's legs match
+                            // that look too instead of the civilian walk
+                            // cycle. Idle keeps idle_lower - nothing to walk.
+                            const wantsWalkingLower = baseMoveState === 'walk' || baseMoveState === 'run';
+                            const lowerName = (wantsWalkingLower && this.actions['punch_walk_lower']) ? 'punch_walk_lower' : (baseMoveState + '_lower');
+                            if (this.actions[lowerName]) {
+                                this.fadeToAction(lowerName, dur);
+                            }
+                        }
+                        // Track old+new separately from this.activeUpperAction
+                        // (which only ever holds the newest one) - mirrors
+                        // fadeToUpperAction's own crossfade pairing exactly,
+                        // so the hips-correction pass below can blend the
+                        // outgoing and incoming punch's corrections the same
+                        // way the mixer blends their actual poses. Needed for
+                        // two separate cases: (1) stopUpperAction() (in the
+                        // plain "else" below, once punchState resets to 0)
+                        // nulls activeUpperAction instantly, but the action
+                        // itself keeps fading its weight to 0 over `dur`
+                        // seconds - losing the reference here would yank the
+                        // correction off in one frame instead of fading it
+                        // out with the pose. (2) mid-combo (punch_left ->
+                        // punch_right etc.), activeUpperAction reassigns
+                        // instantly too, but the OLD punch is still fading
+                        // out for `dur` seconds with its own, different hip
+                        // correction - applying only the new one during that
+                        // overlap doesn't match what's actually on screen and
+                        // pops right at the swap.
+                        if (this.punchCorrectionNew !== this.activeUpperAction) {
+                            this.punchCorrectionOld = this.punchCorrectionNew;
+                            this.punchCorrectionNew = this.activeUpperAction;
+                        }
                     } else if (window.isCarryingObj) {
                         this.fadeToAction(baseMoveState, dur);
                         this.fadeToUpperAction('carry_upper', dur);
@@ -1953,11 +2136,56 @@ updateClimbing(delta) {
 
                         this.lastGroupQuat.copy(this.group.quaternion);
                     }
+                } else if (this.spine && this.hips &&
+                    ((this.punchCorrectionNew && this.punchCorrectionNew.getEffectiveWeight() > 0.001) ||
+                     (this.punchCorrectionOld && this.punchCorrectionOld.getEffectiveWeight() > 0.001))) {
+                    // The punch clips are full-body mocap performances - the
+                    // chest's aim in the original recording depended on how
+                    // far the hips had also twisted into that specific
+                    // punch. The _upper split drops the Hips track (Hips has
+                    // to keep following the walk/idle lower clip instead, or
+                    // the legs would freeze), so spine's local rotation ends
+                    // up composed under the WRONG hip orientation - and since
+                    // punch_left/punch_right/punch_combo each have a
+                    // different amount of hip twist baked in, each one came
+                    // out aiming a different direction once isolated. Fix:
+                    // read what the punch clip's OWN Hips rotation would
+                    // have been at this instant (from the still-intact full,
+                    // unsplit clip - never applied to the real this.hips
+                    // bone) and fold just the difference into spine's local
+                    // rotation, so the chest ends up exactly where the
+                    // original full-body performance intended.
+                    //
+                    // Old+new are blended (not just the newest one applied
+                    // at full strength) because fadeToUpperAction crossfades
+                    // two actions at a time, and each punch clip has its own,
+                    // different hip twist - using only one side's correction
+                    // while both are still contributing to the actual blended
+                    // pose caused an audible/visible pop right at the swap
+                    // (punch->idle *and* mid-combo punch->punch). Blending by
+                    // the same weights the mixer itself is using keeps the
+                    // correction in step with what's actually on screen.
+                    const newWeight = this.punchCorrectionNew ? this.punchCorrectionNew.getEffectiveWeight() : 0;
+                    const oldWeight = this.punchCorrectionOld ? this.punchCorrectionOld.getEffectiveWeight() : 0;
+
+                    const haveNew = newWeight > 0.001 && this.getPunchHipCorrection(this.punchCorrectionNew, _tempQuat2);
+                    const haveOld = oldWeight > 0.001 && this.getPunchHipCorrection(this.punchCorrectionOld, _tempQuat3);
+                    if (!haveNew) _tempQuat2.identity();
+                    if (!haveOld) _tempQuat3.identity();
+
+                    if (haveNew || haveOld) {
+                        const totalWeight = newWeight + oldWeight;
+                        const newFraction = totalWeight > 0.0001 ? newWeight / totalWeight : 0;
+                        _tempQuat4.copy(_tempQuat3).slerp(_tempQuat2, newFraction);
+                        _tempQuat.identity().slerp(_tempQuat4, Math.min(1, totalWeight));
+                        this.spine.quaternion.premultiply(_tempQuat);
+                        this.spine.updateMatrixWorld(true);
+                    }
                 } else {
                     if (this.spine && this.lastSpineWorld) this.spine.getWorldQuaternion(this.lastSpineWorld);
                     if (this.spine1 && this.lastSpine1World) this.spine1.getWorldQuaternion(this.lastSpine1World);
                     if (this.neck && this.lastNeckWorld) this.neck.getWorldQuaternion(this.lastNeckWorld);
-                    
+
                     if (!this.lastGroupQuat) this.lastGroupQuat = new THREE.Quaternion();
                     this.lastGroupQuat.copy(this.group.quaternion);
                 }

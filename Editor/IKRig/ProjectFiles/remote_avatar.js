@@ -22,10 +22,14 @@ const REMOTE_ANIMS = [
     { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
     { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
     { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
+    { name: 'punch_walk', file: 'PunchWalk.fbx' },
     { name: 'standup_front', file: 'StandUp_Front.fbx' },
     { name: 'standup_back', file: 'StandUp_Back.fbx' }
 ];
 
+// punch_walk deliberately excluded - see the matching comment in
+// ClimbGame.html's setupActionProperties, it needs to loop for a sustained
+// walk cycle instead of freezing after one stride.
 const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'standup_front', 'standup_back']);
 const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run'];
 
@@ -131,6 +135,17 @@ export class RemoteAvatar {
         this._pendingChargeMature = false;
         this._lastPunchAnim = null;
         this._punchHitFlags = [false, false, false, false, false];
+        // Mirrors CombatController's punchTimer/chargeDuration maturity
+        // tracking (ClimbGame.html) instead of reading time off whichever of
+        // punch_charge_hold/punch_walk clip is currently active - punch_walk
+        // loops (has to, for a sustained walk cycle), so its own .time
+        // cycles back to 0 repeatedly and would make the energy ball reset
+        // every stride if read directly. Counts up for as long as stateName
+        // is either charge-hold variant, carrying over across a mid-charge
+        // switch between them the same way the real puncher's own does.
+        this._chargeElapsed = 0;
+        this._chargeDuration = 1;
+        this._wasChargeHoldState = false;
 
         // Ragdoll runs the same RagdollPhysics module Character uses, mixed into
         // this class below - triggered by a lightweight one-shot network event
@@ -458,13 +473,10 @@ export class RemoteAvatar {
         this.chargeEffect.time += delta;
         this.chargeEffect.glow.position.copy(handPos);
 
-        // Mirrors CombatController.updateChargeEffect in the HTML file, so
-        // bystanders see the same growing energy ball a puncher sees on their
-        // own screen - both read the same punch_charge_hold clip progress,
-        // which is already in lockstep since it's driven by the synced
-        // animation state, not a separately-tracked timer.
-        const holdAction = this.actions['punch_charge_hold'];
-        const growthT = holdAction ? Math.min(1, holdAction.time / holdAction.getClip().duration) : 1;
+        // Mirrors CombatController's punchTimer/chargeDuration in the HTML
+        // file (see the comment on _chargeElapsed in the constructor for why
+        // it's not read off the active clip's own time - punch_walk loops).
+        const growthT = Math.min(1, this._chargeElapsed / (this._chargeDuration || 1));
         const isMature = growthT >= 1.0;
         let growth, pulse;
         if (isMature) {
@@ -520,8 +532,22 @@ export class RemoteAvatar {
     // matches without needing extra network events per punch.
     updatePunchEffects(delta) {
         const stateName = this.stateName;
+        const isChargeHoldState = stateName === 'punch_charge_hold' || stateName === 'punch_walk';
 
-        if (stateName === 'punch_charge_hold') {
+        if (isChargeHoldState) {
+            if (!this._wasChargeHoldState) {
+                // Just started charging (from some other state) - fresh
+                // timer. Switching between punch_charge_hold and punch_walk
+                // (this avatar's own stateName may flip between them exactly
+                // like the real puncher's does) does NOT hit this branch,
+                // since isChargeHoldState was already true last frame too -
+                // that's what keeps _chargeElapsed running continuously
+                // across the switch instead of resetting.
+                this._chargeElapsed = 0;
+                const holdClip = this.actions['punch_charge_hold'] && this.actions['punch_charge_hold'].getClip();
+                this._chargeDuration = holdClip ? holdClip.duration : 1;
+            }
+            this._chargeElapsed += delta;
             this.startChargeEffect();
             this.updateChargeEffect(delta);
         } else if (this.chargeEffect) {
@@ -534,6 +560,7 @@ export class RemoteAvatar {
             this._pendingChargeMature = this.chargeEffect.isMature;
             this.stopChargeEffect();
         }
+        this._wasChargeHoldState = isChargeHoldState;
 
         if (stateName !== this._lastPunchAnim) {
             this._punchHitFlags = [false, false, false, false, false];
