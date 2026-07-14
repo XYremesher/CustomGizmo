@@ -38,6 +38,13 @@ export function startGame(CharacterClass) {
     window.carryables = carryables;
     let nextCarryNetId = 0;
     const debugHelpers = [];
+    // Sandbag (constructed later from ClimbGame.html) takes a debugHelpers
+    // array in its own constructor to push a hitbox wireframe into, but
+    // without this it was getting a disconnected, throwaway [] instead of
+    // this actual array - toggle-hitbox's handler below only ever iterates
+    // this one, so anything pushed into the throwaway copy was never
+    // reachable and just silently never showed.
+    window.debugHelpers = debugHelpers;
     const activeShards = [];
 
     const _tempVec1 = new THREE.Vector3();
@@ -228,6 +235,62 @@ export function startGame(CharacterClass) {
     scene.add(new THREE.Mesh(skyGeo, skyMat));
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
     window.gameCamera = camera;
+    // Camera has to be in the scene graph for anything parented to it (the
+    // compass mesh below) to actually get drawn - camera.add(x) alone
+    // leaves x in a detached hierarchy renderer.render(scene, camera)
+    // never visits.
+    scene.add(camera);
+
+    // Real 3D compass: a cone fixed at a small offset in front of the
+    // camera, re-oriented via a real lookAt() every frame to point at the
+    // level's exit (the star). Full 3D rotation, not a flat screen icon -
+    // it tilts up/down and spins left/right together, on whatever combined
+    // axis actually points at the target. Toggled independently from the
+    // flat 2D arrow below (window.compass3DEnabled/compass2DEnabled, see
+    // the panel checkboxes) - 2D on by default, 3D off (matches the
+    // checkboxes' own default checked state in the HTML).
+    window.compass3DEnabled = false;
+    window.compass2DEnabled = true;
+    // Two half-cones (each a 180-degree wedge via ConeGeometry's own
+    // thetaStart/thetaLength), one white one red, instead of one solid
+    // color - a plain solid cone viewed nearly head-on just reads as a
+    // blob with no sense of "which way is it rolled"; a bicolor split
+    // keeps that roll/orientation legible even when heavily foreshortened,
+    // since you can still tell which side the red half is leaning toward.
+    const compassMesh = new THREE.Group();
+    const compassHalfMat = (color) => new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    [[0xffffff, 0], [0xcc0000, Math.PI]].forEach(([color, thetaStart]) => {
+        // ConeGeometry's apex points along local +Y by default, but
+        // Object3D.lookAt() (unlike Camera's own -Z convention) orients a
+        // plain mesh's local +Z at the target - rotating the geometry
+        // itself once here means the mesh's own apex is what ends up
+        // pointing at the star each frame, not its side.
+        const halfGeo = new THREE.ConeGeometry(0.15, 0.5, 24, 1, false, thetaStart, Math.PI);
+        halfGeo.rotateX(Math.PI / 2);
+        const half = new THREE.Mesh(halfGeo, compassHalfMat(color));
+        half.renderOrder = 999;
+        compassMesh.add(half);
+    });
+    // Camera-local offset: -3 out in front, +1.9 up - the "up" part is what
+    // actually pushes it toward the top of the screen instead of dead
+    // center (a bare Z offset alone sits it at the camera's own height,
+    // i.e. roughly chest-level on whatever's straight ahead, since this
+    // camera looks down at the player from behind/above). 2.3 pushed the
+    // cone's own extent (it's not a point, it has real size) partly past
+    // the top edge - 1.9 keeps the whole shape on screen with margin.
+    compassMesh.position.set(0, 1.9, -3);
+    camera.add(compassMesh);
+
+    // 2D arrow, kept in sync with the 3D cone above instead of computed
+    // independently: projects the cone's own tip (its "front") and its own
+    // center (its "back") to screen pixels, and points the flat icon along
+    // that on-screen delta. Both points stay near the camera regardless of
+    // which way the cone is currently facing (only the cone's *rotation*,
+    // inherited from its own lookAt(), carries the "which way" information)
+    // so this never nears the divide-by-near-zero-w blowup a directly-
+    // projected far-away/behind target hits.
+    const _compassFront = new THREE.Vector3();
+    const _compassBack = new THREE.Vector3();
 
     // Orthographic camera test, toggled from the settings panel - all the
     // existing follow/orbit/raycast/billboard logic below keeps driving the
@@ -329,7 +392,15 @@ export function startGame(CharacterClass) {
         waitTimer: 0,
         punchTimer: 0,
         punchHasHit: false,
-        cooldownTimer: 0
+        cooldownTimer: 0,
+        // Which side (-1 left / 0 none / 1 right) moveAiBotToward last
+        // steered around an obstacle on. Persisted across frames so it
+        // keeps preferring that same side next frame instead of
+        // re-deciding from scratch - when the obstacle sits dead-center
+        // between the bot and the target, left and right are equally
+        // "first found clear" and a per-frame re-decision flip-flops
+        // between them every frame (net standing still, vibrating).
+        avoidSide: 0
     };
     window.aiBotPathVisible = true;
     // Two lines, not one: goalLine (yellow) is where the bot is ultimately
@@ -396,10 +467,15 @@ export function startGame(CharacterClass) {
     // Candidate steering angles (degrees) tried in order when the direct
     // line to the target is blocked - 0 first (so the common unblocked
     // case costs exactly the one raycast it always did), then increasingly
-    // wide turns to either side. This is what makes the bot go around a
-    // jar/box instead of walking straight into it and stopping dead the
-    // way the old single-ray "wallHits[0].distance < 1.0 -> bail" check did.
-    const AI_AVOID_ANGLES = [0, 25, -25, 50, -50, 75, -75, 100, -100];
+    // wide turns. Two fixed orderings, one preferring right first and one
+    // left first - which one gets used each call depends on
+    // aiBotState.avoidSide (see moveAiBotToward), so once the bot commits
+    // to going around a side it keeps re-trying that side first every
+    // frame instead of re-deciding from scratch (which side "wins" ties
+    // arbitrarily each frame when an obstacle is dead-center, flip-flopping
+    // between them - net standing still, vibrating left/right).
+    const AI_AVOID_ANGLES_RIGHT_FIRST = [0, 25, -25, 50, -50, 75, -75, 100, -100];
+    const AI_AVOID_ANGLES_LEFT_FIRST = [0, -25, 25, -50, 50, -75, 75, -100, 100];
     const AI_AVOID_LOOKAHEAD = 1.8;
     // Roughly the bot's own half-width - a single centerline ray can find a
     // direction "clear" while still grazing an obstacle's edge close enough
@@ -432,8 +508,10 @@ export function startGame(CharacterClass) {
         // walking straight over jars specifically while still correctly
         // avoiding taller things like the sandbag/movable boxes.
         const rayOrigin = _tempVec2.copy(pos).setY(pos.y + 0.5);
+        const angleOrder = aiBotState.avoidSide < 0 ? AI_AVOID_ANGLES_LEFT_FIRST : AI_AVOID_ANGLES_RIGHT_FIRST;
         let moveDir = null;
-        for (const angleDeg of AI_AVOID_ANGLES) {
+        let chosenAngle = 0;
+        for (const angleDeg of angleOrder) {
             const candidate = _tempQuat.setFromAxisAngle(_upVec, angleDeg * Math.PI / 180);
             // _tempVec3 is also this function's nextPos scratch further
             // down, but that's only written after this loop is done with it.
@@ -450,9 +528,14 @@ export function startGame(CharacterClass) {
             }
             if (clear) {
                 moveDir = _tempVec3.clone();
+                chosenAngle = angleDeg;
                 break;
             }
         }
+        // 0 means the direct line is clear again - nothing left to commit
+        // to, so future obstacles get re-decided fresh rather than sticking
+        // to whatever side was last used for something unrelated.
+        aiBotState.avoidSide = chosenAngle === 0 ? 0 : Math.sign(chosenAngle);
         if (window.aiBotPathVisible) {
             updateAiBotPathVisual(pos, destTarget, moveDir ? _tempVec2.copy(pos).addScaledVector(moveDir, 3) : pos);
         }
@@ -724,11 +807,38 @@ export function startGame(CharacterClass) {
         // up yet.
         const testLockGroup = createLockInstance();
         if (testLockGroup) {
-            testLockGroup.position.set(-3, testLockGroup.userData.floorOffset * window.keyScale, -3);
+            // Right where the flat starting platform ends and the actual
+            // stairs (stair_0 at z=-10, see buildStairsLevel) begin -
+            // stair_0's near face sits at roughly z=-8.5 (cubeSize/2 in
+            // front of its own z=-10 center), so -8 puts the lock just
+            // ahead of it, still on the flat ground.
+            testLockGroup.position.set(0, testLockGroup.userData.floorOffset * window.keyScale, -8);
+            testLockGroup.rotation.y = Math.PI;
             levelGroup.add(testLockGroup);
             collidables.push(testLockGroup);
             activeLockInstances.push(testLockGroup);
             window.debugTestLockGroup = testLockGroup; // L key triggers revealLockStar() on this, see keydown handler
+
+            // Capsule = its actual collision size (getObstacleBox falls
+            // back to the real computed AABB for anything that isn't
+            // isCarryable/isMovable, which the lock is neither) - a box
+            // was a poor visual match for this tall, roughly-cylindrical
+            // model. Sphere = how close a thrown/carried key actually has
+            // to get for it to insert (see KEY_INSERT_DISTANCE).
+            //
+            // Positioned at the box's own computed center, not
+            // testLockGroup.position - this model's visible mesh (like the
+            // sandbag's) isn't centered on its own group origin, so the
+            // helper was floating off away from what's actually on screen.
+            // Actual gameplay code (insertion distance, collision) still
+            // uses testLockGroup.position unchanged - only this debug
+            // visualization's placement needed the correction.
+            testLockGroup.updateMatrixWorld(true);
+            const lockBox = new THREE.Box3().setFromObject(testLockGroup);
+            const lockSize = lockBox.getSize(new THREE.Vector3());
+            const lockCenter = lockBox.getCenter(new THREE.Vector3());
+            addWireframeCapsuleDebugHelper(lockCenter, Math.max(lockSize.x, lockSize.z) / 2, lockSize.y);
+            addWireframeSphereDebugHelper(testLockGroup.position, KEY_INSERT_DISTANCE);
         }
     }
 
@@ -1159,6 +1269,57 @@ export function startGame(CharacterClass) {
         debugHelpers.push(helperMesh);
     }
 
+    // Two general-purpose debug wireframes, same "Show Hitboxes" checkbox
+    // convention as every other helper here (initial visibility read from
+    // it directly, pushed into the shared debugHelpers array so the
+    // checkbox's own change handler keeps controlling it afterward).
+    // Box = actual collision hitbox; sphere = a proximity/interaction
+    // radius (e.g. KEY_INSERT_DISTANCE) that isn't a physical collider at
+    // all, just a "close enough" check - kept visually distinct (cyan vs
+    // magenta) so the two don't get confused for each other.
+    function addWireframeBoxDebugHelper(targetPos, width, height, depth, colorHex = 0xff00ff) {
+        const helperMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(width, height, depth),
+            new THREE.MeshBasicMaterial({ color: colorHex, wireframe: true, transparent: true, opacity: 0.6 })
+        );
+        helperMesh.position.copy(targetPos);
+        helperMesh.visible = document.getElementById('toggle-hitbox').checked;
+        helperMesh.raycast = () => {};
+        scene.add(helperMesh);
+        debugHelpers.push(helperMesh);
+        return helperMesh;
+    }
+    function addWireframeSphereDebugHelper(targetPos, radius, colorHex = 0x00ffff) {
+        const helperMesh = new THREE.Mesh(
+            new THREE.SphereGeometry(radius, 16, 16),
+            new THREE.MeshBasicMaterial({ color: colorHex, wireframe: true, transparent: true, opacity: 0.4 })
+        );
+        helperMesh.position.copy(targetPos);
+        helperMesh.visible = document.getElementById('toggle-hitbox').checked;
+        helperMesh.raycast = () => {};
+        scene.add(helperMesh);
+        debugHelpers.push(helperMesh);
+        return helperMesh;
+    }
+    // CapsuleGeometry(radius, length, ...) - length is just the straight
+    // cylindrical middle section, total height is length + 2*radius, so
+    // callers passing a target total height need to subtract that back out
+    // (see the lock's own call site for why: a box was a poor visual match
+    // for a tall, roughly-cylindrical model like the lock).
+    function addWireframeCapsuleDebugHelper(targetPos, radius, totalHeight, colorHex = 0xff00ff) {
+        const length = Math.max(0.01, totalHeight - 2 * radius);
+        const helperMesh = new THREE.Mesh(
+            new THREE.CapsuleGeometry(radius, length, 4, 12),
+            new THREE.MeshBasicMaterial({ color: colorHex, wireframe: true, transparent: true, opacity: 0.6 })
+        );
+        helperMesh.position.copy(targetPos);
+        helperMesh.visible = document.getElementById('toggle-hitbox').checked;
+        helperMesh.raycast = () => {};
+        scene.add(helperMesh);
+        debugHelpers.push(helperMesh);
+        return helperMesh;
+    }
+
     function exportLevelToJson() {
         const data = { metadata: { author: "Player", version: "1.0" }, voxels: [], entities: [] };
         collidables.forEach(c => {
@@ -1347,6 +1508,10 @@ export function startGame(CharacterClass) {
         mBox.castShadow = true; mBox.receiveShadow = true;
         mBox.userData.isMovable = true;
         levelGroup.add(mBox); collidables.push(mBox);
+        // getObstacleBox treats isMovable objects as an exact cubeSize^3
+        // box regardless of this mesh's own (rounded-corner) geometry -
+        // worth being able to see that they're not quite the same shape.
+        addWireframeBoxDebugHelper(mBox.position, cubeSize, cubeSize, cubeSize);
 
         const checkerData = new Uint8Array([255,255,255,255, 0,0,0,255, 0,0,0,255, 255,255,255,255]);
         const checkerTex = new THREE.DataTexture(checkerData, 2, 2);
@@ -1559,6 +1724,8 @@ export function startGame(CharacterClass) {
     const carryBtn = document.getElementById('carry-btn');
     const dropBtn = document.getElementById('drop-btn');
     const throwBtn = document.getElementById('throw-btn');
+    const compassArrowEl = document.getElementById('compass-arrow');
+    const compassBackdropEl = document.getElementById('compass-backdrop');
 
     const pickupStartPos = new THREE.Vector3();
     const pickupStartRot = new THREE.Quaternion();
@@ -1950,6 +2117,10 @@ export function startGame(CharacterClass) {
         char.toggleHitbox(checked);
         carryables.forEach(c => { if (c.debugHelper) c.debugHelper.visible = checked; });
         debugHelpers.forEach(h => { h.visible = checked; });
+        // Not in debugHelpers - see the comment on Sandbag's own
+        // this.hitboxHelper for why (it survives level rebuilds that wipe
+        // that array, so it can't live in it).
+        if (window.sacks) window.sacks.forEach(s => { if (s.hitboxHelper) s.hitboxHelper.visible = checked; });
     });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
 
@@ -2060,6 +2231,13 @@ export function startGame(CharacterClass) {
         window.orthoViewSize = v;
         updateOrthoFrustum();
         document.getElementById('ortho-zoom-val').textContent = v;
+    });
+
+    document.getElementById('toggle-compass-3d').addEventListener('change', e => {
+        window.compass3DEnabled = e.target.checked;
+    });
+    document.getElementById('toggle-compass-2d').addEventListener('change', e => {
+        window.compass2DEnabled = e.target.checked;
     });
 
     document.getElementById('key-scale-slider').addEventListener('input', e => {
@@ -2566,7 +2744,12 @@ export function startGame(CharacterClass) {
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
                 let earlyExit = false;
                 collidables.forEach(obj => {
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable) return;
+                    // Locks excluded too - otherwise a thrown key bounces
+                    // off the lock's own solid hitbox before ever getting
+                    // within KEY_INSERT_DISTANCE of its origin (a lock
+                    // model is wider than that), so it could never actually
+                    // reach the lock to trigger insertion by throwing.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -2587,7 +2770,12 @@ export function startGame(CharacterClass) {
                 c.mesh.position.z += c.velocity.z * subDelta;
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
                 collidables.forEach(obj => {
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable) return;
+                    // Locks excluded too - otherwise a thrown key bounces
+                    // off the lock's own solid hitbox before ever getting
+                    // within KEY_INSERT_DISTANCE of its origin (a lock
+                    // model is wider than that), so it could never actually
+                    // reach the lock to trigger insertion by throwing.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -2619,7 +2807,12 @@ export function startGame(CharacterClass) {
 
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
                 collidables.forEach(obj => {
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable) return;
+                    // Locks excluded too - otherwise a thrown key bounces
+                    // off the lock's own solid hitbox before ever getting
+                    // within KEY_INSERT_DISTANCE of its origin (a lock
+                    // model is wider than that), so it could never actually
+                    // reach the lock to trigger insertion by throwing.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const overlapY = Math.min(carryBox.max.y - obstacleBox.min.y, obstacleBox.max.y - carryBox.min.y);
@@ -2642,6 +2835,23 @@ export function startGame(CharacterClass) {
                     }
                 });
                 if (earlyExit) break;
+            }
+
+            // A thrown key can also settle into the lock, same as walking
+            // up to it while still carrying already does (see the
+            // isCarryingObj branch elsewhere in this file) - checked every
+            // frame the key isn't being held, not gated on it still being
+            // "fast" like the hit-detection below, so it also catches one
+            // that's already rolled to a stop near the lock, not just one
+            // still mid-flight.
+            if (c.mesh.userData.isKey) {
+                for (const lockGroup of activeLockInstances) {
+                    if (lockGroup.userData.keyInserted) continue;
+                    if (c.mesh.position.distanceTo(lockGroup.position) <= KEY_INSERT_DISTANCE) {
+                        triggerKeyInsertion(c.mesh, lockGroup);
+                        break;
+                    }
+                }
             }
 
             // Thrown objects land like a punch, on sandbags and on other
@@ -3291,6 +3501,36 @@ export function startGame(CharacterClass) {
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
+
+        // Compass: real 3D cone (see its own construction comment near the
+        // camera, top of this function) just looks straight at the level's
+        // exit (the yellow octahedron "star") every frame.
+        compassMesh.visible = window.compass3DEnabled;
+        compassMesh.lookAt(star.position);
+        compassMesh.updateMatrixWorld();
+
+        // 2D arrow, derived from the (always-updated, even if its own
+        // visibility is off) 3D cone's own tip vs its own center - see
+        // _compassFront/_compassBack's construction comment for why this
+        // avoids the near-90-degree projection blowup a directly-projected
+        // far-away/behind target hits.
+        if (compassArrowEl) {
+            compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
+            if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
+            if (window.compass2DEnabled) {
+                _compassFront.set(0, 0, 0.25).applyMatrix4(compassMesh.matrixWorld).project(camera);
+                _compassBack.set(0, 0, 0).applyMatrix4(compassMesh.matrixWorld).project(camera);
+                const frontX = (_compassFront.x * 0.5 + 0.5) * window.innerWidth;
+                const frontY = (-_compassFront.y * 0.5 + 0.5) * window.innerHeight;
+                const backX = (_compassBack.x * 0.5 + 0.5) * window.innerWidth;
+                const backY = (-_compassBack.y * 0.5 + 0.5) * window.innerHeight;
+                const dx = frontX - backX, dy = frontY - backY;
+                if (dx !== 0 || dy !== 0) {
+                    const screenAngle = Math.atan2(dx, -dy);
+                    compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
+                }
+            }
+        }
 
         // X-ray: if a wall sits between the camera and the player (camera
         // orbits at a fixed radius with no collision of its own, so this can

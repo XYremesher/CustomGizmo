@@ -75,6 +75,9 @@
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
 
+        #compass-arrow { position: absolute; top: 14px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
+        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); pointer-events: none; z-index: 9; }
+
         .ledge-hint-container { position: absolute; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.2s; border-radius: 50%; overflow: hidden; }
         .ledge-hint-line { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: rgba(255, 0, 0, 0.2); transform: translateX(-50%); }
         .ledge-hint { position: absolute; font-size: 10px; font-weight: bold; color: #fff; background: rgba(255, 0, 0, 0.8); padding: 2px 10px; border-radius: 4px; left: 50%; transform: translateX(-50%); z-index: 2; font-family: monospace; }
@@ -235,7 +238,9 @@
                     <input type="range" id="pixel-depth-edge-slider" min="0.0" max="2.0" step="0.05" value="0.40" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
-                    <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;">
+                    <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-compass-3d"> Compass (3D cone)</label><br>
+                    <label><input type="checkbox" id="toggle-compass-2d" checked> Compass (2D arrow)</label>
                 </div>
             </div>
 
@@ -325,6 +330,8 @@
             <button id="btn-close-json">Close</button>
         </div>
     </div>
+    <div id="compass-backdrop"></div>
+    <img id="compass-arrow" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/CompassArrow.png" alt="">
     <div id="jump-btn">JUMP</div>
     <div id="build-btn">B</div>
     <div id="hold-btn">HOLD</div>

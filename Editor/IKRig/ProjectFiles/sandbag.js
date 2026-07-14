@@ -18,6 +18,62 @@ export class Sandbag {
                 loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
                     fbx.scale.setScalar(0.0065);
                     this.group.add(fbx);
+                    fbx.updateMatrixWorld(true);
+
+                    // This model's own skeleton isn't centered on the FBX
+                    // file's root node - some off-center pivot baked in at
+                    // export - so the visible sandbag was rendering
+                    // noticeably away from this.group's own origin, which
+                    // is what colliderMesh/hitboxHelper below (and every
+                    // hit check anywhere else in the game against this
+                    // sandbag) actually use. Close enough to be easy to
+                    // miss at a glance, far enough that the hitbox
+                    // wireframe never looked like it belonged to the bag
+                    // you were actually looking at. Anchoring on the
+                    // skeleton's own "Root" bone (rather than a mesh
+                    // bounding-box measurement, which turned out not to
+                    // agree with where the root bone itself actually sits -
+                    // a skinned mesh isn't necessarily positioned at the
+                    // same point as the bone driving it) and re-centering
+                    // the whole loaded FBX by the inverse of that offset,
+                    // just once right after load, fixes both without
+                    // needing to touch anywhere the collider itself is used.
+                    let rootBone = null;
+                    fbx.traverse(c => { if (!rootBone && c.isBone && c.name.toLowerCase().includes('root')) rootBone = c; });
+                    if (rootBone) {
+                        const boneWorldPos = rootBone.getWorldPosition(new THREE.Vector3());
+                        fbx.position.sub(boneWorldPos).add(this.group.position);
+                        fbx.updateMatrixWorld(true);
+                    }
+
+                    // The skinned mesh's own vertices aren't actually
+                    // anchored to the Root bone above - they're offset from
+                    // it by a fixed amount baked into this FBX's export
+                    // (same offset regardless of where fbx.position puts
+                    // the whole hierarchy, since a uniform translation
+                    // can't change the *relative* placement between two
+                    // nodes that both move with it). So with the skeleton
+                    // now correctly centered on this.group above, the
+                    // visible mesh itself still renders off to one side.
+                    // Nudge just the mesh's own local transform - separate
+                    // from the bones it's skinned to - by that fixed
+                    // residual, so it lines up with the now-correctly-
+                    // centered collider too.
+                    let sandSackMesh = null;
+                    fbx.traverse(c => { if (!sandSackMesh && c.isMesh) sandSackMesh = c; });
+                    if (sandSackMesh) {
+                        const meshWorldPos = sandSackMesh.getWorldPosition(new THREE.Vector3());
+                        // Transform both the mesh's current world position
+                        // and the target world position (this.group's
+                        // origin) into the mesh's own parent-local space,
+                        // then shift by their difference - transforming as
+                        // points (not as a direction vector) so the actual
+                        // magnitude of the offset is preserved.
+                        const targetLocalPos = sandSackMesh.parent.worldToLocal(this.group.position.clone());
+                        const meshWorldPosAsLocal = sandSackMesh.parent.worldToLocal(meshWorldPos.clone());
+                        sandSackMesh.position.add(targetLocalPos).sub(meshWorldPosAsLocal);
+                        sandSackMesh.updateMatrixWorld(true);
+                    }
 
                     fbx.traverse(c => {
                         if (c.isMesh) {
@@ -75,11 +131,40 @@ this.colliderMesh.userData.isObstacle = true;
 this.colliderMesh.userData.isWall = true;
                 
                 scene.add(this.colliderMesh);
-                
+
                 if (!window.collidables) window.collidables = [];
                 if (!window.collidables.includes(this.colliderMesh)) {
                     window.collidables.push(this.colliderMesh);
                 }
+
+                // colliderMesh's own material is invisible on purpose (it's
+                // a physics-only box, not meant to be seen normally) - this
+                // separate wireframe, toggled by the same "Show Hitboxes"
+                // checkbox every other debug hitbox uses (see its initial-
+                // state read here matching that same convention), is what
+                // actually lets it be inspected. Kept as this.hitboxHelper
+                // (toggled directly by name from game_js.js's checkbox
+                // handler, the same way it already reaches into char's own
+                // hitbox) instead of pushed into the passed-in debugHelpers
+                // array: that array belongs to the *level* and gets wiped
+                // wholesale on every buildLevel() rebuild, but the sandbag
+                // itself is constructed once and survives level rebuilds -
+                // anything of its own put in there would get scene.remove()'d
+                // on the next rebuild and never come back.
+                // Capsule instead of a box - same overall footprint as the
+                // actual collision box (1.2 wide/deep, 2.4 tall: radius 0.6,
+                // so the straight middle section is 2.4 - 2*0.6 = 1.2 tall),
+                // just a closer visual match for this roughly cylindrical
+                // sandbag than a box's flat corners were.
+                this.hitboxHelper = new THREE.Mesh(
+                    new THREE.CapsuleGeometry(0.6, 1.2, 4, 12),
+                    new THREE.MeshBasicMaterial({ color: 0xff00ff, wireframe: true, transparent: true, opacity: 0.6 })
+                );
+                this.hitboxHelper.position.copy(this.colliderMesh.position);
+                const toggleEl = document.getElementById('toggle-hitbox');
+                this.hitboxHelper.visible = toggleEl ? toggleEl.checked : false;
+                this.hitboxHelper.raycast = () => {};
+                scene.add(this.hitboxHelper);
             }
 
             getCollider() {
