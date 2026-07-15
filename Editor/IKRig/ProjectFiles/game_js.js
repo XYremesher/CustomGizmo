@@ -241,54 +241,74 @@ export function startGame(CharacterClass) {
     // never visits.
     scene.add(camera);
 
-    // Real 3D compass: a cone fixed at a small offset in front of the
-    // camera, re-oriented via a real lookAt() every frame to point at the
-    // level's exit (the star). Full 3D rotation, not a flat screen icon -
-    // it tilts up/down and spins left/right together, on whatever combined
-    // axis actually points at the target. Toggled independently from the
-    // flat 2D arrow below (window.compass3DEnabled/compass2DEnabled, see
-    // the panel checkboxes) - 2D on by default, 3D off (matches the
-    // checkboxes' own default checked state in the HTML).
+    // Real 3D compass: the Compass.glb needle model, re-oriented via a real
+    // lookAt() every frame to point at the level's exit (the star). Full 3D
+    // rotation, not a flat screen icon - it tilts up/down and spins left/
+    // right together, on whatever combined axis actually points at the
+    // target. Toggled independently from the flat 2D arrow below
+    // (window.compass3DEnabled/compass2DEnabled, see the panel checkboxes)
+    // - 2D on by default, 3D off (matches the checkboxes' own default
+    // checked state in the HTML).
     window.compass3DEnabled = false;
     window.compass2DEnabled = true;
-    // Two half-cones (each a 180-degree wedge via ConeGeometry's own
-    // thetaStart/thetaLength), one white one red, instead of one solid
-    // color - a plain solid cone viewed nearly head-on just reads as a
-    // blob with no sense of "which way is it rolled"; a bicolor split
-    // keeps that roll/orientation legible even when heavily foreshortened,
-    // since you can still tell which side the red half is leaning toward.
+    // Positioned in world space every frame (see the main loop) rather
+    // than parented to the camera: still uses the camera's full local
+    // offset (so it stays roughly centered in view exactly like before,
+    // tracking pitch as the player orbits up/down), but the result gets
+    // clamped to a minimum world Y afterward - a plain camera-child offset
+    // has no such floor, so a steep enough downward pitch could swing the
+    // offset point below ground level.
     const compassMesh = new THREE.Group();
-    const compassHalfMat = (color) => new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
-    [[0xffffff, 0], [0xcc0000, Math.PI]].forEach(([color, thetaStart]) => {
-        // ConeGeometry's apex points along local +Y by default, but
-        // Object3D.lookAt() (unlike Camera's own -Z convention) orients a
-        // plain mesh's local +Z at the target - rotating the geometry
-        // itself once here means the mesh's own apex is what ends up
-        // pointing at the star each frame, not its side.
-        const halfGeo = new THREE.ConeGeometry(0.15, 0.5, 24, 1, false, thetaStart, Math.PI);
-        halfGeo.rotateX(Math.PI / 2);
-        const half = new THREE.Mesh(halfGeo, compassHalfMat(color));
-        half.renderOrder = 999;
-        compassMesh.add(half);
+    scene.add(compassMesh);
+    window.compassMesh = compassMesh;
+    const compassGltfLoader = new GLTFLoader();
+    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Compass.glb', (gltf) => {
+        const model = gltf.scene;
+        // The model's two halves (a yellow-tipped cone and a white-tipped
+        // cone, base to base) are built pointing along local Y, spanning
+        // y:[-2,2]. Object3D.lookAt() (unlike Camera's own -Z convention)
+        // orients a plain mesh's local +Z at the target, so rotating this
+        // 90 degrees around X once here maps that Y axis onto Z - the
+        // yellow tip becomes the end that ends up pointing at the star.
+        model.rotation.x = Math.PI / 2;
+        // Model's own bounding box is 4 units tall - scaled down to a
+        // small on-screen size.
+        model.scale.setScalar(0.1);
+        // depthTest/depthWrite disabled here (like the old cone) made it
+        // always draw on top of scene geometry, but also disabled depth
+        // sorting between the model's own two cone-half meshes - since
+        // they overlap in the same space, that let the far half's
+        // triangles draw over the near half's in the wrong order, reading
+        // as a weird semi-transparent/see-through look. Normal depth
+        // testing fixes that self-occlusion; it sits close enough to the
+        // camera that scene geometry occluding it is not a real concern.
+        model.traverse(c => {
+            if (!c.isMesh) return;
+            c.material = c.material.clone();
+        });
+        compassMesh.add(model);
     });
-    // Camera-local offset: -3 out in front, +1.9 up - the "up" part is what
-    // actually pushes it toward the top of the screen instead of dead
-    // center (a bare Z offset alone sits it at the camera's own height,
-    // i.e. roughly chest-level on whatever's straight ahead, since this
-    // camera looks down at the player from behind/above). 2.3 pushed the
-    // cone's own extent (it's not a point, it has real size) partly past
-    // the top edge - 1.9 keeps the whole shape on screen with margin.
-    compassMesh.position.set(0, 1.9, -3);
-    camera.add(compassMesh);
+    // Camera-local offset - same ratio of up:forward the old cone used
+    // (0, 1.9, -3), just scaled down to about half the distance from the
+    // camera, so it keeps the same on-screen position (this ratio is what
+    // determines where it lands on screen, not the absolute distance) but
+    // sits closer.
+    const COMPASS_LOCAL_OFFSET = new THREE.Vector3(0, 0.95, -1.5);
+    // Minimum height above the current floor the compass is allowed to
+    // sit at, regardless of what the camera-local offset above would
+    // otherwise compute - this is what actually stops it from ever
+    // visually sinking into the ground on a steep downward camera pitch.
+    const COMPASS_MIN_FLOOR_CLEARANCE = 1.2;
+    const _compassOffset = new THREE.Vector3();
 
-    // 2D arrow, kept in sync with the 3D cone above instead of computed
-    // independently: projects the cone's own tip (its "front") and its own
-    // center (its "back") to screen pixels, and points the flat icon along
-    // that on-screen delta. Both points stay near the camera regardless of
-    // which way the cone is currently facing (only the cone's *rotation*,
-    // inherited from its own lookAt(), carries the "which way" information)
-    // so this never nears the divide-by-near-zero-w blowup a directly-
-    // projected far-away/behind target hits.
+    // 2D arrow, kept in sync with the 3D needle above instead of computed
+    // independently: projects the needle's own tip (its "front") and its
+    // own center (its "back") to screen pixels, and points the flat icon
+    // along that on-screen delta. Both points stay near the camera
+    // regardless of which way the needle is currently facing (only its
+    // *rotation*, inherited from its own lookAt(), carries the "which way"
+    // information) so this never nears the divide-by-near-zero-w blowup a
+    // directly-projected far-away/behind target hits.
     const _compassFront = new THREE.Vector3();
     const _compassBack = new THREE.Vector3();
 
@@ -3502,10 +3522,18 @@ export function startGame(CharacterClass) {
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
 
-        // Compass: real 3D cone (see its own construction comment near the
-        // camera, top of this function) just looks straight at the level's
-        // exit (the yellow octahedron "star") every frame.
+        // Compass: real 3D needle (see its own construction comment near
+        // the camera, top of this function). Same camera-local offset the
+        // old cone used (so it stays roughly centered in view, tracking
+        // pitch as the player orbits the camera), computed manually here
+        // instead of via camera.add() so a floor clamp can be applied
+        // afterward - that's what actually stops it from visually sinking
+        // into the ground on a steep downward pitch. Then just looks
+        // straight at the level's exit (the yellow octahedron "star").
         compassMesh.visible = window.compass3DEnabled;
+        _compassOffset.copy(COMPASS_LOCAL_OFFSET).applyQuaternion(camera.quaternion);
+        compassMesh.position.copy(camera.position).add(_compassOffset);
+        compassMesh.position.y = Math.max(compassMesh.position.y, floorY + COMPASS_MIN_FLOOR_CLEARANCE);
         compassMesh.lookAt(star.position);
         compassMesh.updateMatrixWorld();
 
