@@ -247,9 +247,9 @@ export function startGame(CharacterClass) {
     // right together, on whatever combined axis actually points at the
     // target. Toggled independently from the flat 2D arrow below
     // (window.compass3DEnabled/compass2DEnabled, see the panel checkboxes)
-    // - 2D on by default, 3D off (matches the checkboxes' own default
-    // checked state in the HTML).
-    window.compass3DEnabled = false;
+    // - both on by default (matches the checkboxes' own default checked
+    // state in the HTML).
+    window.compass3DEnabled = true;
     window.compass2DEnabled = true;
     // Positioned in world space every frame (see the main loop) rather
     // than parented to the camera: still uses the camera's full local
@@ -272,19 +272,28 @@ export function startGame(CharacterClass) {
         // yellow tip becomes the end that ends up pointing at the star.
         model.rotation.x = Math.PI / 2;
         // Model's own bounding box is 4 units tall - scaled down to a
-        // small on-screen size.
-        model.scale.setScalar(0.1);
-        // depthTest/depthWrite disabled here (like the old cone) made it
-        // always draw on top of scene geometry, but also disabled depth
-        // sorting between the model's own two cone-half meshes - since
-        // they overlap in the same space, that let the far half's
-        // triangles draw over the near half's in the wrong order, reading
-        // as a weird semi-transparent/see-through look. Normal depth
-        // testing fixes that self-occlusion; it sits close enough to the
-        // camera that scene geometry occluding it is not a real concern.
+        // small on-screen size (half of the already-shrunk 0.1 used
+        // before).
+        model.scale.setScalar(0.05);
         model.traverse(c => {
             if (!c.isMesh) return;
-            c.material = c.material.clone();
+            // Matches the toon/cell shading every other object in the
+            // game uses (see threeTone, this same 3-step gradient map
+            // used by the ground/star/sandbag/etc.) instead of the GLB's
+            // own imported PBR material.
+            c.material = new THREE.MeshToonMaterial({ color: c.material.color ? c.material.color.clone() : 0xffffff, gradientMap: threeTone });
+            // CompassContainer (a shell around the needle, added after the
+            // original two cone halves) came in with its normals facing
+            // the wrong way for how it's meant to be lit/shaded here -
+            // flipping them is the simple fix requested, not a winding/
+            // culling change.
+            if (c.name === 'CompassContainer') {
+                const normalAttr = c.geometry.attributes.normal;
+                for (let i = 0; i < normalAttr.count; i++) {
+                    normalAttr.setXYZ(i, -normalAttr.getX(i), -normalAttr.getY(i), -normalAttr.getZ(i));
+                }
+                normalAttr.needsUpdate = true;
+            }
         });
         compassMesh.add(model);
     });
