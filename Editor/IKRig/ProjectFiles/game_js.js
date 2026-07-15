@@ -247,10 +247,10 @@ export function startGame(CharacterClass) {
     // right together, on whatever combined axis actually points at the
     // target. Toggled independently from the flat 2D arrow below
     // (window.compass3DEnabled/compass2DEnabled, see the panel checkboxes)
-    // - both on by default (matches the checkboxes' own default checked
-    // state in the HTML).
+    // - 3D on, 2D off by default (matches the checkboxes' own default
+    // checked state in the HTML).
     window.compass3DEnabled = true;
-    window.compass2DEnabled = true;
+    window.compass2DEnabled = false;
     // Positioned in world space every frame (see the main loop) rather
     // than parented to the camera: still uses the camera's full local
     // offset (so it stays roughly centered in view exactly like before,
@@ -277,22 +277,41 @@ export function startGame(CharacterClass) {
         model.scale.setScalar(0.05);
         model.traverse(c => {
             if (!c.isMesh) return;
-            // Matches the toon/cell shading every other object in the
-            // game uses (see threeTone, this same 3-step gradient map
-            // used by the ground/star/sandbag/etc.) instead of the GLB's
-            // own imported PBR material.
-            c.material = new THREE.MeshToonMaterial({ color: c.material.color ? c.material.color.clone() : 0xffffff, gradientMap: threeTone });
-            // CompassContainer (a shell around the needle, added after the
-            // original two cone halves) came in with its normals facing
-            // the wrong way for how it's meant to be lit/shaded here -
-            // flipping them is the simple fix requested, not a winding/
-            // culling change.
-            if (c.name === 'CompassContainer') {
+            const isContainer = c.name === 'CompassContainer';
+            if (isContainer) {
+                // CompassContainer (a shell around the needle, added after
+                // the original two cone halves) came in with its normals
+                // facing the wrong way for how it's meant to be lit/shaded
+                // here - flipping them is a simple fix for that.
                 const normalAttr = c.geometry.attributes.normal;
                 for (let i = 0; i < normalAttr.count; i++) {
                     normalAttr.setXYZ(i, -normalAttr.getX(i), -normalAttr.getY(i), -normalAttr.getZ(i));
                 }
                 normalAttr.needsUpdate = true;
+                // Cell/toon-shaded (matches the rest of the game's look,
+                // see threeTone) and fully opaque/matte - no specular
+                // highlight from toon shading already gives it a flat,
+                // non-shiny look on its own.
+                c.material = new THREE.MeshToonMaterial({ color: 0x1c2a4a, gradientMap: threeTone });
+                c.renderOrder = 0;
+            } else {
+                // Flat-shaded (faceted, unsmoothed normals), not the
+                // toon/cell banding the container and everything else in
+                // the game uses - Lambert instead of Toon is what actually
+                // avoids the stepped-band look; flatShading is what gives
+                // the faceted look.
+                c.material = new THREE.MeshLambertMaterial({
+                    color: c.material.color ? c.material.color.clone() : 0xffffff,
+                    flatShading: true,
+                });
+                // The needle sits inside the container's opaque volume,
+                // so its own near surface would normally depth-occlude
+                // the needle entirely. depthTest:false plus a higher
+                // renderOrder than the container is what makes it always
+                // draw last and fully visible, regardless of actual depth.
+                c.material.depthTest = false;
+                c.material.depthWrite = false;
+                c.renderOrder = 1;
             }
         });
         compassMesh.add(model);
