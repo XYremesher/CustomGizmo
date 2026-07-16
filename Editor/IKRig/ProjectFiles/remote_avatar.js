@@ -26,13 +26,14 @@ const REMOTE_ANIMS = [
     { name: 'standup_front', file: 'StandUp_Front.fbx' },
     { name: 'standup_back', file: 'StandUp_Back.fbx' },
     { name: 'slide', file: 'Slide.fbx' },
-    { name: 'runup', file: 'RunUp.fbx' }
+    { name: 'runup', file: 'RunUp.fbx' },
+    { name: 'stop_sliding', file: 'StopSliding.fbx' }
 ];
 
 // punch_walk deliberately excluded - see the matching comment in
 // ClimbGame.html's setupActionProperties, it needs to loop for a sustained
 // walk cycle instead of freezing after one stride.
-const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'standup_front', 'standup_back']);
+const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'standup_front', 'standup_back', 'stop_sliding']);
 const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run'];
 
 function processClip(clip) {

@@ -1118,6 +1118,33 @@
         const _leanCounterQuat = new THREE.Quaternion();
         const _leanBlendQuat = new THREE.Quaternion();
         const _worldUpVec = new THREE.Vector3(0, 1, 0);
+        const _hipsPivotBefore = new THREE.Vector3();
+        const _hipsPivotAfter = new THREE.Vector3();
+        const _tempQuat5 = new THREE.Quaternion();
+        const _tempQuat6 = new THREE.Quaternion();
+        const _localForwardAxisVec = new THREE.Vector3(0, 0, 1);
+        // Dedicated scratch for solveLegIK - kept separate from the
+        // general-purpose _tempVec/_tempQuat pool above since the solve
+        // needs many of them alive simultaneously (hip/knee/foot
+        // positions, current and desired directions, multiple
+        // intermediate rotations) without any of them getting clobbered
+        // by a nested call.
+        const _ikVec1 = new THREE.Vector3();
+        const _ikVec2 = new THREE.Vector3();
+        const _ikVec3 = new THREE.Vector3();
+        const _ikVec4 = new THREE.Vector3();
+        const _ikVec5 = new THREE.Vector3();
+        const _ikVec6 = new THREE.Vector3();
+        const _ikVec7 = new THREE.Vector3();
+        const _ikVec8 = new THREE.Vector3();
+        const _ikQuat1 = new THREE.Quaternion();
+        const _ikQuat2 = new THREE.Quaternion();
+        const _ikQuat3 = new THREE.Quaternion();
+        const _ikQuat4 = new THREE.Quaternion();
+        const _ikParentWorldQuat = new THREE.Quaternion();
+        const _ikBoneWorldQuat = new THREE.Quaternion();
+        const _ikNewWorldQuat = new THREE.Quaternion();
+        const _legPoleWorldDir = new THREE.Vector3();
 
         function isUpperBodyTrack(trackName) {
             const lowerName = trackName.toLowerCase();
@@ -1237,6 +1264,12 @@
                 this.spine = null;
                 this.spine1 = null;
                 this.neck = null;
+                this.lThighBone = null; this.lKneeBone = null; this.lFootBone = null;
+                this.rThighBone = null; this.rKneeBone = null; this.rFootBone = null;
+                this.lUpperLegLen = 0; this.lLowerLegLen = 0;
+                this.rUpperLegLen = 0; this.rLowerLegLen = 0;
+                this.turnLeanAngle = 0;
+                this._lastGroupYaw = null;
                 this.climbSpeed = 1.6;
                 this.landSpeed = 2.4;
                 this.rootBone = null;
@@ -1452,6 +1485,40 @@
                     // wherever the slide animation plants it.
                     this.rShoulderBone = findBone('rightarm') || findBone('rightshoulder');
 
+                    // Leg IK chain, used by applyLegIK to plant each foot
+                    // on the actual ground under it instead of wherever the
+                    // animation clip alone leaves it (which never accounts
+                    // for a sloped surface). thigh/knee/foot mirrors the
+                    // arm chain naming above (Mixamo-style bone names).
+                    this.lThighBone = findBone('leftupleg');
+                    this.lKneeBone = findBone('leftleg');
+                    this.lFootBone = findBone('leftfoot');
+                    this.rThighBone = findBone('rightupleg');
+                    this.rKneeBone = findBone('rightleg');
+                    this.rFootBone = findBone('rightfoot');
+                    // Bone lengths are fixed (rigid skeleton) - the
+                    // distance between adjacent joints doesn't change as
+                    // the skeleton animates (only rotations do), so this
+                    // only needs computing once here rather than every
+                    // frame. Measured via WORLD positions rather than each
+                    // bone's own local .position.length() - the model is
+                    // loaded at some non-1 scale (raw FBX units, e.g.
+                    // centimeters, need converting to this game's meter-ish
+                    // scale), so a raw local offset is in the WRONG units
+                    // entirely and would make every IK reach/angle
+                    // calculation wrong by that same scale factor.
+                    object.updateMatrixWorld(true);
+                    const boneWorldDist = (a, b) => {
+                        if (!a || !b) return 0;
+                        const pa = new THREE.Vector3(), pb = new THREE.Vector3();
+                        a.getWorldPosition(pa); b.getWorldPosition(pb);
+                        return pa.distanceTo(pb);
+                    };
+                    this.lUpperLegLen = boneWorldDist(this.lThighBone, this.lKneeBone);
+                    this.lLowerLegLen = boneWorldDist(this.lKneeBone, this.lFootBone);
+                    this.rUpperLegLen = boneWorldDist(this.rThighBone, this.rKneeBone);
+                    this.rLowerLegLen = boneWorldDist(this.rKneeBone, this.rFootBone);
+
                     const keyBones = [
                         { id: 'hips', bone: this.hips, radius: 0.18, length: 0.15 },
                         { id: 'spine', bone: findBone('spine1') || findBone('spine'), radius: 0.22, length: 0.25 },
@@ -1515,7 +1582,8 @@
                         { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
                         { name: 'punch_walk', file: 'PunchWalk.fbx' },
                         { name: 'sliding', file: 'Slide.fbx' },
-                        { name: 'runup', file: 'RunUp.fbx' }
+                        { name: 'runup', file: 'RunUp.fbx' },
+                        { name: 'stop_sliding', file: 'StopSliding.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -1561,7 +1629,7 @@
                 // needs to keep looping for as long as the player keeps
                 // moving during a charge, not freeze on its last frame after
                 // one stride the way the stationary charge-hold pose should.
-                if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch'].some(k => name.includes(k))) {
+                if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'stop_sliding'].some(k => name.includes(k))) {
                     action.setLoop(THREE.LoopOnce);
                     action.clampWhenFinished = true;
                 }
@@ -1616,25 +1684,64 @@
             // of this.group) instead, purely cosmetic. Called every frame
             // regardless of sliding - pass world up when not sliding and
             // it relaxes back to identity on its own.
-            setSlopeTilt(normal, delta, slideDir) {
+            // weight (0-1) scales how much of the full slope tilt actually
+            // gets applied - full (1.0) while genuinely sliding reads as
+            // real momentum, but the same full tilt while just standing/
+            // walking on a slope looks physically wrong (a person doesn't
+            // lean their whole torso over that far just standing still -
+            // that's what legs/ankles are for, which this rig doesn't
+            // model). A partial lean instead reads as a person naturally
+            // leaning into a slope while on their feet, without implying
+            // they're about to topple over.
+            // turnLeanAngle (see applyTurnLean) is folded into the SAME
+            // final target quaternion and applied via the SAME single
+            // slerp call below, rather than as a separate quaternion
+            // operation of its own - two competing slerps/multiplies on
+            // fbxModel.quaternion each frame (this method pulling toward a
+            // no-roll target, a separate step then adding roll on top)
+            // fight each other every frame, with this method's own
+            // identity/tilt-only pull-back eating most of whatever roll the
+            // other step just added before it was ever visible. Composing
+            // both into one target and slerping once avoids that entirely.
+            setSlopeTilt(normal, delta, slideDir, turnLeanAngle = 0, weight = 1.0) {
                 if (!this.fbxModel) return;
+                let targetQuat;
                 if (Math.abs(normal.y) > 0.999 || !slideDir) {
-                    this.fbxModel.quaternion.slerp(_identityQuat, 10 * delta);
-                    return;
+                    targetQuat = _identityQuat;
+                } else {
+                    targetQuat = this._computeSlopeTiltQuat(normal, slideDir, weight);
                 }
-                // Rotate the (world-space) normal into a local space built
-                // from the TARGET yaw (whichever way slideDir points), not
-                // this.group's own current quaternion - the group's own
-                // yaw is turning toward that same target via its own
-                // separate slerp (see the isSliding branch in game_js.js),
-                // so on any frame it hasn't fully caught up yet, using its
-                // still-lagging current facing here would build this tilt
-                // against a momentarily different reference frame than
-                // where the body is actually turning to - showing up as a
-                // transient, uncoordinated left/right roll while the two
-                // catch up to each other at slightly different rates.
-                // Building both against the same fixed target instead
-                // keeps this a pure forward/backward tilt throughout.
+                _tempQuat6.copy(targetQuat);
+                if (Math.abs(turnLeanAngle) > 0.0001) {
+                    _tempQuat5.setFromAxisAngle(_localForwardAxisVec, turnLeanAngle);
+                    _tempQuat6.multiply(_tempQuat5);
+                }
+                if (this.hips) this.hips.getWorldPosition(_hipsPivotBefore);
+                this.fbxModel.quaternion.slerp(_tempQuat6, 10 * delta);
+                if (this.hips) {
+                    this.fbxModel.updateMatrixWorld(true);
+                    this.hips.getWorldPosition(_hipsPivotAfter);
+                    this.fbxModel.position.add(_hipsPivotBefore.sub(_hipsPivotAfter));
+                }
+            }
+
+            // Rotate the (world-space) normal into a local space built
+            // from the TARGET yaw (whichever way slideDir points), not
+            // this.group's own current quaternion - the group's own
+            // yaw is turning toward that same target via its own
+            // separate slerp (see the isSliding branch in game_js.js),
+            // so on any frame it hasn't fully caught up yet, using its
+            // still-lagging current facing here would build this tilt
+            // against a momentarily different reference frame than
+            // where the body is actually turning to - showing up as a
+            // transient, uncoordinated left/right roll while the two
+            // catch up to each other at slightly different rates.
+            // Building both against the same fixed target instead
+            // keeps this a pure forward/backward tilt throughout.
+            // Returns _tempQuat4 (a shared scratch, not a fresh instance) -
+            // callers must finish using the result before this is called
+            // again, same convention as the rest of this pool.
+            _computeSlopeTiltQuat(normal, slideDir, weight) {
                 const yawAngle = Math.atan2(slideDir.x, slideDir.z);
                 _tempQuat3.setFromAxisAngle(_worldUpVec, yawAngle);
                 const localUp = _tempVec2.copy(normal).applyQuaternion(_tempQuat3.invert()).normalize();
@@ -1643,7 +1750,98 @@
                 localForward.crossVectors(localRight, localUp).normalize();
                 _tempMat4.makeBasis(localRight, localUp, localForward);
                 _tempQuat4.setFromRotationMatrix(_tempMat4);
-                this.fbxModel.quaternion.slerp(_tempQuat4, 10 * delta);
+                if (weight < 1.0) _tempQuat4.slerp(_identityQuat, 1.0 - weight);
+                return _tempQuat4;
+            }
+
+            // Pulls the pelvis back to directly above this.group's own
+            // local origin (the character's actual stand point) in the
+            // horizontal plane, leaving only its height where the pose/
+            // tilt naturally puts it. The rotation-step compensation above
+            // only cancels the displacement from THIS frame's own tilt
+            // increment - it doesn't correct any offset already baked into
+            // the current pose (walk-cycle hip sway, an animation that
+            // doesn't itself keep the hips centered, accumulated drift,
+            // etc.), so the pelvis can still end up not-quite-over-the-feet
+            // even with that in place. This is a second, independent
+            // correction for that: a plain positional offset on fbxModel,
+            // not a joint-angle solve. It drags the feet out of position by
+            // the same amount it moves everything else - that's fine now,
+            // applyLegIK (game_js.js, runs after this every frame) re-plants
+            // them on the real ground regardless of where this leaves them.
+            alignPelvisUnderRoot() {
+                if (!this.hips) return;
+                this.hips.getWorldPosition(_hipsPivotAfter);
+                const localHips = this.group.worldToLocal(_hipsPivotAfter);
+                this.fbxModel.position.x -= localHips.x;
+                this.fbxModel.position.z -= localHips.z;
+            }
+
+            // Same math as setSlopeTilt, kept separate on purpose: the
+            // ground arrow tilts to match any sloped surface the character
+            // is grounded on (sliding, climbing, or just walking a shallow
+            // ramp), but the body itself only leans while actually
+            // sliding - a standing/walking person doesn't lean their whole
+            // torso to match the ground under their feet in real life
+            // (that's what legs/ankles are for), so extending the same
+            // full-body tilt to those cases read as physically wrong even
+            // though it's a purely cosmetic root transform either way.
+            setArrowTilt(normal, delta, refDir) {
+                if (!this.playerArrowGroup) return;
+                if (Math.abs(normal.y) > 0.999 || !refDir) {
+                    this.playerArrowGroup.quaternion.slerp(_identityQuat, 10 * delta);
+                    return;
+                }
+                const yawAngle = Math.atan2(refDir.x, refDir.z);
+                _tempQuat3.setFromAxisAngle(_worldUpVec, yawAngle);
+                const localUp = _tempVec2.copy(normal).applyQuaternion(_tempQuat3.invert()).normalize();
+                const localForward = _tempVec1.set(0, 0, 1);
+                const localRight = _tempVec3.copy(localUp).cross(localForward).normalize();
+                localForward.crossVectors(localRight, localUp).normalize();
+                _tempMat4.makeBasis(localRight, localUp, localForward);
+                _tempQuat4.setFromRotationMatrix(_tempMat4);
+                this.playerArrowGroup.quaternion.slerp(_tempQuat4, 10 * delta);
+            }
+
+            // Experimental: banks the body into a turn (like leaning a bike
+            // into a corner) based on how fast this.group is actually
+            // yawing right now, independent of ground slope. Only updates
+            // this.turnLeanAngle (a smoothed, clamped state value) - does
+            // NOT touch fbxModel.quaternion itself. setSlopeTilt reads
+            // this.turnLeanAngle and folds it into its own single combined
+            // slerp target every frame (see its own comment for why: two
+            // separate quaternion ops on the same fbxModel.quaternion each
+            // frame fight each other and mostly cancel out). Reads
+            // this.group's own yaw directly rather than being told a turn
+            // rate, so it naturally tracks however fast the facing slerp
+            // (game_js.js) is actually turning the character frame to
+            // frame, no matter which state drives that slerp. Call this
+            // BEFORE setSlopeTilt each frame.
+            updateTurnLean(delta) {
+                // this.group is only ever yawed (pure Y-axis rotation), so
+                // its quaternion is always of the form (0, sin(yaw/2), 0,
+                // cos(yaw/2)) - this simplified form is exact for that case
+                // instead of a general (and pricier) quaternion-to-euler.
+                const yaw = 2 * Math.atan2(this.group.quaternion.y, this.group.quaternion.w);
+                let yawDelta = 0;
+                if (this._lastGroupYaw !== null) {
+                    yawDelta = yaw - this._lastGroupYaw;
+                    if (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
+                    if (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
+                }
+                this._lastGroupYaw = yaw;
+                // Clamp the RATE itself before it feeds the gain below, not
+                // just the final lean angle - an instant about-face (input
+                // reversed straight to behind, the facing slerp snapping
+                // ~180deg in a frame or two) would otherwise register as an
+                // enormous momentary yawRate that the lerp below still
+                // takes several frames to unwind from, reading as a much
+                // bigger/slower lean than a normal turn produces.
+                const yawRate = delta > 0 ? THREE.MathUtils.clamp(yawDelta / delta, -6, 6) : 0;
+                const TURN_LEAN_MAX = 0.3; // radians, ~17deg cap
+                const TURN_LEAN_GAIN = 0.09;
+                const targetLean = THREE.MathUtils.clamp(-yawRate * TURN_LEAN_GAIN, -TURN_LEAN_MAX, TURN_LEAN_MAX);
+                this.turnLeanAngle = THREE.MathUtils.lerp(this.turnLeanAngle, targetLean, Math.min(1, 10 * delta));
             }
 
             // Counter-rotates the upper body against the lean setSlopeTilt
@@ -1659,7 +1857,17 @@
             // this runs (see animate()), so - unlike those two - nothing
             // here needs to capture/restore a "default" pose first; there's
             // always a fresh base to multiply on top of.
-            applySlopeLean(delta, isSliding) {
+            // The spine counter-lean below is gated purely by whether
+            // fbxModel actually has any tilt right now (tiltAngle) - since
+            // setSlopeTilt now applies on any sloped surface, not just
+            // sliding, this naturally straightens the upper body whenever
+            // the legs are tilted, with no separate "should I lean" flag
+            // needed. shouldLockArm is kept as its own explicit parameter
+            // though: the right-hand-plants-on-the-slope pose (and its
+            // lock, see below) only makes sense for the actual sliding
+            // pose, not the climbing/walking ones, which have their own
+            // arm swing animation.
+            applySlopeLean(delta, shouldLockArm) {
                 if (!this.fbxModel || !this.spine) return;
                 // Released the instant sliding actually stops, independent
                 // of the tiltAngle check below - fbxModel's own tilt only
@@ -1669,7 +1877,7 @@
                 // "reaching for the ground" pose, actively fighting the
                 // mixer's own transition into the next animation, for a
                 // visible beat after the slide had already logically ended.
-                if (!isSliding) this._slideArmLocalQuat = null;
+                if (!shouldLockArm) this._slideArmLocalQuat = null;
 
                 const tiltAngle = 2 * Math.acos(THREE.MathUtils.clamp(this.fbxModel.quaternion.w, -1, 1));
                 if (tiltAngle < 0.001) return;
@@ -1712,11 +1920,120 @@
                 // rest of the slide - the slide pose is a static hold
                 // anyway, so the arm doesn't need to track the mixer frame
                 // to frame once it's captured.
-                if (this.rShoulderBone && isSliding) {
+                if (this.rShoulderBone && shouldLockArm) {
                     if (!this._slideArmLocalQuat) this._slideArmLocalQuat = this.rShoulderBone.quaternion.clone();
                     else this.rShoulderBone.quaternion.copy(this._slideArmLocalQuat);
                     this.rShoulderBone.updateMatrixWorld(true);
                 }
+            }
+
+            // Rotates `bone` so its WORLD orientation becomes
+            // deltaWorldQuat * (bone's current world orientation), leaving
+            // its parent untouched - i.e. applies a rotation expressed in
+            // world space without needing to know the bone's own bind-pose
+            // local axis at all (which varies by rig/exporter and isn't
+            // something this codebase has any other way to know). Works
+            // out the equivalent LOCAL quaternion via
+            // parentWorldQuat^-1 * (deltaWorldQuat * boneWorldQuat), since
+            // THREE composes worldQuat = parentWorldQuat * localQuat.
+            applyWorldDeltaRotation(bone, deltaWorldQuat) {
+                bone.parent.getWorldQuaternion(_ikParentWorldQuat);
+                bone.getWorldQuaternion(_ikBoneWorldQuat);
+                _ikNewWorldQuat.copy(deltaWorldQuat).multiply(_ikBoneWorldQuat);
+                bone.quaternion.copy(_ikParentWorldQuat.invert().multiply(_ikNewWorldQuat));
+            }
+
+            // Analytic 2-bone IK (law of cosines, same technique as a game
+            // engine's "two bone IK" node) - bends thighBone/kneeBone so
+            // footBone reaches targetWorldPos, or as close to it as the
+            // leg's own fixed length allows. Works from CURRENT (already
+            // animation-posed) bone directions and applies a world-space
+            // delta rather than computing an absolute target rotation, so
+            // it doesn't need to know either bone's bind-pose axis (see
+            // applyWorldDeltaRotation) - it only needs to know how far to
+            // rotate from wherever the animation already left it.
+            solveLegIK(thighBone, kneeBone, footBone, upperLen, lowerLen, targetWorldPos) {
+                if (!thighBone || !kneeBone || !footBone || upperLen <= 0 || lowerLen <= 0) return;
+
+                const hipPos = _ikVec1; thighBone.getWorldPosition(hipPos);
+                const kneePos = _ikVec2; kneeBone.getWorldPosition(kneePos);
+                const footPos = _ikVec3; footBone.getWorldPosition(footPos);
+                const curHipToKnee = _ikVec4.copy(kneePos).sub(hipPos).normalize();
+
+                const toTarget = _ikVec5.copy(targetWorldPos).sub(hipPos);
+                const rawDist = toTarget.length();
+                if (rawDist < 0.0001) return;
+                const maxReach = upperLen + lowerLen - 0.001;
+                const minReach = Math.max(0.001, Math.abs(upperLen - lowerLen) + 0.001);
+                const dist = THREE.MathUtils.clamp(rawDist, minReach, maxReach);
+                const targetDir = toTarget.normalize();
+
+                const cosHip = THREE.MathUtils.clamp((upperLen * upperLen + dist * dist - lowerLen * lowerLen) / (2 * upperLen * dist), -1, 1);
+                const hipAngle = Math.acos(cosHip);
+                const cosKnee = THREE.MathUtils.clamp((upperLen * upperLen + lowerLen * lowerLen - dist * dist) / (2 * upperLen * lowerLen), -1, 1);
+                const kneeInteriorAngle = Math.acos(cosKnee);
+
+                // Bend plane: the character's own forward direction,
+                // flattened to be perpendicular to targetDir, so the knee
+                // bends forward rather than sideways or backward - falls
+                // back to world up if forward happens to be parallel to
+                // targetDir (looking straight down/up, an edge case that
+                // shouldn't come up for a standing character).
+                const poleDir = _ikVec6.copy(_legPoleWorldDir);
+                poleDir.addScaledVector(targetDir, -poleDir.dot(targetDir));
+                if (poleDir.lengthSq() < 1e-6) poleDir.set(0, 1, 0).addScaledVector(targetDir, -targetDir.y);
+                poleDir.normalize();
+
+                // Order matters here (cross(targetDir, poleDir), not the
+                // other way around) - it's what makes rotating targetDir by
+                // +hipAngle below actually bend the knee TOWARD poleDir
+                // (forward) instead of away from it. Verified by hand with
+                // a concrete example (hip at origin, target straight down,
+                // pole straight forward): the wrong order rotates
+                // desiredHipToKnee backward instead of forward.
+                const bendAxis = _ikVec7.crossVectors(targetDir, poleDir).normalize();
+                if (bendAxis.lengthSq() < 1e-6) return;
+
+                _ikQuat1.setFromAxisAngle(bendAxis, hipAngle);
+                const desiredHipToKnee = _ikVec8.copy(targetDir).applyQuaternion(_ikQuat1).normalize();
+
+                _ikQuat2.setFromUnitVectors(curHipToKnee, desiredHipToKnee);
+                this.applyWorldDeltaRotation(thighBone, _ikQuat2);
+
+                // The thigh rotation just moved the knee (and everything
+                // below it) - re-read its new position/world matrix before
+                // working out the lower leg's own rotation.
+                thighBone.updateMatrixWorld(true);
+                const kneePos2 = _ikVec2; kneeBone.getWorldPosition(kneePos2);
+                const footPos2 = _ikVec3; footBone.getWorldPosition(footPos2);
+                const curKneeToFoot = _ikVec4.copy(footPos2).sub(kneePos2).normalize();
+
+                // Negative here (folding back), not positive (continuing
+                // to swing the same way) - the hip rotation above bends the
+                // thigh forward/out from the straight-line direction, and
+                // the shin has to bend back the OTHER way around the same
+                // axis to actually bring the foot back to the target
+                // instead of swinging it further away. Also verified by
+                // hand with the same concrete example: the positive-angle
+                // version lands the foot nowhere near the target, the
+                // negative one lands exactly on it.
+                _ikQuat3.setFromAxisAngle(bendAxis, -(Math.PI - kneeInteriorAngle));
+                const desiredKneeToFoot = _ikVec5.copy(desiredHipToKnee).applyQuaternion(_ikQuat3).normalize();
+
+                _ikQuat4.setFromUnitVectors(curKneeToFoot, desiredKneeToFoot);
+                this.applyWorldDeltaRotation(kneeBone, _ikQuat4);
+                kneeBone.updateMatrixWorld(true);
+            }
+
+            // leftTarget/rightTarget: world-space ground point under each
+            // foot (see game_js.js's per-foot raycast), or null if no
+            // valid ground was found under that foot this frame (leaves
+            // that leg's animated pose untouched rather than guessing).
+            applyLegIK(leftTarget, rightTarget) {
+                if (!this.fbxModel) return;
+                _legPoleWorldDir.set(0, 0, 1).applyQuaternion(this.group.quaternion);
+                if (leftTarget) this.solveLegIK(this.lThighBone, this.lKneeBone, this.lFootBone, this.lUpperLegLen, this.lLowerLegLen, leftTarget);
+                if (rightTarget) this.solveLegIK(this.rThighBone, this.rKneeBone, this.rFootBone, this.rUpperLegLen, this.rLowerLegLen, rightTarget);
             }
 
             // Lets other players tell this one apart in multiplayer - assigned
@@ -2109,6 +2426,9 @@ updateClimbing(delta) {
                 } else if (state === 'sliding') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('sliding', dur);
+                } else if (state === 'stop_sliding') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('stop_sliding', dur);
                 } else if (state === 'runup') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('runup', dur);

@@ -54,6 +54,11 @@ export function startGame(CharacterClass) {
     const _steepestNormalScratch = new THREE.Vector3();
     const _candidateNormalScratch = new THREE.Vector3();
     const _centerNormalScratch = new THREE.Vector3();
+    const _tiltRefDirScratch = new THREE.Vector3();
+    const _footWorldPosScratch = new THREE.Vector3();
+    const _footRayOriginScratch = new THREE.Vector3();
+    const _leftFootIKTarget = new THREE.Vector3();
+    const _rightFootIKTarget = new THREE.Vector3();
     const _tempVec2D = new THREE.Vector2();
     const _tempVec2D2 = new THREE.Vector2();
     const _tempQuat = new THREE.Quaternion();
@@ -1512,6 +1517,28 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // Finds where a given foot's own ground contact point actually is,
+    // for the leg IK to reach toward - not just floorY under the
+    // character's center (which a foot on a slope can be meaningfully off
+    // of once it's a body-width to either side). Only accepts the hit if
+    // it's reasonably close to where the animation already placed the
+    // foot (0.6 units) - a bigger mismatch means the animated pose is
+    // mid-stride/airborne/otherwise not something IK should be dragging
+    // toward a nearby but unrelated surface.
+    function computeFootIKTarget(footBone, targetVec, solidCollidables) {
+        if (!footBone) return false;
+        footBone.getWorldPosition(_footWorldPosScratch);
+        _footRayOriginScratch.copy(_footWorldPosScratch);
+        _footRayOriginScratch.y += 0.6;
+        rayDown.set(_footRayOriginScratch, _downVec);
+        const hits = rayDown.intersectObjects(solidCollidables);
+        if (hits.length > 0 && Math.abs(hits[0].point.y - _footWorldPosScratch.y) < 0.6) {
+            targetVec.copy(hits[0].point);
+            return true;
+        }
+        return false;
+    }
+
     function buildLevelFromJson(data) {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
@@ -1607,6 +1634,52 @@ export function startGame(CharacterClass) {
         return ramp;
     }
 
+    // A field of small cubes, each rotated 45deg (diamond-on-point), whose
+    // top corner height is randomized around roughly knee height (the
+    // rigged character's own knee bone sits at ~0.256 world units above
+    // the ground - measured live via lKneeBone.getWorldPosition()) - some
+    // a bit under, some right at, some a bit over. Meant purely to stress-
+    // test the per-foot leg IK (computeFootIKTarget/applyLegIK in
+    // game_js.js) against genuinely uneven, closely-packed terrain instead
+    // of the single flat/sloped surface every other test area so far
+    // provides - a real single-obstacle raycast per foot has nowhere to
+    // "average out" bumps here.
+    function buildKneeBumpField(centerX, centerZ, rows, cols, spacing) {
+        const KNEE_HEIGHT = 0.256;
+        const bumpMat = new THREE.MeshToonMaterial({ color: 0x77aa88, gradientMap: threeTone });
+        const startX = centerX - (cols - 1) * spacing / 2;
+        const startZ = centerZ - (rows - 1) * spacing / 2;
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const peakHeight = KNEE_HEIGHT + THREE.MathUtils.randFloatSpread(0.22); // ~0.15 to ~0.37
+                const size = 0.32;
+                const bump = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), bumpMat);
+                bump.rotation.x = Math.PI / 4;
+                bump.rotation.y = Math.random() * Math.PI * 2;
+                const halfDiagonal = size * Math.SQRT2 / 2;
+                bump.position.set(startX + c * spacing, peakHeight - halfDiagonal, startZ + r * spacing);
+                bump.castShadow = true; bump.receiveShadow = true;
+                // These sit right at/past the slide-entry angle by design
+                // (that's the point - genuinely uneven terrain for legIK to
+                // react to), but they're small, densely packed, and
+                // randomly yawed - if the ground-detection raycast treated
+                // one as a real "steep slope", the whole slide-physics
+                // system (built for one continuous surface with one
+                // consistent downhill direction) would trigger and shove
+                // the character toward THAT bump's own random slideDir,
+                // then the next bump's completely different one the very
+                // next frame - the reported "deliye dönüyor" chaos. This
+                // flag excludes them from that specific trigger (see
+                // isSteepSlope in the ground-detection block) while
+                // leaving them fully solid for everything else - vertical
+                // ground-follow (so the character's height still bobs over
+                // them) and each foot's own independent legIK raycast.
+                bump.userData.isDecorativeBump = true;
+                levelGroup.add(bump); collidables.push(bump);
+            }
+        }
+    }
+
     function buildNarrowLedgeTestRig(x, z, gap) {
         const lower = new THREE.Mesh(boxGeoTemplate, platMat);
         lower.position.set(x, cubeSize/2, z);
@@ -1683,6 +1756,10 @@ export function startGame(CharacterClass) {
         buildNarrowLedgeTestRig(15, 8, 1.2);
         buildNarrowLedgeTestRig(20, 8, 0.4);
         buildNarrowLedgeTestRig(25, 8, 0);
+
+        // Clear of everything else built above (ledge rigs/shooters top out
+        // at x=25, z=8) - open ground further out at (45, 20).
+        buildKneeBumpField(45, 20, 8, 8, 0.9);
 
         const sLow = new ShooterBox(levelGroup, 25, 1.0, 4.5, 'low');
         shooters.push(sLow); collidables.push(sLow.mesh);
@@ -2160,6 +2237,37 @@ export function startGame(CharacterClass) {
     // real, if slow, climb speed and normal walk-facing instead of the
     // automatic push+facing-lock fighting them the instant they let go.
     let isClimbingSlope = false;
+    // Set alongside isClimbingSlope (reset every frame in the same place)
+    // whenever the player pushes uphill against a real slide - a brief,
+    // fast-decelerating continuation of the slide instead of an instant,
+    // physically-wrong stop, with its own StopSliding.fbx clip (see
+    // 'stop_sliding' in the animation state selection).
+    let isStoppingSlide = false;
+    // Deliberately gentler than it sounds - a high value here dumps almost
+    // all the slide speed in the first fraction of a second, so the
+    // character sits fully stopped for most of STOP_SLIDE_DURATION while
+    // the animation keeps playing, reading as an abrupt halt rather than
+    // an actual gradual slowdown. Spreads the deceleration out closer to
+    // the full duration of the stopping animation instead.
+    const STOP_SLIDE_FRICTION = 14;
+    // Gating this phase on slideSpeed itself (skip it once speed is
+    // already low) meant a player who reacts quickly - pressing uphill
+    // within the first couple frames of even starting to slide, before
+    // SLIDE_ACCEL has built up much speed at all - skipped straight to
+    // the climb state and never saw the animation, which is the common
+    // case, not an edge case. A fixed timer instead guarantees the
+    // stopping animation always gets its full duration on screen
+    // regardless of how fast the player reacts or how much speed there
+    // actually was to bleed off.
+    let stopSlideTimer = 0;
+    const STOP_SLIDE_DURATION = 0.5;
+    // How long into the stop to keep the body moving at full speed before
+    // any friction kicks in - matches the animation crossfade duration
+    // (see 'dur' in Character.animate) so the body has actually travelled
+    // by the time the sliding pose has fully blended into the stopping
+    // one, instead of the lead foot appearing to yank itself backward
+    // while the body barely moved.
+    const STOP_SLIDE_HOLD = 0.2;
     const _climbInputDir = new THREE.Vector3();
     let networkStateName = 'idle';
     let networkCarryUpper = false;
@@ -2167,11 +2275,12 @@ export function startGame(CharacterClass) {
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
     let wallStopThreshold = 0.90;
     // How fast the character's facing turns to match the movement/slide
-    // direction (a slerp factor, higher = snappier) - 40 chosen after
-    // live-testing against the previous 15, which felt too slow/laggy on
-    // direction reversals. Still exposed on window so it can be tuned
-    // further from the console without a reload if needed.
-    window.CHAR_TURN_RATE = 40;
+    // direction (a slerp factor, higher = snappier) - was 15, bumped to 40
+    // for feeling too slow/laggy on direction reversals, then eased back
+    // down after 40 itself read as a bit too snappy. Still exposed on
+    // window so it can be tuned further from the console without a
+    // reload if needed.
+    window.CHAR_TURN_RATE = 28;
     // Surfaces steeper than this (measured from the real, un-flattened hit
     // normal) count as a genuine wall for the horizontal wall-stop below,
     // not a climbable/slideable slope - comfortably past the ~39.6deg
@@ -2767,6 +2876,7 @@ export function startGame(CharacterClass) {
         // frame that branch actually ran, on any frame that doesn't reach
         // it at all (ungrounded, ledge-grabbing, not a steep slope, etc.).
         isClimbingSlope = false;
+        isStoppingSlide = false;
         // Horizontal (downhill) direction of the slope currently being slid
         // on - only meaningful while isSliding is true this frame, set
         // alongside it below. Used later (see the animation state
@@ -2898,7 +3008,13 @@ export function startGame(CharacterClass) {
                 // otherwise have caught (walking into an overhang with too
                 // little headroom).
                 const slopeAngle = groundNormal.angleTo(_upVec);
-                const isSteepSlope = slopeAngle > (wasSliding ? SLIDE_EXIT_ANGLE : SLIDE_ENTER_ANGLE);
+                // Small decorative clutter (see buildKneeBumpField) is
+                // explicitly excluded here even when individually steeper
+                // than the slide threshold - see its own userData comment
+                // for why treating dense, randomly-oriented small bumps as
+                // "the one slope you're sliding on" breaks down.
+                const isDecorativeBump = groundHitObject && groundHitObject.userData && groundHitObject.userData.isDecorativeBump;
+                const isSteepSlope = !isDecorativeBump && slopeAngle > (wasSliding ? SLIDE_EXIT_ANGLE : SLIDE_ENTER_ANGLE);
                 const isOnRamp = groundHitObject && groundHitObject.userData && groundHitObject.userData.isSlopeRamp;
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
                 const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp &&
@@ -2929,13 +3045,71 @@ export function startGame(CharacterClass) {
                         // "uphill" let them climb it anyway.
                         const onBlockedRamp = groundHitObject && groundHitObject.userData &&
                             groundHitObject.userData.isSlopeRamp && slopeAngle > RAMP_WALK_BLOCK_ANGLE;
+                        let wantsToClimb = false;
                         if (inputMag > 0.1 && !onBlockedRamp) {
                             const inputAng = cameraTheta + Math.atan2(cx, cy);
                             _climbInputDir.set(Math.sin(inputAng), 0, Math.cos(inputAng));
-                            isClimbingSlope = _climbInputDir.dot(slideDir) < -0.3;
+                            wantsToClimb = _climbInputDir.dot(slideDir) < -0.3;
                         }
 
-                        if (isClimbingSlope) {
+                        // Only relevant coming out of an actual slide - if
+                        // they weren't sliding as of last frame (e.g. just
+                        // walked up to the ramp from flat ground already
+                        // aiming uphill, never slid down it at all), there
+                        // is no slide to stop out of, so this whole phase
+                        // has to be skipped and normal climbing has to
+                        // start immediately instead. wasSliding covers this
+                        // (it's true for every frame isStoppingSlide itself
+                        // was active too, so a stop-in-progress isn't cut
+                        // short by this check).
+                        if (wantsToClimb && wasSliding) {
+                            // Fresh transition (timer not already counting
+                            // down from a previous frame) - kick it off.
+                            if (stopSlideTimer <= 0) stopSlideTimer = STOP_SLIDE_DURATION;
+                            stopSlideTimer -= delta;
+                        } else {
+                            stopSlideTimer = 0;
+                        }
+
+                        if (wantsToClimb && wasSliding && stopSlideTimer > 0) {
+                            // Pushing uphill against a real slide - snapping
+                            // straight to the climb state here would stop
+                            // them dead in one frame, which doesn't read as
+                            // "fighting your own momentum" so much as just
+                            // teleporting to a standstill. Keep it a real
+                            // (if steeply decelerating) slide for a fixed
+                            // stretch instead, with its own StopSliding.fbx
+                            // clip (see the isStoppingSlide branch in state
+                            // selection) rather than the looping downhill-
+                            // slide one - once the timer runs out, the
+                            // plain isClimbingSlope branch below takes over
+                            // for good.
+                            isStoppingSlide = true;
+                            isSliding = true;
+                            // Hold near-full speed through the animation
+                            // crossfade itself (see the 'dur' this same
+                            // transition uses in Character.animate) before
+                            // any deceleration kicks in. The sliding pose
+                            // plants the lead foot forward; the stopping
+                            // pose plants it further back - blending
+                            // between those two poses while the body barely
+                            // moves reads as the foot yanking itself
+                            // backward. Keeping the body actually
+                            // travelling at full speed through that same
+                            // blend window instead means the body catches
+                            // up to roughly where the stop pose expects the
+                            // foot to be, so it reads as the foot staying
+                            // planted while the body slides past it -
+                            // actual friction only starts after the pose
+                            // has fully blended in.
+                            const stopSlideElapsed = STOP_SLIDE_DURATION - stopSlideTimer;
+                            if (stopSlideElapsed > STOP_SLIDE_HOLD) {
+                                slideSpeed = Math.max(0, slideSpeed - STOP_SLIDE_FRICTION * delta);
+                            }
+                            char.group.position.addScaledVector(slideDir, slideSpeed * delta);
+                            char.group.position.y = floorY;
+                        } else if (wantsToClimb) {
+                            isClimbingSlope = true;
                             // Let the movement-input block (further down,
                             // its own reduced-but-real climb speed) carry
                             // them up instead of fighting it here too -
@@ -4052,6 +4226,11 @@ export function startGame(CharacterClass) {
             if (isGrounded) {
                 if (pushPullState === 'push') { char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'push'; }
                 else if (pushPullState === 'pull') { char.animate(delta, 'pull', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'pull'; }
+                else if (isStoppingSlide) {
+                    char.animate(delta, 'stop_sliding', effectiveMoveMag, time, yVelocity, 0);
+                    networkStateName = 'stop_sliding';
+                    char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, Math.atan2(slideDir.x, slideDir.z)), window.CHAR_TURN_RATE * delta);
+                }
                 else if (isSliding) {
                     char.animate(delta, 'sliding', effectiveMoveMag, time, yVelocity, 0);
                     networkStateName = 'slide';
@@ -4069,13 +4248,62 @@ export function startGame(CharacterClass) {
             // Visual-only lean toward the slope's surface while sliding -
             // called every frame (not just while isSliding) so it relaxes
             // back to upright on its own once grounded normally again.
-            char.setSlopeTilt(isSliding ? groundNormal : _upVec, delta, isSliding ? slideDir : null);
-            // Counter-leans the upper body/head back toward level (and
-            // keeps the right arm's shape locked so its hand doesn't drift
-            // off whatever the slide pose plants it against) - reads
-            // fbxModel's own tilt directly, so it has to run after the
-            // call above actually updates it this frame.
-            char.applySlopeLean(delta, isSliding);
+            // isStoppingSlide counts as "not sliding" here on purpose: it
+            // still sets isSliding=true for the physics/animation-state
+            // branch above, but the body itself should already be
+            // straightening back up through that whole stopping stretch,
+            // not staying leaned at the full slide angle until the instant
+            // it switches to climbing - StopSliding.fbx's own pose already
+            // shows that recovery, fighting it with a still-fully-tilted
+            // root transform is what left the body looking stuck at the
+            // slide angle through the transition.
+            const isGenuinelySliding = isSliding && !isStoppingSlide;
+            // Only the ARROW tilts on any sloped surface the character is
+            // grounded on (sliding, climbing, or just walking a shallow
+            // ramp). The body/root itself only tilts while genuinely
+            // sliding - tilting it during climbing/walking too forced legIK
+            // to fight a fully-tilted root every frame just to keep feet
+            // planted, producing an unnatural crouch. Feet still conform to
+            // the slope on any sloped surface via legIK below, independent
+            // of whether the root itself is tilted.
+            const isOnSlopeSurface = isGrounded && groundNormal.y < 0.995 && !isLedgeGrabbing && !isClimbingUp;
+            let arrowTiltRefDir = null;
+            if (isOnSlopeSurface) {
+                arrowTiltRefDir = isGenuinelySliding ? slideDir : _tiltRefDirScratch.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+            }
+            // Updates char.turnLeanAngle only (no quaternion writes) - has
+            // to run before setSlopeTilt so that call can fold the fresh
+            // value into its own single combined slerp target this frame
+            // (see setSlopeTilt's own comment for why they can't be two
+            // separate quaternion ops on fbxModel.quaternion).
+            char.updateTurnLean(delta);
+            char.setSlopeTilt(isGenuinelySliding ? groundNormal : _upVec, delta, isGenuinelySliding ? slideDir : null, char.turnLeanAngle);
+            char.setArrowTilt(isOnSlopeSurface ? groundNormal : _upVec, delta, arrowTiltRefDir);
+            // Counter-leans the upper body/head back toward level (and, only
+            // while genuinely sliding, keeps the right arm's shape locked so
+            // its hand doesn't drift off whatever the slide pose plants it
+            // against) - reads fbxModel's own tilt directly, so it has to
+            // run after the call above actually updates it this frame. The
+            // spine counter-lean itself applies whenever fbxModel has any
+            // tilt at all (see its own comment), which now only happens
+            // while genuinely sliding since the root itself no longer tilts
+            // during climbing/walking.
+            char.applySlopeLean(delta, isGenuinelySliding);
+            // Leg IK: plants each foot on the ground actually under it
+            // (rather than wherever the animation clip alone leaves it),
+            // running after the tilt/lean above so it's working from the
+            // final posed skeleton for this frame, not a stale one. Gated
+            // on isOnSlopeSurface (not isGenuinelySliding) so feet still
+            // conform to the slope while climbing/walking too, even though
+            // the root itself stays upright in that case - on flat ground
+            // there's nothing for this to correct, and running the two
+            // extra raycasts + solves every frame regardless would be pure
+            // waste.
+            if (isOnSlopeSurface && char.fbxModel) {
+                const leftValid = computeFootIKTarget(char.lFootBone, _leftFootIKTarget, solidCollidables);
+                const rightValid = computeFootIKTarget(char.rFootBone, _rightFootIKTarget, solidCollidables);
+                char.applyLegIK(leftValid ? _leftFootIKTarget : null, rightValid ? _rightFootIKTarget : null);
+            }
 
             networkCarryUpper = false;
             if (window.isCarryStarting) networkStateName = 'carry_start';
