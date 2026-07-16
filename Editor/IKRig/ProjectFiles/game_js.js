@@ -2268,6 +2268,13 @@ export function startGame(CharacterClass) {
     // one, instead of the lead foot appearing to yank itself backward
     // while the body barely moved.
     const STOP_SLIDE_HOLD = 0.2;
+    // Must match applyProceduralRecoil's own HIT_RECOVERY_DURATION
+    // (ragdoll_physics.js) - that's what actually sets char.hitRecoveryTimer
+    // on a real hit; this copy is only used here to turn the remaining
+    // timer into an ease-out fraction for the recovery step's speed (see
+    // the movement block below).
+    const HIT_RECOVERY_DURATION = 0.35;
+    const RECOVERY_STEP_SPEED = 3.5;
     const _climbInputDir = new THREE.Vector3();
     let networkStateName = 'idle';
     let networkCarryUpper = false;
@@ -3983,14 +3990,33 @@ export function startGame(CharacterClass) {
                     }
                     effectiveMoveMag = isBuilding ? 0 : actualSpeed / 1.5;
                 }
-            } else if (moveMag > 0.1) {
-                const mAng = cameraTheta + Math.atan2(curX, curY);
-                const mDir = _tempVec1.set(Math.sin(mAng), 0, Math.cos(mAng));
-                
+            } else if (moveMag > 0.1 || (char.hitRecoveryTimer > 0 && !char.isRagdoll)) {
+                // A real hit (see applyProceduralRecoil) forces a short,
+                // fixed step in the direction it shoved the character,
+                // overriding whatever the player is actually pressing (or
+                // pressing nothing at all) for its short duration - reads
+                // as catching your balance by stepping into the hit rather
+                // than the spine's own recoil lean just springing back
+                // upright while the character stays planted in place. Runs
+                // through the exact same wall-check/collision/facing-turn
+                // code as normal movement below, just with mAng/mDir/speed
+                // substituted, so it can't clip through anything a normal
+                // step couldn't.
+                const isHitRecovering = char.hitRecoveryTimer > 0 && !char.isRagdoll;
+                let mAng, mDir;
+                if (isHitRecovering) {
+                    mDir = _tempVec1.copy(char.hitRecoveryDir);
+                    mAng = Math.atan2(mDir.x, mDir.z);
+                } else {
+                    mAng = cameraTheta + Math.atan2(curX, curY);
+                    mDir = _tempVec1.set(Math.sin(mAng), 0, Math.cos(mAng));
+                }
+
                 rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.3), mDir);
-                
+
                 let speedMult = 1.0;
-                if (isSliding) speedMult = 0.1;
+                if (isHitRecovering) { /* actualSpeed set directly below instead */ }
+                else if (isSliding) speedMult = 0.1;
                 else if (isClimbingSlope) {
                     // Actively climbing (see the ground-detection block
                     // above) gets a real, if slow, speed instead of
@@ -4020,11 +4046,16 @@ export function startGame(CharacterClass) {
                     const walkT = THREE.MathUtils.clamp(groundNormal.angleTo(_upVec) / SLIDE_ENTER_ANGLE, 0, 1);
                     speedMult = THREE.MathUtils.lerp(1.0, 0.8, walkT);
                 }
-                if (landingTimer > 0 && initialLandingTimer > 0) speedMult = 1.0 - (0.85 * Math.sin(Math.pow(1.0 - (landingTimer / initialLandingTimer), 0.6) * Math.PI));
-                
+                if (!isHitRecovering && landingTimer > 0 && initialLandingTimer > 0) speedMult = 1.0 - (0.85 * Math.sin(Math.pow(1.0 - (landingTimer / initialLandingTimer), 0.6) * Math.PI));
+
                 let finalMoveDir = mDir.clone();
-                let actualSpeed = (window.isCarryingObj ? 4.0 : 8) * speedMult * moveMag;
-                
+                // Eases out as the timer counts down instead of holding
+                // full speed then stopping dead, so the step itself reads
+                // as a decelerating stumble-catch rather than a rigid slide.
+                let actualSpeed = isHitRecovering
+                    ? RECOVERY_STEP_SPEED * Math.min(1, char.hitRecoveryTimer / HIT_RECOVERY_DURATION)
+                    : (window.isCarryingObj ? 4.0 : 8) * speedMult * moveMag;
+
                 const actualHits = rayFwd.intersectObjects(solidCollidables);
                 if (actualHits.length > 0 && actualHits[0].distance < 0.5) {
                     // Classify using the real (un-flattened) hit normal
@@ -4058,6 +4089,7 @@ export function startGame(CharacterClass) {
 
                 if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
+                if (isHitRecovering) char.hitRecoveryTimer = Math.max(0, char.hitRecoveryTimer - delta);
                 // Skipped while sliding - the slide-facing turn (see the
                 // isSliding branch below, later this same frame) is meant
                 // to be the sole thing driving facing in that case. Both

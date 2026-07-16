@@ -41,6 +41,7 @@ export const RagdollPhysics = {
         this.lastNeckWorld = null;
         this.lastGroupQuat = null;
         this.stabilizeWeight = 1.0;
+        this.hitRecoveryTimer = 0;
 
         this.fbxModel.updateMatrixWorld(true);
         this.currentRagdollIntensity = intensity;
@@ -136,6 +137,25 @@ export const RagdollPhysics = {
         this.lastNeckWorld = null;
         this.lastGroupQuat = null;
         this.stabilizeWeight = 0.0;
+
+        // Kick off a real recovery step (see game_js.js's movement block
+        // and Character's own hitRecoveryTimer/hitRecoveryDir fields) for
+        // any hit strong enough to actually stagger, not just a light tap -
+        // 'low' intensity (impulseMagnitude 6.0) stays a pure upper-body
+        // recoil with no footwork. Direction is the incoming hit's own
+        // horizontal travel direction (projectileVelocity, not the
+        // already-local-and-rotated localDir above) - a real push shoves
+        // you further along the direction it's already travelling, not
+        // sideways to it.
+        const HIT_RECOVERY_MIN_IMPULSE = 8.0;
+        const HIT_RECOVERY_DURATION = 0.35;
+        if (impulseMagnitude >= HIT_RECOVERY_MIN_IMPULSE && this.hitRecoveryDir) {
+            this.hitRecoveryDir.set(projectileVelocity.x, 0, projectileVelocity.z);
+            if (this.hitRecoveryDir.lengthSq() > 0.0001) {
+                this.hitRecoveryDir.normalize();
+                this.hitRecoveryTimer = HIT_RECOVERY_DURATION;
+            }
+        }
     },
 
     updateRecoil(delta) {

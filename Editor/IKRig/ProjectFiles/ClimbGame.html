@@ -1304,7 +1304,17 @@
                 this.originalClips = {};
 
                 this.recoilRotation = new THREE.Vector3(0, 0, 0);
-                this.recoilVelocity = new THREE.Vector3(0, 0, 0);  
+                this.recoilVelocity = new THREE.Vector3(0, 0, 0);
+
+                // Hit-recovery stagger step (see applyProceduralRecoil in
+                // ragdoll_physics.js and its use in game_js.js's movement
+                // block) - a short, forced step in the direction a hit just
+                // shoved the character, so recovering from a real hit reads
+                // as catching your balance by stepping into it rather than
+                // the spine's recoil lean just springing back upright while
+                // the character stays planted in place.
+                this.hitRecoveryTimer = 0;
+                this.hitRecoveryDir = new THREE.Vector3();
 
                 this.stabilizeWeight = 1.0;
                 this.climbLockedWorldPos = null;
