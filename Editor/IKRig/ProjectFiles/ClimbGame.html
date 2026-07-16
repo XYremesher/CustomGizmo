@@ -202,8 +202,8 @@
                     <input type="range" id="proj-size-slider" min="0.1" max="1.5" step="0.05" value="0.3" style="width: 100%;"><br>
                     <label>Projectile Speed: <span id="proj-speed-val">20.0</span></label><br>
                     <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
-                    <label>Orange Recoil Force: <span id="orange-recoil-val">35.0</span></label><br>
-                    <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="35.0" style="width: 100%;"><br>
+                    <label>Orange Recoil Force: <span id="orange-recoil-val">60.0</span></label><br>
+                    <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="60.0" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -269,6 +269,18 @@
                     <input type="range" id="ragdoll-lateral-stiffness-slider" min="0.0" max="1.0" step="0.05" value="0.0" style="width: 100%;"><br>
                     <label>Ragdoll Damping: <span id="ragdoll-damping-val">0.98</span></label><br>
                     <input type="range" id="ragdoll-damping-slider" min="0.80" max="0.99" step="0.01" value="0.98" style="width: 100%;"><br>
+                    <label>Hit Recovery Delay: <span id="hit-recovery-delay-val">0.02</span></label><br>
+                    <input type="range" id="hit-recovery-delay-slider" min="0.0" max="0.3" step="0.01" value="0.02" style="width: 100%;"><br>
+                    <label>Hit Recovery Duration: <span id="hit-recovery-duration-val">0.35</span></label><br>
+                    <input type="range" id="hit-recovery-duration-slider" min="0.1" max="1.2" step="0.05" value="0.35" style="width: 100%;"><br>
+                    <label>Recovery Step Speed: <span id="recovery-step-speed-val">3.5</span></label><br>
+                    <input type="range" id="recovery-step-speed-slider" min="0.5" max="10.0" step="0.5" value="3.5" style="width: 100%;"><br>
+                    <label>Recovery Strength Mult Max: <span id="recovery-strength-mult-max-val">3.0</span></label><br>
+                    <input type="range" id="recovery-strength-mult-max-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="width: 100%;"><br>
+                    <label>Recovery Anim Speed Min: <span id="hit-recovery-anim-speed-min-val">0.40</span></label><br>
+                    <input type="range" id="hit-recovery-anim-speed-min-slider" min="0.1" max="1.5" step="0.05" value="0.4" style="width: 100%;"><br>
+                    <label>Recovery Anim Speed Max: <span id="hit-recovery-anim-speed-max-val">2.50</span></label><br>
+                    <input type="range" id="hit-recovery-anim-speed-max-slider" min="1.0" max="6.0" step="0.1" value="2.5" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -1316,6 +1328,7 @@
                 this.hitRecoveryTimer = 0;
                 this.hitRecoveryDir = new THREE.Vector3();
                 this.hitRecoveryAnimState = 'walk';
+                this.hitRecoveryStrength = 12.0;
 
                 this.stabilizeWeight = 1.0;
                 this.climbLockedWorldPos = null;
@@ -1671,7 +1684,8 @@
                     this.setupActionProperties(name, fullBodyAction);
                     this.actions[name] = fullBodyAction;
 
-                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land', 'punch_walk'].includes(name)) {
+                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land', 'punch_walk',
+                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward'].includes(name)) {
                         const lowerClip = makeLowerBodyClip(clip);
                         const lowerAction = this.mixer.clipAction(lowerClip);
                         this.setupActionProperties(name + '_lower', lowerAction);
@@ -2122,7 +2136,8 @@
                 let targetActionName = name;
 
                 if (isCarrying) {
-                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land'].includes(name)) {
+                    if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land',
+                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward'].includes(name)) {
                         targetActionName = name + '_lower';
                     }
                 }
@@ -2481,6 +2496,29 @@ updateClimbing(delta) {
                         baseMoveState = 'land';
                     }
 
+                    // A hit's recovery step is a sudden, short-lived cut
+                    // straight into a strafe clip, not a natural walk-up to
+                    // speed - starting it at frame 0 (its own idle-ish
+                    // starting pose, same as any other locomotion clip)
+                    // reads as a stutter before the step actually begins.
+                    // Starting mid-clip instead means the very first frame
+                    // shown is already mid-stride, closer to "already
+                    // stepping" the instant the recovery kicks in. Only
+                    // applied on an actual NEW transition into one of these
+                    // two (checked before fadeToAction below changes
+                    // this.activeAction) - once already playing, later
+                    // frames this same call would otherwise re-trigger it
+                    // every frame instead of just letting it loop normally.
+                    // Mirrors fadeToAction's own carry-remap (name + '_lower')
+                    // so this resolves to whichever action actually ends up
+                    // playing - while carrying, that's the lower-body-only
+                    // split, not the full-body clip.
+                    const strafeWalkTargetName = (baseMoveState === 'strafe_left_walk' || baseMoveState === 'strafe_right_walk')
+                        ? (window.isCarryingObj ? baseMoveState + '_lower' : baseMoveState)
+                        : null;
+                    const isNewStrafeWalk = strafeWalkTargetName !== null
+                        && this.activeAction !== this.actions[strafeWalkTargetName];
+
                     if (window.isCarryStarting) {
                         this.stopUpperAction(dur);
                         this.fadeToAction('carry_start', dur);
@@ -2570,6 +2608,28 @@ updateClimbing(delta) {
                     } else {
                         this.fadeToAction(baseMoveState, dur);
                         this.stopUpperAction(dur);
+                    }
+
+                    // fadeToAction's own reset() just set .time back to 0 -
+                    // this has to happen after it, not before, or reset()
+                    // would immediately undo it.
+                    if (isNewStrafeWalk) {
+                        const a = this.actions[strafeWalkTargetName];
+                        if (a) a.time = a.getClip().duration / 2;
+                    }
+
+                    // Same idea as 'runup's own window.runupAnimSpeed - the
+                    // recovery step's ground speed already starts fast
+                    // (scaled by hit strength) and eases toward a stop (see
+                    // its own comment in game_js.js), so the feet need to
+                    // keep pace with that instead of cycling at a fixed
+                    // rate regardless, which reads as sliding on a hard hit.
+                    // window.isHitRecoveryStepActive (not just checking
+                    // baseMoveState's name) is what actually disambiguates
+                    // this from an ordinary player-driven 'walk' - both
+                    // share the same state name and action.
+                    if (window.isHitRecoveryStepActive && this.activeAction) {
+                        this.activeAction.setEffectiveTimeScale(window.hitRecoveryAnimSpeed || 1.0);
                     }
                 }
 

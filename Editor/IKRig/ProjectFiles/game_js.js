@@ -2270,13 +2270,13 @@ export function startGame(CharacterClass) {
     // one, instead of the lead foot appearing to yank itself backward
     // while the body barely moved.
     const STOP_SLIDE_HOLD = 0.2;
-    // Must match applyProceduralRecoil's own HIT_RECOVERY_DURATION
-    // (ragdoll_physics.js) - that's what actually sets char.hitRecoveryTimer
-    // on a real hit; this copy is only used here to turn the remaining
-    // timer into an ease-out fraction for the recovery step's speed (see
-    // the movement block below).
-    const HIT_RECOVERY_DURATION = 0.35;
-    const RECOVERY_STEP_SPEED = 3.5;
+    // All live-tunable via panel sliders now (window.hitRecoveryDuration/
+    // recoveryStepSpeed/recoveryStrengthMultMax/hitRecoveryAnimSpeedMin/Max,
+    // see their init below and ragdoll_physics.js's matching
+    // window.hitRecoveryDuration read) - the fixed defaults here only
+    // matter as a fallback if read before that init has run.
+    const HIT_RECOVERY_DURATION_DEFAULT = 0.35;
+    const RECOVERY_STEP_SPEED_DEFAULT = 3.5;
     const _climbInputDir = new THREE.Vector3();
     let networkStateName = 'idle';
     let networkCarryUpper = false;
@@ -2319,7 +2319,13 @@ export function startGame(CharacterClass) {
     window.throwHitForce = 35;
     window.throwHitRadius = 0.8;
     window.spineBlendValue = 1.00;
-    window.orangeRecoilForce = 35.0;
+    window.orangeRecoilForce = 60.0;
+    window.hitRecoveryDelay = 0.02;
+    window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
+    window.recoveryStepSpeed = RECOVERY_STEP_SPEED_DEFAULT;
+    window.recoveryStrengthMultMax = 3.0;
+    window.hitRecoveryAnimSpeedMin = 0.4;
+    window.hitRecoveryAnimSpeedMax = 2.5;
     window.ragdollLateralStiffness = 0.0;
     window.ragdollDamping = 0.98;
     window.chargeStreakOpacity = 0.3;
@@ -2475,6 +2481,12 @@ export function startGame(CharacterClass) {
         { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
         { id: 'ragdoll-lateral-stiffness-slider', vId: 'ragdoll-lateral-stiffness-val', func: v => window.ragdollLateralStiffness = v },
         { id: 'ragdoll-damping-slider', vId: 'ragdoll-damping-val', func: v => window.ragdollDamping = v },
+        { id: 'hit-recovery-delay-slider', vId: 'hit-recovery-delay-val', func: v => window.hitRecoveryDelay = v, fix: 2 },
+        { id: 'hit-recovery-duration-slider', vId: 'hit-recovery-duration-val', func: v => window.hitRecoveryDuration = v, fix: 2 },
+        { id: 'recovery-step-speed-slider', vId: 'recovery-step-speed-val', func: v => window.recoveryStepSpeed = v, fix: 1 },
+        { id: 'recovery-strength-mult-max-slider', vId: 'recovery-strength-mult-max-val', func: v => window.recoveryStrengthMultMax = v, fix: 1 },
+        { id: 'hit-recovery-anim-speed-min-slider', vId: 'hit-recovery-anim-speed-min-val', func: v => window.hitRecoveryAnimSpeedMin = v, fix: 2 },
+        { id: 'hit-recovery-anim-speed-max-slider', vId: 'hit-recovery-anim-speed-max-val', func: v => window.hitRecoveryAnimSpeedMax = v, fix: 2 },
         { id: 'charge-streak-opacity-slider', vId: 'charge-streak-opacity-val', func: v => window.chargeStreakOpacity = v },
         { id: 'charge-streak-base-radius-slider', vId: 'charge-streak-base-radius-val', func: v => window.chargeStreakBaseRadius = v },
         { id: 'charge-streak-radius-spread-slider', vId: 'charge-streak-radius-spread-val', func: v => window.chargeStreakRadiusSpread = v },
@@ -2875,6 +2887,25 @@ export function startGame(CharacterClass) {
             const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
             if (hipsP) lightTrack.copy(hipsP.pos);
         }
+
+        // Ticks down every frame regardless of which branches run below -
+        // unlike the old in-branch decrement, this has to keep counting
+        // through the initial "bend only, no stepping yet" delay portion
+        // too (see HIT_RECOVERY_DELAY), which the movement block's own
+        // isHitRecovering branch doesn't even enter during.
+        if (char.hitRecoveryTimer > 0) char.hitRecoveryTimer = Math.max(0, char.hitRecoveryTimer - delta);
+        // True only once the timer has counted down PAST the initial delay
+        // portion into its last window.hitRecoveryDuration seconds - the window
+        // where the recovery step itself (movement override + directional
+        // anim) is actually active. Read by both the movement block and
+        // the animation state-selection chain further below.
+        const hitRecoveryStepActive = char.hitRecoveryTimer > 0 && char.hitRecoveryTimer <= window.hitRecoveryDuration && !char.isRagdoll;
+        // Read by Character.animate() (ClimbGame.html) to know whether
+        // THIS frame's 'walk' state is the hit-recovery forward-step
+        // variant or an ordinary player-driven walk - both share the same
+        // state name, so window.hitRecoveryAnimSpeed alone (which persists
+        // stale between hits) isn't a reliable enough signal on its own.
+        window.isHitRecoveryStepActive = hitRecoveryStepActive;
 
         let floorY = 0;
         let isSliding = false;
@@ -3992,7 +4023,7 @@ export function startGame(CharacterClass) {
                     }
                     effectiveMoveMag = isBuilding ? 0 : actualSpeed / 1.5;
                 }
-            } else if (moveMag > 0.1 || (char.hitRecoveryTimer > 0 && !char.isRagdoll)) {
+            } else if (moveMag > 0.1 || hitRecoveryStepActive) {
                 // A real hit (see applyProceduralRecoil) forces a short,
                 // fixed step in the direction it shoved the character,
                 // overriding whatever the player is actually pressing (or
@@ -4003,8 +4034,11 @@ export function startGame(CharacterClass) {
                 // through the exact same wall-check/collision/facing-turn
                 // code as normal movement below, just with mAng/mDir/speed
                 // substituted, so it can't clip through anything a normal
-                // step couldn't.
-                const isHitRecovering = char.hitRecoveryTimer > 0 && !char.isRagdoll;
+                // step couldn't. Only true once hitRecoveryStepActive is
+                // (i.e. past the initial bend-only delay - see its own
+                // comment) - during the delay itself, moveMag alone decides
+                // whether this branch runs at all.
+                const isHitRecovering = hitRecoveryStepActive;
                 let mAng, mDir;
                 if (isHitRecovering) {
                     mDir = _tempVec1.copy(char.hitRecoveryDir);
@@ -4073,8 +4107,17 @@ export function startGame(CharacterClass) {
                 // Eases out as the timer counts down instead of holding
                 // full speed then stopping dead, so the step itself reads
                 // as a decelerating stumble-catch rather than a rigid slide.
+                // Scaled by hitRecoveryStrength (the hit's own
+                // impulseMagnitude - see applyProceduralRecoil) so a harder
+                // hit covers noticeably more ground than one right at the
+                // recovery threshold, instead of every recovery step
+                // travelling the same fixed distance regardless of how hard
+                // it landed. 12.0 (medium's own flat impulse) is the
+                // baseline - a plain medium hit's distance is unchanged from
+                // before this scaling was added.
+                const recoveryStrengthMult = THREE.MathUtils.clamp(char.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax);
                 let actualSpeed = isHitRecovering
-                    ? RECOVERY_STEP_SPEED * Math.min(1, char.hitRecoveryTimer / HIT_RECOVERY_DURATION)
+                    ? window.recoveryStepSpeed * recoveryStrengthMult * Math.min(1, char.hitRecoveryTimer / window.hitRecoveryDuration)
                     : (window.isCarryingObj ? 4.0 : 8) * speedMult * moveMag;
 
                 const actualHits = rayFwd.intersectObjects(solidCollidables);
@@ -4110,7 +4153,22 @@ export function startGame(CharacterClass) {
 
                 if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
-                if (isHitRecovering) char.hitRecoveryTimer = Math.max(0, char.hitRecoveryTimer - delta);
+                if (isHitRecovering) {
+                    // Same idea as runupAnimSpeed above: the step's own
+                    // ground speed already starts fast (scaled by hit
+                    // strength) and eases toward a stop as the timer runs
+                    // out (see actualSpeed's own comment) - without this,
+                    // the feet cycle at a fixed rate regardless, reading as
+                    // sliding/skating on a hard hit instead of actually
+                    // stepping harder. window.recoveryStepSpeed is the 1.0
+                    // ("normal pace") reference, so a plain medium hit's
+                    // very first frame plays at roughly its usual rate; a
+                    // stronger hit starts noticeably faster and settles back
+                    // down as the stumble itself decelerates. Floor kept
+                    // well above 0 so the feet don't visibly freeze right at
+                    // the tail end, before the state hands off to idle.
+                    window.hitRecoveryAnimSpeed = THREE.MathUtils.clamp(actualSpeed / window.recoveryStepSpeed, window.hitRecoveryAnimSpeedMin, window.hitRecoveryAnimSpeedMax);
+                }
                 // Skipped while sliding - the slide-facing turn (see the
                 // isSliding branch below, later this same frame) is meant
                 // to be the sole thing driving facing in that case. Both
@@ -4282,7 +4340,16 @@ export function startGame(CharacterClass) {
             if (landingTimer > 0) landingTimer -= delta;
             
             if (isGrounded) {
-                if (char.hitRecoveryTimer > 0 && !char.isRagdoll) {
+                if (hitRecoveryStepActive) {
+                    // Only during the actual step window, not the initial
+                    // bend-only delay before it (see hitRecoveryStepActive's
+                    // own comment) - through that delay, normal state
+                    // selection (idle/walk/whatever) keeps running below
+                    // undisturbed, and the visible "bend" comes entirely
+                    // from the spine recoil overlay (updateRecoil, applied
+                    // unconditionally in Character.animate regardless of
+                    // which locomotion state is playing), not from
+                    // switching locomotion states early.
                     // hitRecoveryAnimState was classified this same frame in
                     // the movement block above (relative to the character's
                     // own un-rotated facing) - 'walk' (forward), 'walk_backward',

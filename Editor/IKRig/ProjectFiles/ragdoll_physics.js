@@ -148,12 +148,30 @@ export const RagdollPhysics = {
         // you further along the direction it's already travelling, not
         // sideways to it.
         const HIT_RECOVERY_MIN_IMPULSE = 8.0;
-        const HIT_RECOVERY_DURATION = 0.35;
+        // Both live-tunable via panel sliders (window.hitRecoveryDelay,
+        // window.hitRecoveryDuration - see their init in game_js.js).
+        // hitRecoveryTimer starts at DURATION+DELAY together; the recoil
+        // lean above (recoilVelocity/recoilRotation) already starts
+        // building immediately regardless, but game_js.js's movement block
+        // only treats the timer as "step now" once it's counted down into
+        // just the last DURATION seconds - so the character visibly bends
+        // first, then steps toward wherever that bend is. Fixed fallbacks
+        // only matter if read before game_js.js's own init has run.
+        const hitRecoveryDelay = window.hitRecoveryDelay !== undefined ? window.hitRecoveryDelay : 0.02;
+        const hitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
         if (impulseMagnitude >= HIT_RECOVERY_MIN_IMPULSE && this.hitRecoveryDir) {
             this.hitRecoveryDir.set(projectileVelocity.x, 0, projectileVelocity.z);
             if (this.hitRecoveryDir.lengthSq() > 0.0001) {
                 this.hitRecoveryDir.normalize();
-                this.hitRecoveryTimer = HIT_RECOVERY_DURATION;
+                this.hitRecoveryTimer = hitRecoveryDuration + hitRecoveryDelay;
+                // Read by game_js.js's movement block to scale the actual
+                // step speed (and so the ground it covers) with how hard
+                // this specific hit was - a 'medium_high' hit (tunable via
+                // window.orangeRecoilForce, can go well past 'medium's flat
+                // 12.0) should stagger noticeably further than a hit right
+                // at the recovery threshold, not the same fixed-distance
+                // step regardless of intensity.
+                this.hitRecoveryStrength = impulseMagnitude;
             }
         }
     },
