@@ -24,7 +24,8 @@ const REMOTE_ANIMS = [
     { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
     { name: 'punch_walk', file: 'PunchWalk.fbx' },
     { name: 'standup_front', file: 'StandUp_Front.fbx' },
-    { name: 'standup_back', file: 'StandUp_Back.fbx' }
+    { name: 'standup_back', file: 'StandUp_Back.fbx' },
+    { name: 'slide', file: 'Slide.fbx' }
 ];
 
 // punch_walk deliberately excluded - see the matching comment in

@@ -50,6 +50,10 @@ export function startGame(CharacterClass) {
     const _tempVec1 = new THREE.Vector3();
     const _tempVec2 = new THREE.Vector3();
     const _tempVec3 = new THREE.Vector3();
+    const _slideDirScratch = new THREE.Vector3(0, 0, 1);
+    const _steepestNormalScratch = new THREE.Vector3();
+    const _candidateNormalScratch = new THREE.Vector3();
+    const _centerNormalScratch = new THREE.Vector3();
     const _tempVec2D = new THREE.Vector2();
     const _tempVec2D2 = new THREE.Vector2();
     const _tempQuat = new THREE.Quaternion();
@@ -59,6 +63,9 @@ export function startGame(CharacterClass) {
     const _remoteCollideNormal = new THREE.Vector3();
     const _cubeSizeVec = new THREE.Vector3(3.0, 3.0, 3.0);
     const _carrySizeVec = new THREE.Vector3(1.0, 1.0, 1.0);
+    const _rampLocalPos = new THREE.Vector3();
+    const _rampLocalHead = new THREE.Vector3();
+    const _rampInvMatrix = new THREE.Matrix4();
 
     const shinyJarMat = new THREE.MeshStandardMaterial({
         color: 0xba5c3c,
@@ -272,9 +279,8 @@ export function startGame(CharacterClass) {
         // yellow tip becomes the end that ends up pointing at the star.
         model.rotation.x = Math.PI / 2;
         // Model's own bounding box is 4 units tall - scaled down to a
-        // small on-screen size (half of the already-shrunk 0.1 used
-        // before).
-        model.scale.setScalar(0.05);
+        // small on-screen size.
+        model.scale.setScalar(0.032);
         model.traverse(c => {
             if (!c.isMesh) return;
             const isContainer = c.name === 'CompassContainer';
@@ -295,14 +301,13 @@ export function startGame(CharacterClass) {
                 c.material = new THREE.MeshToonMaterial({ color: 0x1c2a4a, gradientMap: threeTone });
                 c.renderOrder = 0;
             } else {
-                // Flat-shaded (faceted, unsmoothed normals), not the
-                // toon/cell banding the container and everything else in
-                // the game uses - Lambert instead of Toon is what actually
-                // avoids the stepped-band look; flatShading is what gives
-                // the faceted look.
-                c.material = new THREE.MeshLambertMaterial({
+                // Truly flat: MeshBasicMaterial isn't lit at all, so each
+                // face renders as its own uniform solid color with no
+                // lighting response/gradient whatsoever - Lambert still
+                // varies continuously with the light angle (not flat
+                // enough), and Toon still bands in discrete steps.
+                c.material = new THREE.MeshBasicMaterial({
                     color: c.material.color ? c.material.color.clone() : 0xffffff,
-                    flatShading: true,
                 });
                 // The needle sits inside the container's opaque volume,
                 // so its own near surface would normally depth-occlude
@@ -321,7 +326,7 @@ export function startGame(CharacterClass) {
     // camera, so it keeps the same on-screen position (this ratio is what
     // determines where it lands on screen, not the absolute distance) but
     // sits closer.
-    const COMPASS_LOCAL_OFFSET = new THREE.Vector3(0, 0.95, -1.5);
+    const COMPASS_LOCAL_OFFSET = new THREE.Vector3(0, 1.05, -1.5);
     // Minimum height above the current floor the compass is allowed to
     // sit at, regardless of what the camera-local offset above would
     // otherwise compute - this is what actually stops it from ever
@@ -1438,6 +1443,75 @@ export function startGame(CharacterClass) {
         return isVerticalSpaceClear(x, feetY, feetY + 1.8, z, excludeObj, excludeObj2, 'STAND');
     }
 
+    // The ground/wall raycasts only ever look straight down or straight
+    // ahead, so a tilted ramp's slab has whole regions they never see from
+    // below/beside: the pinch zone under it (gap shorter than the
+    // character), and the shallow zone near the toe where the slab crosses
+    // the body at shin/chest height with the head sticking out ABOVE the
+    // top surface. An earlier version of this check tested only the single
+    // head point against the slab, which caught the pinch zone but
+    // completely missed that shallow zone - the exact "head poking out of
+    // the ramp near where it meets the ground" the player kept hitting.
+    // Every ramp is the same BoxGeometry(6, 0.6, 14) shape (half-extents
+    // hx=3, hy=0.3, hz=7), rotated only around local X, so instead this
+    // takes the character's whole body as a vertical segment (feet+0.15 up
+    // to feet+1.75) in the ramp's local space and asks whether ANY of it
+    // overlaps the slab's local-Y band (-hy, hy) while the crossing point
+    // sits inside the XZ footprint - true whenever any body part is inside
+    // the solid slab, at any height. Legitimately standing/sliding ON the
+    // top face keeps feet at local Y=+hy exactly, so the +0.15 bottom
+    // margin puts the whole segment above the band and this never fires
+    // for the on-ramp case.
+    // Resolution: fully close the smallest of four escape distances each
+    // frame - either side (X) edge, the toe (+Z) edge, or backing out
+    // toward the tall-gap side (-Z) until the head clears the underside.
+    // Because the overlap test triggers on first contact, the penetration
+    // being resolved is at most one frame's movement (~centimeters), so a
+    // full resolve reads as a solid invisible wall; the per-frame cap
+    // below only matters for abnormal deep spawns (teleports/lag), turning
+    // what used to be a single-frame jump to the footprint edge into a
+    // quick smooth push instead.
+    function pushOutOfRampUnderside(position) {
+        const hx = 3, hy = 0.3, hz = 7;
+        const bodyBottom = 0.15, bodyTop = 1.75;
+        const MAX_PUSH_PER_FRAME = 0.3;
+        for (let k = 0; k < collidables.length; k++) {
+            const ramp = collidables[k];
+            if (!ramp.userData || !ramp.userData.isSlopeRamp) continue;
+            _rampInvMatrix.copy(ramp.matrixWorld).invert();
+            _rampLocalPos.set(position.x, position.y + bodyBottom, position.z).applyMatrix4(_rampInvMatrix);
+            _rampLocalHead.set(position.x, position.y + bodyTop, position.z).applyMatrix4(_rampInvMatrix);
+            const loY = Math.min(_rampLocalPos.y, _rampLocalHead.y);
+            const hiY = Math.max(_rampLocalPos.y, _rampLocalHead.y);
+            if (loY >= hy || hiY <= -hy) continue;
+            // Where the body segment crosses the slab's center plane
+            // (clamped to the segment) - the local X/Z used for the
+            // footprint test and the escape distances. The body is
+            // vertical in world space but tilted in ramp-local space, so
+            // feet and head can differ in local Z by up to ~1.6 units;
+            // the crossing point is the part actually inside the slab.
+            const dy = _rampLocalHead.y - _rampLocalPos.y;
+            const t = Math.abs(dy) > 1e-6 ? THREE.MathUtils.clamp(-_rampLocalPos.y / dy, 0, 1) : 0.5;
+            const cx = _rampLocalPos.x + (_rampLocalHead.x - _rampLocalPos.x) * t;
+            const cz = _rampLocalPos.z + (_rampLocalHead.z - _rampLocalPos.z) * t;
+            if (Math.abs(cx) >= hx || Math.abs(cz) >= hz) continue;
+            const sinA = Math.max(0.2, Math.sin(ramp.userData.rampAngleRad || 0.6));
+            const dxPlus = hx - cx;
+            const dxMinus = cx + hx;
+            const dzToe = hz - cz;
+            const dzClear = (hiY + hy) / sinA;
+            const minDist = Math.min(dxPlus, dxMinus, dzToe, dzClear);
+            const push = Math.min(minDist, MAX_PUSH_PER_FRAME);
+            if (minDist === dxPlus) _rampLocalPos.x += push;
+            else if (minDist === dxMinus) _rampLocalPos.x -= push;
+            else if (minDist === dzToe) _rampLocalPos.z += push;
+            else _rampLocalPos.z -= push;
+            _rampLocalPos.applyMatrix4(ramp.matrixWorld);
+            position.x = _rampLocalPos.x;
+            position.z = _rampLocalPos.z;
+        }
+    }
+
     function buildLevelFromJson(data) {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
@@ -1506,6 +1580,33 @@ export function startGame(CharacterClass) {
         c.debugHelper = helperMesh;
     }
 
+    // Same shape as the original 48deg sliding-slope ramp in
+    // buildStairsLevel(), parameterized by angle - rotated only around X,
+    // so its own local top face's low edge lands at
+    // y = hz*sin(angle) - hy*cos(angle) relative to this mesh's own
+    // position (hz/hy = half the 14/0.6 box dimensions below), which is
+    // exactly the position.y needed to sit that low edge flush with y=0
+    // ground (verified against the original ramp's hand-picked y=5.0 at
+    // 48deg, which this formula reproduces exactly).
+    function buildSlopeTestRamp(x, z, angleDeg) {
+        const angleRad = angleDeg * Math.PI / 180;
+        const hz = 7, hy = 0.3;
+        const rampGeo = new THREE.BoxGeometry(6, 0.6, 14);
+        const ramp = new THREE.Mesh(rampGeo, platMat);
+        ramp.rotation.x = angleRad;
+        ramp.position.set(x, hz * Math.sin(angleRad) - hy * Math.cos(angleRad), z);
+        ramp.castShadow = true; ramp.receiveShadow = true;
+        // Checked by both the ledge-grab detection and the horizontal
+        // wall-stop (see their own comments) - a ramp is meant to be a
+        // pure slide surface, not something with grabbable edges, and its
+        // walk-blocking angle is tuned separately/lower than the general
+        // SLOPE_WALL_CUTOFF used for natural terrain like the hemisphere.
+        ramp.userData.isSlopeRamp = true;
+        ramp.userData.rampAngleRad = angleRad;
+        levelGroup.add(ramp); collidables.push(ramp);
+        return ramp;
+    }
+
     function buildNarrowLedgeTestRig(x, z, gap) {
         const lower = new THREE.Mesh(boxGeoTemplate, platMat);
         lower.position.set(x, cubeSize/2, z);
@@ -1524,6 +1625,19 @@ export function startGame(CharacterClass) {
         levelGroup.add(hemisphere); collidables.push(hemisphere);
         addHemisphereDebugHelper(hemisphere);
 
+        // A row of test ramps, one per angle, laid out in ANGLE order (not
+        // build order) so each new one actually sits physically between
+        // its two neighbors instead of just tacked on at the end: below
+        // the ~39.6deg slide threshold (walkable, no sliding), just past
+        // it, solidly steep, and near the ~75.6deg wall cutoff (still
+        // barely a slideable slope, not a wall) - plus one filled in
+        // between each original pair. 9 units center-to-center leaves a
+        // 3-unit gap on each side of every 6-unit-wide ramp.
+        const ROW_ANGLES = [25, 33, 40, 44, 48, 56, 65, 69, 72];
+        const ROW_SPACING = 9, ROW_START_X = -25, ROW_Z = -10;
+        ROW_ANGLES.forEach((deg, i) => buildSlopeTestRamp(ROW_START_X - i * ROW_SPACING, ROW_Z, deg));
+        const ROW_END_X = ROW_START_X - (ROW_ANGLES.length - 1) * ROW_SPACING;
+
         const startMesh = new THREE.Mesh(boxGeoTemplate, platMat);
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
         levelGroup.add(startMesh); collidables.push(startMesh);
@@ -1534,6 +1648,36 @@ export function startGame(CharacterClass) {
             mesh.name = 'stair_' + i;
             mesh.castShadow = true; mesh.receiveShadow = true;
             levelGroup.add(mesh); collidables.push(mesh);
+        }
+
+        // Elevated walkway from the top of the stairs (last one lands at
+        // (0, 16.5, -25) per the loop above) over to the ramp row, so
+        // approaching a ramp by walking/falling onto its high end can be
+        // tested too, not just climbing up from its low edge. Stays a
+        // couple units above even the tallest (72deg) ramp's own top edge
+        // the whole way, so it doesn't intersect any of them. L-shaped
+        // (two straight legs) rather than one diagonal run - easier to
+        // actually walk end to end with plain forward/strafe input than a
+        // diagonal would be. Leg 1 heads west at the stairs' own Z; leg 2
+        // then turns south along the ramp row's own X, ending above the
+        // 72deg ramp's top edge - stepping off the side anywhere along
+        // leg 2 means dropping a short distance onto whichever ramp is
+        // below.
+        const addWalkwaySegment = (x, y, z) => {
+            const seg = new THREE.Mesh(new THREE.BoxGeometry(8, 0.6, 8), platMat);
+            seg.position.set(x, y, z);
+            seg.castShadow = true; seg.receiveShadow = true;
+            levelGroup.add(seg); collidables.push(seg);
+        };
+        const WALKWAY_LEG1_SEGMENTS = 12;
+        for (let i = 0; i <= WALKWAY_LEG1_SEGMENTS; i++) {
+            const t = i / WALKWAY_LEG1_SEGMENTS;
+            addWalkwaySegment(THREE.MathUtils.lerp(0, ROW_END_X, t), THREE.MathUtils.lerp(16.5, 14.5, t), -25);
+        }
+        const WALKWAY_LEG2_SEGMENTS = 3;
+        for (let i = 1; i <= WALKWAY_LEG2_SEGMENTS; i++) {
+            const t = i / WALKWAY_LEG2_SEGMENTS;
+            addWalkwaySegment(ROW_END_X, THREE.MathUtils.lerp(14.5, 13.5, t), THREE.MathUtils.lerp(-25, -11, t));
         }
 
         buildNarrowLedgeTestRig(15, 8, 1.2);
@@ -1981,11 +2125,69 @@ export function startGame(CharacterClass) {
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
 
     let stamina = 100, isGrounded = false, isLedgeGrabbing = false, isClimbingUp = false, ledgeTarget = new THREE.Vector3(), jumpMomentum = new THREE.Vector3();
+    // Slope sliding: was flickering on/off right around the entry angle
+    // (any tiny per-frame change in exact foot position, from the slide
+    // push itself or from fighting it with input, could nudge the raycast
+    // hit angle back and forth across a single fixed threshold) and had no
+    // sense of acceleration/friction at all - a flat, instant 15 units/sec
+    // the moment it started, dead stop the moment it didn't. wasSliding is
+    // the persisted (across frames) half of a hysteresis band: use the
+    // higher SLIDE_ENTER_ANGLE to *start* sliding, but only the lower
+    // SLIDE_EXIT_ANGLE to *stop* - once already sliding, a momentary dip
+    // just under the entry angle no longer immediately kicks you out.
+    // slideSpeed is a real ramping scalar (accelerates toward a
+    // steepness-dependent target while sliding, decays via friction
+    // otherwise) instead of an instant on/off constant.
+    let wasSliding = false, slideSpeed = 0;
+    const SLIDE_ENTER_ANGLE = Math.PI * 0.22; // ~39.6deg
+    const SLIDE_EXIT_ANGLE = Math.PI * 0.17; // ~30.6deg
+    const SLIDE_ACCEL = 20, SLIDE_FRICTION = 25;
+    const SLIDE_MIN_SPEED = 3, SLIDE_MAX_SPEED = 15;
+    // slideSpeed above is purely horizontal (applied along slideDir, which
+    // has y=0) - the actual vertical descent rate it produces depends on
+    // the slope's own steepness (roughly slideSpeed*tan(angle)), so as the
+    // angle approaches vertical that implied fall rate can end up faster
+    // than actual gravity (yVelocity's own -30/s^2) ever gets falling the
+    // same height, reading as "sliding is faster than just falling off a
+    // cliff" on the steepest ramps. Capping the vertical rate directly
+    // (rather than the horizontal slideSpeed) keeps every slope's descent
+    // just under a comparable free-fall's, regardless of angle - some
+    // felt friction instead of feeling frictionless/faster than gravity.
+    const SLIDE_MAX_VERTICAL_RATE = 18;
+    // Set (each frame, in the ground-detection block below) whenever the
+    // player is actively holding input roughly opposing the slide
+    // direction - lets the movement-input block further down give them a
+    // real, if slow, climb speed and normal walk-facing instead of the
+    // automatic push+facing-lock fighting them the instant they let go.
+    let isClimbingSlope = false;
+    const _climbInputDir = new THREE.Vector3();
     let networkStateName = 'idle';
     let networkCarryUpper = false;
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0, initialLandingTimer = 0;
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
     let wallStopThreshold = 0.90;
+    // How fast the character's facing turns to match the movement/slide
+    // direction (a slerp factor, higher = snappier) - 40 chosen after
+    // live-testing against the previous 15, which felt too slow/laggy on
+    // direction reversals. Still exposed on window so it can be tuned
+    // further from the console without a reload if needed.
+    window.CHAR_TURN_RATE = 40;
+    // Surfaces steeper than this (measured from the real, un-flattened hit
+    // normal) count as a genuine wall for the horizontal wall-stop below,
+    // not a climbable/slideable slope - comfortably past the ~39.6deg
+    // slide-eligibility threshold, short of vertical.
+    const SLOPE_WALL_CUTOFF = Math.PI * 0.42;
+    // Purpose-built test ramps (userData.isSlopeRamp) use their own, lower
+    // walk-blocking angle instead of SLOPE_WALL_CUTOFF above - the two
+    // steepest ones (65/72deg) are meant to read as an unclimbable cliff
+    // face on foot even though they're still well under the general
+    // 75.6deg cutoff (which exists for natural terrain like the
+    // hemisphere, where nothing marks a "this angle is a hard wall"
+    // intent this explicitly). Landing/being pushed onto one from above
+    // is untouched by this - only the horizontal approach is blocked;
+    // isSliding's own threshold (SLIDE_ENTER_ANGLE) still applies once
+    // grounded there regardless of how you got there.
+    const RAMP_WALK_BLOCK_ANGLE = Math.PI * (58 / 180);
     let carryTargetObj = null;
     let isSlipping = false;
     let slipTimer = 0;
@@ -2029,7 +2231,28 @@ export function startGame(CharacterClass) {
             document.getElementById('base-left').classList.remove('hold-mode');
         }
         if (stamina < JUMP_COST || landingTimer > 0) return;
-        if (isGrounded && !isLedgeGrabbing && !isClimbingUp) { stamina -= JUMP_COST; yVelocity = 10; isGrounded = false; landingTimer = 0; }
+        if (isGrounded && !isLedgeGrabbing && !isClimbingUp) {
+            stamina -= JUMP_COST; isGrounded = false; landingTimer = 0;
+            // Jumping off a slide used to just cancel all speed and pop
+            // straight up in place at the same fixed height as any other
+            // jump - carry the slide's own speed and direction into the
+            // jump instead, both horizontally AND vertically, the way
+            // actually launching off a slope while moving fast gives you
+            // more air than jumping from a standstill. isSliding itself is
+            // a per-frame-local flag from the animate loop and not visible
+            // here, but wasSliding (updated every frame, same scope as
+            // this function) is a frame-old proxy for "still sliding right
+            // now" that's accurate enough for a keypress landing between
+            // frames. _slideDirScratch keeps its last-set value (the
+            // ground-detection block only touches it while isSteepSlope is
+            // true) so it still holds the correct direction here.
+            if (wasSliding) {
+                yVelocity = 10 + slideSpeed * 0.4;
+                jumpMomentum.addScaledVector(_slideDirScratch, slideSpeed);
+            } else {
+                yVelocity = 10;
+            }
+        }
         // Used to also fire whenever airborne with ledgeGrabCooldown > 0.1,
         // regardless of isLedgeGrabbing - meant to let a jump-away-from-ledge
         // keep responding to jump briefly, but it let this whole climb-attempt
@@ -2535,8 +2758,20 @@ export function startGame(CharacterClass) {
             if (hipsP) lightTrack.copy(hipsP.pos);
         }
 
-        let floorY = 0; 
+        let floorY = 0;
         let isSliding = false;
+        // Reset every frame here (unlike isSliding, this one's declared
+        // outside this function so the movement-input block further down
+        // can still read it) - only the branch below ever sets it true, so
+        // without this it would keep whatever value it had on the last
+        // frame that branch actually ran, on any frame that doesn't reach
+        // it at all (ungrounded, ledge-grabbing, not a steep slope, etc.).
+        isClimbingSlope = false;
+        // Horizontal (downhill) direction of the slope currently being slid
+        // on - only meaningful while isSliding is true this frame, set
+        // alongside it below. Used later (see the animation state
+        // selection) to face the character the way they're actually sliding.
+        let slideDir = _slideDirScratch;
         let groundNormal = _upVec.clone();
 
         if (char.isRagdoll) {
@@ -2556,38 +2791,214 @@ export function startGame(CharacterClass) {
             ];
             let hitAnything = false;
             let highestY = -Infinity;
+            let steepestAngle = -Infinity;
+            let hasSteepCandidate = false;
+            let steepestY = 0;
+            let groundHitObject = null;
+            let steepestHitObject = null;
+            let hasCenterHit = false;
+            let centerY = 0;
+            let centerHitObject = null;
 
-            for (let offset of rayOffsets) {
+            for (let i = 0; i < rayOffsets.length; i++) {
+                const offset = rayOffsets[i];
                 let testOrigin = _tempVec1.copy(char.group.position).add(offset);
-                testOrigin.y += 1.2; 
+                testOrigin.y += 1.2;
                 rayDown.set(testOrigin, _downVec);
                 const hits = rayDown.intersectObjects(solidCollidables);
                 if (hits.length > 0) {
                     const hitY = hits[0].point.y;
                     if (hitY <= char.group.position.y + 0.8) {
+                        hitAnything = true;
                         if (hitY > highestY) {
                             highestY = hitY;
                             groundNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
-                            hitAnything = true;
+                            groundHitObject = hits[0].object;
+                        }
+                        // Also track whichever of the 5 offset rays sees
+                        // the steepest surface, regardless of its height -
+                        // used below only while already sliding, to avoid
+                        // flip-flopping right at a slope's low edge (see
+                        // that comment).
+                        _candidateNormalScratch.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+                        const candidateAngle = _candidateNormalScratch.angleTo(_upVec);
+                        if (candidateAngle > steepestAngle) {
+                            steepestAngle = candidateAngle;
+                            steepestY = hitY;
+                            _steepestNormalScratch.copy(_candidateNormalScratch);
+                            hasSteepCandidate = true;
+                            steepestHitObject = hits[0].object;
+                        }
+                        // rayOffsets[0] is the (0,0,0) center ray, directly
+                        // under the character - remember its own reading
+                        // separately (see below for why).
+                        if (i === 0) {
+                            hasCenterHit = true;
+                            centerY = hitY;
+                            centerHitObject = hits[0].object;
+                            _centerNormalScratch.copy(_candidateNormalScratch);
                         }
                     }
                 }
             }
+            // Prefer the center ray's own single-point reading over
+            // "whichever of the 5 is highest" whenever it has a hit at all.
+            // Two adjacent surfaces that are only centimeters apart in
+            // height (a ramp's low edge meeting flat ground, for instance)
+            // is exactly where "highest of 5 rays a body-width apart"
+            // becomes ambiguous - it can flip between the two surfaces from
+            // one frame to the next off of sub-frame position noise alone,
+            // even standing still, because the offset rays are sampling
+            // genuinely different ground truth a few centimeters to either
+            // side of the character. A single point sample has no such
+            // ambiguity: it reads whichever surface is actually under the
+            // character's own center, and transitions exactly once as they
+            // physically cross the seam. The other 4 offset rays remain in
+            // play only as a fallback for when the center ray itself has no
+            // hit at all (standing right at an edge/corner).
+            if (hasCenterHit) {
+                groundNormal.copy(_centerNormalScratch);
+                highestY = centerY;
+                groundHitObject = centerHitObject;
+            }
+            // While already sliding, stick with whichever offset ray sees
+            // the steepest surface (as long as it's still above the exit
+            // angle) instead of whichever is merely highest/centered - a
+            // fast-moving slide can have the center ray briefly leave the
+            // slope's own surface (landing just past its edge) while the
+            // character is still very much sliding on it.
+            if (wasSliding && hasSteepCandidate && steepestAngle > SLIDE_EXIT_ANGLE) {
+                groundNormal.copy(_steepestNormalScratch);
+                highestY = steepestY;
+                groundHitObject = steepestHitObject;
+            }
 
             if (hitAnything) {
+                // isStandPositionClear falls back to a cached, one-time
+                // bounding box for any collidable that isn't specifically
+                // isMovable/isCarryable (see getObstacleBox) - fine for
+                // roughly box-shaped level geometry, but for something
+                // large and curved (the hemisphere) that box spans its
+                // entire footprint, nothing like the actual surface. Since
+                // isSteppingUp is true almost every frame while climbing a
+                // continuously-rising curved surface, that gate would
+                // reject the step-up on nearly every frame anywhere on it,
+                // freezing floorY at the character's own stale position
+                // forever and never reaching the isSliding branch below.
+                // Steep slopes don't need "standing room" anyway - they're
+                // about to get pushed back off - so let them bypass this
+                // gate entirely instead. Ramps below the slide threshold hit
+                // the exact same loose-AABB problem despite being plain
+                // walkable surfaces (no sliding involved at all) - their
+                // getObstacleBox fallback is still the whole tilted box's
+                // bounding extent, not the thin slab itself, so a ramp is
+                // exempted outright regardless of its own angle; the
+                // separate pushOutOfRampUnderside check (see its own
+                // comment) already handles the one case this gate would
+                // otherwise have caught (walking into an overhang with too
+                // little headroom).
+                const slopeAngle = groundNormal.angleTo(_upVec);
+                const isSteepSlope = slopeAngle > (wasSliding ? SLIDE_EXIT_ANGLE : SLIDE_ENTER_ANGLE);
+                const isOnRamp = groundHitObject && groundHitObject.userData && groundHitObject.userData.isSlopeRamp;
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
-                if (isSteppingUp && !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null)) {
+                const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp &&
+                    !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null);
+                if (blockedByStandCheck) {
                     floorY = char.group.position.y;
                 } else {
                     floorY = highestY;
-                    if (groundNormal.angleTo(_upVec) > Math.PI * 0.22 && isGrounded && !isLedgeGrabbing && !isClimbingUp) {
-                        isSliding = true;
-                        char.group.position.add(_tempVec3.set(groundNormal.x, 0, groundNormal.z).normalize().multiplyScalar(15 * delta));
+                    if (isSteepSlope && isGrounded && !isLedgeGrabbing && !isClimbingUp) {
+                        slideDir.set(groundNormal.x, 0, groundNormal.z).normalize();
+
+                        // Holding input roughly uphill (opposing slideDir)
+                        // means "let me climb this, slowly" - read input
+                        // directly here rather than the movement block's
+                        // own curX/curY, which aren't computed until later
+                        // this same frame.
+                        const cx = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
+                        const cy = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
+                        const inputMag = Math.sqrt(cx * cx + cy * cy);
+                        isClimbingSlope = false;
+                        // A ramp past its own RAMP_WALK_BLOCK_ANGLE is meant
+                        // to behave like a wall - no climbing it under any
+                        // input, only sliding. The horizontal wall-stop only
+                        // catches a straight-on approach; without this, once
+                        // the character is already standing on such a ramp
+                        // (e.g. having crept up via a shallower-angled/side
+                        // approach the single forward ray missed), holding
+                        // "uphill" let them climb it anyway.
+                        const onBlockedRamp = groundHitObject && groundHitObject.userData &&
+                            groundHitObject.userData.isSlopeRamp && slopeAngle > RAMP_WALK_BLOCK_ANGLE;
+                        if (inputMag > 0.1 && !onBlockedRamp) {
+                            const inputAng = cameraTheta + Math.atan2(cx, cy);
+                            _climbInputDir.set(Math.sin(inputAng), 0, Math.cos(inputAng));
+                            isClimbingSlope = _climbInputDir.dot(slideDir) < -0.3;
+                        }
+
+                        if (isClimbingSlope) {
+                            // Let the movement-input block (further down,
+                            // its own reduced-but-real climb speed) carry
+                            // them up instead of fighting it here too -
+                            // isSliding stays false so it also keeps normal
+                            // walk-facing/animation instead of the
+                            // downhill facing-lock and slide clip. Any
+                            // leftover speed from sliding right before they
+                            // started climbing still bleeds off via
+                            // friction rather than carrying over.
+                            isSliding = false;
+                            slideSpeed = Math.max(0, slideSpeed - SLIDE_FRICTION * delta);
+                        } else {
+                            isSliding = true;
+                            // Steeper past the entry angle = faster top
+                            // speed, same way a real slope would give more
+                            // or less grip - and ramps up/down through
+                            // SLIDE_ACCEL rather than snapping straight to
+                            // it, so starting to slide (and riding it out
+                            // onto flatter ground) both feel like they have
+                            // weight instead of an instant on/off switch.
+                            const steepnessT = THREE.MathUtils.clamp((slopeAngle - SLIDE_ENTER_ANGLE) / (Math.PI / 2 - SLIDE_ENTER_ANGLE), 0, 1);
+                            const steepnessTarget = THREE.MathUtils.lerp(SLIDE_MIN_SPEED, SLIDE_MAX_SPEED, steepnessT);
+                            // See SLIDE_MAX_VERTICAL_RATE - re-expresses that
+                            // cap as a horizontal along-slope speed for this
+                            // specific angle (tan(angle) is how much vertical
+                            // drop one unit of this horizontal motion
+                            // produces on this slope), and only lets the
+                            // steepness-based target above win where it's
+                            // already under that.
+                            const tanAngle = Math.tan(slopeAngle);
+                            const verticalCappedTarget = tanAngle > 0.01 ? SLIDE_MAX_VERTICAL_RATE / tanAngle : steepnessTarget;
+                            const targetSlideSpeed = Math.min(steepnessTarget, verticalCappedTarget);
+                            slideSpeed = Math.min(slideSpeed + SLIDE_ACCEL * delta, targetSlideSpeed);
+                            char.group.position.addScaledVector(slideDir, slideSpeed * delta);
+                            // The push above only moves X/Z - on a steep
+                            // slope, the true floor height changes fast
+                            // relative to that horizontal speed (e.g. ~1.1
+                            // units of drop per unit moved at a 48deg
+                            // incline), much faster than gravity alone can
+                            // accelerate the character downward within a
+                            // single frame. Left to the separate vertical
+                            // gravity/ground-snap resolution below to
+                            // "catch up" on its own, position.y stays stale
+                            // (matching the pre-push XZ's height) for a
+                            // frame, reads as being above the newly-lower
+                            // floor, drops isGrounded back to false, and
+                            // the cycle repeats every few frames - a real,
+                            // visible fall/sliding flicker. Snapping Y to
+                            // this frame's floorY immediately keeps it
+                            // glued to the slope every frame instead of
+                            // waiting on gravity.
+                            char.group.position.y = floorY;
+                        }
                     }
                 }
             } else floorY = 0;
         }
-        
+        // Friction: decay any leftover slide speed back to zero once no
+        // longer sliding (instead of the old instant stop), and remember
+        // this frame's result for next frame's hysteresis check above.
+        if (!isSliding) slideSpeed = Math.max(0, slideSpeed - SLIDE_FRICTION * delta);
+        wasSliding = isSliding;
+
         const capsuleRadius = 0.4;
         const penetrationRays = [
             new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
@@ -2623,8 +3034,17 @@ export function startGame(CharacterClass) {
             processHits(hits1); processHits(hits2);
         }
         
-        if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp) {
-            pushOutVector.y = 0; char.group.position.add(pushOutVector.multiplyScalar(0.5)); 
+        // On a steep slope, the character is deliberately standing/leaning
+        // against what is, from these 8 horizontal rays' point of view, a
+        // near-vertical surface right behind them - reads as "penetrating
+        // a wall" to this generic anti-clipping system, which isn't aware
+        // a slope's own surface is supposed to be that close. Without this
+        // exclusion it forcefully shoves the character off the slope every
+        // single frame on top of (and far exceeding) the controlled
+        // slide/climb speed above - the real cause behind slides feeling
+        // wildly faster than intended specifically on the steepest ramps.
+        if (hasPenetration && !char.isRagdoll && !isLedgeGrabbing && !isClimbingUp && !isSliding && !isClimbingSlope) {
+            pushOutVector.y = 0; char.group.position.add(pushOutVector.multiplyScalar(0.5));
         }
 
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
@@ -3397,6 +3817,25 @@ export function startGame(CharacterClass) {
                 
                 let speedMult = 1.0;
                 if (isSliding) speedMult = 0.1;
+                else if (isClimbingSlope) {
+                    // Actively climbing (see the ground-detection block
+                    // above) gets a real, if slow, speed instead of
+                    // near-zero - the whole point is being able to make
+                    // deliberate progress up a slope you'd otherwise just
+                    // slide back down. Scales with the slope's own angle
+                    // instead of one flat rate for the whole climbable
+                    // range - barely past the slide threshold is a mild
+                    // effort, right up against RAMP_WALK_BLOCK_ANGLE
+                    // (the steepest still-climbable ramps) is a real slog.
+                    const climbT = THREE.MathUtils.clamp((groundNormal.angleTo(_upVec) - SLIDE_ENTER_ANGLE) / (RAMP_WALK_BLOCK_ANGLE - SLIDE_ENTER_ANGLE), 0, 1);
+                    speedMult = THREE.MathUtils.lerp(0.5, 0.15, climbT);
+                } else if (isGrounded) {
+                    // Below the slide threshold entirely - still eases off
+                    // gradually approaching it rather than staying at flat-
+                    // ground speed right up to the point sliding kicks in.
+                    const walkT = THREE.MathUtils.clamp(groundNormal.angleTo(_upVec) / SLIDE_ENTER_ANGLE, 0, 1);
+                    speedMult = THREE.MathUtils.lerp(1.0, 0.8, walkT);
+                }
                 if (landingTimer > 0 && initialLandingTimer > 0) speedMult = 1.0 - (0.85 * Math.sin(Math.pow(1.0 - (landingTimer / initialLandingTimer), 0.6) * Math.PI));
                 
                 let finalMoveDir = mDir.clone();
@@ -3404,14 +3843,29 @@ export function startGame(CharacterClass) {
                 
                 const actualHits = rayFwd.intersectObjects(solidCollidables);
                 if (actualHits.length > 0 && actualHits[0].distance < 0.5) {
-                    const wallNormal = actualHits[0].face.normal.clone().transformDirection(actualHits[0].object.matrixWorld).setY(0).normalize();
-                    const dot = finalMoveDir.dot(wallNormal);
-                    if (dot < 0) {
-                        if (-dot > wallStopThreshold) { finalMoveDir.set(0, 0, 0); actualSpeed = 0; }
-                        else {
-                            finalMoveDir.sub(wallNormal.multiplyScalar(dot));
-                            if (finalMoveDir.lengthSq() > 0.001) finalMoveDir.normalize(); else finalMoveDir.set(0, 0, 0);
-                            actualSpeed *= Math.sqrt(1.0 - dot * dot);
+                    // Classify using the real (un-flattened) hit normal
+                    // before deciding this is even a "wall" at all - a
+                    // steep-but-still-floor-like slope (like the
+                    // hemisphere's sides) has real angleTo(_upVec) well
+                    // under vertical, and should be left entirely to the
+                    // vertical ground-follow/sliding block instead of
+                    // getting hard-stopped here. Only surfaces past
+                    // SLOPE_WALL_CUTOFF - genuinely near-vertical - go
+                    // through the existing horizontal wall-stop. Test ramps
+                    // (userData.isSlopeRamp) use their own, lower
+                    // RAMP_WALK_BLOCK_ANGLE instead - see its own comment.
+                    const realNormal = actualHits[0].face.normal.clone().transformDirection(actualHits[0].object.matrixWorld);
+                    const wallCutoffForHit = actualHits[0].object.userData?.isSlopeRamp ? RAMP_WALK_BLOCK_ANGLE : SLOPE_WALL_CUTOFF;
+                    if (realNormal.angleTo(_upVec) > wallCutoffForHit) {
+                        const wallNormal = realNormal.clone().setY(0).normalize();
+                        const dot = finalMoveDir.dot(wallNormal);
+                        if (dot < 0) {
+                            if (-dot > wallStopThreshold) { finalMoveDir.set(0, 0, 0); actualSpeed = 0; }
+                            else {
+                                finalMoveDir.sub(wallNormal.multiplyScalar(dot));
+                                if (finalMoveDir.lengthSq() > 0.001) finalMoveDir.normalize(); else finalMoveDir.set(0, 0, 0);
+                                actualSpeed *= Math.sqrt(1.0 - dot * dot);
+                            }
                         }
                     }
                 }
@@ -3420,14 +3874,69 @@ export function startGame(CharacterClass) {
 
                 if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
-                char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), 15*delta);
+                // Skipped while sliding - the slide-facing turn (see the
+                // isSliding branch below, later this same frame) is meant
+                // to be the sole thing driving facing in that case. Both
+                // used to run unconditionally every frame regardless of
+                // each other, so trying to walk uphill against a slide had
+                // this one turning to face the input direction and the
+                // other immediately turning back to face downhill right
+                // after it, every single frame - a visible, constant
+                // tug-of-war on the character's rotation.
+                if (!isSliding) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+            }
+
+            // Walking downhill (stairs, a shallow ramp, the hemisphere,
+            // anything sloped but not steep enough to slide): floorY was
+            // computed earlier this frame from the position BEFORE this
+            // frame's own movement just above, so it reflects where the
+            // ground was, not where it now is at the character's new,
+            // further-downhill spot. The gravity/ground-snap resolution
+            // further below only starts correcting once that gap crosses
+            // its own "am I falling" threshold, then closes it in one
+            // frame - since the gap regenerates every single frame while
+            // continuously walking downhill, this repeats every frame and
+            // reads as a stutter-step hop instead of smoothly following
+            // the slope down. A single fresh ray from the character's
+            // actual new position catches up immediately instead of
+            // waiting on gravity - the same fix isSliding already applies
+            // to itself, just for ordinary grounded walking too. Downhill
+            // only (never snaps up) so it can't interfere with the
+            // separate isSteppingUp/isStandPositionClear logic that
+            // already handles stepping up onto something higher.
+            if (isGrounded && !isSliding && !isClimbingSlope && !isLedgeGrabbing && !isClimbingUp && yVelocity <= 0) {
+                const downhillOrigin = _tempVec3.copy(char.group.position); downhillOrigin.y += 1.2;
+                rayDown.set(downhillOrigin, _downVec);
+                const downhillHits = rayDown.intersectObjects(solidCollidables);
+                if (downhillHits.length > 0 && downhillHits[0].point.y < char.group.position.y && downhillHits[0].point.y > char.group.position.y - 1.5) {
+                    char.group.position.y = downhillHits[0].point.y;
+                }
             }
 
             if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
                 const chest = _tempVec2.copy(char.group.position).setY(char.group.position.y+1.1), fwd = _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
                 rayFwd.set(chest, fwd); const wH = rayFwd.intersectObjects(solidCollidables);
-                if (wH.length > 0 && wH[0].distance < 0.8) {
-                    const n = wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld).setY(0).normalize();
+                // Same steep-slope-vs-genuine-wall classification as the
+                // horizontal movement wall-stop (see SLOPE_WALL_CUTOFF) -
+                // without it, a steep ramp (still a walkable/slideable
+                // slope, not a distinct ledge) reads as a climbable wall
+                // with a "ledge" above it (since the ray upward from any
+                // point on a continuous ramp always finds more ramp), so
+                // the player grabs on and hangs instead of sliding/
+                // climbing normally. Test ramps are excluded outright
+                // (isSlopeRamp), regardless of which face got hit or its
+                // angle - their own SIDE faces are always perfectly
+                // vertical (unaffected by the ramp's own rotation, which
+                // only tilts around that same axis), so without this a
+                // player could walk up to a ramp's side, grab that edge
+                // like a real ledge, and climb/shimmy up it - bypassing
+                // the slide mechanic entirely from the side even on ramps
+                // whose actual sloped face is well within normal
+                // slide/walk range.
+                const realWallNormal = wH.length > 0 ? wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld) : null;
+                const isRampHit = wH.length > 0 && wH[0].object.userData?.isSlopeRamp;
+                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
+                    const n = realWallNormal.setY(0).normalize();
                     const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
                     if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
@@ -3456,10 +3965,37 @@ export function startGame(CharacterClass) {
                     }
                 }
             }
-            if (jumpMomentum.lengthSq() > 0.01) { char.group.position.add(_tempVec1.copy(jumpMomentum).multiplyScalar(delta)); jumpMomentum.lerp(_tempVec2.set(0,0,0), 4*delta); }
+            // Only decay while grounded (landing naturally kills leftover
+            // momentum, and it's also explicitly zeroed on various landing
+            // transitions below) - decaying it unconditionally at this
+            // fairly fast fixed rate meant a slide-jump's horizontal push
+            // (see handleJump) died out well before a real jump arc with
+            // that much vertical velocity finishes, so the character moved
+            // forward briefly right after jumping and then just fell
+            // straight down for the rest of the flight instead of
+            // following a proper forward arc the whole way. No air
+            // resistance is modeled anywhere else, so constant horizontal
+            // momentum for the whole time airborne is the physically
+            // consistent behavior, not a decaying one.
+            if (jumpMomentum.lengthSq() > 0.01) {
+                char.group.position.add(_tempVec1.copy(jumpMomentum).multiplyScalar(delta));
+                if (isGrounded) jumpMomentum.lerp(_tempVec2.set(0,0,0), 4*delta);
+            }
             
             let wasGrounded = isGrounded;
-            if (char.group.position.y + yVelocity*delta > floorY + 0.01) {
+            // yVelocity>0 (actively rising, e.g. right after a jump) is
+            // always treated as airborne outright, not just when it clears
+            // the floorY+0.01 check - on a steep slope, floorY (from the 5
+            // offset ground-detection rays) can shift by
+            // 0.25*tan(slopeAngle) between one frame and the next purely
+            // from which of those rays happens to read "highest" (real
+            // effect measured: exactly 0.278 on the 48deg ramp, matching
+            // 0.25*tan(48deg)) even though the character's own position
+            // barely moved - a jump's very first frame or two can land
+            // right on the wrong side of that jitter and get silently
+            // snapped back onto the slope before ever leaving it, without
+            // this exemption.
+            if (yVelocity > 0 || char.group.position.y + yVelocity*delta > floorY + 0.01) {
                 yVelocity -= 30*delta;
                 if (yVelocity > 0) {
                     const headOrigin = _tempVec3.copy(char.group.position).setY(char.group.position.y + 1.7);
@@ -3491,16 +4027,44 @@ export function startGame(CharacterClass) {
                 }
                 if (!char.isRagdoll) { yVelocity = 0; jumpMomentum.set(0,0,0); }
             }
-            
+
+            // Run only now that position.y is fully finalized for this
+            // frame (both the grounded and airborne branches above have
+            // already run) - checking earlier, before the Y-snap, compares
+            // against a stale (usually previous-frame) height and reads as
+            // "below the ramp's top surface" even while legitimately
+            // standing on/climbing it, spuriously shoving the character
+            // sideways off ramps they were correctly walking up.
+            pushOutOfRampUnderside(char.group.position);
+
             if (landingTimer > 0) landingTimer -= delta;
             
             if (isGrounded) {
                 if (pushPullState === 'push') { char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'push'; }
                 else if (pushPullState === 'pull') { char.animate(delta, 'pull', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'pull'; }
+                else if (isSliding) {
+                    char.animate(delta, 'sliding', effectiveMoveMag, time, yVelocity, 0);
+                    networkStateName = 'slide';
+                    // Face the direction actually being slid, same turn rate
+                    // normal movement uses (see the moveMag>0.1 block above) -
+                    // overrides whatever that block just turned toward, since
+                    // it runs earlier this same frame and isn't aware of slopes.
+                    char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, Math.atan2(slideDir.x, slideDir.z)), window.CHAR_TURN_RATE * delta);
+                }
                 else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
                 else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', effectiveMoveMag, time, yVelocity, 0); networkStateName = effectiveMoveMag > 0.8 ? 'run' : 'walk'; }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
+            // Visual-only lean toward the slope's surface while sliding -
+            // called every frame (not just while isSliding) so it relaxes
+            // back to upright on its own once grounded normally again.
+            char.setSlopeTilt(isSliding ? groundNormal : _upVec, delta, isSliding ? slideDir : null);
+            // Counter-leans the upper body/head back toward level (and
+            // keeps the right arm's shape locked so its hand doesn't drift
+            // off whatever the slide pose plants it against) - reads
+            // fbxModel's own tilt directly, so it has to run after the
+            // call above actually updates it this frame.
+            char.applySlopeLean(delta, isSliding);
 
             networkCarryUpper = false;
             if (window.isCarryStarting) networkStateName = 'carry_start';

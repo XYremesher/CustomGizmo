@@ -1114,6 +1114,10 @@
         const _tempQuat4 = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
+        const _identityQuat = new THREE.Quaternion();
+        const _leanCounterQuat = new THREE.Quaternion();
+        const _leanBlendQuat = new THREE.Quaternion();
+        const _worldUpVec = new THREE.Vector3(0, 1, 0);
 
         function isUpperBodyTrack(trackName) {
             const lowerName = trackName.toLowerCase();
@@ -1220,6 +1224,14 @@
                 this.activeUpperAction = null;
                 this.isLoaded = false;
                 this.fbxModel = null;
+                // Cached once per slide (see applySlopeLean) rather than
+                // read fresh from the mixer every frame - directly writing
+                // to rShoulderBone.quaternion each frame turned out to
+                // fight with the mixer's own per-frame write in a way that
+                // made the arm spin wildly instead of holding steady.
+                // Reset to null whenever not leaning, so the next slide
+                // re-captures a fresh starting pose.
+                this._slideArmLocalQuat = null;
                 this.climbFinished = false;
                 this.hips = null;
                 this.spine = null;
@@ -1434,6 +1446,11 @@
 
                     this.leftHandBone = findBone('lefthand');
                     this.rightHandBone = findBone('righthand');
+                    // Used by setSlopeTilt/applySlopeLean to re-lock the
+                    // right arm's shape after leaning the spine forward
+                    // while sliding, so the hand doesn't drift from
+                    // wherever the slide animation plants it.
+                    this.rShoulderBone = findBone('rightarm') || findBone('rightshoulder');
 
                     const keyBones = [
                         { id: 'hips', bone: this.hips, radius: 0.18, length: 0.15 },
@@ -1496,7 +1513,8 @@
                         { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
                         { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
                         { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
-                        { name: 'punch_walk', file: 'PunchWalk.fbx' }
+                        { name: 'punch_walk', file: 'PunchWalk.fbx' },
+                        { name: 'sliding', file: 'Slide.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -1587,6 +1605,117 @@
             updateScale(val) {
                 if (this.fbxModel) this.fbxModel.scale.setScalar(val);
                 this.hitbox.scale.setScalar(val / 0.0065);
+            }
+
+            // Visually leans the model to match a slope's surface normal
+            // while sliding (this.group itself stays yaw-only - it's what
+            // everything else, wall/ledge raycasts, throw/punch direction,
+            // reads as "forward", so tilting it directly would knock all
+            // of that off horizontal). Applied to fbxModel (a plain child
+            // of this.group) instead, purely cosmetic. Called every frame
+            // regardless of sliding - pass world up when not sliding and
+            // it relaxes back to identity on its own.
+            setSlopeTilt(normal, delta, slideDir) {
+                if (!this.fbxModel) return;
+                if (Math.abs(normal.y) > 0.999 || !slideDir) {
+                    this.fbxModel.quaternion.slerp(_identityQuat, 10 * delta);
+                    return;
+                }
+                // Rotate the (world-space) normal into a local space built
+                // from the TARGET yaw (whichever way slideDir points), not
+                // this.group's own current quaternion - the group's own
+                // yaw is turning toward that same target via its own
+                // separate slerp (see the isSliding branch in game_js.js),
+                // so on any frame it hasn't fully caught up yet, using its
+                // still-lagging current facing here would build this tilt
+                // against a momentarily different reference frame than
+                // where the body is actually turning to - showing up as a
+                // transient, uncoordinated left/right roll while the two
+                // catch up to each other at slightly different rates.
+                // Building both against the same fixed target instead
+                // keeps this a pure forward/backward tilt throughout.
+                const yawAngle = Math.atan2(slideDir.x, slideDir.z);
+                _tempQuat3.setFromAxisAngle(_worldUpVec, yawAngle);
+                const localUp = _tempVec2.copy(normal).applyQuaternion(_tempQuat3.invert()).normalize();
+                const localForward = _tempVec1.set(0, 0, 1);
+                const localRight = _tempVec3.copy(localUp).cross(localForward).normalize();
+                localForward.crossVectors(localRight, localUp).normalize();
+                _tempMat4.makeBasis(localRight, localUp, localForward);
+                _tempQuat4.setFromRotationMatrix(_tempMat4);
+                this.fbxModel.quaternion.slerp(_tempQuat4, 10 * delta);
+            }
+
+            // Counter-rotates the upper body against the lean setSlopeTilt
+            // just applied, so the head/chest look more level and forward
+            // instead of the whole body robotically matching the slope
+            // angle - like a real person leaning back to look ahead while
+            // sliding down a hill. Call every frame (mirrors setSlopeTilt) -
+            // it reads fbxModel's own current tilt directly, so it's
+            // naturally a no-op once that's back to identity.
+            //
+            // this.spine/this.spine1/this.neck already get overwritten by
+            // the animation mixer and updateRecoil() every frame before
+            // this runs (see animate()), so - unlike those two - nothing
+            // here needs to capture/restore a "default" pose first; there's
+            // always a fresh base to multiply on top of.
+            applySlopeLean(delta, isSliding) {
+                if (!this.fbxModel || !this.spine) return;
+                // Released the instant sliding actually stops, independent
+                // of the tiltAngle check below - fbxModel's own tilt only
+                // *asymptotically* approaches identity (an exponential
+                // slerp decay never truly finishes), so tying the arm
+                // release to that instead left it locked to the old
+                // "reaching for the ground" pose, actively fighting the
+                // mixer's own transition into the next animation, for a
+                // visible beat after the slide had already logically ended.
+                if (!isSliding) this._slideArmLocalQuat = null;
+
+                const tiltAngle = 2 * Math.acos(THREE.MathUtils.clamp(this.fbxModel.quaternion.w, -1, 1));
+                if (tiltAngle < 0.001) return;
+
+                _leanCounterQuat.copy(this.fbxModel.quaternion).invert();
+
+                const applyLean = (bone, weight) => {
+                    if (!bone) return;
+                    _leanBlendQuat.identity().slerp(_leanCounterQuat, weight);
+                    bone.quaternion.multiply(_leanBlendQuat);
+                    bone.updateMatrixWorld(true);
+                };
+                // Weighted low-to-high up the spine - this.spine1 (mid
+                // spine, "Spine1" bone) is actually below this.spine
+                // (upper spine, ends up matching "Spine2" - the bone-name
+                // matching in the constructor's traverse callback keeps
+                // overwriting this.spine with the last "spine"-but-not-
+                // "spine1" bone it visits, which is the upper one). Neck
+                // deliberately left out - counter-rotating it on top of the
+                // spine's own lean read as the head snapping back too far,
+                // disconnected from the neck's natural bend; the spine
+                // lean alone already gives the "looking forward" effect.
+                applyLean(this.spine1, 0.3);
+                applyLean(this.spine, 0.6);
+
+                // The right hand plants against the ground/slope in the
+                // slide pose, so its shape shouldn't wobble as the lean
+                // above shifts the shoulder around. First attempt read the
+                // shoulder's world orientation fresh every frame and
+                // restored it afterward (a "lock", not target-based IK) -
+                // mathematically correct in isolation, but directly writing
+                // to rShoulderBone.quaternion every frame turned out to
+                // fight with the animation mixer's own per-frame write to
+                // the same property (the mixer didn't cleanly overwrite it
+                // back next frame the way it does every other bone), so the
+                // "before" reading was actually contaminated by last
+                // frame's correction and the whole thing spun wildly.
+                // Sidesteps that entirely: cache the arm's local pose once
+                // when the lean starts and just hold it fixed there for the
+                // rest of the slide - the slide pose is a static hold
+                // anyway, so the arm doesn't need to track the mixer frame
+                // to frame once it's captured.
+                if (this.rShoulderBone && isSliding) {
+                    if (!this._slideArmLocalQuat) this._slideArmLocalQuat = this.rShoulderBone.quaternion.clone();
+                    else this.rShoulderBone.quaternion.copy(this._slideArmLocalQuat);
+                    this.rShoulderBone.updateMatrixWorld(true);
+                }
             }
 
             // Lets other players tell this one apart in multiplayer - assigned
@@ -1976,6 +2105,9 @@ updateClimbing(delta) {
                 } else if (state === 'pull') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('pull', dur);
+                } else if (state === 'sliding') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('sliding', dur);
                 } else if (state === 'ledge') {
                     this.stopUpperAction(dur);
                     if (moveMag > 0.1) {
