@@ -275,12 +275,12 @@
                     <input type="range" id="hit-recovery-duration-slider" min="0.1" max="1.2" step="0.05" value="0.35" style="width: 100%;"><br>
                     <label>Recovery Step Speed: <span id="recovery-step-speed-val">3.5</span></label><br>
                     <input type="range" id="recovery-step-speed-slider" min="0.5" max="10.0" step="0.5" value="3.5" style="width: 100%;"><br>
-                    <label>Recovery Strength Mult Max: <span id="recovery-strength-mult-max-val">3.0</span></label><br>
-                    <input type="range" id="recovery-strength-mult-max-slider" min="1.0" max="8.0" step="0.5" value="3.0" style="width: 100%;"><br>
-                    <label>Recovery Anim Speed Min: <span id="hit-recovery-anim-speed-min-val">0.40</span></label><br>
-                    <input type="range" id="hit-recovery-anim-speed-min-slider" min="0.1" max="1.5" step="0.05" value="0.4" style="width: 100%;"><br>
-                    <label>Recovery Anim Speed Max: <span id="hit-recovery-anim-speed-max-val">2.50</span></label><br>
-                    <input type="range" id="hit-recovery-anim-speed-max-slider" min="1.0" max="6.0" step="0.1" value="2.5" style="width: 100%;"><br>
+                    <label>Recovery Strength Mult Max: <span id="recovery-strength-mult-max-val">6.0</span></label><br>
+                    <input type="range" id="recovery-strength-mult-max-slider" min="1.0" max="10.0" step="0.5" value="6.0" style="width: 100%;"><br>
+                    <label>Recovery Anim Speed Min: <span id="hit-recovery-anim-speed-min-val">1.50</span></label><br>
+                    <input type="range" id="hit-recovery-anim-speed-min-slider" min="0.1" max="3.0" step="0.05" value="1.5" style="width: 100%;"><br>
+                    <label>Recovery Anim Speed Max: <span id="hit-recovery-anim-speed-max-val">6.00</span></label><br>
+                    <input type="range" id="hit-recovery-anim-speed-max-slider" min="1.0" max="10.0" step="0.1" value="6.0" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -2509,11 +2509,23 @@ updateClimbing(delta) {
                     // this.activeAction) - once already playing, later
                     // frames this same call would otherwise re-trigger it
                     // every frame instead of just letting it loop normally.
+                    // Same treatment for the forward/backward recovery
+                    // clips - 'walk_backward' only ever plays for hit
+                    // recovery (front hits), so it's unconditional like the
+                    // strafes, but 'walk'/'run' are ALSO the ordinary
+                    // player-driven locomotion states - only mid-clip-start
+                    // them when window.isHitRecoveryStepActive says THIS
+                    // particular call is the recovery forward-step (a hit
+                    // from behind), not just someone starting to walk
+                    // normally, which should still start from frame 0.
+                    const isRecoveryForwardStep = (baseMoveState === 'walk' || baseMoveState === 'run') && window.isHitRecoveryStepActive;
+                    const wantsMidClipStart = baseMoveState === 'strafe_left_walk' || baseMoveState === 'strafe_right_walk'
+                        || baseMoveState === 'walk_backward' || isRecoveryForwardStep;
                     // Mirrors fadeToAction's own carry-remap (name + '_lower')
                     // so this resolves to whichever action actually ends up
                     // playing - while carrying, that's the lower-body-only
                     // split, not the full-body clip.
-                    const strafeWalkTargetName = (baseMoveState === 'strafe_left_walk' || baseMoveState === 'strafe_right_walk')
+                    const strafeWalkTargetName = wantsMidClipStart
                         ? (window.isCarryingObj ? baseMoveState + '_lower' : baseMoveState)
                         : null;
                     const isNewStrafeWalk = strafeWalkTargetName !== null

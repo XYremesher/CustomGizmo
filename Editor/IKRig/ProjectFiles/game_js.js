@@ -2323,9 +2323,9 @@ export function startGame(CharacterClass) {
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
     window.recoveryStepSpeed = RECOVERY_STEP_SPEED_DEFAULT;
-    window.recoveryStrengthMultMax = 3.0;
-    window.hitRecoveryAnimSpeedMin = 0.4;
-    window.hitRecoveryAnimSpeedMax = 2.5;
+    window.recoveryStrengthMultMax = 6.0;
+    window.hitRecoveryAnimSpeedMin = 1.5;
+    window.hitRecoveryAnimSpeedMax = 6.0;
     window.ragdollLateralStiffness = 0.0;
     window.ragdollDamping = 0.98;
     window.chargeStreakOpacity = 0.3;
