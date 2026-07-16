@@ -1514,7 +1514,8 @@
                         { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
                         { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
                         { name: 'punch_walk', file: 'PunchWalk.fbx' },
-                        { name: 'sliding', file: 'Slide.fbx' }
+                        { name: 'sliding', file: 'Slide.fbx' },
+                        { name: 'runup', file: 'RunUp.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -2108,6 +2109,17 @@ updateClimbing(delta) {
                 } else if (state === 'sliding') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('sliding', dur);
+                } else if (state === 'runup') {
+                    this.stopUpperAction(dur);
+                    this.fadeToAction('runup', dur);
+                    // window.runupAnimSpeed (set in game_js.js from the
+                    // same slope angle that already scales the character's
+                    // actual movement speed while climbing) keeps the feet
+                    // cycle honest with how fast they're really moving -
+                    // otherwise it plays at a fixed pace regardless of the
+                    // ramp's steepness.
+                    const runupAction = this.actions['runup'];
+                    if (runupAction) runupAction.setEffectiveTimeScale(window.runupAnimSpeed || 1.0);
                 } else if (state === 'ledge') {
                     this.stopUpperAction(dur);
                     if (moveMag > 0.1) {

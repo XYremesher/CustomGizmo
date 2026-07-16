@@ -3828,7 +3828,17 @@ export function startGame(CharacterClass) {
                     // effort, right up against RAMP_WALK_BLOCK_ANGLE
                     // (the steepest still-climbable ramps) is a real slog.
                     const climbT = THREE.MathUtils.clamp((groundNormal.angleTo(_upVec) - SLIDE_ENTER_ANGLE) / (RAMP_WALK_BLOCK_ANGLE - SLIDE_ENTER_ANGLE), 0, 1);
-                    speedMult = THREE.MathUtils.lerp(0.5, 0.15, climbT);
+                    speedMult = THREE.MathUtils.lerp(0.3, 0.1, climbT);
+                    // Same climbT drives the 'runup' clip's own playback
+                    // rate (read in ClimbGame.html's animate()) - kept
+                    // noticeably higher than speedMult itself rather than
+                    // matching it 1:1: speedMult here is quite low (real
+                    // ground coverage is meant to feel slow/effortful), but
+                    // driving the animation at that same low rate makes the
+                    // feet barely cycle at all relative to how far the
+                    // character visibly moves, reading as skating/gliding
+                    // instead of taking real steps.
+                    window.runupAnimSpeed = THREE.MathUtils.lerp(1.6, 0.7, climbT);
                 } else if (isGrounded) {
                     // Below the slide threshold entirely - still eases off
                     // gradually approaching it rather than staying at flat-
@@ -4052,6 +4062,7 @@ export function startGame(CharacterClass) {
                     char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, Math.atan2(slideDir.x, slideDir.z)), window.CHAR_TURN_RATE * delta);
                 }
                 else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
+                else if (isClimbingSlope && effectiveMoveMag > 0.05) { char.animate(delta, 'runup', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'runup'; }
                 else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', effectiveMoveMag, time, yVelocity, 0); networkStateName = effectiveMoveMag > 0.8 ? 'run' : 'walk'; }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
