@@ -1315,6 +1315,7 @@
                 // the character stays planted in place.
                 this.hitRecoveryTimer = 0;
                 this.hitRecoveryDir = new THREE.Vector3();
+                this.hitRecoveryAnimState = 'walk';
 
                 this.stabilizeWeight = 1.0;
                 this.climbLockedWorldPos = null;
@@ -1593,7 +1594,12 @@
                         { name: 'punch_walk', file: 'PunchWalk.fbx' },
                         { name: 'sliding', file: 'Slide.fbx' },
                         { name: 'runup', file: 'RunUp.fbx' },
-                        { name: 'stop_sliding', file: 'StopSliding.fbx' }
+                        { name: 'stop_sliding', file: 'StopSliding.fbx' },
+                        { name: 'strafe_left_walk', file: 'StrafeLeftWalk.fbx' },
+                        { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
+                        { name: 'strafe_left_run', file: 'StrafeRunLeft.fbx' },
+                        { name: 'strafe_right_run', file: 'StrafeRunRight.fbx' },
+                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -2461,6 +2467,14 @@ updateClimbing(delta) {
                     let baseMoveState = 'idle';
                     if (state === 'walk') {
                         baseMoveState = (moveMag > 0.8) ? 'run' : 'walk';
+                    } else if (state === 'strafe_left') {
+                        baseMoveState = (moveMag > 0.8) ? 'strafe_left_run' : 'strafe_left_walk';
+                    } else if (state === 'strafe_right') {
+                        baseMoveState = (moveMag > 0.8) ? 'strafe_right_run' : 'strafe_right_walk';
+                    } else if (state === 'walk_backward') {
+                        // Only one pace of clip for this direction - no
+                        // separate run variant to blend into.
+                        baseMoveState = 'walk_backward';
                     } else if (state === 'air') {
                         baseMoveState = (yVelocity > 0) ? 'jump_start' : 'fall';
                     } else if (state === 'landing') {

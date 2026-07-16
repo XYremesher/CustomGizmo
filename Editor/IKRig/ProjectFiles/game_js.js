@@ -59,6 +59,8 @@ export function startGame(CharacterClass) {
     const _footRayOriginScratch = new THREE.Vector3();
     const _leftFootIKTarget = new THREE.Vector3();
     const _rightFootIKTarget = new THREE.Vector3();
+    const _hitRecoveryLocalDir = new THREE.Vector3();
+    const _hitRecoveryInvQuat = new THREE.Quaternion();
     const _tempVec2D = new THREE.Vector2();
     const _tempVec2D2 = new THREE.Vector2();
     const _tempQuat = new THREE.Quaternion();
@@ -4007,6 +4009,25 @@ export function startGame(CharacterClass) {
                 if (isHitRecovering) {
                     mDir = _tempVec1.copy(char.hitRecoveryDir);
                     mAng = Math.atan2(mDir.x, mDir.z);
+                    // Which way the character actually staggers visually
+                    // (see the facing-turn skip below, and Character.animate's
+                    // 'strafe_left'/'strafe_right'/'walk_backward' handling) -
+                    // classified against the character's CURRENT facing
+                    // (unrotated this frame, since facing is intentionally
+                    // left alone during recovery) rather than always turning
+                    // to face travel direction like normal movement does.
+                    // Without this, a hit from the front pushes the
+                    // character straight back, and facing the push direction
+                    // like normal movement would spin them a full 180 to
+                    // face away from whoever just hit them, regardless of
+                    // which side the hit actually came from.
+                    _hitRecoveryInvQuat.copy(char.group.quaternion).invert();
+                    _hitRecoveryLocalDir.copy(char.hitRecoveryDir).applyQuaternion(_hitRecoveryInvQuat);
+                    if (Math.abs(_hitRecoveryLocalDir.x) > Math.abs(_hitRecoveryLocalDir.z)) {
+                        char.hitRecoveryAnimState = _hitRecoveryLocalDir.x > 0 ? 'strafe_right' : 'strafe_left';
+                    } else {
+                        char.hitRecoveryAnimState = _hitRecoveryLocalDir.z > 0 ? 'walk' : 'walk_backward';
+                    }
                 } else {
                     mAng = cameraTheta + Math.atan2(curX, curY);
                     mDir = _tempVec1.set(Math.sin(mAng), 0, Math.cos(mAng));
@@ -4098,8 +4119,13 @@ export function startGame(CharacterClass) {
                 // this one turning to face the input direction and the
                 // other immediately turning back to face downhill right
                 // after it, every single frame - a visible, constant
-                // tug-of-war on the character's rotation.
-                if (!isSliding) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+                // tug-of-war on the character's rotation. Also skipped
+                // during hit recovery - the whole point of classifying
+                // hitRecoveryAnimState above is to stagger sideways/
+                // backwards/forwards in whichever direction the hit
+                // actually pushed, WITHOUT turning to face travel
+                // direction the way normal movement does.
+                if (!isSliding && !isHitRecovering) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
             }
 
             // Walking downhill (stairs, a shallow ramp, the hemisphere,
@@ -4256,7 +4282,17 @@ export function startGame(CharacterClass) {
             if (landingTimer > 0) landingTimer -= delta;
             
             if (isGrounded) {
-                if (pushPullState === 'push') { char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'push'; }
+                if (char.hitRecoveryTimer > 0 && !char.isRagdoll) {
+                    // hitRecoveryAnimState was classified this same frame in
+                    // the movement block above (relative to the character's
+                    // own un-rotated facing) - 'walk' (forward), 'walk_backward',
+                    // 'strafe_left', or 'strafe_right'. Character.animate maps
+                    // each to its matching clip (see its own state handling).
+                    const s = char.hitRecoveryAnimState || 'walk';
+                    char.animate(delta, s, effectiveMoveMag, time, yVelocity, 0);
+                    networkStateName = s;
+                }
+                else if (pushPullState === 'push') { char.animate(delta, 'push', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'push'; }
                 else if (pushPullState === 'pull') { char.animate(delta, 'pull', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'pull'; }
                 else if (isStoppingSlide) {
                     char.animate(delta, 'stop_sliding', effectiveMoveMag, time, yVelocity, 0);
