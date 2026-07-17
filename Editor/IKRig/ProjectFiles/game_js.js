@@ -61,6 +61,19 @@ export function startGame(CharacterClass) {
     const _rightFootIKTarget = new THREE.Vector3();
     const _hitRecoveryLocalDir = new THREE.Vector3();
     const _hitRecoveryInvQuat = new THREE.Quaternion();
+    // Fixed unit directions for the anti-clipping penetration check below -
+    // used to be recreated with `new THREE.Vector3(...)` (8 allocations)
+    // every single frame despite never changing; Raycaster.set() copies
+    // these values in rather than holding a reference, so reusing the same
+    // 8 objects every frame is safe.
+    const _penetrationRayDirs = [
+        new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
+        new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
+        new THREE.Vector3(0.707, 0, 0.707), new THREE.Vector3(-0.707, 0, -0.707),
+        new THREE.Vector3(0.707, 0, -0.707), new THREE.Vector3(-0.707, 0, 0.707)
+    ];
+    const _pushOutVectorScratch = new THREE.Vector3();
+    const _penetrationNormalScratch = new THREE.Vector3();
     const _tempVec2D = new THREE.Vector2();
     const _tempVec2D2 = new THREE.Vector2();
     const _tempQuat = new THREE.Quaternion();
@@ -1522,13 +1535,25 @@ export function startGame(CharacterClass) {
     // Finds where a given foot's own ground contact point actually is,
     // for the leg IK to reach toward - not just floorY under the
     // character's center (which a foot on a slope can be meaningfully off
-    // of once it's a body-width to either side). Only accepts the hit if
-    // it's reasonably close to where the animation already placed the
-    // foot (0.6 units) - a bigger mismatch means the animated pose is
-    // mid-stride/airborne/otherwise not something IK should be dragging
-    // toward a nearby but unrelated surface.
+    // of once it's a body-width to either side). Symmetric on purpose
+    // (within 0.6 units either way of where the animation already put the
+    // foot) - an EARLIER, asymmetric version of this (only ever correcting
+    // upward, never down) was tried to stop legIK from flattening a
+    // running foot's natural lift on flat/bump ground, but it broke ramps:
+    // a downhill foot's true contact point is often genuinely BELOW where
+    // a flat-ground-authored animation places it mid-stride, and the
+    // asymmetric check silently refused that correction, leaving the leg
+    // hovering above the slope instead of planting on it. The run-lift
+    // problem is handled differently now - see applyLegIK's own weight
+    // parameter (speed-based in game_js.js), which fades how much of this
+    // target actually gets applied instead of rejecting it outright.
+    // Returns the hit object (truthy) on success, null otherwise - callers
+    // that only need a yes/no can just check truthiness; the object itself
+    // is also how the movement block tells whether a foot actually landed
+    // on isDecorativeBump terrain (see bumpSpeedBlend) without a third,
+    // separate raycast pass.
     function computeFootIKTarget(footBone, targetVec, solidCollidables) {
-        if (!footBone) return false;
+        if (!footBone) return null;
         footBone.getWorldPosition(_footWorldPosScratch);
         _footRayOriginScratch.copy(_footWorldPosScratch);
         _footRayOriginScratch.y += 0.6;
@@ -1536,9 +1561,9 @@ export function startGame(CharacterClass) {
         const hits = rayDown.intersectObjects(solidCollidables);
         if (hits.length > 0 && Math.abs(hits[0].point.y - _footWorldPosScratch.y) < 0.6) {
             targetVec.copy(hits[0].point);
-            return true;
+            return hits[0].object;
         }
-        return false;
+        return null;
     }
 
     function buildLevelFromJson(data) {
@@ -1617,6 +1642,36 @@ export function startGame(CharacterClass) {
     // exactly the position.y needed to sit that low edge flush with y=0
     // ground (verified against the original ramp's hand-picked y=5.0 at
     // 48deg, which this formula reproduces exactly).
+    // Small canvas-texture sprite showing plain text, always facing the
+    // camera - used to label each test ramp with its own angle so it can
+    // be identified at a glance instead of having to remember/recompute
+    // which one is which from its world position.
+    function makeTextSprite(text, scale = 1.5) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+        const texture = new THREE.CanvasTexture(canvas);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+        sprite.scale.set(scale, scale * 0.5, 1);
+        // Parented to the ramp mesh below, which is itself in
+        // `collidables` - Raycaster.intersectObjects recurses into
+        // children by default, so without this the label's own billboard
+        // quad (floating just above the ramp surface) could be the
+        // closest hit instead of the actual ramp, breaking every raycast
+        // that expects a real face/normal (ground detection, leg IK, wall
+        // checks - anything that reads hits[0].face or .object.matrixWorld
+        // assuming a real mesh surface).
+        sprite.raycast = () => {};
+        return sprite;
+    }
+
     function buildSlopeTestRamp(x, z, angleDeg) {
         const angleRad = angleDeg * Math.PI / 180;
         const hz = 7, hy = 0.3;
@@ -1633,6 +1688,15 @@ export function startGame(CharacterClass) {
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = angleRad;
         levelGroup.add(ramp); collidables.push(ramp);
+
+        // Angle label at the ramp's own low/right corner (local +x, +z,
+        // just above the surface) - parented to the ramp mesh itself so it
+        // inherits its rotation/position automatically, no separate
+        // world-space math to keep in sync.
+        const label = makeTextSprite(Math.round(angleDeg) + '°');
+        label.position.set(2.5, 0.6, 6.5);
+        ramp.add(label);
+
         return ramp;
     }
 
@@ -1646,15 +1710,13 @@ export function startGame(CharacterClass) {
     // of the single flat/sloped surface every other test area so far
     // provides - a real single-obstacle raycast per foot has nowhere to
     // "average out" bumps here.
-    function buildKneeBumpField(centerX, centerZ, rows, cols, spacing) {
-        const KNEE_HEIGHT = 0.256;
+    function buildKneeBumpField(centerX, centerZ, rows, cols, spacing, size = 0.32, baseHeight = 0.256, heightSpread = 0.22) {
         const bumpMat = new THREE.MeshToonMaterial({ color: 0x77aa88, gradientMap: threeTone });
         const startX = centerX - (cols - 1) * spacing / 2;
         const startZ = centerZ - (rows - 1) * spacing / 2;
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
-                const peakHeight = KNEE_HEIGHT + THREE.MathUtils.randFloatSpread(0.22); // ~0.15 to ~0.37
-                const size = 0.32;
+                const peakHeight = baseHeight + THREE.MathUtils.randFloatSpread(heightSpread);
                 const bump = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), bumpMat);
                 bump.rotation.x = Math.PI / 4;
                 bump.rotation.y = Math.random() * Math.PI * 2;
@@ -1706,10 +1768,12 @@ export function startGame(CharacterClass) {
         // the ~39.6deg slide threshold (walkable, no sliding), just past
         // it, solidly steep, and near the ~75.6deg wall cutoff (still
         // barely a slideable slope, not a wall) - plus one filled in
-        // between each original pair. 9 units center-to-center leaves a
-        // 3-unit gap on each side of every 6-unit-wide ramp.
+        // between each original pair. Moved closer to spawn (was
+        // ROW_START_X=-25) and packed tighter (was ROW_SPACING=9, a 3-unit
+        // gap on each side of every 6-unit-wide ramp - now half that gap,
+        // 1.5 units) so walking the whole row for testing is quicker.
         const ROW_ANGLES = [25, 33, 40, 44, 48, 56, 65, 69, 72];
-        const ROW_SPACING = 9, ROW_START_X = -25, ROW_Z = -10;
+        const ROW_SPACING = 7.5, ROW_START_X = -15, ROW_Z = -10;
         ROW_ANGLES.forEach((deg, i) => buildSlopeTestRamp(ROW_START_X - i * ROW_SPACING, ROW_Z, deg));
         const ROW_END_X = ROW_START_X - (ROW_ANGLES.length - 1) * ROW_SPACING;
 
@@ -1759,9 +1823,26 @@ export function startGame(CharacterClass) {
         buildNarrowLedgeTestRig(20, 8, 0.4);
         buildNarrowLedgeTestRig(25, 8, 0);
 
-        // Clear of everything else built above (ledge rigs/shooters top out
-        // at x=25, z=8) - open ground further out at (45, 20).
-        buildKneeBumpField(45, 20, 8, 8, 0.9);
+        // All four bump-test fields lined up along the same Z (20), packed
+        // as close together (and to spawn at 0,0,0) as their own widths
+        // allow without actually overlapping - originally spread 20 units
+        // apart starting at x=45, then tightened once already; each center
+        // here is spaced just past the widest of its two neighbors' half-
+        // extents plus a small walkable gap, not a fixed round number.
+        buildKneeBumpField(5, 20, 8, 8, 0.9);
+        // Same field, right next to it, with 2x bigger bumps - spacing
+        // doubled to match (keeps the same gap-to-bump-size ratio as the
+        // original instead of the boxes packing tighter together).
+        buildKneeBumpField(15, 20, 8, 8, 1.8, 0.64);
+        // Same big (0.64) bumps as above, but spacing back down to the
+        // first field's own 0.9 - packed tight the way the original was,
+        // just with bigger obstacles this time.
+        buildKneeBumpField(25, 20, 8, 8, 0.9, 0.64);
+        // Same tight-packed big bumps, but noticeably taller - baseHeight
+        // raised from knee level (~0.256) to roughly hip level (the
+        // character's own hips bone sits at ~0.62 - measured live via
+        // hips.getWorldPosition() the same way the knee reference was).
+        buildKneeBumpField(32, 20, 8, 8, 0.9, 0.64, 0.62, 0.22);
 
         const sLow = new ShooterBox(levelGroup, 25, 1.0, 4.5, 'low');
         shooters.push(sLow); collidables.push(sLow.mesh);
@@ -2245,6 +2326,26 @@ export function startGame(CharacterClass) {
     // physically-wrong stop, with its own StopSliding.fbx clip (see
     // 'stop_sliding' in the animation state selection).
     let isStoppingSlide = false;
+    // Smoothed (not snapped) extra height added on top of floorY when a
+    // foot lands on ground higher than the center-ray reading (see the
+    // foot-boost block below, near wasGrounded) - eases toward the target
+    // instead of jumping straight to it every frame, since on scattered
+    // small obstacles (buildKneeBumpField) which foot is in stance phase
+    // touching which bump changes step to step; snapping floorY straight
+    // to that raw, rapidly-changing value read as the root visibly
+    // jittering rather than a smooth rise/fall onto each bump.
+    let footRiseSmoothed = 0;
+    // Smoothed 0..1 "how much of either foot is currently on decorative
+    // bump terrain" - read by the movement block to blend in a speed
+    // reduction (see bumpTerrainSpeedMult) the same eased way, rather than
+    // a per-frame on/off toggle that would itself read as speed jitter.
+    let bumpSpeedBlend = 0;
+    // Set once per frame by the foot-boost block (near footRiseSmoothed
+    // above), reused by the legIK-apply block later the same frame instead
+    // of recomputing the identical raycast a second time - see that
+    // block's own comment.
+    let leftFootHit = null;
+    let rightFootHit = null;
     // Deliberately gentler than it sounds - a high value here dumps almost
     // all the slide speed in the first fraction of a second, so the
     // character sits fully stopped for most of STOP_SLIDE_DURATION while
@@ -2326,6 +2427,11 @@ export function startGame(CharacterClass) {
     window.recoveryStrengthMultMax = 6.0;
     window.hitRecoveryAnimSpeedMin = 1.5;
     window.hitRecoveryAnimSpeedMax = 6.0;
+    // Multiplies speedMult while on isDecorativeBump terrain (see
+    // bumpSpeedBlend) - 1.0 would mean no slowdown, lower = slower. Applied
+    // through the same eased blend as the root foot-rise, not a hard
+    // per-frame toggle.
+    window.bumpTerrainSpeedMult = 0.6;
     window.ragdollLateralStiffness = 0.0;
     window.ragdollDamping = 0.98;
     window.chargeStreakOpacity = 0.3;
@@ -2346,6 +2452,17 @@ export function startGame(CharacterClass) {
     window.playerStaggerRegenDelay = 2.5;
     window.playerStaggerRegenCooldown = 0;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
+    // Between HANG_DRAIN (passive hanging) and CLIMB_COST (the quick
+    // ledge climb-up action) - actively climbing a steep/slidable ramp
+    // (isClimbingSlope, only ever true above the slide-entry angle) is
+    // sustained effort like hanging, not a one-off action like the ledge
+    // climb-up, so it's charged per second the same way, just a bit
+    // steeper since you're also making real progress against it (unlike
+    // hanging in place). Angle-scaled at the drain site (same climbT as
+    // speed): the shallowest slidable slope drains at the base rate
+    // (~33s of full bar), the steepest still-climbable one at the max
+    // (~12s of full bar).
+    const RAMP_CLIMB_DRAIN = 3, RAMP_CLIMB_DRAIN_MAX = 8;
 
 
     function handleJump() {
@@ -2487,6 +2604,7 @@ export function startGame(CharacterClass) {
         { id: 'recovery-strength-mult-max-slider', vId: 'recovery-strength-mult-max-val', func: v => window.recoveryStrengthMultMax = v, fix: 1 },
         { id: 'hit-recovery-anim-speed-min-slider', vId: 'hit-recovery-anim-speed-min-val', func: v => window.hitRecoveryAnimSpeedMin = v, fix: 2 },
         { id: 'hit-recovery-anim-speed-max-slider', vId: 'hit-recovery-anim-speed-max-val', func: v => window.hitRecoveryAnimSpeedMax = v, fix: 2 },
+        { id: 'bump-terrain-speed-mult-slider', vId: 'bump-terrain-speed-mult-val', func: v => window.bumpTerrainSpeedMult = v, fix: 2 },
         { id: 'charge-streak-opacity-slider', vId: 'charge-streak-opacity-val', func: v => window.chargeStreakOpacity = v },
         { id: 'charge-streak-base-radius-slider', vId: 'charge-streak-base-radius-val', func: v => window.chargeStreakBaseRadius = v },
         { id: 'charge-streak-radius-spread-slider', vId: 'charge-streak-radius-spread-val', func: v => window.chargeStreakRadiusSpread = v },
@@ -2876,6 +2994,19 @@ export function startGame(CharacterClass) {
         }
 
         const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
+        // Ground-scan-only variant, excluding isDecorativeBump terrain
+        // (see buildKneeBumpField) - those small bumps still need to be in
+        // solidCollidables itself for the per-foot legIK raycasts
+        // (computeFootIKTarget) and normal horizontal collision, but
+        // having them ALSO picked up by the coarse 5-offset-ray floorY/
+        // groundNormal scan below meant that scan's own single highest-hit
+        // reading flipped between a bump-top and the flat ground right
+        // next to it from one frame to the next, independent of (and in
+        // addition to) the already-smoothed per-foot boost - the root
+        // visibly jittering even with that smoothing in place. Every bump
+        // contributing to standing height now flows through exactly one
+        // path (the smoothed foot-boost), not two uncoordinated ones.
+        const groundScanCollidables = solidCollidables.filter(c => !(c.userData && c.userData.isDecorativeBump));
 
         if (Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05) {
             cameraTheta -= input.right.x * 0.04;
@@ -2955,7 +3086,7 @@ export function startGame(CharacterClass) {
                 let testOrigin = _tempVec1.copy(char.group.position).add(offset);
                 testOrigin.y += 1.2;
                 rayDown.set(testOrigin, _downVec);
-                const hits = rayDown.intersectObjects(solidCollidables);
+                const hits = rayDown.intersectObjects(groundScanCollidables);
                 if (hits.length > 0) {
                     const hitY = hits[0].point.y;
                     if (hitY <= char.group.position.y + 0.8) {
@@ -3214,38 +3345,29 @@ export function startGame(CharacterClass) {
         wasSliding = isSliding;
 
         const capsuleRadius = 0.4;
-        const penetrationRays = [
-            new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
-            new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
-            new THREE.Vector3(0.707, 0, 0.707), new THREE.Vector3(-0.707, 0, -0.707),
-            new THREE.Vector3(0.707, 0, -0.707), new THREE.Vector3(-0.707, 0, 0.707)
-        ];
-        
-        let pushOutVector = new THREE.Vector3(0, 0, 0);
+        const pushOutVector = _pushOutVectorScratch.set(0, 0, 0);
         let hasPenetration = false;
-        
-        for(let dir of penetrationRays) {
-            let testOrigin1 = _tempVec1.copy(char.group.position);
-            testOrigin1.y += 0.5; 
-            rayFwd.set(testOrigin1, dir);
-            let hits1 = rayFwd.intersectObjects(solidCollidables);
-            
-            let testOrigin2 = _tempVec2.copy(char.group.position);
-            testOrigin2.y += 1.5; 
-            rayFwd.set(testOrigin2, dir);
-            let hits2 = rayFwd.intersectObjects(solidCollidables);
-            
-            const processHits = (hits) => {
-                if (hits.length > 0 && hits[0].distance < capsuleRadius) {
-                    const overlap = capsuleRadius - hits[0].distance;
-                    const normal = hits[0].face.normal.clone().transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
-                    if (normal.lengthSq() > 0) {
-                        pushOutVector.add(normal.multiplyScalar(overlap));
-                        hasPenetration = true;
-                    }
+
+        const processHit = (hits) => {
+            if (hits.length > 0 && hits[0].distance < capsuleRadius) {
+                const overlap = capsuleRadius - hits[0].distance;
+                const normal = _penetrationNormalScratch.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld).setY(0).normalize();
+                if (normal.lengthSq() > 0) {
+                    pushOutVector.add(normal.multiplyScalar(overlap));
+                    hasPenetration = true;
                 }
-            };
-            processHits(hits1); processHits(hits2);
+            }
+        };
+        for (let dir of _penetrationRayDirs) {
+            let testOrigin1 = _tempVec1.copy(char.group.position);
+            testOrigin1.y += 0.5;
+            rayFwd.set(testOrigin1, dir);
+            processHit(rayFwd.intersectObjects(solidCollidables));
+
+            let testOrigin2 = _tempVec2.copy(char.group.position);
+            testOrigin2.y += 1.5;
+            rayFwd.set(testOrigin2, dir);
+            processHit(rayFwd.intersectObjects(solidCollidables));
         }
         
         // On a steep slope, the character is deliberately standing/leaning
@@ -3873,6 +3995,12 @@ export function startGame(CharacterClass) {
             networkStateName = 'hang_idle';
         } else {
             if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
+            else if (isClimbingSlope) {
+                // Steeper climb drains faster - same climbT ramp that
+                // already scales movement speed and the runup clip's rate.
+                const drainT = THREE.MathUtils.clamp((groundNormal.angleTo(_upVec) - SLIDE_ENTER_ANGLE) / (RAMP_WALK_BLOCK_ANGLE - SLIDE_ENTER_ANGLE), 0, 1);
+                stamina -= THREE.MathUtils.lerp(RAMP_CLIMB_DRAIN, RAMP_CLIMB_DRAIN_MAX, drainT)*delta;
+            }
             else if (isGrounded && moveMag < 0.1 && yVelocity === 0) stamina += REGEN_RATE*delta;
             stamina = Math.max(0, Math.min(STAMINA_MAX, stamina));
             document.getElementById('stamina-bar').style.width = stamina + '%';
@@ -4073,35 +4201,39 @@ export function startGame(CharacterClass) {
                 if (isHitRecovering) { /* actualSpeed set directly below instead */ }
                 else if (isSliding) speedMult = 0.1;
                 else if (isClimbingSlope) {
-                    // Actively climbing (see the ground-detection block
-                    // above) gets a real, if slow, speed instead of
-                    // near-zero - the whole point is being able to make
-                    // deliberate progress up a slope you'd otherwise just
-                    // slide back down. Scales with the slope's own angle
-                    // instead of one flat rate for the whole climbable
-                    // range - barely past the slide threshold is a mild
-                    // effort, right up against RAMP_WALK_BLOCK_ANGLE
-                    // (the steepest still-climbable ramps) is a real slog.
+                    // The original deliberate slow crawl, restored (a
+                    // softer 0.6-0.35 range was tried in between and
+                    // rejected - the whole point of this branch is that
+                    // climbing a slope you'd otherwise slide down reads as
+                    // real effort, and steeper/closer to
+                    // RAMP_WALK_BLOCK_ANGLE is a real slog).
                     const climbT = THREE.MathUtils.clamp((groundNormal.angleTo(_upVec) - SLIDE_ENTER_ANGLE) / (RAMP_WALK_BLOCK_ANGLE - SLIDE_ENTER_ANGLE), 0, 1);
                     speedMult = THREE.MathUtils.lerp(0.3, 0.1, climbT);
                     // Same climbT drives the 'runup' clip's own playback
-                    // rate (read in ClimbGame.html's animate()) - kept
-                    // noticeably higher than speedMult itself rather than
-                    // matching it 1:1: speedMult here is quite low (real
-                    // ground coverage is meant to feel slow/effortful), but
-                    // driving the animation at that same low rate makes the
-                    // feet barely cycle at all relative to how far the
-                    // character visibly moves, reading as skating/gliding
-                    // instead of taking real steps.
+                    // rate (read in ClimbGame.html's animate()) - the
+                    // dedicated climbing clip is back for slidable ramps
+                    // (a walk/run cycle was tried there and rejected), and
+                    // without this its fixed pace ignores how the ramp's
+                    // steepness already scales real ground speed.
                     window.runupAnimSpeed = THREE.MathUtils.lerp(1.6, 0.7, climbT);
                 } else if (isGrounded) {
-                    // Below the slide threshold entirely - still eases off
-                    // gradually approaching it rather than staying at flat-
-                    // ground speed right up to the point sliding kicks in.
+                    // Below the slide threshold entirely (not slidable) -
+                    // real reduction again too, same reasoning as above:
+                    // safe now that the run/walk animation choice no
+                    // longer reads this same (reduced) value.
                     const walkT = THREE.MathUtils.clamp(groundNormal.angleTo(_upVec) / SLIDE_ENTER_ANGLE, 0, 1);
-                    speedMult = THREE.MathUtils.lerp(1.0, 0.8, walkT);
+                    speedMult = THREE.MathUtils.lerp(1.0, 0.6, walkT);
                 }
                 if (!isHitRecovering && landingTimer > 0 && initialLandingTimer > 0) speedMult = 1.0 - (0.85 * Math.sin(Math.pow(1.0 - (landingTimer / initialLandingTimer), 0.6) * Math.PI));
+                // Slows down on decorative bump terrain (see
+                // buildKneeBumpField/bumpSpeedBlend, updated once per frame
+                // near wasGrounded) - real uneven ground is harder to move
+                // fast over, and it reads as a genuine "this terrain is
+                // rough" cue rather than just a visual leg-IK correction
+                // with no gameplay weight to it. bumpSpeedBlend is already
+                // eased (not a hard per-frame toggle), so this multiply
+                // itself doesn't introduce any new jitter.
+                if (!isHitRecovering) speedMult *= THREE.MathUtils.lerp(1.0, window.bumpTerrainSpeedMult, bumpSpeedBlend);
 
                 let finalMoveDir = mDir.clone();
                 // Eases out as the timer counts down instead of holding
@@ -4207,7 +4339,7 @@ export function startGame(CharacterClass) {
             if (isGrounded && !isSliding && !isClimbingSlope && !isLedgeGrabbing && !isClimbingUp && yVelocity <= 0) {
                 const downhillOrigin = _tempVec3.copy(char.group.position); downhillOrigin.y += 1.2;
                 rayDown.set(downhillOrigin, _downVec);
-                const downhillHits = rayDown.intersectObjects(solidCollidables);
+                const downhillHits = rayDown.intersectObjects(groundScanCollidables);
                 if (downhillHits.length > 0 && downhillHits[0].point.y < char.group.position.y && downhillHits[0].point.y > char.group.position.y - 1.5) {
                     char.group.position.y = downhillHits[0].point.y;
                 }
@@ -4282,6 +4414,112 @@ export function startGame(CharacterClass) {
                 if (isGrounded) jumpMomentum.lerp(_tempVec2.set(0,0,0), 4*delta);
             }
             
+            // Blend floorY with each foot's OWN ground contact point (found
+            // the same way applyLegIK's own targets are below, just
+            // computed here too) BEFORE the grounded/falling decision right
+            // below uses it - the single center-preferred ray floorY comes
+            // from can land in a gap between scattered small obstacles (see
+            // buildKneeBumpField) even while a foot is squarely on one,
+            // leaving the root too low for that leg to reach without
+            // stretching or clipping through. Doing this here, folded into
+            // floorY itself, keeps floorY the one source of truth isGrounded
+            // relies on - an earlier attempt nudged char.group.position.y
+            // up AFTER isGrounded was already decided instead, which left
+            // the root sitting above whatever floorY the very next frame's
+            // fresh single-ray read happened to find, misreading as
+            // "falling" out of nowhere the instant that ray missed the bump.
+            // Computed once here and reused by the legIK-apply block further
+            // below (same foot bones, same frame) instead of calling
+            // computeFootIKTarget a second time for each foot - it used to
+            // recompute an identical raycast twice per foot per frame
+            // (4 raycasts total against the full ~300+-object collidables
+            // array where 2 give the same result), pure waste. The targets
+            // are one animation-tick staler by the time legIK reads them
+            // (this runs before char.animate() updates the skeleton for
+            // the frame, the old second call ran after) - imperceptible at
+            // 60fps for how far a foot actually moves in one tick.
+            // Only ever counts isDecorativeBump contacts - this whole
+            // root-rise/speed-reduction system is scoped exclusively to the
+            // buildKneeBumpField test areas now, never touching ordinary
+            // ramps/slopes/stairs at all. It used to count ANY raised
+            // ground a foot found (not just bumps), which was meant to be
+            // a no-op on a genuine ramp (its own foot target and floorY
+            // should already roughly agree) but in practice kept
+            // interacting with ramp-specific behavior in ways that were
+            // hard to fully predict and broke ramp foot-planting more than
+            // once this session - full separation is safer and easier to
+            // reason about than trying to make one shared system correct
+            // for both a continuous authored slope and scattered test
+            // clutter at the same time.
+            let footBoostTarget = 0;
+            let bumpBoostTarget = 0;
+            leftFootHit = null; rightFootHit = null;
+            if (char.lFootBone && char.rFootBone && !isLedgeGrabbing && !isClimbingUp) {
+                leftFootHit = computeFootIKTarget(char.lFootBone, _leftFootIKTarget, solidCollidables);
+                rightFootHit = computeFootIKTarget(char.rFootBone, _rightFootIKTarget, solidCollidables);
+                if (leftFootHit && leftFootHit.userData && leftFootHit.userData.isDecorativeBump) {
+                    bumpBoostTarget = Math.max(bumpBoostTarget, _leftFootIKTarget.y - floorY);
+                }
+                if (rightFootHit && rightFootHit.userData && rightFootHit.userData.isDecorativeBump) {
+                    bumpBoostTarget = Math.max(bumpBoostTarget, _rightFootIKTarget.y - floorY);
+                }
+            }
+            bumpBoostTarget = Math.max(0, bumpBoostTarget);
+            footBoostTarget = bumpBoostTarget;
+            // Only frozen (skipped) while genuinely standing still ON TOP
+            // of a bump right now (moveMag<=0.1 AND footBoostTarget still
+            // >0 this exact frame) - every other case updates normally:
+            //   - moving: rises fast onto a new bump, falls slow off an
+            //     old one, same as always.
+            //   - airborne (!isGrounded, last frame's value - this block
+            //     runs before this frame's own grounded/falling decision):
+            //     MUST keep updating even with no input, or a value frozen
+            //     from the last bump the player was standing on before
+            //     walking off an edge stays baked into floorY while
+            //     they're actually falling through open air - the
+            //     grounded/falling check below then reads that stale,
+            //     no-longer-relevant boost as real ground and snaps them
+            //     back "grounded" at a height with nothing under them,
+            //     which is exactly the mid-air-with-legs-stretched-down
+            //     pose from the reported screenshot.
+            //   - standing still but NOT currently on a bump
+            //     (footBoostTarget already back to 0, e.g. they drifted
+            //     off the bump itself while stopping, or this is simply
+            //     the tail end of walking away): still decays toward 0
+            //     normally instead of holding onto a stale elevation with
+            //     nothing left to justify it - the earlier version of this
+            //     fix always froze once input stopped, which meant walking
+            //     away in short, hesitant bursts (stop-start-stop) held
+            //     the leftover height in place through every pause instead
+            //     of continuing to settle down between them.
+            const isStandingOnBumpNow = footBoostTarget > 0.001;
+            if (moveMag > 0.1 || !isGrounded || !isStandingOnBumpNow) {
+                // Rise fast, fall slow - each stride only has ONE foot in
+                // stance touching a bump at a time (the other's mid-swing,
+                // see computeFootIKTarget), so a symmetric lerp here means
+                // the target itself swings a lot step to step (one foot on
+                // a tall bump, the next stride's foot maybe on nothing at
+                // all) and the root visibly bobs down again between almost
+                // every single step even at a fairly slow lerp rate.
+                // Letting it fall back down much more gradually than it
+                // rises keeps the root reading as "generally elevated
+                // while crossing rough ground" instead of snapping down
+                // each time neither foot's raycast happens to catch a
+                // bump for a step.
+                const footRiseRate = footBoostTarget > footRiseSmoothed ? 9 : 2.5;
+                footRiseSmoothed = THREE.MathUtils.lerp(footRiseSmoothed, footBoostTarget, Math.min(1, footRiseRate * delta));
+                // Proportional to how tall/intense the actual bump contact
+                // is (0.4 units ~ the taller test field's typical peak
+                // height reads as "fully" slow) rather than a flat on/off -
+                // a single small bump barely slows the player, the tall/
+                // dense field slows them close to the full
+                // bumpTerrainSpeedMult.
+                const BUMP_SPEED_REFERENCE_HEIGHT = 0.4;
+                const bumpIntensity = THREE.MathUtils.clamp(bumpBoostTarget / BUMP_SPEED_REFERENCE_HEIGHT, 0, 1);
+                bumpSpeedBlend = THREE.MathUtils.lerp(bumpSpeedBlend, bumpIntensity, Math.min(1, 8 * delta));
+            }
+            floorY += footRiseSmoothed;
+
             let wasGrounded = isGrounded;
             // yVelocity>0 (actively rising, e.g. right after a jump) is
             // always treated as airborne outright, not just when it clears
@@ -4309,7 +4547,19 @@ export function startGame(CharacterClass) {
                 }
                 isGrounded = false; char.group.position.y += yVelocity*delta;
             } else {
-                char.group.position.y = floorY; isGrounded = true; 
+                // Smoothed instead of snapped specifically while on/near
+                // decorative bump terrain (bumpSpeedBlend > 0, see its own
+                // comment) - floorY itself (not just the foot-boost added
+                // to it above) already jitters there, since the small
+                // bumps are also picked up directly by the normal 5-ray
+                // ground scan just like any other ground geometry, and
+                // which ray reads highest can flip between a bump-top and
+                // the flat ground beneath it from one frame to the next.
+                // Every other surface (stairs, ramps, flat ground) keeps
+                // the exact original instant snap - bumpSpeedBlend is 0
+                // there, so this is a no-op everywhere except the bump
+                // fields.
+                char.group.position.y = floorY; isGrounded = true;
                 if (!wasGrounded) {
                     if (yVelocity < -22 && !char.isRagdoll) {
                         const currentVel = new THREE.Vector3();
@@ -4376,8 +4626,19 @@ export function startGame(CharacterClass) {
                     char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, Math.atan2(slideDir.x, slideDir.z)), window.CHAR_TURN_RATE * delta);
                 }
                 else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
+                // Slidable-but-climbable ramps keep their dedicated
+                // 'runup' clip (a plain walk/run cycle was tried there and
+                // rejected) - unlike before, legIK now stays on during it.
                 else if (isClimbingSlope && effectiveMoveMag > 0.05) { char.animate(delta, 'runup', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'runup'; }
-                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', effectiveMoveMag, time, yVelocity, 0); networkStateName = effectiveMoveMag > 0.8 ? 'run' : 'walk'; }
+                // Non-slidable ramps + flat ground: the walk/run choice is
+                // driven by moveMag (raw input, 0-1) rather than
+                // effectiveMoveMag, so the ramp-angle speed reduction above
+                // can't cap the character out of the run clip at full
+                // input. fadeToAction uses the value as a plain threshold
+                // (neither clip's timeScale varies with it), so which clip
+                // plays reflects how hard the player is pressing while
+                // actual ground covered still reflects the reduced speed.
+                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk'; }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
             // Visual-only lean toward the slope's surface while sliding -
@@ -4412,32 +4673,63 @@ export function startGame(CharacterClass) {
             // (see setSlopeTilt's own comment for why they can't be two
             // separate quaternion ops on fbxModel.quaternion).
             char.updateTurnLean(delta);
-            char.setSlopeTilt(isGenuinelySliding ? groundNormal : _upVec, delta, isGenuinelySliding ? slideDir : null, char.turnLeanAngle);
+            // Whole body (root) tilts to match the slope while genuinely
+            // sliding, same as it always did - the piecemeal spine/neck
+            // counter-lean experiments are gone. What survives instead is
+            // a single pelvis hold (below): the root tilts, but the hips
+            // bone is rotated back to its as-authored orientation, as if
+            // the ground weren't sloped - legs get carried with it and
+            // legIK (later this frame) re-plants the feet on the slope.
+            char.setSlopeTilt(isGenuinelySliding ? groundNormal : _upVec, delta, isGenuinelySliding ? slideDir : null, char.turnLeanAngle, char.hitTwistAngle);
+            if (isGenuinelySliding) char.levelPelvisWhileSliding();
             char.setArrowTilt(isOnSlopeSurface ? groundNormal : _upVec, delta, arrowTiltRefDir);
-            // Counter-leans the upper body/head back toward level (and, only
-            // while genuinely sliding, keeps the right arm's shape locked so
-            // its hand doesn't drift off whatever the slide pose plants it
-            // against) - reads fbxModel's own tilt directly, so it has to
-            // run after the call above actually updates it this frame. The
-            // spine counter-lean itself applies whenever fbxModel has any
-            // tilt at all (see its own comment), which now only happens
-            // while genuinely sliding since the root itself no longer tilts
-            // during climbing/walking.
-            char.applySlopeLean(delta, isGenuinelySliding);
             // Leg IK: plants each foot on the ground actually under it
             // (rather than wherever the animation clip alone leaves it),
             // running after the tilt/lean above so it's working from the
-            // final posed skeleton for this frame, not a stale one. Gated
-            // on isOnSlopeSurface (not isGenuinelySliding) so feet still
-            // conform to the slope while climbing/walking too, even though
-            // the root itself stays upright in that case - on flat ground
-            // there's nothing for this to correct, and running the two
-            // extra raycasts + solves every frame regardless would be pure
-            // waste.
-            if (isOnSlopeSurface && char.fbxModel) {
-                const leftValid = computeFootIKTarget(char.lFootBone, _leftFootIKTarget, solidCollidables);
-                const rightValid = computeFootIKTarget(char.rFootBone, _rightFootIKTarget, solidCollidables);
-                char.applyLegIK(leftValid ? _leftFootIKTarget : null, rightValid ? _rightFootIKTarget : null);
+            // final posed skeleton for this frame, not a stale one.
+            // Gated on isOnSlopeSurface (one continuous sloped surface,
+            // groundNormal.y < 0.995) - the ORIGINAL condition, restored -
+            // OR isOnBumpTerrain (either foot's own raycast found an
+            // isDecorativeBump directly, regardless of what the single
+            // coarse groundNormal ray saw). A version of this broadened to
+            // plain isGrounded (running on literally every frame,
+            // including flat ground) was tried to make bump-field contact
+            // more reliable, but it also meant every other new mechanic
+            // built alongside it (weighted correction, the floorY foot-
+            // boost) now ran on ramps too even when nothing about them
+            // needed fixing, and broke ramp foot-planting more than once
+            // this session in ways that took real effort to track down
+            // each time. Splitting the trigger like this keeps ramps on
+            // the exact path they were already working well on, while
+            // still giving bumps their own reliable (if separately
+            // maintained) per-foot detection.
+            const isOnBumpTerrain = (leftFootHit && leftFootHit.userData && leftFootHit.userData.isDecorativeBump)
+                || (rightFootHit && rightFootHit.userData && rightFootHit.userData.isDecorativeBump);
+            // No legIK while actively climbing a slidable slope
+            // (isClimbingSlope - the 'runup' clip): IK-on there was tried
+            // and rejected, the correction erases the clip's stepping
+            // motion (an earlier version of the same exception gated on
+            // the test ramps' own 40deg+ userData angle instead; the state
+            // flag covers every slidable slope, not just test ramps).
+            // Shallower, non-slidable ramps keep full IK as always.
+            if ((isOnSlopeSurface || isOnBumpTerrain) && !isClimbingSlope && !isLedgeGrabbing && !isClimbingUp && char.fbxModel) {
+                // leftFootHit/rightFootHit and _leftFootIKTarget/
+                // _rightFootIKTarget were already computed once this same
+                // frame by the foot-boost block above (near wasGrounded) -
+                // reused here instead of raycasting the same thing again.
+                const leftValid = leftFootHit;
+                const rightValid = rightFootHit;
+                // Plain universal speed-based weight, no isClimbingSlope
+                // special case - both a flat weight of 1.0 (perfect hold,
+                // but reads as zero stepping - full correction overrides
+                // whatever lift the runup clip's own cycle wants to show)
+                // and a fixed 0.6 for climbing specifically (still too
+                // close to the same "doesn't hold" feel as the plain
+                // formula already gave) were tried and rejected in favor
+                // of just this - the first version that actually read
+                // well while climbing.
+                const legIKWeight = THREE.MathUtils.clamp(1.0 - effectiveMoveMag, 0.35, 1.0);
+                char.applyLegIK(leftValid ? _leftFootIKTarget : null, rightValid ? _rightFootIKTarget : null, legIKWeight);
             }
 
             networkCarryUpper = false;

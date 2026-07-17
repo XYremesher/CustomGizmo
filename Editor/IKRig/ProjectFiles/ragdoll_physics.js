@@ -131,6 +131,19 @@ export const RagdollPhysics = {
 
         this.recoilVelocity.x += localDir.z * impulseMagnitude;
         this.recoilVelocity.z += -localDir.x * impulseMagnitude;
+        // Whole-character yaw snap, separate from the spine-only lean above
+        // - this used to be exactly what the OLD recovery-turn did (facing
+        // travel direction), which was removed because it always spun the
+        // character's back toward whoever hit them regardless of which
+        // side the hit came from. This is different: a quick, self-
+        // decaying twist purely for impact emphasis (applied to fbxModel in
+        // setSlopeTilt, not this.group's actual facing), independent of
+        // movement direction - the recovery step's own direction
+        // (hitRecoveryDir, set below) stays a fixed world-space vector
+        // unaffected by this, so a hit from the side twisting the visual
+        // model doesn't send the character stepping the wrong way. Same
+        // raw-impulse-as-velocity convention as recoilVelocity.x/z above.
+        this.hitTwistVelocity += -localDir.x * impulseMagnitude;
 
         this.lastSpineWorld = null;
         this.lastSpine1World = null;
@@ -180,6 +193,12 @@ export const RagdollPhysics = {
         this.recoilVelocity.lerp(new THREE.Vector3(), 15 * delta);
         this.recoilRotation.lerp(new THREE.Vector3(), 10 * delta);
         this.recoilRotation.add(this.recoilVelocity.clone().multiplyScalar(delta));
+        // Same spring-damper shape as recoilVelocity/recoilRotation above,
+        // just scalar - drives the whole-character impact twist (see
+        // applyProceduralRecoil and setSlopeTilt's hitTwistAngle param).
+        this.hitTwistVelocity = THREE.MathUtils.lerp(this.hitTwistVelocity, 0, 15 * delta);
+        this.hitTwistAngle = THREE.MathUtils.lerp(this.hitTwistAngle, 0, 10 * delta);
+        this.hitTwistAngle += this.hitTwistVelocity * delta;
     },
 
     detectFallDirection() {

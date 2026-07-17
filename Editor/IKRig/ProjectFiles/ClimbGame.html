@@ -281,6 +281,8 @@
                     <input type="range" id="hit-recovery-anim-speed-min-slider" min="0.1" max="3.0" step="0.05" value="1.5" style="width: 100%;"><br>
                     <label>Recovery Anim Speed Max: <span id="hit-recovery-anim-speed-max-val">6.00</span></label><br>
                     <input type="range" id="hit-recovery-anim-speed-max-slider" min="1.0" max="10.0" step="0.1" value="6.0" style="width: 100%;"><br>
+                    <label>Bump Terrain Speed Mult: <span id="bump-terrain-speed-mult-val">0.60</span></label><br>
+                    <input type="range" id="bump-terrain-speed-mult-slider" min="0.1" max="1.0" step="0.05" value="0.6" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -1317,6 +1319,8 @@
 
                 this.recoilRotation = new THREE.Vector3(0, 0, 0);
                 this.recoilVelocity = new THREE.Vector3(0, 0, 0);
+                this.hitTwistAngle = 0;
+                this.hitTwistVelocity = 0;
 
                 // Hit-recovery stagger step (see applyProceduralRecoil in
                 // ragdoll_physics.js and its use in game_js.js's movement
@@ -1733,7 +1737,7 @@
             // identity/tilt-only pull-back eating most of whatever roll the
             // other step just added before it was ever visible. Composing
             // both into one target and slerping once avoids that entirely.
-            setSlopeTilt(normal, delta, slideDir, turnLeanAngle = 0, weight = 1.0) {
+            setSlopeTilt(normal, delta, slideDir, turnLeanAngle = 0, hitTwistAngle = 0, weight = 1.0) {
                 if (!this.fbxModel) return;
                 let targetQuat;
                 if (Math.abs(normal.y) > 0.999 || !slideDir) {
@@ -1744,6 +1748,17 @@
                 _tempQuat6.copy(targetQuat);
                 if (Math.abs(turnLeanAngle) > 0.0001) {
                     _tempQuat5.setFromAxisAngle(_localForwardAxisVec, turnLeanAngle);
+                    _tempQuat6.multiply(_tempQuat5);
+                }
+                // Whole-character impact twist (see applyProceduralRecoil's
+                // own comment on hitTwistVelocity for why this is safe now
+                // in a way the old recovery-turn wasn't) - a yaw rotation
+                // around the model's own local up axis, composed into the
+                // same combined target as the tilt/lean above so it doesn't
+                // fight them the same way turnLeanAngle would have as a
+                // separate operation.
+                if (Math.abs(hitTwistAngle) > 0.0001) {
+                    _tempQuat5.setFromAxisAngle(_worldUpVec, hitTwistAngle);
                     _tempQuat6.multiply(_tempQuat5);
                 }
                 if (this.hips) this.hips.getWorldPosition(_hipsPivotBefore);
@@ -1920,18 +1935,40 @@
                     bone.quaternion.multiply(_leanBlendQuat);
                     bone.updateMatrixWorld(true);
                 };
+                // Pelvis (this.hips) deliberately NOT included here, unlike
+                // spine/spine1 below - tried it (weighted the same way) and
+                // it made the character somersault continuously while
+                // sliding. Cause: the comment above this function notes
+                // spine/spine1/neck get overwritten with a fresh absolute
+                // pose by the animation mixer + updateRecoil() every frame
+                // before this runs, so multiplying a counter-quat onto them
+                // here is always starting from the same clean base - but
+                // hips is never in that reset list, its rotation persists
+                // frame to frame (it's also read/written elsewhere, e.g.
+                // the arm-IK local-space conversion at ~line 2247, and
+                // setSlopeTilt's own pivot-correction reads its world
+                // position across frames). Multiplying an extra rotation
+                // onto it every frame with no reset compounds without
+                // bound - runaway spin. Only bones the mixer freshly
+                // re-evaluates every frame are safe to counter-lean this
+                // way.
                 // Weighted low-to-high up the spine - this.spine1 (mid
                 // spine, "Spine1" bone) is actually below this.spine
                 // (upper spine, ends up matching "Spine2" - the bone-name
                 // matching in the constructor's traverse callback keeps
                 // overwriting this.spine with the last "spine"-but-not-
                 // "spine1" bone it visits, which is the upper one). Neck
-                // deliberately left out - counter-rotating it on top of the
-                // spine's own lean read as the head snapping back too far,
-                // disconnected from the neck's natural bend; the spine
-                // lean alone already gives the "looking forward" effect.
-                applyLean(this.spine1, 0.3);
-                applyLean(this.spine, 0.6);
+                // deliberately left out too - tried it (even at a light 0.2
+                // weight), but the neck bone's rest orientation isn't
+                // axis-aligned with the spine/root the way spine/spine1
+                // are, so multiplying the same world-space counter-quat
+                // onto its local quaternion doesn't come out as a pure
+                // forward counter-tilt like it does on the spine - it reads
+                // as the head tipping slightly to the left instead. The
+                // spine lean alone already gives the "looking forward"
+                // effect.
+                applyLean(this.spine1, 0.4);
+                applyLean(this.spine, 0.75);
 
                 // The right hand plants against the ground/slope in the
                 // slide pose, so its shape shouldn't wobble as the lean
@@ -1957,6 +1994,39 @@
                 }
             }
 
+            // Holds the pelvis at the orientation the animation clip
+            // authored it at (i.e. as if the ground under it were flat),
+            // while the root/fbxModel itself stays tilted to the slope -
+            // legs are hips' children so they get carried along, but legIK
+            // (running later the same frame) re-plants the feet on the
+            // actual slope, so the net read is: body upright-ish, legs
+            // conforming. Math: with G = group's world yaw and T =
+            // fbxModel's current slope tilt, any descendant's world
+            // orientation contains G*T*...; the world-space delta that
+            // exactly cancels T from that chain is G * T^-1 * G^-1 -
+            // applied via applyWorldDeltaRotation so the hips bone's own
+            // (rig-specific, non-axis-aligned) rest orientation never
+            // enters into it. That axis problem is exactly why the naive
+            // local-multiply counter-lean read as "head tips left" on the
+            // neck bone; this route sidesteps it entirely.
+            // SAFE against the compounding/somersault failure of the first
+            // pelvis attempt only because animate() now restores
+            // hips.quaternion from defaultHipsQuat at the top of every
+            // frame (see the restore block there) - do not call this on
+            // any bone outside that restore/capture cycle.
+            levelPelvisWhileSliding() {
+                if (!this.fbxModel || !this.hips) return;
+                const tiltAngle = 2 * Math.acos(THREE.MathUtils.clamp(Math.abs(this.fbxModel.quaternion.w), -1, 1));
+                if (tiltAngle < 0.001) return;
+                _leanCounterQuat.copy(this.group.quaternion);
+                _leanBlendQuat.copy(this.fbxModel.quaternion).invert();
+                _leanCounterQuat.multiply(_leanBlendQuat);
+                _leanBlendQuat.copy(this.group.quaternion).invert();
+                _leanCounterQuat.multiply(_leanBlendQuat);
+                this.applyWorldDeltaRotation(this.hips, _leanCounterQuat, 1.0);
+                this.hips.updateMatrixWorld(true);
+            }
+
             // Rotates `bone` so its WORLD orientation becomes
             // deltaWorldQuat * (bone's current world orientation), leaving
             // its parent untouched - i.e. applies a rotation expressed in
@@ -1966,10 +2036,17 @@
             // out the equivalent LOCAL quaternion via
             // parentWorldQuat^-1 * (deltaWorldQuat * boneWorldQuat), since
             // THREE composes worldQuat = parentWorldQuat * localQuat.
-            applyWorldDeltaRotation(bone, deltaWorldQuat) {
+            applyWorldDeltaRotation(bone, deltaWorldQuat, weight = 1.0) {
                 bone.parent.getWorldQuaternion(_ikParentWorldQuat);
                 bone.getWorldQuaternion(_ikBoneWorldQuat);
                 _ikNewWorldQuat.copy(deltaWorldQuat).multiply(_ikBoneWorldQuat);
+                // weight < 1 pulls the fully-corrected world orientation
+                // back toward the bone's pre-IK (animated) one - _ikBoneWorldQuat
+                // still holds that original value here, untouched since
+                // the read above. Lets the caller blend between "trust the
+                // animation" and "trust the IK solve" instead of always
+                // snapping straight to the exact target.
+                if (weight < 1.0) _ikNewWorldQuat.slerp(_ikBoneWorldQuat, 1.0 - weight);
                 bone.quaternion.copy(_ikParentWorldQuat.invert().multiply(_ikNewWorldQuat));
             }
 
@@ -1982,7 +2059,7 @@
             // it doesn't need to know either bone's bind-pose axis (see
             // applyWorldDeltaRotation) - it only needs to know how far to
             // rotate from wherever the animation already left it.
-            solveLegIK(thighBone, kneeBone, footBone, upperLen, lowerLen, targetWorldPos) {
+            solveLegIK(thighBone, kneeBone, footBone, upperLen, lowerLen, targetWorldPos, weight = 1.0) {
                 if (!thighBone || !kneeBone || !footBone || upperLen <= 0 || lowerLen <= 0) return;
 
                 const hipPos = _ikVec1; thighBone.getWorldPosition(hipPos);
@@ -2028,7 +2105,7 @@
                 const desiredHipToKnee = _ikVec8.copy(targetDir).applyQuaternion(_ikQuat1).normalize();
 
                 _ikQuat2.setFromUnitVectors(curHipToKnee, desiredHipToKnee);
-                this.applyWorldDeltaRotation(thighBone, _ikQuat2);
+                this.applyWorldDeltaRotation(thighBone, _ikQuat2, weight);
 
                 // The thigh rotation just moved the knee (and everything
                 // below it) - re-read its new position/world matrix before
@@ -2051,7 +2128,7 @@
                 const desiredKneeToFoot = _ikVec5.copy(desiredHipToKnee).applyQuaternion(_ikQuat3).normalize();
 
                 _ikQuat4.setFromUnitVectors(curKneeToFoot, desiredKneeToFoot);
-                this.applyWorldDeltaRotation(kneeBone, _ikQuat4);
+                this.applyWorldDeltaRotation(kneeBone, _ikQuat4, weight);
                 kneeBone.updateMatrixWorld(true);
             }
 
@@ -2059,11 +2136,21 @@
             // foot (see game_js.js's per-foot raycast), or null if no
             // valid ground was found under that foot this frame (leaves
             // that leg's animated pose untouched rather than guessing).
-            applyLegIK(leftTarget, rightTarget) {
+            // weight (0-1, default full): how much of the solve actually
+            // gets applied vs leaving the animated pose alone - game_js.js
+            // passes a lower weight while running fast (see its own
+            // comment), full weight while walking/standing. Needed because
+            // running's own natural foot-lift, corrected at full strength
+            // every single stride, read as a flattened, same-pose shuffle
+            // rather than a real run - fading it out at speed lets the
+            // animation's own leg motion show through, while still fully
+            // planting the feet the instant the player slows down or stops
+            // (a ramp's downhill foot, or a bump directly underfoot).
+            applyLegIK(leftTarget, rightTarget, weight = 1.0) {
                 if (!this.fbxModel) return;
                 _legPoleWorldDir.set(0, 0, 1).applyQuaternion(this.group.quaternion);
-                if (leftTarget) this.solveLegIK(this.lThighBone, this.lKneeBone, this.lFootBone, this.lUpperLegLen, this.lLowerLegLen, leftTarget);
-                if (rightTarget) this.solveLegIK(this.rThighBone, this.rKneeBone, this.rFootBone, this.rUpperLegLen, this.rLowerLegLen, rightTarget);
+                if (leftTarget) this.solveLegIK(this.lThighBone, this.lKneeBone, this.lFootBone, this.lUpperLegLen, this.lLowerLegLen, leftTarget, weight);
+                if (rightTarget) this.solveLegIK(this.rThighBone, this.rKneeBone, this.rFootBone, this.rUpperLegLen, this.rLowerLegLen, rightTarget, weight);
             }
 
             // Lets other players tell this one apart in multiplayer - assigned
@@ -2408,6 +2495,13 @@ updateClimbing(delta) {
                 if (this.spine && this.defaultSpineQuat) this.spine.quaternion.copy(this.defaultSpineQuat);
                 if (this.spine1 && this.defaultSpine1Quat) this.spine1.quaternion.copy(this.defaultSpine1Quat);
                 if (this.neck && this.defaultNeckQuat) this.neck.quaternion.copy(this.defaultNeckQuat);
+                // Hips joined the same restore/capture cycle when
+                // levelPelvisWhileSliding was added: unlike spine/neck, the
+                // mixer does NOT reliably rewrite hips.quaternion every
+                // frame, so any per-frame correction multiplied onto it
+                // compounds unboundedly without this reset (that exact bug
+                // shipped once as a continuous somersault while sliding).
+                if (this.hips && this.defaultHipsQuat) this.hips.quaternion.copy(this.defaultHipsQuat);
 
                 if (this.mixer) this.mixer.update(delta);
                 if (!this.isLoaded) return;
@@ -2768,6 +2862,10 @@ updateClimbing(delta) {
                 if (this.neck) {
                     if (!this.defaultNeckQuat) this.defaultNeckQuat = new THREE.Quaternion();
                     this.defaultNeckQuat.copy(this.neck.quaternion);
+                }
+                if (this.hips) {
+                    if (!this.defaultHipsQuat) this.defaultHipsQuat = new THREE.Quaternion();
+                    this.defaultHipsQuat.copy(this.hips.quaternion);
                 }
 
                 if (this.spine) {
