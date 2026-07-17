@@ -857,6 +857,26 @@ export function startGame(CharacterClass) {
         }
     });
 
+    // Level 2's whole map is a single authored model (LevelModel/Level.glb,
+    // exported from Blender) rather than voxels/JSON. Preloaded here at
+    // startup the same way StarKey.glb is; buildLevelFromGlb() (called via
+    // the level dropdown) just assembles the already-loaded scene. Tries
+    // the local copy first (ProjectFiles/LevelModel/, kept alongside the
+    // FBX clips so the dev server can reach it - the authored original
+    // lives outside the server root at Editor/IKRig/LevelModel/), falls
+    // back to the repo's raw URL like every other remote asset.
+    let levelGlbScene = null;
+    let pendingGlbLevelBuild = false;
+    const levelGlbLoader = new GLTFLoader();
+    const onLevelGlbLoaded = (gltf) => {
+        levelGlbScene = gltf.scene;
+        if (pendingGlbLevelBuild) { pendingGlbLevelBuild = false; buildLevelFromGlb(); }
+    };
+    levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
+        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
+            onLevelGlbLoaded, undefined, (e) => console.error('Level.glb load failed:', e));
+    });
+
     function spawnTestKeyAndLock() {
         // Test-only key instance, sitting out in the open near spawn so it
         // can be inspected/picked up without having to break a jar first.
@@ -1621,6 +1641,56 @@ export function startGame(CharacterClass) {
       ]
     };
 
+    function buildLevelFromGlb() {
+        // Loader may still be in flight the first time the dropdown picks
+        // this level - flag it and let onLevelGlbLoaded re-call once ready.
+        if (!levelGlbScene) { pendingGlbLevelBuild = true; return; }
+        while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
+        projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
+        carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
+        carryables.length = 0;
+        nextCarryNetId = 0;
+        debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
+        collidables.length = 0; collidables.push(ground);
+
+        let startNode = null;
+        levelGlbScene.traverse(o => {
+            if (o.isMesh) {
+                o.castShadow = true; o.receiveShadow = true;
+                collidables.push(o);
+            } else if (o.name && o.name.toLowerCase().startsWith('empty')) {
+                startNode = o;
+            }
+        });
+        levelGroup.add(levelGlbScene);
+        star.visible = false;
+
+        if (startNode) {
+            // The Blender single-arrow empty marks both where the player
+            // spawns and which way they face. Which LOCAL axis the arrow
+            // corresponds to after Blender's Y-up export conversion isn't
+            // guaranteed, so try +Y first (what this file's actual export
+            // produces: its +90deg-X rotation maps local +Y to a horizontal
+            // world direction) and fall back to +Z if +Y comes out near-
+            // vertical (an unrotated empty), then flatten to the ground
+            // plane either way - the spawn facing is yaw-only.
+            char.group.position.copy(startNode.position);
+            _tempVec1.set(0, 1, 0).applyQuaternion(startNode.quaternion);
+            if (Math.abs(_tempVec1.y) > 0.9) _tempVec1.set(0, 0, 1).applyQuaternion(startNode.quaternion);
+            _tempVec1.y = 0;
+            if (_tempVec1.lengthSq() > 0.0001) {
+                _tempVec1.normalize();
+                char.group.rotation.y = Math.atan2(_tempVec1.x, _tempVec1.z);
+            } else {
+                char.group.rotation.y = Math.PI;
+            }
+        } else {
+            char.group.position.set(0, 2, 0);
+            char.group.rotation.y = Math.PI;
+        }
+    }
+
     function addCarryableDebugHelper(c) {
         let helperGeo;
         if (c.mesh.geometry && c.mesh.geometry.type === 'SphereGeometry') helperGeo = new THREE.SphereGeometry(0.5, 8, 8);
@@ -1952,6 +2022,7 @@ export function startGame(CharacterClass) {
         collidables.length = 0; collidables.push(ground);
 
         if (currentLevel === "local_stairs") buildStairsLevel();
+        else if (currentLevel === "local_glb") buildLevelFromGlb();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else {
             try {
@@ -1975,7 +2046,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_json">Level 2 (JSON)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -2301,6 +2372,18 @@ export function startGame(CharacterClass) {
     let wasSliding = false, slideSpeed = 0;
     const SLIDE_ENTER_ANGLE = Math.PI * 0.22; // ~39.6deg
     const SLIDE_EXIT_ANGLE = Math.PI * 0.17; // ~30.6deg
+    // Walking along a ramp's base line (nearly parallel to where it meets
+    // the ground) makes the center ground ray alternate between the flat
+    // ground and the ramp face frame to frame, so the measured slope angle
+    // jumps across BOTH thresholds at once and the angle hysteresis above
+    // can't stop the resulting slide/walk flicker. Entering a slide now
+    // additionally requires the steep reading to have held continuously
+    // for this long - intermittent single-frame steep readings at the
+    // boundary keep resetting the timer and never engage the slide, while
+    // genuinely walking onto a steep face still slides after an
+    // imperceptible beat. Exit (while already sliding) is untouched.
+    const SLIDE_ENTER_DEBOUNCE = 0.15;
+    let steepGroundTimer = 0;
     const SLIDE_ACCEL = 20, SLIDE_FRICTION = 25;
     const SLIDE_MIN_SPEED = 3, SLIDE_MAX_SPEED = 15;
     // slideSpeed above is purely horizontal (applied along slideDir, which
@@ -2320,6 +2403,17 @@ export function startGame(CharacterClass) {
     // real, if slow, climb speed and normal walk-facing instead of the
     // automatic push+facing-lock fighting them the instant they let go.
     let isClimbingSlope = false;
+    // Last frame's isClimbingSlope (same role wasSliding plays for
+    // isSliding) - the slidable-face entry refusal below must not fire
+    // against someone who was already legitimately climbing last frame.
+    let wasClimbingSlope = false;
+    // Set by ground detection on frames where the character is being
+    // refused entry onto a slidable face (approach not deliberate enough -
+    // see CLIMB_INTENT_DOT); read by the movement block the same frame
+    // to also strip the into-face component of the move direction, since
+    // the forward wall ray misses a face approached near-parallel.
+    let steepEntryBlocked = false;
+    const _steepEntryNormal = new THREE.Vector3();
     // Set alongside isClimbingSlope (reset every frame in the same place)
     // whenever the player pushes uphill against a real slide - a brief,
     // fast-decelerating continuation of the slide instead of an instant,
@@ -2407,6 +2501,26 @@ export function startGame(CharacterClass) {
     // isSliding's own threshold (SLIDE_ENTER_ANGLE) still applies once
     // grounded there regardless of how you got there.
     const RAMP_WALK_BLOCK_ANGLE = Math.PI * (58 / 180);
+    // Minimum UPHILL component of the input direction (dot against the
+    // face's outward downhill normal, ~0.08 = ~5deg above parallel) for
+    // the input to count as "wants to go up" on a slidable face. ONE
+    // shared threshold for all three consumers - the climb trigger in the
+    // slide state machine, the base-seam entry refusal, and the movement
+    // block's wall treatment - after a round of separate thresholds
+    // (climb at ~72deg-off, entry at ~37deg-off) left mismatch zones that
+    // stalled or flung the character. Any input above this climbs, right
+    // from the base seam, with no debounce and no slide flash (explicit
+    // user direction: walking just-above-parallel must go UP, never
+    // slide); anything at/below it while walking is refused entry
+    // entirely; sliding stays reserved for no-input/downhill situations.
+    const CLIMB_INTENT_DOT = 0.08;
+    // Air-control speed multiplier while airborne - normally full (1.0),
+    // dropped for the duration of a jump launched while climbing a
+    // slidable slope (see handleJump): full 8u/s air speed is ~4x the
+    // climb crawl, so one mid-climb hop with any stick misalignment used
+    // to fling the character clean off the ramp's side. Re-set on every
+    // jump, snapped back to 1.0 whenever grounded.
+    let airControlMult = 1.0;
     let carryTargetObj = null;
     let isSlipping = false;
     let slipTimer = 0;
@@ -2487,12 +2601,24 @@ export function startGame(CharacterClass) {
             // frames. _slideDirScratch keeps its last-set value (the
             // ground-detection block only touches it while isSteepSlope is
             // true) so it still holds the correct direction here.
-            if (wasSliding) {
+            // isClimbingSlope/isStoppingSlide excluded: both can coexist
+            // with wasSliding for a few frames (the stop-slide transition,
+            // or slide/climb flapping right at a ramp's base line), and
+            // leftover slideSpeed along the DOWNHILL slideDir hurled a
+            // player who was jumping to gain height while climbing off
+            // the ramp instead. Only a genuine, ongoing slide carries its
+            // momentum into the jump.
+            if (wasSliding && !isClimbingSlope && !isStoppingSlide) {
                 yVelocity = 10 + slideSpeed * 0.4;
                 jumpMomentum.addScaledVector(_slideDirScratch, slideSpeed);
             } else {
                 yVelocity = 10;
             }
+            // See airControlMult's own comment - a hop launched mid-climb
+            // keeps only a fraction of normal air speed so it stays a
+            // controllable straight-up hop instead of a 4x-speed lunge
+            // off the ramp's side. Every other jump gets full air control.
+            airControlMult = (isClimbingSlope || isStoppingSlide) ? 0.4 : 1.0;
         }
         // Used to also fire whenever airborne with ledgeGrabCooldown > 0.1,
         // regardless of isLedgeGrabbing - meant to let a jump-away-from-ledge
@@ -3048,6 +3174,7 @@ export function startGame(CharacterClass) {
         // it at all (ungrounded, ledge-grabbing, not a steep slope, etc.).
         isClimbingSlope = false;
         isStoppingSlide = false;
+        steepEntryBlocked = false;
         // Horizontal (downhill) direction of the slope currently being slid
         // on - only meaningful while isSliding is true this frame, set
         // alongside it below. Used later (see the animation state
@@ -3185,16 +3312,87 @@ export function startGame(CharacterClass) {
                 // for why treating dense, randomly-oriented small bumps as
                 // "the one slope you're sliding on" breaks down.
                 const isDecorativeBump = groundHitObject && groundHitObject.userData && groundHitObject.userData.isDecorativeBump;
-                const isSteepSlope = !isDecorativeBump && slopeAngle > (wasSliding ? SLIDE_EXIT_ANGLE : SLIDE_ENTER_ANGLE);
+                // See SLIDE_ENTER_DEBOUNCE's own comment - entry needs the
+                // steep reading to persist, exit hysteresis is unchanged.
+                const rawSteepReading = !isDecorativeBump && slopeAngle > SLIDE_ENTER_ANGLE;
+                steepGroundTimer = rawSteepReading ? steepGroundTimer + delta : 0;
+                const isSteepSlope = wasSliding
+                    ? (!isDecorativeBump && slopeAngle > SLIDE_EXIT_ANGLE)
+                    : (rawSteepReading && steepGroundTimer >= SLIDE_ENTER_DEBOUNCE);
                 const isOnRamp = groundHitObject && groundHitObject.userData && groundHitObject.userData.isSlopeRamp;
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
                 const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp &&
                     !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null);
-                if (blockedByStandCheck) {
+                // Entry refusal for slidable faces, ground-path version of
+                // the CLIMB_INTENT_DOT wall gate: walking nearly parallel
+                // to a ramp's base line with a slight uphill drift slips
+                // past the forward wall ray (which misses a face it runs
+                // almost parallel to), creeps up the face via this very
+                // ground-follow, gets slid back off, creeps up again - the
+                // reported walk-slide-walk oscillation on 40-48deg ramps.
+                // Refuse the ground-follow onto the face here, at the
+                // source, unless the input genuinely points into the face
+                // (or the character was already sliding/climbing -
+                // mid-slide ground-follow and an established climb must
+                // never be interrupted by this).
+                // Deliberately NOT gated on any single "stepping up" frame:
+                // the center ray flips to the steep face the exact frame
+                // the character's center crosses the base seam, where the
+                // face is only ~1-2cm above the flat - far below any
+                // step-height threshold - and after that the per-frame
+                // rise while grinding along the base never exceeds one.
+                // The refusal instead re-fires on EVERY grounded frame the
+                // center reads steep without an established slide/climb
+                // and without deliberate input (verified at the user-
+                // reported leak yaws, 107/263deg on the test ramps).
+                // While refusing, the slide-entry debounce timer is pinned
+                // to zero so the grind can never mature into a slide.
+                // The face must also be at/above the character's own feet
+                // (entry from below/level) - walking DOWNHILL onto a face
+                // from its crest reads steep with non-deliberate input
+                // too, but holding floorY there would leave the character
+                // walking on air past the edge; that case falls through to
+                // the normal ground-follow + slide machine instead.
+                // Input-driven only: with no movement input at all there is
+                // no walk-in to refuse, and the slide machine must stay in
+                // charge - a character dropped/landing onto mid-face with
+                // no input held would otherwise be caught by this (a short
+                // drop doesn't accumulate enough steepGroundTimer to take
+                // the escape below) and left standing impossibly still on
+                // a slidable face instead of sliding off it.
+                if (rawSteepReading && !wasSliding && !wasClimbingSlope
+                    && isGrounded && !isLedgeGrabbing && !isClimbingUp && !blockedByStandCheck
+                    && highestY >= char.group.position.y - 0.05
+                    && steepGroundTimer <= SLIDE_ENTER_DEBOUNCE) {
+                    const ecx = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
+                    const ecy = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
+                    if (Math.sqrt(ecx * ecx + ecy * ecy) > 0.1) {
+                        _steepEntryNormal.set(groundNormal.x, 0, groundNormal.z).normalize();
+                        const entryAng = cameraTheta + Math.atan2(ecx, ecy);
+                        _climbInputDir.set(Math.sin(entryAng), 0, Math.cos(entryAng));
+                        const hasUphillIntent = _climbInputDir.dot(_steepEntryNormal) < -CLIMB_INTENT_DOT;
+                        if (!hasUphillIntent) {
+                            steepEntryBlocked = true;
+                            steepGroundTimer = 0;
+                        }
+                    }
+                }
+                if (blockedByStandCheck || steepEntryBlocked) {
                     floorY = char.group.position.y;
                 } else {
                     floorY = highestY;
-                    if (isSteepSlope && isGrounded && !isLedgeGrabbing && !isClimbingUp) {
+                    // Gated on the RAW steep reading, not the debounced
+                    // isSteepSlope: the climb decision inside must engage
+                    // the very frame the character's center crosses onto a
+                    // steep face with uphill input - waiting out the
+                    // debounce here meant ~0.15s of ordinary walk (wrong
+                    // animation, and a window for stray slide flashes)
+                    // right at the base seam before the climb state took
+                    // over. The debounce still gates the SLIDE branch
+                    // below - it exists to stop seam flicker from
+                    // alternating flat/steep readings, which is purely a
+                    // slide-entry problem.
+                    if (rawSteepReading && isGrounded && !isLedgeGrabbing && !isClimbingUp) {
                         slideDir.set(groundNormal.x, 0, groundNormal.z).normalize();
 
                         // Holding input roughly uphill (opposing slideDir)
@@ -3220,7 +3418,10 @@ export function startGame(CharacterClass) {
                         if (inputMag > 0.1 && !onBlockedRamp) {
                             const inputAng = cameraTheta + Math.atan2(cx, cy);
                             _climbInputDir.set(Math.sin(inputAng), 0, Math.cos(inputAng));
-                            wantsToClimb = _climbInputDir.dot(slideDir) < -0.3;
+                            // Same shared threshold as the entry refusal
+                            // and the wall gate (see CLIMB_INTENT_DOT) -
+                            // any real uphill component climbs.
+                            wantsToClimb = _climbInputDir.dot(slideDir) < -CLIMB_INTENT_DOT;
                         }
 
                         // Only relevant coming out of an actual slide - if
@@ -3292,7 +3493,7 @@ export function startGame(CharacterClass) {
                             // friction rather than carrying over.
                             isSliding = false;
                             slideSpeed = Math.max(0, slideSpeed - SLIDE_FRICTION * delta);
-                        } else {
+                        } else if (isSteepSlope) {
                             isSliding = true;
                             // Steeper past the entry angle = faster top
                             // speed, same way a real slope would give more
@@ -3336,13 +3537,14 @@ export function startGame(CharacterClass) {
                         }
                     }
                 }
-            } else floorY = 0;
+            } else { floorY = 0; steepGroundTimer = 0; }
         }
         // Friction: decay any leftover slide speed back to zero once no
         // longer sliding (instead of the old instant stop), and remember
         // this frame's result for next frame's hysteresis check above.
         if (!isSliding) slideSpeed = Math.max(0, slideSpeed - SLIDE_FRICTION * delta);
         wasSliding = isSliding;
+        wasClimbingSlope = isClimbingSlope;
 
         const capsuleRadius = 0.4;
         const pushOutVector = _pushOutVectorScratch.set(0, 0, 0);
@@ -4198,6 +4400,7 @@ export function startGame(CharacterClass) {
                 rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.3), mDir);
 
                 let speedMult = 1.0;
+                if (isGrounded) airControlMult = 1.0;
                 if (isHitRecovering) { /* actualSpeed set directly below instead */ }
                 else if (isSliding) speedMult = 0.1;
                 else if (isClimbingSlope) {
@@ -4223,6 +4426,10 @@ export function startGame(CharacterClass) {
                     // longer reads this same (reduced) value.
                     const walkT = THREE.MathUtils.clamp(groundNormal.angleTo(_upVec) / SLIDE_ENTER_ANGLE, 0, 1);
                     speedMult = THREE.MathUtils.lerp(1.0, 0.6, walkT);
+                } else {
+                    // Airborne - normally full control, reduced for the
+                    // duration of a mid-climb hop (see airControlMult).
+                    speedMult = airControlMult;
                 }
                 if (!isHitRecovering && landingTimer > 0 && initialLandingTimer > 0) speedMult = 1.0 - (0.85 * Math.sin(Math.pow(1.0 - (landingTimer / initialLandingTimer), 0.6) * Math.PI));
                 // Slows down on decorative bump terrain (see
@@ -4266,8 +4473,27 @@ export function startGame(CharacterClass) {
                     // (userData.isSlopeRamp) use their own, lower
                     // RAMP_WALK_BLOCK_ANGLE instead - see its own comment.
                     const realNormal = actualHits[0].face.normal.clone().transformDirection(actualHits[0].object.matrixWorld);
+                    const realSurfaceAngle = realNormal.angleTo(_upVec);
                     const wallCutoffForHit = actualHits[0].object.userData?.isSlopeRamp ? RAMP_WALK_BLOCK_ANGLE : SLOPE_WALL_CUTOFF;
-                    if (realNormal.angleTo(_upVec) > wallCutoffForHit) {
+                    let treatAsWall = realSurfaceAngle > wallCutoffForHit;
+                    // Slidable-but-climbable faces (past the slide-entry
+                    // angle but under the hard cutoff above) are a wall
+                    // only for movement with NO uphill component (walking
+                    // past/alongside the ramp) - any real uphill intent
+                    // (shared CLIMB_INTENT_DOT threshold, same one the
+                    // climb trigger and the base-seam entry refusal use)
+                    // walks on and climbs. ENTRY-ONLY: once the character
+                    // is already climbing (or sliding, or mid-air from a
+                    // hop), this stays out of the way - an earlier version
+                    // used a stricter threshold here than the climb
+                    // trigger, and the mismatch zone stalled/flung
+                    // climbers whose stick drifted mid-climb.
+                    if (!treatAsWall && realSurfaceAngle > SLIDE_ENTER_ANGLE
+                        && isGrounded && !isClimbingSlope && !isSliding) {
+                        _tempVec3.copy(realNormal).setY(0).normalize();
+                        treatAsWall = -finalMoveDir.dot(_tempVec3) < CLIMB_INTENT_DOT;
+                    }
+                    if (treatAsWall) {
                         const wallNormal = realNormal.clone().setY(0).normalize();
                         const dot = finalMoveDir.dot(wallNormal);
                         if (dot < 0) {
@@ -4278,6 +4504,21 @@ export function startGame(CharacterClass) {
                                 actualSpeed *= Math.sqrt(1.0 - dot * dot);
                             }
                         }
+                    }
+                }
+
+                // Ground-path companion to the wall gate above: on frames
+                // where ground detection refused entry onto a slidable
+                // face (steepEntryBlocked - near-parallel approach the
+                // forward ray can't see), strip the into-face component of
+                // the move too, or the character keeps grinding into the
+                // face it was just refused from and jitters against it.
+                if (steepEntryBlocked && !isHitRecovering) {
+                    const entryDot = finalMoveDir.dot(_steepEntryNormal);
+                    if (entryDot < 0) {
+                        finalMoveDir.sub(_tempVec3.copy(_steepEntryNormal).multiplyScalar(entryDot));
+                        if (finalMoveDir.lengthSq() > 0.001) finalMoveDir.normalize(); else finalMoveDir.set(0, 0, 0);
+                        actualSpeed *= Math.sqrt(Math.max(0, 1.0 - entryDot * entryDot));
                     }
                 }
 
@@ -4493,7 +4734,28 @@ export function startGame(CharacterClass) {
             //     the leftover height in place through every pause instead
             //     of continuing to settle down between them.
             const isStandingOnBumpNow = footBoostTarget > 0.001;
-            if (moveMag > 0.1 || !isGrounded || !isStandingOnBumpNow) {
+            // A foot raycast alone isn't proof the CHARACTER is still over
+            // the bump field: stopping right after slowly drifting past
+            // its edge leaves the root hanging over flat ground while one
+            // trailing (IK-reaching) foot still catches a bump behind -
+            // the old feet-only freeze then held that stale elevation
+            // forever, floating the character in mid-air next to the
+            // field. Verify with the root's own downward ray: whatever
+            // surface is directly below the root must itself be a bump.
+            // The same ray also steers the DECAY rate below, so it's cast
+            // whenever either consumer needs it (idle-on-bump frames, or
+            // while leftover boost is still settling after leaving the
+            // field) - still nothing on plain ground with no boost active.
+            let rootOverBump = false;
+            const needRootRay = (isStandingOnBumpNow && moveMag <= 0.1 && isGrounded)
+                || (footRiseSmoothed > 0.02);
+            if (needRootRay) {
+                rayDown.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _downVec);
+                const rootBumpHits = rayDown.intersectObjects(solidCollidables);
+                rootOverBump = rootBumpHits.length > 0 && rootBumpHits[0].object.userData
+                    && rootBumpHits[0].object.userData.isDecorativeBump;
+            }
+            if (moveMag > 0.1 || !isGrounded || !isStandingOnBumpNow || !rootOverBump) {
                 // Rise fast, fall slow - each stride only has ONE foot in
                 // stance touching a bump at a time (the other's mid-swing,
                 // see computeFootIKTarget), so a symmetric lerp here means
@@ -4506,7 +4768,16 @@ export function startGame(CharacterClass) {
                 // while crossing rough ground" instead of snapping down
                 // each time neither foot's raycast happens to catch a
                 // bump for a step.
-                const footRiseRate = footBoostTarget > footRiseSmoothed ? 9 : 2.5;
+                // The slow 2.5 fall is ONLY for stride gaps while still
+                // over the field (neither foot momentarily touching a bump
+                // mid-walk - dropping fast there made the root bob every
+                // step). Once the root itself is past the field's edge
+                // (rootOverBump false with no foot contact either), there
+                // is nothing left to be smooth about - fall at a fast,
+                // step-off-a-ledge rate instead of the floaty slow drift
+                // to the ground the shared 2.5 gave there.
+                const offFieldEntirely = bumpBoostTarget <= 0.001 && !rootOverBump;
+                const footRiseRate = footBoostTarget > footRiseSmoothed ? 9 : (offFieldEntirely ? 14 : 2.5);
                 footRiseSmoothed = THREE.MathUtils.lerp(footRiseSmoothed, footBoostTarget, Math.min(1, footRiseRate * delta));
                 // Proportional to how tall/intense the actual bump contact
                 // is (0.4 units ~ the taller test field's typical peak
@@ -4779,6 +5050,45 @@ export function startGame(CharacterClass) {
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
+
+        // Debug: live yaw readout floating above the player's head, so a
+        // problematic walking angle can be read off the screen and
+        // reported exactly instead of described (used for tuning the
+        // slidable-ramp entry thresholds). Redrawn only when the shown
+        // integer changes. Remove (or gate behind a toggle) once the
+        // ramp-angle tuning session is done.
+        if (!window._yawLabelSprite && char && char.group) {
+            const cv = document.createElement('canvas');
+            cv.width = 192; cv.height = 64;
+            window._yawLabelCtx = cv.getContext('2d');
+            window._yawLabelTex = new THREE.CanvasTexture(cv);
+            const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: window._yawLabelTex, depthTest: false }));
+            spr.scale.set(1.8, 0.6, 1);
+            spr.position.set(0, 2.5, 0);
+            spr.raycast = () => {}; // must never be hit-testable (see makeTextSprite)
+            char.group.add(spr);
+            window._yawLabelSprite = spr;
+            window._yawLabelLast = '';
+        }
+        if (window._yawLabelSprite) {
+            // group.quaternion is yaw-only: (0, sin(y/2), 0, cos(y/2)).
+            let yawDeg = Math.round(2 * Math.atan2(char.group.quaternion.y, char.group.quaternion.w) * 180 / Math.PI);
+            yawDeg = ((yawDeg % 360) + 360) % 360;
+            const txt = yawDeg + '°';
+            if (txt !== window._yawLabelLast) {
+                window._yawLabelLast = txt;
+                const ctx = window._yawLabelCtx;
+                ctx.clearRect(0, 0, 192, 64);
+                ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                ctx.fillRect(0, 0, 192, 64);
+                ctx.fillStyle = '#ffff88';
+                ctx.font = 'bold 40px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(txt, 96, 32);
+                window._yawLabelTex.needsUpdate = true;
+            }
+        }
 
         // Compass: real 3D needle (see its own construction comment near
         // the camera, top of this function). Same camera-local offset the
