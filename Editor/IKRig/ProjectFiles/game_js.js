@@ -1641,39 +1641,6 @@ export function startGame(CharacterClass) {
       ]
     };
 
-    // Level.glb's blocks come out of Blender with real non-uniform (and in
-    // several nodes, negative) scale baked into each node - e.g. the main
-    // "Cube" node is S=[2.03, 2.2, 5.27], "Cube.001" is S=[-15.8, -0.66,
-    // -13.26]. Every slope/wall/ledge check in this codebase reads a
-    // surface's world normal via `face.normal.clone().transformDirection(
-    // object.matrixWorld)` - transformDirection only applies the matrix's
-    // rotation correctly for UNIFORM scale; under non-uniform (or
-    // negative) scale it silently returns a skewed, wrong direction. That
-    // one mismatch was the root cause of several Level 2 reports at once:
-    // shallow faces reading as steep and vice versa, cones registering as
-    // walkable, and (very likely) the ledge-grab search latching onto the
-    // wrong candidate. Fixed once, here, instead of patching every
-    // consumer: bake each mesh's full local transform into its own
-    // geometry (BufferGeometry.applyMatrix4 DOES use the correct inverse-
-    // transpose normal matrix internally) and zero the node's transform -
-    // every downstream transformDirection(matrixWorld) call then sees a
-    // plain identity/uniform matrix and computes the right normal for
-    // free. Idempotent (re-baking an already-identity node is a no-op),
-    // so it's safe to run again if buildLevelFromGlb() re-fires after the
-    // scene is already cached.
-    function bakeGlbTransforms(root) {
-        root.traverse(o => {
-            if (!o.isMesh) return;
-            o.updateMatrix();
-            o.geometry = o.geometry.clone().applyMatrix4(o.matrix);
-            o.position.set(0, 0, 0);
-            o.quaternion.identity();
-            o.scale.set(1, 1, 1);
-            o.updateMatrix();
-        });
-    }
-
-    let levelGlbWater = null;
     function buildLevelFromGlb() {
         // Loader may still be in flight the first time the dropdown picks
         // this level - flag it and let onLevelGlbLoaded re-call once ready.
@@ -1685,38 +1652,13 @@ export function startGame(CharacterClass) {
         carryables.length = 0;
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
-        collidables.length = 0;
-
-        bakeGlbTransforms(levelGlbScene);
-
-        // Grass ground swapped for a water plane, a bit below the level's
-        // own y=0 base - only for this level, restored by buildLevel()
-        // before every other level builds. No fall-into-water handling
-        // yet (recovery/respawn is a separate follow-up) - for now it's
-        // just a plain solid floor so nothing falls through into the void.
-        ground.visible = false;
-        if (!levelGlbWater) {
-            levelGlbWater = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000),
-                new THREE.MeshToonMaterial({ color: 0x3377aa, gradientMap: threeTone }));
-            levelGlbWater.rotation.x = -Math.PI / 2;
-            levelGlbWater.receiveShadow = true;
-        }
-        levelGlbWater.position.y = -1.5;
-        levelGroup.add(levelGlbWater);
-        collidables.push(levelGlbWater);
+        collidables.length = 0; collidables.push(ground);
 
         let startNode = null;
         levelGlbScene.traverse(o => {
             if (o.isMesh) {
                 o.castShadow = true; o.receiveShadow = true;
-                // Cones are decorative obstacles, not terrain - explicitly
-                // excluded from collidables (see userData.name comment
-                // above the loader) instead of just relying on their
-                // now-correct-but-still-steep slope angle, since the
-                // request was "never climbable", not "climbable only up
-                // to the slide threshold". Falling through one is the
-                // point - nothing to get trapped in with no collision.
-                if (!o.name.startsWith('Cone')) collidables.push(o);
+                collidables.push(o);
             } else if (o.name && o.name.toLowerCase().startsWith('empty')) {
                 startNode = o;
             }
@@ -2078,10 +2020,6 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
-        // Only Level 2 (buildLevelFromGlb) hides this in favor of a water
-        // plane - reset here so switching back to any other level always
-        // gets the grass back regardless of which level was active before.
-        ground.visible = true;
 
         if (currentLevel === "local_stairs") buildStairsLevel();
         else if (currentLevel === "local_glb") buildLevelFromGlb();
@@ -4674,24 +4612,7 @@ export function startGame(CharacterClass) {
                     const n = realWallNormal.setY(0).normalize();
                     const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
-                    // Reject a ledge candidate whose top point lands far
-                    // (horizontally) from the wall face actually being
-                    // climbed. On the hand-built stairs level, walls and
-                    // the platforms above them tend to be the same or a
-                    // squarely-aligned adjacent box, so this rarely
-                    // mattered - Level 2's dense, irregularly stacked
-                    // Blender geometry has tall shelves whose footprint
-                    // can overlap a lower wall's XZ position without
-                    // being structurally connected to it at all. Without
-                    // this check, the straight-down probe from above the
-                    // low wall can pass clean through the gap and land on
-                    // that unrelated high shelf instead - the "jump grabs
-                    // a ledge way above where I jumped" report. A real
-                    // continuous ledge's top edge sits close to (x,z) of
-                    // its own wall face; only accept those.
-                    const ledgeHorizDist = lH.length > 0
-                        ? Math.hypot(lH[0].point.x - wH[0].point.x, lH[0].point.z - wH[0].point.z) : Infinity;
-                    if (lH.length > 0 && ledgeHorizDist < 1.2 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
+                    if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
                         const hangX = wH[0].point.x + n.x*ledgeOffset;
                         const hangZ = wH[0].point.z + n.z*ledgeOffset;
                         const hangGroupY = lH[0].point.y - 1.85;
@@ -5149,16 +5070,6 @@ export function startGame(CharacterClass) {
             window._yawLabelSprite = spr;
             window._yawLabelLast = '';
         }
-        // Debug: expose core per-frame physics state for external
-        // inspection (e.g. via Playwright) while chasing the Level 2
-        // stuck-in-air report. Cheap (plain property writes, no DOM/GC
-        // churn) - fine to leave running. Remove alongside the yaw label
-        // once these investigations are done.
-        window._dbgIsGrounded = isGrounded;
-        window._dbgFloorY = floorY;
-        window._dbgYVelocity = yVelocity;
-        window._dbgIsSliding = typeof isSliding !== 'undefined' ? isSliding : undefined;
-        window._dbgIsClimbingSlope = isClimbingSlope;
         if (window._yawLabelSprite) {
             // group.quaternion is yaw-only: (0, sin(y/2), 0, cos(y/2)).
             let yawDeg = Math.round(2 * Math.atan2(char.group.quaternion.y, char.group.quaternion.w) * 180 / Math.PI);
