@@ -46,6 +46,7 @@ export function startGame(CharacterClass) {
     // accumulates references to sprites that got removed along with their
     // old ramp meshes.
     const rampAngleLabels = [];
+    const curvedRampWireframes = [];
     // Sandbag (constructed later from ClimbGame.html) takes a debugHelpers
     // array in its own constructor to push a hitbox wireframe into, but
     // without this it was getting a disconnected, throwaway [] instead of
@@ -1851,6 +1852,62 @@ export function startGame(CharacterClass) {
         return ramp;
     }
 
+    // Decorative curved ramp prop (CurvedRamps_UniRamp.glb) - purely a
+    // collidable set piece, not wired into the isSlopeRamp-specific slide/
+    // walk-up-clip logic the way buildSlopeTestRamp's own ramps are.
+    // Positioned directly off the model's own local origin (no bounding-box
+    // ground-fit) - its root is meant to already sit at its own base, same
+    // as any other game-ready export.
+    function loadCurvedRampProp(x, z) {
+        const propLoader = new GLTFLoader();
+        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/CurvedRamps_UniRamp.glb', (gltf) => {
+            const model = gltf.scene;
+            // Half of Level.glb's own LEVEL_TO_PLAYER_SCALE (buildLevelFromGlb) -
+            // full scale read too large here.
+            model.scale.setScalar(0.325);
+            model.position.set(x, 0, z);
+
+            const shinyPlasticMat = new THREE.MeshPhysicalMaterial({
+                color: 0xff7722, roughness: 0.2, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.1
+            });
+            // Wireframe overlay of the exact same geometry used for
+            // collision - there's no separate simplified collider for this
+            // prop (the visible mesh IS the collidable), so this is purely
+            // to see the actual triangulation the ground raycast is
+            // sampling against (see 'toggle-curved-ramp-collider' Debug Vis
+            // checkbox) - useful for the reported climbing jitter, which
+            // looks like the 5-ray ground sample flipping between adjacent
+            // triangles with different face normals on this curved,
+            // faceted surface (unlike the flat test ramps).
+            const wireframeMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: true, depthTest: false });
+            // Collect the real meshes into a plain array FIRST, then add the
+            // wireframe children in a separate loop - traverse() is a live
+            // recursive walk, so adding a wireframe child (itself an
+            // isMesh===true Object3D) to `c` WHILE still inside the same
+            // traverse() call means traverse would then descend into that
+            // freshly-added child too, wireframe it AGAIN, and so on - an
+            // unbounded chain (caught this at 16607 objects deep).
+            const realMeshes = [];
+            model.traverse(c => { if (c.isMesh) realMeshes.push(c); });
+            realMeshes.forEach(c => {
+                c.material = shinyPlasticMat; c.castShadow = true; c.receiveShadow = true;
+                const wire = new THREE.Mesh(c.geometry, wireframeMat);
+                wire.raycast = () => {};
+                wire.visible = document.getElementById('toggle-curved-ramp-collider').checked;
+                c.add(wire);
+                curvedRampWireframes.push(wire);
+            });
+            model.userData.isCurvedRampProp = true;
+
+            levelGroup.add(model);
+            // realMeshes only (not a fresh traverse) - the wireframe
+            // overlays are now children of these same meshes and would
+            // otherwise get swept in too (harmless since their raycast is
+            // stubbed out, but there's no reason to carry them here).
+            realMeshes.forEach(c => collidables.push(c));
+        });
+    }
+
     // A field of small cubes, each rotated 45deg (diamond-on-point), whose
     // top corner height is randomized around roughly knee height (the
     // rigged character's own knee bone sits at ~0.256 world units above
@@ -1930,6 +1987,10 @@ export function startGame(CharacterClass) {
         const ROW_SPACING = 7.5, ROW_START_X = -15, ROW_Z = -10;
         ROW_ANGLES.forEach((deg, i) => buildSlopeTestRamp(ROW_START_X - i * ROW_SPACING, ROW_Z, deg));
         const ROW_END_X = ROW_START_X - (ROW_ANGLES.length - 1) * ROW_SPACING;
+
+        // Decorative curved ramp prop, across from the test ramp row (same
+        // X as its first entry, mirrored to the other side of Z=0).
+        loadCurvedRampProp(ROW_START_X, -ROW_Z);
 
         const startMesh = new THREE.Mesh(boxGeoTemplate, platMat);
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
@@ -2495,6 +2556,17 @@ export function startGame(CharacterClass) {
     // steepness-dependent target while sliding, decays via friction
     // otherwise) instead of an instant on/off constant.
     let wasSliding = false, slideSpeed = 0;
+    // Smooths out frame-to-frame face-normal noise on densely-triangulated
+    // curved surfaces (e.g. the curved ramp prop) - the ground raycast can
+    // land on adjacent triangles with meaningfully different face normals
+    // from a sub-pixel shift in exact hit position, which read as visible
+    // jitter (tilt, climb speed/anim rate, all of which key off groundNormal)
+    // on a flat/coarse ramp too, just imperceptibly since neighboring
+    // triangles there share nearly the same normal. Persists across frames;
+    // lerped toward the raw per-frame groundNormal below, then that raw
+    // value is overwritten with the smoothed result so every downstream
+    // read this same frame benefits automatically.
+    const smoothedGroundNormal = _upVec.clone();
     const SLIDE_ENTER_ANGLE = Math.PI * 0.22; // ~39.6deg
     const SLIDE_EXIT_ANGLE = Math.PI * 0.17; // ~30.6deg
     // Walking along a ramp's base line (nearly parallel to where it meets
@@ -2943,6 +3015,9 @@ export function startGame(CharacterClass) {
         const checked = e.target.checked;
         rampAngleLabels.forEach(l => { l.visible = checked; });
         if (window._yawLabelSprite) window._yawLabelSprite.visible = checked;
+    });
+    document.getElementById('toggle-curved-ramp-collider').addEventListener('change', e => {
+        curvedRampWireframes.forEach(w => { w.visible = e.target.checked; });
     });
     document.getElementById('toggle-speed-label').addEventListener('change', e => {
         if (window._speedLabelSprite) window._speedLabelSprite.visible = e.target.checked;
@@ -3473,6 +3548,8 @@ export function startGame(CharacterClass) {
                 groundHitObject = steepestHitObject;
             }
             lastGroundObject = groundHitObject;
+            smoothedGroundNormal.lerp(groundNormal, Math.min(1, 15 * delta)).normalize();
+            groundNormal.copy(smoothedGroundNormal);
 
             if (hitAnything) {
                 // isStandPositionClear falls back to a cached, one-time
