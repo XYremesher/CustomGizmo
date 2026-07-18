@@ -5511,6 +5511,9 @@ export function startGame(CharacterClass) {
         window._dbgIsGrounded = isGrounded;
         window._dbgYVelocity = yVelocity;
         window._dbgIsLedgeGrabbing = isLedgeGrabbing;
+        window._dbgIsClimbingUp = isClimbingUp;
+        window._dbgStamina = stamina;
+        window._dbgLedgeGrabCooldown = ledgeGrabCooldown;
         if (window._yawLabelSprite) {
             // group.quaternion is yaw-only: (0, sin(y/2), 0, cos(y/2)).
             let yawDeg = Math.round(2 * Math.atan2(char.group.quaternion.y, char.group.quaternion.w) * 180 / Math.PI);
