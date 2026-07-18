@@ -2696,6 +2696,7 @@ export function startGame(CharacterClass) {
     window.chargePunchHitTime = 0.28;
     window.comboHit1Time = 0.15;
     window.chargePunchForce = 80.0;
+    window.rampWalkAnimSpeed = 1.3;
     window.chargePunchKnockback = 15.0;
     window.chargeAttackProjectileSpeed = 5.0;
     window.chargeAttackProjectileFadeRate = 3.0;
@@ -2868,6 +2869,7 @@ export function startGame(CharacterClass) {
         { id: 'standup-speed-slider', vId: 'standup-speed-val', func: v => char.standupSpeed = v, fix: 1 },
         { id: 'standup-fade-slider', vId: 'standup-fade-val', func: v => char.standupCrossfade = v },
         { id: 'pose-dur-slider', vId: 'pose-dur-val', func: v => char.ragdollPoseDuration = v },
+        { id: 'ramp-walk-speed-slider', vId: 'ramp-walk-speed-val', func: v => window.rampWalkAnimSpeed = v, fix: 2 },
         { id: 'carry-height-slider', vId: 'carry-height-val', func: v => carryHeight = v },
         { id: 'throw-speed-slider', vId: 'throw-speed-val', func: v => window.throwSpeedMult = v },
         { id: 'throw-horizontal-slider', vId: 'throw-horizontal-val', func: v => window.throwHorizontalSpeed = v, fix: 1 },
