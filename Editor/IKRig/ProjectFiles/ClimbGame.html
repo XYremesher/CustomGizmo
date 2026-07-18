@@ -214,6 +214,7 @@
                     <label><input type="checkbox" id="toggle-ragdoll-colliders"> Show Ragdoll Overlay</label><br>
                     <label><input type="checkbox" id="toggle-angle-labels"> Show Angle Labels</label><br>
                     <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
+                    <label><input type="checkbox" id="toggle-foot-ik-goals" checked> Show Foot IK Goals + Knees</label><br>
                     <label>Collider Density: <span id="collider-density-val">8</span></label><br>
                     <input type="range" id="collider-density-slider" min="4" max="32" step="2" value="8" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label>
@@ -1682,7 +1683,7 @@
                         { name: 'strafe_left_run', file: 'StrafeRunLeft.fbx' },
                         { name: 'strafe_right_run', file: 'StrafeRunRight.fbx' },
                         { name: 'walk_backward', file: 'WalkingBackwards.fbx' },
-                        { name: 'walk_short_step', file: 'WalkingShortStep.fbx' }
+                        { name: 'walk_up', file: 'WalkingUp.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -2644,16 +2645,14 @@ updateClimbing(delta) {
                         // On a genuinely sloped surface (window.isOnSlopeSurfaceForWalk,
                         // set in game_js.js from the same groundNormal.y<0.995 check
                         // isOnSlopeSurface itself uses), the ordinary Walking.fbx clip's
-                        // stride is long enough that the trailing foot's slope-correction
-                        // target can end up outside comfortable leg reach mid-stride,
-                        // reading as both feet momentarily stuck out front instead of
-                        // alternating (reported on the 33deg+ test ramps). A dedicated
-                        // shorter-stride clip sidesteps that instead of trying to fix it
-                        // through IK alone. Skipped while carrying (no '_lower' variant
-                        // of this clip exists) - falls back to the normal walk/carry_walk
-                        // path exactly as before.
-                        const useShortStep = window.isOnSlopeSurfaceForWalk && !window.isCarryingObj;
-                        baseMoveState = (moveMag > 0.8) ? 'run' : (useShortStep ? 'walk_short_step' : 'walk');
+                        // stride reads as both feet momentarily stuck out front instead
+                        // of alternating (reported on the 33deg+ test ramps) - a
+                        // dedicated uphill-walk clip (WalkingUp.fbx) replaces it there
+                        // instead of trying to fix it through IK alone. Skipped while
+                        // carrying (no '_lower' variant of this clip exists) - falls
+                        // back to the normal walk/carry_walk path exactly as before.
+                        const useWalkUp = window.isOnSlopeSurfaceForWalk && !window.isCarryingObj;
+                        baseMoveState = (moveMag > 0.8) ? 'run' : (useWalkUp ? 'walk_up' : 'walk');
                     } else if (state === 'strafe_left') {
                         baseMoveState = (moveMag > 0.8) ? 'strafe_left_run' : 'strafe_left_walk';
                     } else if (state === 'strafe_right') {

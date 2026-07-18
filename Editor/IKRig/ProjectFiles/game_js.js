@@ -3365,6 +3365,12 @@ export function startGame(CharacterClass) {
         // selection) to face the character the way they're actually sliding.
         let slideDir = _slideDirScratch;
         let groundNormal = _upVec.clone();
+        // Mirrors the inner (else-block-scoped) groundHitObject once it's
+        // settled each frame - needed outside that block too (e.g. to check
+        // userData.isSlopeRamp for the WalkingUp.fbx animation swap), same
+        // reason floorY/groundNormal themselves are already declared out
+        // here instead of inside that block.
+        let lastGroundObject = null;
 
         if (char.isRagdoll) {
             const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
@@ -3464,6 +3470,7 @@ export function startGame(CharacterClass) {
                 highestY = steepestY;
                 groundHitObject = steepestHitObject;
             }
+            lastGroundObject = groundHitObject;
 
             if (hitAnything) {
                 // isStandPositionClear falls back to a cached, one-time
@@ -4973,6 +4980,49 @@ export function startGame(CharacterClass) {
                     bumpBoostTarget = Math.max(bumpBoostTarget, _rightFootIKTarget.y - floorY);
                 }
             }
+            // Debug: small markers at each foot's own computed IK target
+            // (where computeFootIKTarget's raycast actually landed, before
+            // solveLegIK tries to reach it) - lets a target-placement bug be
+            // told apart from a leg-reach/animation-timing one by literally
+            // seeing where the system thinks each foot should plant, right
+            // next to (or not) where the rendered foot ends up. Lazily
+            // created once, matching the '_yawLabelSprite' pattern already
+            // used for this session's other debug overlays.
+            if (!window._footIKGoalL) {
+                const goalGeo = new THREE.SphereGeometry(0.06, 8, 8);
+                window._footIKGoalL = new THREE.Mesh(goalGeo, new THREE.MeshBasicMaterial({ color: 0x00ff66, depthTest: false }));
+                window._footIKGoalR = new THREE.Mesh(goalGeo, new THREE.MeshBasicMaterial({ color: 0xff3366, depthTest: false }));
+                window._footIKGoalL.raycast = () => {};
+                window._footIKGoalR.raycast = () => {};
+                window._footIKGoalL.renderOrder = 999;
+                window._footIKGoalR.renderOrder = 999;
+                scene.add(window._footIKGoalL, window._footIKGoalR);
+            }
+            // Debug: small cube markers at each knee bone's actual current
+            // world position (post-IK, post-mixer - wherever the rendered
+            // skeleton really has them right now), same toggle as the foot
+            // goals above - lets a knee that's bending oddly (collapsing
+            // forward, not tracking the slope) be seen directly instead of
+            // inferred from the feet alone.
+            if (!window._kneeMarkerL) {
+                const kneeGeo = new THREE.BoxGeometry(0.07, 0.07, 0.07);
+                window._kneeMarkerL = new THREE.Mesh(kneeGeo, new THREE.MeshBasicMaterial({ color: 0x00ff66, depthTest: false }));
+                window._kneeMarkerR = new THREE.Mesh(kneeGeo, new THREE.MeshBasicMaterial({ color: 0xff3366, depthTest: false }));
+                window._kneeMarkerL.raycast = () => {};
+                window._kneeMarkerR.raycast = () => {};
+                window._kneeMarkerL.renderOrder = 999;
+                window._kneeMarkerR.renderOrder = 999;
+                scene.add(window._kneeMarkerL, window._kneeMarkerR);
+            }
+            const showFootIKGoals = document.getElementById('toggle-foot-ik-goals').checked;
+            window._footIKGoalL.visible = showFootIKGoals && !!leftFootHit;
+            window._footIKGoalR.visible = showFootIKGoals && !!rightFootHit;
+            if (leftFootHit) window._footIKGoalL.position.copy(_leftFootIKTarget);
+            if (rightFootHit) window._footIKGoalR.position.copy(_rightFootIKTarget);
+            window._kneeMarkerL.visible = showFootIKGoals && !!char.lKneeBone;
+            window._kneeMarkerR.visible = showFootIKGoals && !!char.rKneeBone;
+            if (char.lKneeBone) char.lKneeBone.getWorldPosition(window._kneeMarkerL.position);
+            if (char.rKneeBone) char.rKneeBone.getWorldPosition(window._kneeMarkerR.position);
             bumpBoostTarget = Math.max(0, bumpBoostTarget);
             footBoostTarget = bumpBoostTarget;
             // Only frozen (skipped) while genuinely standing still ON TOP
@@ -5177,15 +5227,7 @@ export function startGame(CharacterClass) {
                 // (neither clip's timeScale varies with it), so which clip
                 // plays reflects how hard the player is pressing while
                 // actual ground covered still reflects the reduced speed.
-                else if (effectiveMoveMag > 0.05) {
-                    // Same "genuinely sloped, not climbing/hanging" check
-                    // isOnSlopeSurface (below) uses, computed here too since
-                    // that flag itself isn't set until after this call -
-                    // read by Character.animate (ClimbGame.html) to swap in
-                    // the short-stride walk clip on ramps.
-                    window.isOnSlopeSurfaceForWalk = isGrounded && groundNormal.y < 0.995 && !isLedgeGrabbing && !isClimbingUp;
-                    char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk';
-                }
+                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk'; }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
             // Visual-only lean toward the slope's surface while sliding -
