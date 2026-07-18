@@ -181,6 +181,26 @@ export class RemoteAvatar {
         this.defaultSpineQuat = null;
         this.defaultSpine1Quat = null;
         this.defaultNeckQuat = null;
+        // hitTwistAngle/Velocity: RagdollPhysics.applyProceduralRecoil
+        // writes to these unconditionally (`this.hitTwistVelocity += ...`)
+        // - undefined here would silently corrupt them to NaN on the
+        // first hit. Not currently read anywhere in this file (no fbxModel
+        // whole-body twist for remote avatars yet), but harmless/cheap to
+        // keep valid for whenever that changes.
+        this.hitTwistAngle = 0;
+        this.hitTwistVelocity = 0;
+        // Hit-recovery stagger step - mirrors Character's own fields in
+        // ClimbGame.html exactly (same RagdollPhysics.applyProceduralRecoil
+        // populates both), so a hit hard enough to stagger the local player
+        // also staggers a remote avatar the same way. Was missing entirely
+        // here before, which silently no-opped the whole recovery-step
+        // block in applyProceduralRecoil (it's guarded on
+        // `this.hitRecoveryDir` being truthy) - remote players and the AI
+        // bot recoiled (spine bend) but never actually stepped from a hit.
+        this.hitRecoveryTimer = 0;
+        this.hitRecoveryDir = new THREE.Vector3();
+        this.hitRecoveryAnimState = 'walk';
+        this.hitRecoveryStrength = 12.0;
 
         const loader = new FBXLoader();
         loader.load(BASE_URL + 'StickMan.fbx', (object) => {
@@ -742,7 +762,26 @@ export class RemoteAvatar {
         }
         if (this.mixer) this.mixer.update(delta);
 
-        let animName = this.actions[this.stateName] ? this.stateName : 'idle';
+        // Hit-recovery stagger step: counts down the same field
+        // RagdollPhysics.applyProceduralRecoil set (shared with the local
+        // Character via the same mixin - this is the only place that
+        // actually decrements it for a RemoteAvatar, same as
+        // game_js.js's movement block does for the local player). While
+        // active, force the 'walk' clip regardless of whatever state the
+        // network/AI logic asked for, so the legs visibly step through
+        // the stumble instead of freezing on the pre-hit pose for its
+        // ~0.35s duration - real remote players' own position already
+        // reflects their real stagger via the ordinary network lerp
+        // above (their owning client computed it), this only needed to
+        // stop the ANIMATION from ignoring that. The AI bot's own
+        // position stagger is driven separately, from game_js.js's
+        // updateAiBot (RemoteAvatar has no wander/physics of its own to
+        // pause here).
+        if (this.hitRecoveryTimer > 0) this.hitRecoveryTimer -= delta;
+        const hitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
+        const hitRecoveryStepActive = this.hitRecoveryTimer > 0 && this.hitRecoveryTimer <= hitRecoveryDuration;
+
+        let animName = hitRecoveryStepActive ? 'walk' : (this.actions[this.stateName] ? this.stateName : 'idle');
         if (this.carryUpper && this.actions[animName + '_lower']) animName += '_lower';
         this.fadeToAction(animName, 0.2);
 

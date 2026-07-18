@@ -129,8 +129,8 @@
             <div class="category">
                 <div class="category-header">Physics & Core</div>
                 <div class="category-content">
-                    <label>Jump Force: <span id="force-val">1.0</span>x</label><br>
-                    <input type="range" id="ledge-force-slider" min="0.2" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
+                    <label>Jump Force: <span id="force-val">0.6</span>x</label><br>
+                    <input type="range" id="ledge-force-slider" min="0.2" max="3.0" step="0.1" value="0.6" style="width: 100%;"><br>
                     <label>Model Scale: <span id="scale-val">0.0065</span></label><br>
                     <input type="range" id="scale-slider" min="0.001" max="0.02" step="0.0005" value="0.0065" style="width: 100%;"><br>
                     <label>Ledge Offset: <span id="offset-val">0.06</span></label><br>
@@ -212,6 +212,8 @@
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-hitbox"> Show Hitboxes</label><br>
                     <label><input type="checkbox" id="toggle-ragdoll-colliders"> Show Ragdoll Overlay</label><br>
+                    <label><input type="checkbox" id="toggle-angle-labels"> Show Angle Labels</label><br>
+                    <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
                     <label>Collider Density: <span id="collider-density-val">8</span></label><br>
                     <input type="range" id="collider-density-slider" min="4" max="32" step="2" value="8" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label>
@@ -305,6 +307,8 @@
                     <input type="range" id="combo-hit1-time-slider" min="0.0" max="0.5" step="0.01" value="0.15" style="width: 100%;"><br>
                     <label>Charge Punch Force: <span id="charge-punch-force-val">80.0</span></label><br>
                     <input type="range" id="charge-punch-force-slider" min="20.0" max="150.0" step="1.0" value="80.0" style="width: 100%;"><br>
+                    <label>Charge Punch Charge Time: <span id="charge-punch-time-val">1.0</span>s</label><br>
+                    <input type="range" id="charge-punch-time-slider" min="0.3" max="3.0" step="0.1" value="1.0" style="width: 100%;"><br>
                     <label>Charge Punch Push Force: <span id="charge-punch-knockback-val">15.0</span></label><br>
                     <input type="range" id="charge-punch-knockback-slider" min="5.0" max="50.0" step="1.0" value="15.0" style="width: 100%;"><br>
                     <label>Charge Projectile Speed: <span id="charge-proj-speed-val">5.0</span></label><br>
@@ -643,9 +647,20 @@
                 // moving. punchTimer (below) already accumulates correctly
                 // across a mid-charge punch_charge_hold<->punch_walk switch,
                 // so maturity is just that against this fixed duration now.
-                const holdClip = this.char.actions['punch_charge_hold'] && this.char.actions['punch_charge_hold'].getClip();
-                this.chargeDuration = holdClip ? holdClip.duration : 1;
+                const holdAction0 = this.char.actions['punch_charge_hold'];
+                const holdClip = holdAction0 && holdAction0.getClip();
+                this.chargeHoldClipDuration = holdClip ? holdClip.duration : 1;
+                // window.chargePunchChargeTime (new tunable, panel slider) is
+                // how long charging should actually take to mature - default
+                // (undefined) falls back to the clip's own natural length,
+                // so behavior is unchanged until the slider is touched. The
+                // clip itself is re-timed (below) to stretch/compress across
+                // exactly that duration instead of always playing at its own
+                // fixed pace and then sitting frozen on the last frame while
+                // still waiting for a longer configured charge to mature.
+                this.chargeDuration = window.chargePunchChargeTime !== undefined ? window.chargePunchChargeTime : this.chargeHoldClipDuration;
                 this.char.fadeToAction('punch_charge_hold', 0.1);
+                if (holdAction0) holdAction0.setEffectiveTimeScale(this.chargeDuration > 0 ? this.chargeHoldClipDuration / this.chargeDuration : 1);
                 // punch_charge_hold/punch_walk is a full-body swap, not an
                 // upper/lower split - if this fires mid-combo (a punch's
                 // _upper track still active, e.g. punch_right_upper),
@@ -884,7 +899,25 @@
                 // ragdoll button.
                 const isMatureCharge = isChargePunch && this.chargeMaturity >= 1.0;
                 const chargePunchForce = window.chargePunchForce !== undefined ? window.chargePunchForce : 80;
-                let forceMagnitude = isFinalComboBlow ? 55 : (isChargePunch ? (isMatureCharge ? chargePunchForce : 30) : 22);
+                // Regular combo hits escalate through the same 'medium_high'
+                // intensity band the orange shooter projectile's own recoil
+                // uses - RagdollPhysics.applyProceduralRecoil always pushes a
+                // 'medium_high' hit at exactly window.orangeRecoilForce
+                // regardless of the specific forceMagnitude that triggered
+                // the classification, so landing anywhere in 45-69 already
+                // means "pushed like the orange projectile pushes us". Used
+                // to be a flat 22 (the weaker, disconnected 'medium' tier,
+                // fixed impulseMagnitude=12, nothing to do with
+                // orangeRecoilForce at all). comboStep treats
+                // left(1)->right(2)->the 5 hits inside punch_combo(3-7) as
+                // one continuous sequence, each hit pushing a little harder
+                // than the last, capped below the 70 ragdoll threshold - raw
+                // combo force alone should never itself cause a knockdown,
+                // only the stagger/juggle check further down does that now.
+                const comboStep = this.punchState === 3 ? (3 + hitIndex) : this.punchState;
+                let forceMagnitude = isFinalComboBlow ? 55
+                    : (isChargePunch ? (isMatureCharge ? chargePunchForce : 30)
+                    : Math.min(66, 42 + comboStep * 4));
 
                 sacks.forEach(sack => {
                     if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) {
@@ -944,8 +977,31 @@
                         const magnitudeForRagdoll = intensity === 'high' ? knockback : forceMagnitude;
                         const velocity = fwdDir.clone().multiplyScalar(magnitudeForRagdoll);
                         window.aiBot.triggerHitFlash(strength);
-                        if (intensity === 'high') window.aiBot.initRagdoll(velocity, intensity);
-                        else window.aiBot.applyProceduralRecoil(velocity, intensity);
+                        if (intensity === 'high') {
+                            window.aiBot.initRagdoll(velocity, intensity);
+                            window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
+                            window.aiBotStaggerRegenCooldown = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
+                        } else {
+                            // Hidden poise pool, mirrors multiplayer.js's
+                            // _applyPunchEvent exactly (same numbers): a
+                            // mature charge punch always knocks the bot down
+                            // outright ('high' above), but a flurry of
+                            // ordinary/combo hits that never lets it recover
+                            // (regen only resumes after a gap without being
+                            // hit) should be able to finish the job too,
+                            // instead of every non-charge hit only ever
+                            // flinching it.
+                            if (window.aiBotStagger === undefined) window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
+                            const staggerDamage = intensity === 'medium_high' ? 35 : 20;
+                            window.aiBotStagger -= staggerDamage;
+                            window.aiBotStaggerRegenCooldown = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
+                            if (window.aiBotStagger <= 0) {
+                                window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
+                                window.aiBot.initRagdoll(velocity, 'high');
+                            } else {
+                                window.aiBot.applyProceduralRecoil(velocity, intensity);
+                            }
+                        }
                     }
                 }
             }
@@ -979,6 +1035,15 @@
                             this.char.fadeToAction(desiredHoldName, 0.15);
                             const newAction = this.char.actions[desiredHoldName];
                             if (newAction) newAction.time = prevProgress * newAction.getClip().duration;
+                            // fadeToAction resets timeScale to 1.0 - re-apply
+                            // the charge-time-derived pace (see
+                            // startChargePunch) whenever swapping BACK to
+                            // punch_charge_hold from punch_walk (punch_walk
+                            // itself plays at its own normal walking pace,
+                            // untouched).
+                            if (desiredHoldName === 'punch_charge_hold' && newAction) {
+                                newAction.setEffectiveTimeScale(this.chargeDuration > 0 ? (this.chargeHoldClipDuration || 1) / this.chargeDuration : 1);
+                            }
                         }
 
                         // Same punchTimer/chargeDuration ratio driving the

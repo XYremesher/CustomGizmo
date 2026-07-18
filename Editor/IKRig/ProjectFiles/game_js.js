@@ -38,6 +38,14 @@ export function startGame(CharacterClass) {
     window.carryables = carryables;
     let nextCarryNetId = 0;
     const debugHelpers = [];
+    // Ramp angle labels (makeTextSprite, added by buildSlopeTestRamp) plus
+    // the live yaw readout above the player's head are both tied to the
+    // 'toggle-angle-labels' Debug Vis checkbox - collected here so the
+    // checkbox's change handler (below) can flip all of them at once.
+    // Cleared at the top of buildStairsLevel() each rebuild so this never
+    // accumulates references to sprites that got removed along with their
+    // old ramp meshes.
+    const rampAngleLabels = [];
     // Sandbag (constructed later from ClimbGame.html) takes a debugHelpers
     // array in its own constructor to push a hitbox wireframe into, but
     // without this it was getting a disconnected, throwaway [] instead of
@@ -631,6 +639,34 @@ export function startGame(CharacterClass) {
         if (aiBot.isRagdoll || aiBot.isStandingUp) { aiBot.update(delta); return; }
 
         const pos = aiBot.group.position;
+
+        // Hit-recovery stagger step - mirrors the local player's own
+        // recovery step in the main movement block below: pauses whatever
+        // the bot was doing (wander/chase/punch/cooldown) for this same
+        // short window and staggers it in the hit's direction instead,
+        // using the exact fields RagdollPhysics.applyProceduralRecoil
+        // already populates (hitRecoveryDir/Timer/Strength - shared with
+        // the local Character via the same mixin, so this needed no new
+        // trigger plumbing, just something to actually read them).
+        // Position-only, no clip to match the exact direction with -
+        // RemoteAvatar's REMOTE_ANIMS never loaded strafe/backward-walk
+        // clips, so 'walk' is the closest available state; at least the
+        // legs visibly cycle instead of sliding/staying frozen mid-stumble.
+        const hitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
+        if (aiBot.hitRecoveryTimer > 0 && aiBot.hitRecoveryTimer <= hitRecoveryDuration) {
+            const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
+            const recoveryStrengthMult = THREE.MathUtils.clamp(aiBot.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
+            const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
+            const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
+            rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
+            const groundHits = rayDown.intersectObjects(collidables);
+            if (groundHits.length > 0) nextPos.y = groundHits[0].point.y;
+            aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z],
+                [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'walk', false);
+            aiBot.update(delta);
+            return;
+        }
+
         const distToPlayer = pos.distanceTo(char.group.position);
         const playerAvailable = !char.isRagdoll && !char.isStandingUp;
 
@@ -1616,6 +1652,12 @@ export function startGame(CharacterClass) {
                     const hemisphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshToonMaterial({ color: 0xaa5555, gradientMap: threeTone }));
                     hemisphere.position.set(e.pos[0], e.pos[1], e.pos[2]);
                     hemisphere.castShadow = true; hemisphere.receiveShadow = true;
+                    // See isOnHemisphere in the movement code - exempts this
+                    // continuously-curved surface from isStandPositionClear
+                    // the same way ramps are, since that check's coarse
+                    // cached AABB (the dome's full 12x12x6 bounding box)
+                    // bears no resemblance to the actual thin curved shell.
+                    hemisphere.userData.isHemisphere = true;
                     levelGroup.add(hemisphere); collidables.push(hemisphere);
                     addHemisphereDebugHelper(hemisphere);
                 }
@@ -1641,6 +1683,7 @@ export function startGame(CharacterClass) {
       ]
     };
 
+    let levelGlbWater = null;
     function buildLevelFromGlb() {
         // Loader may still be in flight the first time the dropdown picks
         // this level - flag it and let onLevelGlbLoaded re-call once ready.
@@ -1652,7 +1695,39 @@ export function startGame(CharacterClass) {
         carryables.length = 0;
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
-        collidables.length = 0; collidables.push(ground);
+        collidables.length = 0;
+
+        // Grass ground swapped for a water plane, a bit below the level's
+        // own y=0 base - only for this level, restored by buildLevel()
+        // before every other level builds. No fall-into-water handling
+        // yet (recovery/respawn is a separate follow-up) - for now it's
+        // just a plain solid floor so nothing falls through into the void.
+        ground.visible = false;
+        if (!levelGlbWater) {
+            levelGlbWater = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000),
+                new THREE.MeshToonMaterial({ color: 0x3377aa, gradientMap: threeTone }));
+            levelGlbWater.rotation.x = -Math.PI / 2;
+            levelGlbWater.receiveShadow = true;
+        }
+        // Whole level scaled to match the player's own in-game scale.
+        // Derived from a real Blender-side reference rather than guessed:
+        // in Blender, the player model reads at the correct size next to
+        // Level.glb when scaled to 0.01 there (with the level left at its
+        // native 1) - so 0.01 (Blender reference) and 1 (Blender
+        // reference) are the two scales that already look right together.
+        // The player's actual in-game scale is 0.0065 (char.fbxModel /
+        // '#scale-slider'), which is 0.65x that Blender reference (0.0065
+        // / 0.01) - applying that same 0.65x to the level's own Blender
+        // reference (1) preserves the exact proportion Blender already
+        // confirmed looks right, landing on 0.65 instead of the flatly
+        // wrong 0.0065 tried earlier (that number conflated two different
+        // reference frames - the player's OWN native-to-ingame correction
+        // - with the level's, which needs its own separate one).
+        const LEVEL_TO_PLAYER_SCALE = 0.65;
+        levelGlbScene.scale.setScalar(LEVEL_TO_PLAYER_SCALE);
+        levelGlbWater.position.y = -1.5 * LEVEL_TO_PLAYER_SCALE;
+        levelGroup.add(levelGlbWater);
+        collidables.push(levelGlbWater);
 
         let startNode = null;
         levelGlbScene.traverse(o => {
@@ -1664,6 +1739,7 @@ export function startGame(CharacterClass) {
             }
         });
         levelGroup.add(levelGlbScene);
+        levelGlbScene.updateMatrixWorld(true);
         star.visible = false;
 
         if (startNode) {
@@ -1675,7 +1751,10 @@ export function startGame(CharacterClass) {
             // world direction) and fall back to +Z if +Y comes out near-
             // vertical (an unrotated empty), then flatten to the ground
             // plane either way - the spawn facing is yaw-only.
-            char.group.position.copy(startNode.position);
+            // WORLD position, not startNode.position (its raw LOCAL
+            // coordinate) - now that the whole scene has a non-1 scale
+            // applied above it, those no longer coincide.
+            startNode.getWorldPosition(char.group.position);
             _tempVec1.set(0, 1, 0).applyQuaternion(startNode.quaternion);
             if (Math.abs(_tempVec1.y) > 0.9) _tempVec1.set(0, 0, 1).applyQuaternion(startNode.quaternion);
             _tempVec1.y = 0;
@@ -1765,7 +1844,9 @@ export function startGame(CharacterClass) {
         // world-space math to keep in sync.
         const label = makeTextSprite(Math.round(angleDeg) + '°');
         label.position.set(2.5, 0.6, 6.5);
+        label.visible = document.getElementById('toggle-angle-labels').checked;
         ramp.add(label);
+        rampAngleLabels.push(label);
 
         return ramp;
     }
@@ -1827,8 +1908,11 @@ export function startGame(CharacterClass) {
     }
 
     function buildStairsLevel() {
+        rampAngleLabels.length = 0;
         const hemisphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshToonMaterial({ color: 0xaa5555, gradientMap: threeTone }));
         hemisphere.position.set(10, 0, -10); hemisphere.castShadow = true; hemisphere.receiveShadow = true;
+        // See isOnHemisphere in the movement code.
+        hemisphere.userData.isHemisphere = true;
         levelGroup.add(hemisphere); collidables.push(hemisphere);
         addHemisphereDebugHelper(hemisphere);
 
@@ -1858,6 +1942,43 @@ export function startGame(CharacterClass) {
             mesh.castShadow = true; mesh.receiveShadow = true;
             levelGroup.add(mesh); collidables.push(mesh);
         }
+
+        // Jump-height test rig: two more ground-standing blocks flush
+        // against stair_0's own side (-x, same z, each cubeSize wide so
+        // touching just means stepping cubeSize over per block) - same
+        // footprint as stair_0, but 1/4 and 2/4 (1.25x/1.5x) taller, to
+        // see exactly how big a single-jump step-up the player can still
+        // clear before it turns into a climb/mantle situation. -x, not
+        // +x: the hemisphere sits at (10, 0, -10) with radius 6, reaching
+        // out to x=4 - +x put these blocks (and the marker below) partway
+        // inside its dome, invisible/clipped through solid geometry. -x is
+        // clear all the way out past the ramp row (closest one starts at
+        // x=-15, well past this rig's own x=-7.8 marker).
+        const JUMP_TEST_HEIGHTS = [1.25, 1.5];
+        JUMP_TEST_HEIGHTS.forEach((mult, i) => {
+            const h = cubeSize * mult;
+            const block = new THREE.Mesh(new RoundedBoxGeometry(cubeSize, h, cubeSize, 1, 0.15), platMat);
+            block.position.set(-cubeSize * (i + 1), h / 2, -10);
+            block.castShadow = true; block.receiveShadow = true;
+            levelGroup.add(block); collidables.push(block);
+        });
+        // Reference marker for the SAME test: a thin, non-collidable plate
+        // hovering at exactly the height the player's own head reaches at
+        // the peak of a standing jump from flat ground (y=0), so it can be
+        // held up against the two blocks above by eye. Derived, not
+        // guessed: apex height gain above the jump's start = v0^2/(2*g)
+        // with this game's actual jump/gravity constants (yVelocity=10 at
+        // takeoff in handleJump(), gravity=30/s^2 in the main integrator)
+        // = 100/60 = 1.667; head-top sits ~2.267 above char.group's own
+        // origin (measured live via the fbxModel's world-space bounding
+        // box - group's origin tracks the feet, not a fixed rig constant,
+        // so this was measured rather than assumed) - 0 + 1.667 + 2.267 =
+        // 3.93.
+        const JUMP_APEX_HEAD_Y = 3.93;
+        const jumpApexMarker = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.06, 2.5),
+            new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.6 }));
+        jumpApexMarker.position.set(-cubeSize * 2.6, JUMP_APEX_HEAD_Y, -10);
+        levelGroup.add(jumpApexMarker);
 
         // Elevated walkway from the top of the stairs (last one lands at
         // (0, 16.5, -25) per the loop above) over to the ramp row, so
@@ -2020,6 +2141,10 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
+        // Only Level 2 (buildLevelFromGlb) hides this in favor of a water
+        // plane - reset here so switching back to any other level always
+        // gets the grass back regardless of which level was active before.
+        ground.visible = true;
 
         if (currentLevel === "local_stairs") buildStairsLevel();
         else if (currentLevel === "local_glb") buildLevelFromGlb();
@@ -2475,7 +2600,22 @@ export function startGame(CharacterClass) {
     const _climbInputDir = new THREE.Vector3();
     let networkStateName = 'idle';
     let networkCarryUpper = false;
-    let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 1.0, landingTimer = 0, initialLandingTimer = 0;
+    // Last movement-input angle (world yaw, cameraTheta+atan2(curX,curY)
+    // convention) while there WAS meaningful input - read by the ledge-
+    // grab wall-detection ray (see its own comment) so a jump fired the
+    // instant the player lets go of the stick (a completely normal thing
+    // to do right as you press jump - the single-frame input read this
+    // used to fall back on was zero almost as often as it was stale
+    // facing) still aims at where they were actually just running,
+    // instead of silently reverting to the same lagging body-facing bug
+    // this was meant to fix in the first place.
+    let lastMoveIntentAng = 0;
+    let hasMoveIntent = false;
+    // Matches '#ledge-force-slider's own HTML default (0.6) - uiBindings'
+    // init only wires an 'input' listener, it never applies the slider's
+    // starting value on load, so this has to be kept in sync by hand or
+    // the two silently disagree until the user first touches the slider.
+    let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 0.6, landingTimer = 0, initialLandingTimer = 0;
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
     let wallStopThreshold = 0.90;
     // How fast the character's facing turns to match the movement/slide
@@ -2565,6 +2705,20 @@ export function startGame(CharacterClass) {
     window.playerStaggerRegenRate = 20.0;
     window.playerStaggerRegenDelay = 2.5;
     window.playerStaggerRegenCooldown = 0;
+    // Same hidden poise pool as window.playerStagger above, mirrored for
+    // the AI bot - multiplayer.js's _applyPunchEvent already has this for
+    // real PvP targets (a flurry of non-ragdoll hits chips it down, and
+    // once exhausted the next hit knocks them down even if it's a light
+    // one; a gap without being hit lets it refill), the bot's own hit path
+    // in ClimbGame.html's detectMeleeHits never had an equivalent - every
+    // hit was judged purely on its own forceMagnitude, so no amount of
+    // never letting the bot recover between combo hits could ever knock
+    // it down on its own.
+    window.aiBotStagger = 100.0;
+    window.aiBotStaggerMax = 100.0;
+    window.aiBotStaggerRegenRate = 20.0;
+    window.aiBotStaggerRegenDelay = 2.5;
+    window.aiBotStaggerRegenCooldown = 0;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
     // Between HANG_DRAIN (passive hanging) and CLIMB_COST (the quick
     // ledge climb-up action) - actively climbing a steep/slidable ramp
@@ -2671,7 +2825,13 @@ export function startGame(CharacterClass) {
                 stamina -= LEDGE_JUMP_COST;
                 isLedgeGrabbing = false; isClimbingUp = false; yVelocity = 10 * ledgeJumpMultiplier;
                 _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
-                jumpMomentum.copy(_tempVec1.negate().multiplyScalar(15 * ledgeJumpMultiplier));
+                // Was 15 - height (yVelocity, still 10) reads fine, but the
+                // horizontal push carries for the whole ~0.67s air time
+                // (until yVelocity brings it back to launch height, from
+                // v0=10 and gravity=30), landing noticeably further out
+                // than intended. 12 trims that same-air-time distance by
+                // ~20% without touching the jump's height/arc feel.
+                jumpMomentum.copy(_tempVec1.negate().multiplyScalar(12 * ledgeJumpMultiplier));
                 lockedHintAngle = null; ledgeGrabCooldown = 0.5;
             }
         }
@@ -2739,6 +2899,15 @@ export function startGame(CharacterClass) {
         { id: 'charge-punch-hit-time-slider', vId: 'charge-punch-hit-time-val', func: v => window.chargePunchHitTime = v },
         { id: 'combo-hit1-time-slider', vId: 'combo-hit1-time-val', func: v => window.comboHit1Time = v },
         { id: 'charge-punch-force-slider', vId: 'charge-punch-force-val', func: v => window.chargePunchForce = v },
+        // Deliberately NOT pre-set at module scope like chargePunchForce
+        // above (line ~2698) - startChargePunch (ClimbGame.html) checks
+        // `window.chargePunchChargeTime !== undefined` and falls back to
+        // the punch_charge_hold clip's own natural duration when it's
+        // untouched, which is the correct zero-config default (matches
+        // pre-this-feature behavior exactly). Pre-setting it here to
+        // match the slider's own "1.0" display would risk silently
+        // overriding that natural duration with a guessed number instead.
+        { id: 'charge-punch-time-slider', vId: 'charge-punch-time-val', func: v => window.chargePunchChargeTime = v },
         { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
         { id: 'charge-proj-speed-slider', vId: 'charge-proj-speed-val', func: v => window.chargeAttackProjectileSpeed = v },
         { id: 'charge-proj-fade-slider', vId: 'charge-proj-fade-val', func: v => window.chargeAttackProjectileFadeRate = v },
@@ -2768,6 +2937,14 @@ export function startGame(CharacterClass) {
         if (window.sacks) window.sacks.forEach(s => { if (s.hitboxHelper) s.hitboxHelper.visible = checked; });
     });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
+    document.getElementById('toggle-angle-labels').addEventListener('change', e => {
+        const checked = e.target.checked;
+        rampAngleLabels.forEach(l => { l.visible = checked; });
+        if (window._yawLabelSprite) window._yawLabelSprite.visible = checked;
+    });
+    document.getElementById('toggle-speed-label').addEventListener('change', e => {
+        if (window._speedLabelSprite) window._speedLabelSprite.visible = e.target.checked;
+    });
 
     window.toonOutlineEnabled = false;
     window.toonOutlineThickness = 0.02;
@@ -2914,6 +3091,13 @@ export function startGame(CharacterClass) {
             window.playerStaggerRegenCooldown -= delta;
         } else if (window.playerStagger < window.playerStaggerMax) {
             window.playerStagger = Math.min(window.playerStaggerMax, window.playerStagger + window.playerStaggerRegenRate * delta);
+        }
+        // Same regen tick as the player's own stagger pool above, for the
+        // AI bot's mirrored one (see window.aiBotStagger's own comment).
+        if (window.aiBotStaggerRegenCooldown > 0) {
+            window.aiBotStaggerRegenCooldown -= delta;
+        } else if (window.aiBotStagger < window.aiBotStaggerMax) {
+            window.aiBotStagger = Math.min(window.aiBotStaggerMax, window.aiBotStagger + window.aiBotStaggerRegenRate * delta);
         }
 
         // Used to live inside Character.prototype.animate() in the HTML file,
@@ -3320,8 +3504,21 @@ export function startGame(CharacterClass) {
                     ? (!isDecorativeBump && slopeAngle > SLIDE_EXIT_ANGLE)
                     : (rawSteepReading && steepGroundTimer >= SLIDE_ENTER_DEBOUNCE);
                 const isOnRamp = groundHitObject && groundHitObject.userData && groundHitObject.userData.isSlopeRamp;
+                // Same reasoning as isOnRamp: isStandPositionClear falls
+                // back to a cached AABB (getObstacleBox) that's the dome's
+                // whole 12x12x6 bounding box, nothing like the thin curved
+                // shell actually underfoot. The earlier fix for this only
+                // exempted the STEEP (isSteepSlope) part of the dome, so
+                // walking up the shallower base first (still isSteppingUp
+                // almost every frame on a continuous curve, but not yet
+                // past the slide angle) kept hitting the same false
+                // "blocked" verdict and froze floorY there - reported as
+                // "gets stuck partway up". Exempting the whole hemisphere
+                // regardless of local steepness fixes both zones the same
+                // way ramps already are.
+                const isOnHemisphere = groundHitObject && groundHitObject.userData && groundHitObject.userData.isHemisphere;
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
-                const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp &&
+                const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp && !isOnHemisphere &&
                     !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null);
                 // Entry refusal for slidable faces, ground-path version of
                 // the CLIMB_INTENT_DOT wall gate: walking nearly parallel
@@ -4193,6 +4390,16 @@ export function startGame(CharacterClass) {
                     else if (isBlocked) currentPushS = 0;
                 }
             } else lockedHintAngle = null;
+            // The normal-movement branch (the trailing `else` below) is the
+            // only place that calls setSlopeTilt each frame - this branch
+            // never did, so whatever motorcycle-style turn-lean the body had
+            // at the exact instant it grabbed on stayed baked into
+            // fbxModel.quaternion for the entire hang, never relaxing back
+            // to level. Forcing turnLeanAngle to 0 and normal/slideDir to
+            // the identity-target case here every frame actively slerps it
+            // back level while hanging, same rate (10*delta) as the normal
+            // branch already uses elsewhere.
+            char.setSlopeTilt(_upVec, delta, null, 0, char.hitTwistAngle);
             char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
             networkStateName = 'hang_idle';
         } else {
@@ -4395,6 +4602,8 @@ export function startGame(CharacterClass) {
                 } else {
                     mAng = cameraTheta + Math.atan2(curX, curY);
                     mDir = _tempVec1.set(Math.sin(mAng), 0, Math.cos(mAng));
+                    // See lastMoveIntentAng's own comment (ledge-grab ray).
+                    if (moveMag > 0.1) { lastMoveIntentAng = mAng; hasMoveIntent = true; }
                 }
 
                 rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.3), mDir);
@@ -4526,6 +4735,7 @@ export function startGame(CharacterClass) {
 
                 if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
+                window._dbgActualSpeed = actualSpeed;
                 if (isHitRecovering) {
                     // Same idea as runupAnimSpeed above: the step's own
                     // ground speed already starts fast (scaled by hit
@@ -4587,7 +4797,33 @@ export function startGame(CharacterClass) {
             }
 
             if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
-                const chest = _tempVec2.copy(char.group.position).setY(char.group.position.y+1.1), fwd = _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
+                // Aimed at actual movement INTENT, not the character's own
+                // facing - group.quaternion visually lags behind input
+                // while turning (curved running/strafing), so a jump timed
+                // mid-turn could point this ray somewhere other than where
+                // the player is actually running, catching an unintended
+                // side/corner surface instead of the one being run toward
+                // head-on - reported as grabbing a ledge "sideways" after
+                // running while turning. Three-tier fallback, in order:
+                // (1) THIS frame's own input, if any (curX/curY+cameraTheta,
+                // same convention as mAng above); (2) failing that,
+                // lastMoveIntentAng - a jump is very often pressed on the
+                // exact frame the player lets go of the stick to press it,
+                // so requiring live input here reverted to the same stale-
+                // facing bug just as often as it fixed it; (3) only with no
+                // recent movement at all (a standing jump) does this fall
+                // back to plain body facing, same as originally.
+                const jInputMag = Math.sqrt(curX * curX + curY * curY);
+                let fwd;
+                if (jInputMag > 0.1) {
+                    const jAng = cameraTheta + Math.atan2(curX, curY);
+                    fwd = _tempVec1.set(Math.sin(jAng), 0, Math.cos(jAng));
+                } else if (hasMoveIntent) {
+                    fwd = _tempVec1.set(Math.sin(lastMoveIntentAng), 0, Math.cos(lastMoveIntentAng));
+                } else {
+                    fwd = _tempVec1.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+                }
+                const chest = _tempVec2.copy(char.group.position).setY(char.group.position.y+1.1);
                 rayFwd.set(chest, fwd); const wH = rayFwd.intersectObjects(solidCollidables);
                 // Same steep-slope-vs-genuine-wall classification as the
                 // horizontal movement wall-stop (see SLOPE_WALL_CUTOFF) -
@@ -4612,7 +4848,28 @@ export function startGame(CharacterClass) {
                     const n = realWallNormal.setY(0).normalize();
                     const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
-                    if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < char.group.position.y+3.5) {
+                    // Ceiling on how high a ledge can be and still get
+                    // grabbed - was a flat char.group.position.y+3.5, which
+                    // actually gets MORE generous the higher/later into the
+                    // jump this runs, since current Y keeps climbing while
+                    // the +3.5 budget never shrinks to compensate. A wall
+                    // taller than any real jump could reach (confirmed with
+                    // a purpose-built test rig - a block above the jump's
+                    // own measured apex height still grabbed, reading as
+                    // teleporting onto it) could still pass this check well
+                    // into the arc. Physically consistent version instead:
+                    // v^2/(2g) is exactly how much MORE the character can
+                    // still rise from its current yVelocity - takeoff_Y +
+                    // remainingRise stays constant across the whole arc
+                    // (remainingRise shrinks by precisely as much as
+                    // current Y has already risen), so this doesn't grow
+                    // over time the way the flat version did. +1.85 is the
+                    // same hand-above-group offset hangGroupY already uses
+                    // below, for internal consistency (whatever height
+                    // this accepts, hangGroupY correctly reflects it).
+                    const remainingRise = yVelocity > 0 ? (yVelocity * yVelocity) / 60 : 0;
+                    const maxLedgeY = char.group.position.y + remainingRise + 1.85;
+                    if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < maxLedgeY) {
                         const hangX = wH[0].point.x + n.x*ledgeOffset;
                         const hangZ = wH[0].point.z + n.z*ledgeOffset;
                         const hangGroupY = lH[0].point.y - 1.85;
@@ -4623,6 +4880,17 @@ export function startGame(CharacterClass) {
                             yVelocity = 0; ledgeTarget.copy(lH[0].point);
                             char.group.position.y = hangGroupY; char.group.position.x = hangX; char.group.position.z = hangZ;
                             char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); jumpMomentum.set(0,0,0);
+                            // The lookAt above snaps facing straight at the wall in a
+                            // single frame - without this, updateTurnLean (game_js.js,
+                            // runs every frame off char.group's own yaw delta) reads
+                            // that snap as an enormous instantaneous turn rate and banks
+                            // the body into it, so the character can appear tilted right
+                            // as it grabs on. Zeroing turnLeanAngle removes any lean
+                            // already in flight, and priming _lastGroupYaw to the
+                            // POST-snap yaw means next frame's yawDelta is 0 instead of
+                            // the whole snap angle, so the bank never gets recreated.
+                            char.turnLeanAngle = 0;
+                            char._lastGroupYaw = 2 * Math.atan2(char.group.quaternion.y, char.group.quaternion.w);
                             // Force-finish any still-fading-out visual offset from a
                             // previous mantle (its 0.2s climbTransitionTimer lerp,
                             // see Character.animate in the HTML file) instead of
@@ -5055,8 +5323,9 @@ export function startGame(CharacterClass) {
         // problematic walking angle can be read off the screen and
         // reported exactly instead of described (used for tuning the
         // slidable-ramp entry thresholds). Redrawn only when the shown
-        // integer changes. Remove (or gate behind a toggle) once the
-        // ramp-angle tuning session is done.
+        // integer changes. Tied to the 'toggle-angle-labels' Debug Vis
+        // checkbox alongside the ramp angle labels (rampAngleLabels) -
+        // see that checkbox's change handler.
         if (!window._yawLabelSprite && char && char.group) {
             const cv = document.createElement('canvas');
             cv.width = 192; cv.height = 64;
@@ -5066,10 +5335,17 @@ export function startGame(CharacterClass) {
             spr.scale.set(1.8, 0.6, 1);
             spr.position.set(0, 2.5, 0);
             spr.raycast = () => {}; // must never be hit-testable (see makeTextSprite)
+            spr.visible = document.getElementById('toggle-angle-labels').checked;
             char.group.add(spr);
             window._yawLabelSprite = spr;
             window._yawLabelLast = '';
         }
+        // Debug: expose core per-frame physics state for external
+        // inspection (e.g. via Playwright) while chasing ledge-grab
+        // reach reports. Cheap (plain property writes), fine to leave.
+        window._dbgIsGrounded = isGrounded;
+        window._dbgYVelocity = yVelocity;
+        window._dbgIsLedgeGrabbing = isLedgeGrabbing;
         if (window._yawLabelSprite) {
             // group.quaternion is yaw-only: (0, sin(y/2), 0, cos(y/2)).
             let yawDeg = Math.round(2 * Math.atan2(char.group.quaternion.y, char.group.quaternion.w) * 180 / Math.PI);
@@ -5087,6 +5363,66 @@ export function startGame(CharacterClass) {
                 ctx.textBaseline = 'middle';
                 ctx.fillText(txt, 96, 32);
                 window._yawLabelTex.needsUpdate = true;
+            }
+        }
+        // Debug: speed + which locomotion clip(s) are actually playing
+        // right now (and at what blend weight, during a walk/run
+        // crossfade) - for tuning the walk-vs-run feel/transition without
+        // guessing from how it looks. Stacked above the yaw label. Tied to
+        // its own 'toggle-speed-label' Debug Vis checkbox.
+        // Canvas tall enough for speed + up to 3 animation lines (one per
+        // active clip) stacked below it, each on its own row instead of
+        // crammed onto one line together.
+        const SPEED_LABEL_LINE_H = 40;
+        const SPEED_LABEL_MAX_LINES = 4;
+        if (!window._speedLabelSprite && char && char.group) {
+            const cv2 = document.createElement('canvas');
+            cv2.width = 256; cv2.height = SPEED_LABEL_LINE_H * SPEED_LABEL_MAX_LINES;
+            window._speedLabelCtx = cv2.getContext('2d');
+            window._speedLabelTex = new THREE.CanvasTexture(cv2);
+            const spr2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: window._speedLabelTex, depthTest: false }));
+            spr2.scale.set(2.4, 2.4 * cv2.height / cv2.width, 1);
+            spr2.position.set(0, 3.4, 0);
+            spr2.raycast = () => {};
+            spr2.visible = document.getElementById('toggle-speed-label').checked;
+            char.group.add(spr2);
+            window._speedLabelSprite = spr2;
+            window._speedLabelLast = '';
+        }
+        if (window._speedLabelSprite) {
+            const spd = window._dbgActualSpeed || 0;
+            const parts = [];
+            ['idle', 'walk', 'run'].forEach(name => {
+                const a = char.actions && char.actions[name];
+                // getEffectiveWeight() alone is misleading here - it
+                // reflects the action's configured weight regardless of
+                // whether the action has actually been started (played)
+                // on the mixer, so an action that's just sitting at its
+                // three.js default weight=1 but was never play()'d would
+                // otherwise show as "100%" despite contributing nothing
+                // to the pose actually on screen. isRunning() is what
+                // tells them apart.
+                if (!a || !a.isRunning()) return;
+                const w = Math.round(a.getEffectiveWeight() * 100);
+                if (w > 0) parts.push(name + ' ' + w + '%');
+            });
+            const lines = [spd.toFixed(1) + ' u/s'].concat(parts.length ? parts : ['-']);
+            const txt = lines.join('|');
+            if (txt !== window._speedLabelLast) {
+                window._speedLabelLast = txt;
+                const ctx2 = window._speedLabelCtx;
+                const w2 = ctx2.canvas.width, h2 = ctx2.canvas.height;
+                ctx2.clearRect(0, 0, w2, h2);
+                ctx2.fillStyle = 'rgba(0,0,0,0.55)';
+                ctx2.fillRect(0, 0, w2, h2);
+                ctx2.fillStyle = '#88ddff';
+                ctx2.font = 'bold 28px sans-serif';
+                ctx2.textAlign = 'center';
+                ctx2.textBaseline = 'middle';
+                lines.forEach((line, i) => {
+                    ctx2.fillText(line, w2 / 2, SPEED_LABEL_LINE_H * (i + 0.5));
+                });
+                window._speedLabelTex.needsUpdate = true;
             }
         }
 
