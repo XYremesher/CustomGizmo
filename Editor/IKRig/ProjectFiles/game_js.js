@@ -3554,11 +3554,16 @@ export function startGame(CharacterClass) {
             window._ledgeRayDownLine = mkDebugLine(0xff00ff);
             window._ledgeRaySideLine = mkDebugLine(0x00ffff);
             window._ledgeRayCornerTopLine = mkDebugLine(0xff8800);
+            // Diagonal outside-corner wrap probe (see the isLedgeGrabbing
+            // branch's own comment on why the pure-sideways sideRay can
+            // never find a convex/outside corner like a cube's edge).
+            window._ledgeRayWrapLine = mkDebugLine(0x00ff00);
         }
         window._ledgeRayFwdLine.visible = false;
         window._ledgeRayDownLine.visible = false;
         window._ledgeRaySideLine.visible = false;
         window._ledgeRayCornerTopLine.visible = false;
+        window._ledgeRayWrapLine.visible = false;
 
         if (char.isRagdoll) {
             const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
@@ -4605,6 +4610,46 @@ export function startGame(CharacterClass) {
                         } else debugBranch = h.length > 0 ? 'wrap-failed-height' : 'wrap-failed-no-downhit';
                     } else if (isBlocked) debugBranch = 'blocked-close-wall';
                     else debugBranch = 'no-side-hit';
+                    // A pure-sideways probe can only ever find an INSIDE
+                    // corner (one that turns TOWARD the character, crossing
+                    // that straight line). At an OUTSIDE/convex corner - a
+                    // cube's edge, exactly the reported case - the new wall
+                    // is perpendicular to the old one and recedes AWAY from
+                    // that same straight line, so sideRay always reports
+                    // no-side-hit there even with a real wall just past the
+                    // edge. A diagonal probe (halfway between "sideways" and
+                    // "into the current wall", from the ORIGINAL un-shifted
+                    // chest) reliably crosses that perpendicular wall
+                    // instead - the same geometry a real hand reaching
+                    // around a corner sweeps through.
+                    if (!handled && debugBranch === 'no-side-hit') {
+                        const wrapProbeDir = mDir.clone().add(charFwd).normalize();
+                        const wrapHits = new THREE.Raycaster(chest, wrapProbeDir).intersectObjects(solidCollidables);
+                        if (showCornerRays) {
+                            const wrapEnd = wrapHits.length > 0 ? wrapHits[0].point.clone() : chest.clone().addScaledVector(wrapProbeDir, 1.5);
+                            window._ledgeRayWrapLine.geometry.setFromPoints([chest.clone(), wrapEnd]);
+                            window._ledgeRayWrapLine.visible = true;
+                        }
+                        if (wrapHits.length > 0 && wrapHits[0].distance < 1.2) {
+                            const n2 = wrapHits[0].face.normal.clone().transformDirection(wrapHits[0].object.matrixWorld).setY(0).normalize();
+                            const top2 = wrapHits[0].point.clone().add(n2.clone().multiplyScalar(-0.2)).setY(wrapHits[0].point.y + 2.0);
+                            rayDown.set(top2, _downVec);
+                            const h2 = rayDown.intersectObjects(solidCollidables);
+                            if (h2.length > 0 && Math.abs(h2[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                                const candX2 = wrapHits[0].point.x + n2.x * ledgeOffset;
+                                const candZ2 = wrapHits[0].point.z + n2.z * ledgeOffset;
+                                const candGroupY2 = h2[0].point.y - 1.85;
+                                const currentWallObj3 = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
+                                if (isHangPositionClear(candX2, candGroupY2, candZ2, wrapHits[0].object, currentWallObj3)) {
+                                    char.group.position.set(candX2, candGroupY2, candZ2);
+                                    ledgeTarget.copy(h2[0].point);
+                                    char.group.lookAt(_cornerWrapLookScratch.copy(char.group.position).sub(n2));
+                                    handled = true;
+                                    debugBranch = 'diagonal-wrap-success';
+                                } else debugBranch = 'diagonal-wrap-blocked-by-hangPositionClear';
+                            } else debugBranch = h2.length > 0 ? 'diagonal-wrap-failed-height' : 'diagonal-wrap-failed-no-downhit';
+                        }
+                    }
                     // Logs only when the classification (debugBranch) itself
                     // changes - it's recomputed every frame the stick is held
                     // sideways, and printing every single one of those (often
