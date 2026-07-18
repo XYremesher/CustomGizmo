@@ -4610,27 +4610,46 @@ export function startGame(CharacterClass) {
                         } else debugBranch = h.length > 0 ? 'wrap-failed-height' : 'wrap-failed-no-downhit';
                     } else if (isBlocked) debugBranch = 'blocked-close-wall';
                     else debugBranch = 'no-side-hit';
-                    // A pure-sideways probe can only ever find an INSIDE
-                    // corner (one that turns TOWARD the character, crossing
-                    // that straight line). At an OUTSIDE/convex corner - a
-                    // cube's edge, exactly the reported case - the new wall
-                    // is perpendicular to the old one and recedes AWAY from
-                    // that same straight line, so sideRay always reports
-                    // no-side-hit there even with a real wall just past the
-                    // edge. A diagonal probe (halfway between "sideways" and
-                    // "into the current wall", from the ORIGINAL un-shifted
-                    // chest) reliably crosses that perpendicular wall
-                    // instead - the same geometry a real hand reaching
-                    // around a corner sweeps through.
+                    // A probe cast from the character's own chest can only
+                    // ever find an INSIDE corner (one that turns TOWARD the
+                    // character, crossing a line through that same point).
+                    // At an OUTSIDE/convex corner - a cube's edge, or a
+                    // narrow notch/crease, exactly the reported cases - the
+                    // new wall sits back far enough that even a diagonal
+                    // ray from dead-center still misses it (confirmed
+                    // visually - a ray drawn from a point already shifted a
+                    // bit past the character's own side DOES cross it,
+                    // one from the character's actual center doesn't).
+                    // Shifting the probe's ORIGIN sideways first (not just
+                    // its direction) is what actually reaches around the
+                    // corner - the same way a hand has to move past an
+                    // edge before it can press against what's around it,
+                    // not just point that way from where it already is.
                     if (!handled && debugBranch === 'no-side-hit') {
-                        const wrapProbeDir = mDir.clone().add(charFwd).normalize();
-                        const wrapHits = new THREE.Raycaster(chest, wrapProbeDir).intersectObjects(solidCollidables);
+                        const wrapProbeOrigin = _cornerWrapShiftScratch.copy(chest).addScaledVector(mDir, 0.6);
+                        const wrapProbeDir = charFwd.clone().addScaledVector(mDir, 0.3).normalize();
+                        const wrapHits = new THREE.Raycaster(wrapProbeOrigin, wrapProbeDir).intersectObjects(solidCollidables);
                         if (showCornerRays) {
-                            const wrapEnd = wrapHits.length > 0 ? wrapHits[0].point.clone() : chest.clone().addScaledVector(wrapProbeDir, 1.5);
-                            window._ledgeRayWrapLine.geometry.setFromPoints([chest.clone(), wrapEnd]);
+                            const wrapEnd = wrapHits.length > 0 ? wrapHits[0].point.clone() : wrapProbeOrigin.clone().addScaledVector(wrapProbeDir, 1.5);
+                            window._ledgeRayWrapLine.geometry.setFromPoints([wrapProbeOrigin.clone(), wrapEnd]);
                             window._ledgeRayWrapLine.visible = true;
                         }
-                        if (wrapHits.length > 0 && wrapHits[0].distance < 1.2) {
+                        // 'no-side-hit' is also the completely ordinary case
+                        // on a ONGOING straight wall (nothing directly
+                        // beside you there either) - without this guard the
+                        // diagonal probe re-finds that SAME wall on every
+                        // single shimmy frame and keeps re-snapping to it,
+                        // fighting the normal per-frame wall-follow at the
+                        // top of this branch and breaking plain straight-
+                        // wall shimmying entirely. Only actually wrap if the
+                        // found surface faces a meaningfully different way
+                        // than the wall already being hung on (charFwd
+                        // points INTO that current wall, so its reverse is
+                        // that wall's own outward normal) - a real corner,
+                        // not the same flat face found again.
+                        const currentWallNormalApprox = charFwd.clone().negate();
+                        if (wrapHits.length > 0 && wrapHits[0].distance < 1.2
+                            && wrapHits[0].face.normal.clone().transformDirection(wrapHits[0].object.matrixWorld).setY(0).normalize().angleTo(currentWallNormalApprox) > Math.PI / 6) {
                             const n2 = wrapHits[0].face.normal.clone().transformDirection(wrapHits[0].object.matrixWorld).setY(0).normalize();
                             const top2 = wrapHits[0].point.clone().add(n2.clone().multiplyScalar(-0.2)).setY(wrapHits[0].point.y + 2.0);
                             rayDown.set(top2, _downVec);
