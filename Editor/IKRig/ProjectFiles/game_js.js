@@ -5177,7 +5177,15 @@ export function startGame(CharacterClass) {
                 // (neither clip's timeScale varies with it), so which clip
                 // plays reflects how hard the player is pressing while
                 // actual ground covered still reflects the reduced speed.
-                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk'; }
+                else if (effectiveMoveMag > 0.05) {
+                    // Same "genuinely sloped, not climbing/hanging" check
+                    // isOnSlopeSurface (below) uses, computed here too since
+                    // that flag itself isn't set until after this call -
+                    // read by Character.animate (ClimbGame.html) to swap in
+                    // the short-stride walk clip on ramps.
+                    window.isOnSlopeSurfaceForWalk = isGrounded && groundNormal.y < 0.995 && !isLedgeGrabbing && !isClimbingUp;
+                    char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk';
+                }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
             // Visual-only lean toward the slope's surface while sliding -

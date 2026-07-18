@@ -1681,7 +1681,8 @@
                         { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
                         { name: 'strafe_left_run', file: 'StrafeRunLeft.fbx' },
                         { name: 'strafe_right_run', file: 'StrafeRunRight.fbx' },
-                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' }
+                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' },
+                        { name: 'walk_short_step', file: 'WalkingShortStep.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -2640,7 +2641,19 @@ updateClimbing(delta) {
                 } else {
                     let baseMoveState = 'idle';
                     if (state === 'walk') {
-                        baseMoveState = (moveMag > 0.8) ? 'run' : 'walk';
+                        // On a genuinely sloped surface (window.isOnSlopeSurfaceForWalk,
+                        // set in game_js.js from the same groundNormal.y<0.995 check
+                        // isOnSlopeSurface itself uses), the ordinary Walking.fbx clip's
+                        // stride is long enough that the trailing foot's slope-correction
+                        // target can end up outside comfortable leg reach mid-stride,
+                        // reading as both feet momentarily stuck out front instead of
+                        // alternating (reported on the 33deg+ test ramps). A dedicated
+                        // shorter-stride clip sidesteps that instead of trying to fix it
+                        // through IK alone. Skipped while carrying (no '_lower' variant
+                        // of this clip exists) - falls back to the normal walk/carry_walk
+                        // path exactly as before.
+                        const useShortStep = window.isOnSlopeSurfaceForWalk && !window.isCarryingObj;
+                        baseMoveState = (moveMag > 0.8) ? 'run' : (useShortStep ? 'walk_short_step' : 'walk');
                     } else if (state === 'strafe_left') {
                         baseMoveState = (moveMag > 0.8) ? 'strafe_left_run' : 'strafe_left_walk';
                     } else if (state === 'strafe_right') {
