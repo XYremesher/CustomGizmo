@@ -4902,6 +4902,33 @@ export function startGame(CharacterClass) {
                 }
             }
 
+            // Debug: the two rays the ledge-grab check below actually casts
+            // (yellow = forward wall probe from chest height, magenta =
+            // downward ledge-top probe from just above/past the wall hit) -
+            // added while chasing reports that grabbing feels highly
+            // timing/aim-sensitive in real play despite working in scripted
+            // tests. Lazily created once; hidden by default each frame and
+            // only shown/updated on frames the check below actually runs
+            // (and further, the down ray only once the wall probe itself
+            // passed), so a stale ray from a previous attempt never lingers
+            // on screen.
+            if (!window._ledgeRayFwdLine) {
+                const mkLine = (color) => {
+                    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, depthTest: false }));
+                    line.raycast = () => {};
+                    line.renderOrder = 999;
+                    line.visible = false;
+                    scene.add(line);
+                    return line;
+                };
+                window._ledgeRayFwdLine = mkLine(0xffff00);
+                window._ledgeRayDownLine = mkLine(0xff00ff);
+            }
+            window._ledgeRayFwdLine.visible = false;
+            window._ledgeRayDownLine.visible = false;
+            const showLedgeRays = document.getElementById('toggle-ledge-rays').checked;
+
             if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
                 // Aimed at actual movement INTENT, not the character's own
                 // facing - group.quaternion visually lags behind input
@@ -4931,6 +4958,11 @@ export function startGame(CharacterClass) {
                 }
                 const chest = _tempVec2.copy(char.group.position).setY(char.group.position.y+1.1);
                 rayFwd.set(chest, fwd); const wH = rayFwd.intersectObjects(solidCollidables);
+                if (showLedgeRays) {
+                    const fwdEnd = wH.length > 0 ? wH[0].point.clone() : chest.clone().addScaledVector(fwd, 2.0);
+                    window._ledgeRayFwdLine.geometry.setFromPoints([chest.clone(), fwdEnd]);
+                    window._ledgeRayFwdLine.visible = true;
+                }
                 // Same steep-slope-vs-genuine-wall classification as the
                 // horizontal movement wall-stop (see SLOPE_WALL_CUTOFF) -
                 // without it, a steep ramp (still a walkable/slideable
@@ -4954,6 +4986,11 @@ export function startGame(CharacterClass) {
                     const n = realWallNormal.setY(0).normalize();
                     const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
+                    if (showLedgeRays) {
+                        const downEnd = lH.length > 0 ? lH[0].point.clone() : top.clone().addScaledVector(_downVec, 4.0);
+                        window._ledgeRayDownLine.geometry.setFromPoints([top.clone(), downEnd]);
+                        window._ledgeRayDownLine.visible = true;
+                    }
                     // Ceiling on how high a ledge can be and still get
                     // grabbed - was a flat char.group.position.y+3.5, which
                     // actually gets MORE generous the higher/later into the
