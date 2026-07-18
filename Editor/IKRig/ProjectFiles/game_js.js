@@ -68,6 +68,9 @@ export function startGame(CharacterClass) {
     const _footRayOriginScratch = new THREE.Vector3();
     const _leftFootIKTarget = new THREE.Vector3();
     const _rightFootIKTarget = new THREE.Vector3();
+    const _cornerWrapShiftScratch = new THREE.Vector3();
+    const _cornerWrapChestScratch = new THREE.Vector3();
+    const _cornerWrapLookScratch = new THREE.Vector3();
     const _hitRecoveryLocalDir = new THREE.Vector3();
     const _hitRecoveryInvQuat = new THREE.Quaternion();
     // Fixed unit directions for the anti-clipping penetration check below -
@@ -1487,6 +1490,14 @@ export function startGame(CharacterClass) {
 
     const _hangBox = new THREE.Box3();
     const _hangObstacleBox = new THREE.Box3();
+    // Logs only when the OUTCOME actually changes (per label) instead of
+    // every single call - this runs every frame while hanging (see its own
+    // callers' comments), and the exact checkBox coordinates differ by tiny
+    // amounts each frame just from normal hang/shimmy drift, so comparing
+    // full messages verbatim would still spam identically to logging
+    // unconditionally. Comparing just the classification (clear vs which
+    // object blocked it) is what actually matters for reading this log.
+    const _lastLedgeDebugOutcome = {};
     function isVerticalSpaceClear(x, bottomY, topY, z, excludeObj, excludeObj2, label) {
         const bodyRadius = 0.45;
         _hangBox.min.set(x - bodyRadius, bottomY, z - bodyRadius);
@@ -1496,11 +1507,22 @@ export function startGame(CharacterClass) {
             if (obj === ground || obj === excludeObj || obj === excludeObj2) continue;
             getObstacleBox(obj, _hangObstacleBox);
             if (_hangBox.intersectsBox(_hangObstacleBox)) {
-                if (label) console.log(`[ledge-debug] ${label} BLOCKED by`, obj.name || obj.uuid, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'obstacleBox', _hangObstacleBox.min.toArray(), _hangObstacleBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+                if (label) {
+                    const outcome = 'BLOCKED by ' + (obj.name || obj.uuid);
+                    if (_lastLedgeDebugOutcome[label] !== outcome) {
+                        _lastLedgeDebugOutcome[label] = outcome;
+                        console.log(`[ledge-debug] ${label} ${outcome}`, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'obstacleBox', _hangObstacleBox.min.toArray(), _hangObstacleBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+                    }
+                }
                 return false;
             }
         }
-        if (label) console.log(`[ledge-debug] ${label} CLEAR`, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+        if (label) {
+            if (_lastLedgeDebugOutcome[label] !== 'CLEAR') {
+                _lastLedgeDebugOutcome[label] = 'CLEAR';
+                console.log(`[ledge-debug] ${label} CLEAR`, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
+            }
+        }
         return true;
     }
     function findNearestObstacle(x, y, z, maxDist) {
@@ -1609,6 +1631,20 @@ export function startGame(CharacterClass) {
     // is also how the movement block tells whether a foot actually landed
     // on isDecorativeBump terrain (see bumpSpeedBlend) without a third,
     // separate raycast pass.
+    // Shared helper for the 'Show Ledge Grab Rays' debug lines (both the
+    // jump-grab wall/ledge-top probes and the shimmy-time corner-wrap
+    // probes reuse this) - a plain 2-point Line, hidden by default, never
+    // raycastable itself.
+    function mkDebugLine(color) {
+        const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, depthTest: false }));
+        line.raycast = () => {};
+        line.renderOrder = 999;
+        line.visible = false;
+        scene.add(line);
+        return line;
+    }
+
     function computeFootIKTarget(footBone, targetVec, solidCollidables) {
         if (!footBone) return null;
         footBone.getWorldPosition(_footWorldPosScratch);
@@ -1861,6 +1897,32 @@ export function startGame(CharacterClass) {
     function loadCurvedRampProp(x, z) {
         const propLoader = new GLTFLoader();
         propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/CurvedRamps_UniRamp.glb', (gltf) => {
+            // Guard against this function having been called more than once
+            // before an earlier call's async load actually resolved - a
+            // pre-existing pattern already does this (the Jar_Broken.fbx
+            // loader calls buildLevel() again once IT finishes, which
+            // re-runs buildStairsLevel() and so re-enters this function too)
+            // - caught this landing TWO full copies of the model stacked in
+            // the same spot (8 part-toggle checkboxes instead of 4). Whatever
+            // instance an EARLIER call already added gets removed here, so
+            // only the most recent one survives regardless of how many times
+            // this got invoked meanwhile.
+            let sceneRoot = levelGroup;
+            while (sceneRoot.parent) sceneRoot = sceneRoot.parent;
+            const stalePriorInstances = [];
+            sceneRoot.traverse(o => { if (o.userData && o.userData.isCurvedRampProp) stalePriorInstances.push(o); });
+            stalePriorInstances.forEach(old => {
+                old.traverse(c => {
+                    if (c.isMesh) {
+                        const idx = collidables.indexOf(c);
+                        if (idx !== -1) collidables.splice(idx, 1);
+                    }
+                });
+                old.parent.remove(old);
+            });
+            const partTogglesContainer0 = document.getElementById('curved-ramp-part-toggles');
+            partTogglesContainer0.innerHTML = '';
+
             const model = gltf.scene;
             // Half of Level.glb's own LEVEL_TO_PLAYER_SCALE (buildLevelFromGlb) -
             // full scale read too large here.
@@ -1905,6 +1967,36 @@ export function startGame(CharacterClass) {
             // otherwise get swept in too (harmless since their raycast is
             // stubbed out, but there's no reason to carry them here).
             realMeshes.forEach(c => collidables.push(c));
+
+            // Per-part debug toggles ('curved-ramp-part-toggles' div, Debug
+            // Vis panel) - one checkbox per mesh in this GLB, each
+            // controlling BOTH that mesh's visibility and whether it's in
+            // collidables (not just visual - actually removing it from
+            // collision too), so a specific part suspected of causing a
+            // ledge-grab/climb problem can be isolated by testing with only
+            // it disabled, without needing a new build/deploy each time.
+            const partTogglesContainer = document.getElementById('curved-ramp-part-toggles');
+            realMeshes.forEach((c, i) => {
+                const checkboxId = 'curved-ramp-part-' + i;
+                const label = document.createElement('label');
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.id = checkboxId;
+                checkbox.checked = true;
+                label.appendChild(checkbox);
+                label.appendChild(document.createTextNode(' ' + (c.name || ('Curved Ramp Part ' + i))));
+                partTogglesContainer.appendChild(label);
+                partTogglesContainer.appendChild(document.createElement('br'));
+                checkbox.addEventListener('change', e => {
+                    c.visible = e.target.checked;
+                    if (e.target.checked) {
+                        if (!collidables.includes(c)) collidables.push(c);
+                    } else {
+                        const idx = collidables.indexOf(c);
+                        if (idx !== -1) collidables.splice(idx, 1);
+                    }
+                });
+            });
         });
     }
 
@@ -3449,6 +3541,25 @@ export function startGame(CharacterClass) {
         // here instead of inside that block.
         let lastGroundObject = null;
 
+        // Debug: ledge-grab/corner-wrap probe rays ('Show Ledge Grab Rays'
+        // Debug Vis checkbox) - lazy-created and reset to hidden here,
+        // unconditionally, BEFORE the isRagdoll/isLedgeGrabbing/normal-
+        // movement branch dispatch below (those are mutually exclusive per
+        // frame, so resetting inside just one of them would let a stale ray
+        // from a previous frame's different branch linger on screen).
+        // Whichever branch actually casts a given ray this frame turns its
+        // line back on and updates it.
+        if (!window._ledgeRayFwdLine) {
+            window._ledgeRayFwdLine = mkDebugLine(0xffff00);
+            window._ledgeRayDownLine = mkDebugLine(0xff00ff);
+            window._ledgeRaySideLine = mkDebugLine(0x00ffff);
+            window._ledgeRayCornerTopLine = mkDebugLine(0xff8800);
+        }
+        window._ledgeRayFwdLine.visible = false;
+        window._ledgeRayDownLine.visible = false;
+        window._ledgeRaySideLine.visible = false;
+        window._ledgeRayCornerTopLine.visible = false;
+
         if (char.isRagdoll) {
             const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
             let rayOrigin = hipsP ? hipsP.pos.clone() : char.group.position.clone();
@@ -4393,7 +4504,17 @@ export function startGame(CharacterClass) {
                 if (lockedHintAngle === null) lockedHintAngle = hint;
                 const stickVec = new THREE.Vector2(curX, curY).normalize(), uiUp = new THREE.Vector2(Math.sin(lockedHintAngle), -Math.cos(lockedHintAngle)).normalize(), uiRgt = new THREE.Vector2(Math.cos(lockedHintAngle), Math.sin(lockedHintAngle)).normalize();
                 const pCD = stickVec.dot(uiUp), pS = stickVec.dot(uiRgt);
-                console.log(`[ledge-input-debug] keys w/a/s/d=${keys.w}/${keys.a}/${keys.s}/${keys.d} curX=${curX.toFixed(2)} curY=${curY.toFixed(2)} lockedHintAngle=${(lockedHintAngle*180/Math.PI).toFixed(1)}deg pCD=${pCD.toFixed(2)} pS=${pS.toFixed(2)} sidewaysGesture=${ledgeSidewaysGesture}`);
+                // Logs only when the input STATE actually changes (which key
+                // combo is held, or sidewaysGesture flipping) rather than
+                // every single frame the stick is held - pCD/pS drift
+                // continuously in tiny amounts even with a perfectly steady
+                // real-world press, which made the unconditional version spam
+                // near-identical lines every frame for the whole hold.
+                const inputStateKey = `${keys.w}${keys.a}${keys.s}${keys.d}|${ledgeSidewaysGesture}`;
+                if (window._lastLedgeInputDebugKey !== inputStateKey) {
+                    window._lastLedgeInputDebugKey = inputStateKey;
+                    console.log(`[ledge-input-debug] keys w/a/s/d=${keys.w}/${keys.a}/${keys.s}/${keys.d} curX=${curX.toFixed(2)} curY=${curY.toFixed(2)} lockedHintAngle=${(lockedHintAngle*180/Math.PI).toFixed(1)}deg pCD=${pCD.toFixed(2)} pS=${pS.toFixed(2)} sidewaysGesture=${ledgeSidewaysGesture}`);
+                }
 
                 if (!ledgeMoveLocked) currentPushS = pS;
 
@@ -4449,8 +4570,14 @@ export function startGame(CharacterClass) {
                     const mDir = actualRgt.clone().multiplyScalar(-Math.sign(pS));
                     let handled = false;
 
+                    const showCornerRays = document.getElementById('toggle-ledge-rays').checked;
                     const sideRay = new THREE.Raycaster(chest, mDir);
                     const sH = sideRay.intersectObjects(solidCollidables);
+                    if (showCornerRays) {
+                        const sideEnd = sH.length > 0 ? sH[0].point.clone() : chest.clone().addScaledVector(mDir, 1.5);
+                        window._ledgeRaySideLine.geometry.setFromPoints([chest.clone(), sideEnd]);
+                        window._ledgeRaySideLine.visible = true;
+                    }
                     const isBlockedByWall = sH.length > 0 && sH[0].distance < 0.65;
                     const isBlocked = isBlockedByWall && !handled;
 
@@ -4459,6 +4586,11 @@ export function startGame(CharacterClass) {
                         const n = sH[0].face.normal.clone().transformDirection(sH[0].object.matrixWorld).setY(0).normalize();
                         const top = sH[0].point.clone().add(n.clone().multiplyScalar(-0.2)).setY(sH[0].point.y+2.0);
                         rayDown.set(top, _downVec); const h = rayDown.intersectObjects(solidCollidables);
+                        if (showCornerRays) {
+                            const cornerTopEnd = h.length > 0 ? h[0].point.clone() : top.clone().addScaledVector(_downVec, 4.0);
+                            window._ledgeRayCornerTopLine.geometry.setFromPoints([top.clone(), cornerTopEnd]);
+                            window._ledgeRayCornerTopLine.visible = true;
+                        }
                         if (h.length > 0) debugHeightDiff = Math.abs(h[0].point.y - (char.group.position.y + 1.85));
                         if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
                             const candX = sH[0].point.x + n.x*ledgeOffset;
@@ -4473,7 +4605,15 @@ export function startGame(CharacterClass) {
                         } else debugBranch = h.length > 0 ? 'wrap-failed-height' : 'wrap-failed-no-downhit';
                     } else if (isBlocked) debugBranch = 'blocked-close-wall';
                     else debugBranch = 'no-side-hit';
-                    console.log(`[ledge-corner-debug] sideHit=${sH.length > 0 ? sH[0].distance.toFixed(2) : 'none'} branch=${debugBranch} heightDiff=${debugHeightDiff !== null ? debugHeightDiff.toFixed(2) : 'n/a'}`);
+                    // Logs only when the classification (debugBranch) itself
+                    // changes - it's recomputed every frame the stick is held
+                    // sideways, and printing every single one of those (often
+                    // dozens of identical 'no-side-hit' in a row) buried the
+                    // one transition that actually matters.
+                    if (window._lastLedgeCornerBranch !== debugBranch) {
+                        window._lastLedgeCornerBranch = debugBranch;
+                        console.log(`[ledge-corner-debug] sideHit=${sH.length > 0 ? sH[0].distance.toFixed(2) : 'none'} branch=${debugBranch} heightDiff=${debugHeightDiff !== null ? debugHeightDiff.toFixed(2) : 'n/a'}`);
+                    }
                     if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
                         _tempVec3.copy(char.group.position).addScaledVector(mDir, 4*delta);
                         const currentWallObj = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
@@ -4902,31 +5042,12 @@ export function startGame(CharacterClass) {
                 }
             }
 
-            // Debug: the two rays the ledge-grab check below actually casts
-            // (yellow = forward wall probe from chest height, magenta =
-            // downward ledge-top probe from just above/past the wall hit) -
-            // added while chasing reports that grabbing feels highly
-            // timing/aim-sensitive in real play despite working in scripted
-            // tests. Lazily created once; hidden by default each frame and
-            // only shown/updated on frames the check below actually runs
-            // (and further, the down ray only once the wall probe itself
-            // passed), so a stale ray from a previous attempt never lingers
-            // on screen.
-            if (!window._ledgeRayFwdLine) {
-                const mkLine = (color) => {
-                    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-                    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color, depthTest: false }));
-                    line.raycast = () => {};
-                    line.renderOrder = 999;
-                    line.visible = false;
-                    scene.add(line);
-                    return line;
-                };
-                window._ledgeRayFwdLine = mkLine(0xffff00);
-                window._ledgeRayDownLine = mkLine(0xff00ff);
-            }
-            window._ledgeRayFwdLine.visible = false;
-            window._ledgeRayDownLine.visible = false;
+            // Debug: forward wall probe (yellow) / downward ledge-top probe
+            // (magenta) the ledge-grab check below casts - lazy-created and
+            // reset once, unconditionally, near the top of this function
+            // (see that comment for why it can't live inside just one
+            // branch). This flag is shared with the corner-wrap probes in
+            // the isLedgeGrabbing branch.
             const showLedgeRays = document.getElementById('toggle-ledge-rays').checked;
 
             if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
