@@ -5227,7 +5227,23 @@ export function startGame(CharacterClass) {
                 // (neither clip's timeScale varies with it), so which clip
                 // plays reflects how hard the player is pressing while
                 // actual ground covered still reflects the reduced speed.
-                else if (effectiveMoveMag > 0.05) { char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk'; }
+                else if (effectiveMoveMag > 0.05) {
+                    // Deliberately NOT the same threshold isOnSlopeSurface
+                    // (below, groundNormal.y<0.995, ~5.7deg) uses - that
+                    // catches every gentle ramp too, and normal Walking.fbx
+                    // was already fine on the shallower ones (confirmed
+                    // still fine at 25deg). Reusing SLIDE_EXIT_ANGLE
+                    // (~30.6deg, between the 25deg that's fine and the
+                    // 33deg that isn't) keeps WalkingUp.fbx scoped to
+                    // ramps steep enough to actually need it. Also gated on
+                    // isSlopeRamp specifically (not any steep terrain, e.g.
+                    // the hemisphere) - WalkingUp.fbx was only ever verified
+                    // against the purpose-built test ramps, not other
+                    // natural climbable slopes.
+                    const isOnTestRamp = lastGroundObject && lastGroundObject.userData && lastGroundObject.userData.isSlopeRamp;
+                    window.isOnSlopeSurfaceForWalk = isGrounded && isOnTestRamp && groundNormal.angleTo(_upVec) > SLIDE_EXIT_ANGLE && !isLedgeGrabbing && !isClimbingUp;
+                    char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk';
+                }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
             // Visual-only lean toward the slope's surface while sliding -
