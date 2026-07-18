@@ -1684,8 +1684,7 @@
                         { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
                         { name: 'strafe_left_run', file: 'StrafeRunLeft.fbx' },
                         { name: 'strafe_right_run', file: 'StrafeRunRight.fbx' },
-                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' },
-                        { name: 'walk_short_step', file: 'WalkingShortStep.fbx' }
+                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -2644,19 +2643,16 @@ updateClimbing(delta) {
                 } else {
                     let baseMoveState = 'idle';
                     if (state === 'walk') {
-                        // Below actualSpeed 3 (window._dbgActualSpeed - the
-                        // same reliable per-frame bridge used for the debug
-                        // speed label, see its own comment in game_js.js),
-                        // Walking.fbx's stride is too long for how little
-                        // ground is actually being covered each step -
-                        // WalkingShortStep.fbx takes quicker, shorter steps
-                        // that stay in sync with the real (slow) movement
-                        // instead. No timeScale change - the clip itself is
-                        // just paced differently. Skipped while carrying (no
-                        // '_lower' variant exists yet) - falls back to
-                        // ordinary walk/carry_walk exactly as before.
-                        const isLowSpeedWalk = window._dbgActualSpeed !== undefined && window._dbgActualSpeed < 3 && !window.isCarryingObj;
-                        baseMoveState = (moveMag > 0.8) ? 'run' : (isLowSpeedWalk ? 'walk_short_step' : 'walk');
+                        // The awkward slow "in-between" actual speeds that
+                        // used to need dedicated shorter-stride clips
+                        // (WalkingShortStep/WalkingEvenShorterStep) don't
+                        // happen anymore - game_js.js now quantizes the
+                        // joystick's own magnitude down to the same two
+                        // tiers keyboard input always produced, so this only
+                        // ever sees a fixed walk-pace moveMag or full run.
+                        // Plain Walking.fbx again, same as before any of
+                        // that.
+                        baseMoveState = (moveMag > 0.8) ? 'run' : 'walk';
                     } else if (state === 'strafe_left') {
                         baseMoveState = (moveMag > 0.8) ? 'strafe_left_run' : 'strafe_left_walk';
                     } else if (state === 'strafe_right') {

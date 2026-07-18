@@ -3794,9 +3794,29 @@ export function startGame(CharacterClass) {
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
         dirLight.target.position.copy(lightTrack);
 
-        const curX = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
-        const curY = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
-        const moveMag = Math.min(Math.sqrt(curX*curX + curY*curY), 1.0);
+        const rawX = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
+        const rawY = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
+        const rawMag = Math.min(Math.sqrt(rawX*rawX + rawY*rawY), 1.0);
+        // Keyboard input is inherently binary (a key is either down or not -
+        // W alone gives exactly moveMag 1.0, always landing in the 'run'
+        // clip), but the touch joystick is analog and can land anywhere in
+        // between. That continuum is what produced the awkward slow "in-
+        // between" actual speeds on ramps that needed a growing stack of
+        // dedicated short-stride walk clips just to not look like the feet
+        // were sliding - simpler to just not let those speeds exist in the
+        // first place. Quantizing the joystick's OWN magnitude down to the
+        // same two effective tiers keyboard already only ever produces
+        // (a fixed walk-pace deflection, or full run) means Walking.fbx's
+        // ordinary stride is always being asked to move at a pace it's
+        // actually tuned for - direction is preserved exactly, only the
+        // magnitude is snapped.
+        const JOYSTICK_DEADZONE = 0.15, JOYSTICK_RUN_THRESHOLD = 0.7, JOYSTICK_WALK_MAG = 0.6;
+        let moveMag = 0, curX = 0, curY = 0;
+        if (rawMag > JOYSTICK_DEADZONE) {
+            moveMag = rawMag >= JOYSTICK_RUN_THRESHOLD ? 1.0 : JOYSTICK_WALK_MAG;
+            curX = (rawX / rawMag) * moveMag;
+            curY = (rawY / rawMag) * moveMag;
+        }
 
         if (isBuilding) {
             const snap = v => Math.floor(v / cubeSize) * cubeSize + cubeSize/2;
