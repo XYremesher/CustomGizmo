@@ -1908,6 +1908,31 @@ export function startGame(CharacterClass) {
         levelGroup.add(upper); collidables.push(upper);
     }
 
+    // Test prop (Cubes.glb) - same scale factor as Level.glb itself
+    // (LEVEL_TO_PLAYER_SCALE, buildLevelFromGlb) since it comes from the
+    // same export pipeline. Its own local origin is NOT at its base (off by
+    // ~34 units at this scale, confirmed by measuring its bounding box) -
+    // unlike CurvedRamps_UniRamp.glb, trusting the raw origin here would
+    // leave it floating deep underground, so this corrects for that
+    // specific gap instead.
+    function loadCubesProp(x, z) {
+        const propLoader = new GLTFLoader();
+        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
+            const model = gltf.scene;
+            model.scale.setScalar(0.65);
+            model.position.set(x, 0, z);
+            model.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+            model.userData.isCubesProp = true;
+
+            model.updateMatrixWorld(true);
+            const groundGap = new THREE.Box3().setFromObject(model).min.y;
+            model.position.y -= groundGap;
+
+            levelGroup.add(model);
+            model.traverse(c => { if (c.isMesh) collidables.push(c); });
+        });
+    }
+
     function buildStairsLevel() {
         rampAngleLabels.length = 0;
         const hemisphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshToonMaterial({ color: 0xaa5555, gradientMap: threeTone }));
@@ -1931,6 +1956,10 @@ export function startGame(CharacterClass) {
         const ROW_SPACING = 7.5, ROW_START_X = -15, ROW_Z = -10;
         ROW_ANGLES.forEach((deg, i) => buildSlopeTestRamp(ROW_START_X - i * ROW_SPACING, ROW_Z, deg));
         const ROW_END_X = ROW_START_X - (ROW_ANGLES.length - 1) * ROW_SPACING;
+
+        // Test prop, across from the ramp row (same spot the earlier curved
+        // ramp prop used, mirrored to the other side of Z=0).
+        loadCubesProp(ROW_START_X, -ROW_Z);
 
         const startMesh = new THREE.Mesh(boxGeoTemplate, platMat);
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
