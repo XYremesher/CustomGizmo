@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { RagdollPhysics } from './ragdoll_physics.js';
+import { LegIK } from './leg_ik.js';
 
 const BASE_URL = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
 
@@ -77,6 +78,16 @@ const _recoilEuler = new THREE.Euler();
 const _recoilQOffset = new THREE.Quaternion();
 const _recoilScratchQuat = new THREE.Quaternion();
 const _recoilIdentity = new THREE.Quaternion();
+
+// Foot IK (leg_ik.js's applyLegIK) scratch - a separate Raycaster from
+// _ragdollRaycaster above even though both just cast straight down, so a
+// stray call from one path can never clobber the other's in-flight query.
+const _footRaycaster = new THREE.Raycaster();
+const _footTargetL = new THREE.Vector3();
+const _footTargetR = new THREE.Vector3();
+const _groundRayOrigin = new THREE.Vector3();
+const _footWorldPosScratch = new THREE.Vector3();
+const _footRayOriginScratch = new THREE.Vector3();
 
 // A deliberately minimal, physics-free stand-in for another player's Character.
 // It only knows how to move toward the latest network sample and play the
@@ -272,6 +283,32 @@ export class RemoteAvatar {
                 object.traverse((child) => { if (child.isBone && !res && child.name.toLowerCase().includes(name)) res = child; });
                 return res;
             };
+
+            // Leg IK chain, used by applyLegIK (leg_ik.js) to plant each
+            // foot on the actual ground under it - same bone-name
+            // resolution and world-distance measurement Character uses in
+            // the HTML file (see its own matching comment for why WORLD
+            // positions, not local .position.length(), are required here:
+            // the model's raw FBX units need converting to this game's
+            // meter-ish scale, and a local offset would be off by that
+            // scale factor).
+            this.lThighBone = findBone('leftupleg');
+            this.lKneeBone = findBone('leftleg');
+            this.lFootBone = findBone('leftfoot');
+            this.rThighBone = findBone('rightupleg');
+            this.rKneeBone = findBone('rightleg');
+            this.rFootBone = findBone('rightfoot');
+            object.updateMatrixWorld(true);
+            const boneWorldDist = (a, b) => {
+                if (!a || !b) return 0;
+                const pa = new THREE.Vector3(), pb = new THREE.Vector3();
+                a.getWorldPosition(pa); b.getWorldPosition(pb);
+                return pa.distanceTo(pb);
+            };
+            this.lUpperLegLen = boneWorldDist(this.lThighBone, this.lKneeBone);
+            this.lLowerLegLen = boneWorldDist(this.lKneeBone, this.lFootBone);
+            this.rUpperLegLen = boneWorldDist(this.rThighBone, this.rKneeBone);
+            this.rLowerLegLen = boneWorldDist(this.rKneeBone, this.rFootBone);
 
             const keyBones = [
                 { id: 'hips', bone: this.hips, radius: 0.18 },
@@ -794,6 +831,67 @@ export class RemoteAvatar {
 
         this.updateRecoil(delta);
         this.applyRecoilVisual();
+
+        // Plants each foot on the ground actually under it instead of
+        // wherever the animation clip alone leaves it - runs after the
+        // mixer/state selection above so it's working from this frame's
+        // already-posed skeleton, same relative ordering as Character's own
+        // legIK call in game_js.js's movement block.
+        this.updateFootIK();
+    }
+
+    // Mirrors game_js.js's own isOnSlopeSurface/isOnBumpTerrain gating and
+    // legIKWeight formula for the local player's applyLegIK call - see its
+    // own comment there for why those specific conditions/thresholds. This
+    // avatar has no continuous ground-follow physics of its own (it just
+    // lerps toward network samples), so "on a slope/bump" is read fresh
+    // from a single raycast under the group's own position each frame
+    // rather than a cached groundNormal.
+    updateFootIK() {
+        if (!this.fbxModel || !this.lFootBone || !this.rFootBone) return;
+        // Skip while playing a state that already has its own dedicated
+        // foot motion the correction would fight - 'runup' is the local
+        // player's own networked state name while isClimbingSlope is true,
+        // hang_idle/climb cover the ledge-grab/mantle states (none of which
+        // this avatar should be foot-planting during).
+        if (this.stateName === 'runup' || this.stateName === 'hang_idle' || this.stateName === 'climb') return;
+
+        _groundRayOrigin.copy(this.group.position);
+        _groundRayOrigin.y += 1.0;
+        _footRaycaster.set(_groundRayOrigin, _ragdollDownVec);
+        const centerHits = _footRaycaster.intersectObjects(window.collidables || []);
+        if (centerHits.length === 0) return;
+        const groundNormal = centerHits[0].face.normal.clone().transformDirection(centerHits[0].object.matrixWorld);
+
+        const leftHit = this._computeFootIKTarget(this.lFootBone, _footTargetL);
+        const rightHit = this._computeFootIKTarget(this.rFootBone, _footTargetR);
+
+        const isOnSlopeSurface = groundNormal.y < 0.995;
+        const isOnBumpTerrain = (leftHit && leftHit.userData && leftHit.userData.isDecorativeBump)
+            || (rightHit && rightHit.userData && rightHit.userData.isDecorativeBump);
+        if (!isOnSlopeSurface && !isOnBumpTerrain) return;
+
+        // No continuous effectiveMoveMag on a RemoteAvatar (only a named
+        // state) - approximates game_js.js's own
+        // clamp(1.0 - effectiveMoveMag, 0.35, 1.0) weight formula (full
+        // correction at rest, faded out while moving fast so the run
+        // clip's own foot-lift still shows through) using the closest
+        // matching states.
+        const legIKWeight = this.stateName === 'run' ? 0.35 : (this.stateName === 'walk' ? 0.65 : 1.0);
+        this.applyLegIK(leftHit ? _footTargetL : null, rightHit ? _footTargetR : null, legIKWeight);
+    }
+
+    _computeFootIKTarget(footBone, targetVec) {
+        footBone.getWorldPosition(_footWorldPosScratch);
+        _footRayOriginScratch.copy(_footWorldPosScratch);
+        _footRayOriginScratch.y += 0.6;
+        _footRaycaster.set(_footRayOriginScratch, _ragdollDownVec);
+        const hits = _footRaycaster.intersectObjects(window.collidables || []);
+        if (hits.length > 0 && Math.abs(hits[0].point.y - _footWorldPosScratch.y) < 0.6) {
+            targetVec.copy(hits[0].point);
+            return hits[0].object;
+        }
+        return null;
     }
 
     // Mirrors Character's recoil-offset block in the HTML file: captures the
@@ -939,3 +1037,4 @@ export class RemoteAvatar {
 }
 
 Object.assign(RemoteAvatar.prototype, RagdollPhysics);
+Object.assign(RemoteAvatar.prototype, LegIK);

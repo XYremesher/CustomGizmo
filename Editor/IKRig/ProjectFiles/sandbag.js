@@ -129,6 +129,7 @@ this.colliderMesh.geometry.computeBoundingBox();
 this.colliderMesh.userData.isMovable = false;
 this.colliderMesh.userData.isObstacle = true;
 this.colliderMesh.userData.isWall = true;
+this.colliderMesh.userData.isSandbagCollider = true;
                 
                 scene.add(this.colliderMesh);
 

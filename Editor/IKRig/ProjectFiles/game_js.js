@@ -629,7 +629,21 @@ export function startGame(CharacterClass) {
         const nextPos = _tempVec3.copy(pos).addScaledVector(moveDir, speed * delta);
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
         const groundHits = rayDown.intersectObjects(collidables);
-        if (groundHits.length > 0) nextPos.y = groundHits[0].point.y;
+        if (groundHits.length > 0) {
+            // A short thrown carryable (a box, jar, ...) landing directly in
+            // the bot's path is too low for the horizontal avoidance rays
+            // above (cast at pos.y+0.5) to see as something to steer around,
+            // but this ground-snap has no height filter at all - it happily
+            // climbed the bot straight up onto anything sitting underfoot,
+            // reading as the bot casually stepping onto a box that just
+            // landed near it. Capping how far it can snap UP per step (same
+            // idea as a normal stair step, not a real climb) makes it just
+            // push against a low obstacle like that instead of mounting it;
+            // stepping DOWN (a ledge, stairs going down) stays uncapped.
+            const AI_MAX_STEP_UP = 0.4;
+            const newY = groundHits[0].point.y;
+            if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
+        }
 
         aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'walk', false);
         return dist;
@@ -957,25 +971,17 @@ export function startGame(CharacterClass) {
             activeLockInstances.push(testLockGroup);
             window.debugTestLockGroup = testLockGroup; // L key triggers revealLockStar() on this, see keydown handler
 
-            // Capsule = its actual collision size (getObstacleBox falls
-            // back to the real computed AABB for anything that isn't
-            // isCarryable/isMovable, which the lock is neither) - a box
-            // was a poor visual match for this tall, roughly-cylindrical
-            // model. Sphere = how close a thrown/carried key actually has
-            // to get for it to insert (see KEY_INSERT_DISTANCE).
+            // Sphere = how close a thrown/carried key actually has to get
+            // for it to insert (see KEY_INSERT_DISTANCE) - not a physical
+            // collider at all, just a "close enough" proximity check.
             //
-            // Positioned at the box's own computed center, not
-            // testLockGroup.position - this model's visible mesh (like the
-            // sandbag's) isn't centered on its own group origin, so the
-            // helper was floating off away from what's actually on screen.
-            // Actual gameplay code (insertion distance, collision) still
-            // uses testLockGroup.position unchanged - only this debug
-            // visualization's placement needed the correction.
-            testLockGroup.updateMatrixWorld(true);
-            const lockBox = new THREE.Box3().setFromObject(testLockGroup);
-            const lockSize = lockBox.getSize(new THREE.Vector3());
-            const lockCenter = lockBox.getCenter(new THREE.Vector3());
-            addWireframeCapsuleDebugHelper(lockCenter, Math.max(lockSize.x, lockSize.z) / 2, lockSize.y);
+            // The lock's actual collision was never this capsule - it's the
+            // real computed AABB getObstacleBox falls back to for anything
+            // that isn't isCarryable/isMovable, which the lock is neither.
+            // The capsule was purely a visual approximation of that box's
+            // size for the "Show Hitboxes" debug view; removed since it was
+            // being read as the real collider (it wasn't) rather than as a
+            // rough visual stand-in for one.
             addWireframeSphereDebugHelper(testLockGroup.position, KEY_INSERT_DISTANCE);
         }
     }
@@ -1439,25 +1445,6 @@ export function startGame(CharacterClass) {
         debugHelpers.push(helperMesh);
         return helperMesh;
     }
-    // CapsuleGeometry(radius, length, ...) - length is just the straight
-    // cylindrical middle section, total height is length + 2*radius, so
-    // callers passing a target total height need to subtract that back out
-    // (see the lock's own call site for why: a box was a poor visual match
-    // for a tall, roughly-cylindrical model like the lock).
-    function addWireframeCapsuleDebugHelper(targetPos, radius, totalHeight, colorHex = 0xff00ff) {
-        const length = Math.max(0.01, totalHeight - 2 * radius);
-        const helperMesh = new THREE.Mesh(
-            new THREE.CapsuleGeometry(radius, length, 4, 12),
-            new THREE.MeshBasicMaterial({ color: colorHex, wireframe: true, transparent: true, opacity: 0.6 })
-        );
-        helperMesh.position.copy(targetPos);
-        helperMesh.visible = document.getElementById('toggle-hitbox').checked;
-        helperMesh.raycast = () => {};
-        scene.add(helperMesh);
-        debugHelpers.push(helperMesh);
-        return helperMesh;
-    }
-
     function exportLevelToJson() {
         const data = { metadata: { author: "Player", version: "1.0" }, voxels: [], entities: [] };
         collidables.forEach(c => {
@@ -3962,6 +3949,25 @@ export function startGame(CharacterClass) {
                 continue;
             }
 
+            // Shooter-box projectiles only ever aimed at/checked against the
+            // local player (targetPos above) - the AI bot could stand right
+            // in the line of fire and every shot would just pass through it.
+            // Same reaction pattern the charge-attack projectile's own
+            // bot-hit check already uses elsewhere in this file (no
+            // network event - the bot is local-only, nothing to broadcast).
+            if (window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
+                const botHitPos = window.aiBot.getHitReferencePoint();
+                if (botHitPos.distanceTo(p.mesh.position) < hitRadius) {
+                    const flashStrengthByIntensity = { low: 0.5, medium: 0.9, medium_high: 1.4, high: 2.5 };
+                    const hitStrength = flashStrengthByIntensity[p.intensity] || 2.5;
+                    window.aiBot.triggerHitFlash(hitStrength);
+                    if (p.intensity === 'high') window.aiBot.initRagdoll(p.velocity, p.intensity);
+                    else window.aiBot.applyProceduralRecoil(p.velocity, p.intensity);
+                    scene.remove(p.mesh); projectiles.splice(i, 1);
+                    continue;
+                }
+            }
+
             let jarDestroyed = false;
             for (let c of carryables) {
                 if (c.mesh.userData.isJar && p.mesh.position.distanceTo(c.mesh.position) < 0.8) {
@@ -4066,7 +4072,20 @@ export function startGame(CharacterClass) {
                     // within KEY_INSERT_DISTANCE of its origin (a lock
                     // model is wider than that), so it could never actually
                     // reach the lock to trigger insertion by throwing.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
+                    // Sandbag excluded the same way locks already are just
+                    // above/below - its own hitRadius-based checkHit/applyHit
+                    // (further down this function) is meant to be the ONLY
+                    // way a thrown object interacts with it. Left in this
+                    // generic bounce loop, its solid box (half-extents
+                    // 0.6/1.2/0.6, centered mid-height) reliably deflected a
+                    // thrown object's own 1x1x1 carryBox before the object's
+                    // CENTER ever got within checkHit's distance threshold -
+                    // a throw arriving anywhere near hand height (well above
+                    // the box's own center) bounced off every single time,
+                    // so checkHit's dedicated hit reaction never got a
+                    // chance to fire at all, regardless of where the sandbag
+                    // was positioned.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -4092,7 +4111,20 @@ export function startGame(CharacterClass) {
                     // within KEY_INSERT_DISTANCE of its origin (a lock
                     // model is wider than that), so it could never actually
                     // reach the lock to trigger insertion by throwing.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
+                    // Sandbag excluded the same way locks already are just
+                    // above/below - its own hitRadius-based checkHit/applyHit
+                    // (further down this function) is meant to be the ONLY
+                    // way a thrown object interacts with it. Left in this
+                    // generic bounce loop, its solid box (half-extents
+                    // 0.6/1.2/0.6, centered mid-height) reliably deflected a
+                    // thrown object's own 1x1x1 carryBox before the object's
+                    // CENTER ever got within checkHit's distance threshold -
+                    // a throw arriving anywhere near hand height (well above
+                    // the box's own center) bounced off every single time,
+                    // so checkHit's dedicated hit reaction never got a
+                    // chance to fire at all, regardless of where the sandbag
+                    // was positioned.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -4129,7 +4161,20 @@ export function startGame(CharacterClass) {
                     // within KEY_INSERT_DISTANCE of its origin (a lock
                     // model is wider than that), so it could never actually
                     // reach the lock to trigger insertion by throwing.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || activeLockInstances.includes(obj)) return;
+                    // Sandbag excluded the same way locks already are just
+                    // above/below - its own hitRadius-based checkHit/applyHit
+                    // (further down this function) is meant to be the ONLY
+                    // way a thrown object interacts with it. Left in this
+                    // generic bounce loop, its solid box (half-extents
+                    // 0.6/1.2/0.6, centered mid-height) reliably deflected a
+                    // thrown object's own 1x1x1 carryBox before the object's
+                    // CENTER ever got within checkHit's distance threshold -
+                    // a throw arriving anywhere near hand height (well above
+                    // the box's own center) bounced off every single time,
+                    // so checkHit's dedicated hit reaction never got a
+                    // chance to fire at all, regardless of where the sandbag
+                    // was positioned.
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const overlapY = Math.min(carryBox.max.y - obstacleBox.min.y, obstacleBox.max.y - carryBox.min.y);
@@ -4756,14 +4801,23 @@ export function startGame(CharacterClass) {
 
             if (window.isCarryStarting && heldCarryable) {
                 carryStartElapsed += delta;
-                const duration = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 1.0;
+                // Was the raw carry_start clip's own length - reasonable
+                // for how long the animation takes to play, but with the
+                // player now frozen for its whole duration (see the
+                // position-lock above), that read as an unnecessarily long
+                // hard stop just to pick something up. Scaling it down
+                // shortens the freeze/lerp-to-hand window without touching
+                // the clip itself - fadeToAction's own crossfade (called
+                // once isCarryingObj takes over) smooths over the clip not
+                // having finished playing yet.
+                const duration = (char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 1.0) * (window.carryStartSpeedMult !== undefined ? window.carryStartSpeedMult : 0.4);
                 const t = Math.max(0.0, Math.min(1.0, carryStartElapsed / duration));
 
                 let basePos = new THREE.Vector3();
                 basePos.x = THREE.MathUtils.lerp(pickupStartPos.x, handMidpoint.x, t);
                 basePos.z = THREE.MathUtils.lerp(pickupStartPos.z, handMidpoint.z, t);
                 basePos.y = THREE.MathUtils.lerp(pickupStartPos.y, handMidpoint.y, Math.sin(t * Math.PI / 2));
-                
+
                 const headY = char.group.position.y + 1.65;
                 const heightDiff = basePos.y - headY;
                 const range = 1.1;
@@ -4773,7 +4827,7 @@ export function startGame(CharacterClass) {
                 const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion);
                 const offsetDistance = 0.8 * smoothFactor;
                 basePos.addScaledVector(fwd, offsetDistance);
-                
+
                 heldCarryable.position.copy(basePos);
                 heldCarryable.quaternion.slerpQuaternions(pickupStartRot, pickupTargetRot, t);
 
@@ -5027,7 +5081,15 @@ export function startGame(CharacterClass) {
 
                 actualSpeed = resolveRemotePlayerCollision(char.group.position, finalMoveDir, actualSpeed);
 
-                if (!isBuilding && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
+                // Frozen during carry_start AND carry drop: both lerps
+                // (pickup below, drop further down) blend the object between
+                // a fixed start/target every frame, so if the player kept
+                // moving during that window the target itself moved too, and
+                // the object visibly chased/trailed behind them instead of
+                // arriving in-hand (pickup) or landing where aimed (drop).
+                // Standing still for the duration removes that moving-target
+                // problem entirely.
+                if (!isBuilding && !window.isCarryStarting && !window.isCarryDropping && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
                 window._dbgActualSpeed = actualSpeed;
                 if (isHitRecovering) {
@@ -5060,7 +5122,7 @@ export function startGame(CharacterClass) {
                 // backwards/forwards in whichever direction the hit
                 // actually pushed, WITHOUT turning to face travel
                 // direction the way normal movement does.
-                if (!isSliding && !isHitRecovering) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
             }
 
             // Walking downhill (stairs, a shallow ramp, the hemisphere,
