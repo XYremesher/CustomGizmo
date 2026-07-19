@@ -573,7 +573,7 @@
         const chargeAttackTexture = new THREE.TextureLoader().load(
             'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/ChargeAttackProjectile.png'
         );
-        window.spawnChargeAttackProjectile = function(position, direction, ownerId) {
+        window.spawnChargeAttackProjectile = function(position, direction, ownerId, extraVelocity) {
             if (!window.gameScene) return;
             const geo = new THREE.PlaneGeometry(1.7, 1.7);
             const mat = new THREE.MeshBasicMaterial({
@@ -593,6 +593,15 @@
             // direction reads as a near-invisible sliver from the side.
             const dir = (direction && direction.lengthSq() > 0.0001) ? direction.clone().normalize() : new THREE.Vector3(0, 0, 1);
             const speed = window.chargeAttackProjectileSpeed !== undefined ? window.chargeAttackProjectileSpeed : 6.0;
+            const velocity = dir.multiplyScalar(speed);
+            // Standing still throws exactly at chargeAttackProjectileSpeed
+            // like before - only adds on top of it while moving, same as
+            // throwing something while running carries your own running
+            // speed into the throw. Without this the projectile's speed was
+            // the same whether the player was standing still or sprinting,
+            // so it landed noticeably shorter (relative to how far the
+            // player had already closed in) while moving.
+            if (extraVelocity) velocity.add(extraVelocity);
             window.gameScene.add(mesh);
             // ownerId identifies who this projectile represents (the local
             // player's own network id, or a RemoteAvatar's id when a
@@ -603,7 +612,7 @@
             // projectile starts right at the puncher's own hand, so on the
             // very first frames it's well within hit range of that same
             // puncher's remote avatar, as seen from anyone else's client).
-            window.chargeAttackProjectiles.push({ mesh, velocity: dir.multiplyScalar(speed), life: 1.0, ownerId });
+            window.chargeAttackProjectiles.push({ mesh, velocity, life: 1.0, ownerId });
         };
 
         export class CombatController {
@@ -1112,7 +1121,7 @@
                                 const handPos = new THREE.Vector3();
                                 this.char.rightHandBone.getWorldPosition(handPos);
                                 const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(this.char.group.quaternion);
-                                window.spawnChargeAttackProjectile(handPos, fwd, window.multiplayerClient ? window.multiplayerClient.id : null);
+                                window.spawnChargeAttackProjectile(handPos, fwd, window.multiplayerClient ? window.multiplayerClient.id : null, window.playerVelocityVec);
                             }
                             this.punchesHitFlags[0] = true;
                         }
@@ -2269,24 +2278,49 @@
             playCarryDrop() {
                 const dropAction = this.actions['carry_start'];
                 if (dropAction) {
-                    // Unlike fadeToAction, this never stopped whatever was
-                    // previously this.activeAction before reassigning it -
-                    // if that was one of the carry-remapped '_lower' clips
-                    // (e.g. the player was idle/walking while carrying),
-                    // it just kept playing at full weight forever, blended
-                    // on top of every locomotion clip that played
-                    // afterward (walk/run's own legs fighting a frozen
-                    // idle/walk pose underneath). Only visible after an
-                    // actual drop, since carry_start (picking up) already
-                    // goes through fadeToAction instead of this method.
+                    // Called every frame for the whole isCarryDropping window
+                    // (see the animate() dispatch), same as fadeToAction's own
+                    // callers - without this guard, the setup below (reset()
+                    // + time pinned to the clip's end) re-ran every single
+                    // frame, snapping .time back to the end EVERY time right
+                    // after the mixer had just ticked it backward. Net
+                    // result: time never actually moved, so the reversed clip
+                    // was frozen on its last frame for the entire drop while
+                    // the object's own position lerp (unaffected by this)
+                    // kept moving on its own timeline - the two were never
+                    // actually playing together despite sharing "the same"
+                    // duration.
+                    if (this.activeAction === dropAction) return;
+
+                    // Same crossfade playCarryStart already uses going INTO
+                    // carry_start - this is the same clip reversed, so it
+                    // needs the same treatment coming back OUT of whatever
+                    // pose was active (idle/walk's carry-remapped '_lower'
+                    // clip, or carry_start itself if it never finished).
+                    // This used to be a hard cut (previousAction.stop() then
+                    // dropAction.play() at full weight, no fade) - visible as
+                    // a pop/snap into the reversed clip's last-frame pose the
+                    // instant drop was pressed.
                     const previousAction = this.activeAction;
-                    if (previousAction && previousAction !== dropAction) previousAction.stop();
+                    this.activeAction = dropAction;
+
                     dropAction.reset();
                     dropAction.time = dropAction.getClip().duration;
                     dropAction.setEffectiveTimeScale(-1.0);
                     dropAction.setEffectiveWeight(1);
+
+                    // This is the actual carry_upper -> carry_start crossfade
+                    // - was hardcoded to 0.1s regardless of how long the rest
+                    // of the drop (stopUpperAction's own fade, the position
+                    // lerp) was set to take, so carry_start's pose became
+                    // fully dominant almost instantly no matter how much
+                    // slower everything else was tuned to be. Matches
+                    // carryDropLowerDuration now so this isn't the odd one
+                    // out finishing in a tenth of a second.
+                    const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.85;
+                    if (previousAction && previousAction !== dropAction) previousAction.fadeOut(duration);
+                    dropAction.fadeIn(duration);
                     dropAction.play();
-                    this.activeAction = dropAction;
                 }
             }
 updateClimbing(delta) {
@@ -2615,7 +2649,15 @@ updateClimbing(delta) {
                         this.stopUpperAction(dur);
                         this.fadeToAction('carry_start', dur);
                     } else if (window.isCarryDropping) {
-                        this.stopUpperAction(dur);
+                        // Drop-specific, longer than the shared `dur` (0.2s)
+                        // used for every other transition here - this fade IS
+                        // the "lowering" motion (the arms relaxing down from
+                        // the carry pose), since carry_start's own reverse
+                        // playback barely changes hand height on its own (see
+                        // game_js.js's drop duration comment). At 0.2s it
+                        // read as near-instant; matches the position lerp's
+                        // own (also lengthened) duration below.
+                        this.stopUpperAction(window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.55);
                         this.playCarryDrop();
                     } else if (window.throwTimer > 0) {
                         this.stopUpperAction(dur);

@@ -2330,7 +2330,6 @@ export function startGame(CharacterClass) {
     const pickupStartRot = new THREE.Quaternion();
     const pickupTargetRot = new THREE.Quaternion();
 
-    const dropStartPos = new THREE.Vector3();
     const dropStartRot = new THREE.Quaternion();
     const dropTargetPos = new THREE.Vector3();
     const dropTargetRot = new THREE.Quaternion();
@@ -2396,7 +2395,6 @@ export function startGame(CharacterClass) {
             window.isCarryDropping = true;
             carryStartElapsed = 0;
 
-            dropStartPos.copy(heldCarryable.position);
             dropStartRot.copy(heldCarryable.quaternion);
 
             _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
@@ -4849,13 +4847,30 @@ export function startGame(CharacterClass) {
                 }
             } else if (window.isCarryDropping && heldCarryable) {
                 carryStartElapsed += delta;
-                const duration = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 1.0;
+                // The "lowering" motion (arms visibly relaxing down from the
+                // carry pose) is actually driven by stopUpperAction's own
+                // fade in the animate() dispatch, not by carry_start's own
+                // reverse playback - scrubbing carry_start in isolation shows
+                // its own hand-height contribution barely changes across the
+                // whole clip. Matches that fade's duration (see the
+                // isCarryDropping branch in animate()) exactly, so this lerp
+                // and the arm motion it's tracking finish together.
+                const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.55;
                 const t = Math.max(0.0, Math.min(1.0, carryStartElapsed / duration));
 
+                // Tracks the live hand position (not a fixed snapshot from
+                // the moment drop was pressed) same as the pickup lerp does
+                // with handMidpoint above - the hands are still animating
+                // downward through this whole window. A fixed start point
+                // drifted out of sync with that motion (object visibly still
+                // airborne after the animation had already finished its
+                // placing motion); chasing the actual hand bones keeps the
+                // two in step and only hands off to the fixed ground target
+                // (dropTargetPos) as t approaches 1.
                 let basePos = new THREE.Vector3();
-                basePos.x = THREE.MathUtils.lerp(dropStartPos.x, dropTargetPos.x, t);
-                basePos.z = THREE.MathUtils.lerp(dropStartPos.z, dropTargetPos.z, t);
-                basePos.y = THREE.MathUtils.lerp(dropStartPos.y, dropTargetPos.y, Math.sin(t * Math.PI / 2));
+                basePos.x = THREE.MathUtils.lerp(handMidpoint.x, dropTargetPos.x, t);
+                basePos.z = THREE.MathUtils.lerp(handMidpoint.z, dropTargetPos.z, t);
+                basePos.y = THREE.MathUtils.lerp(handMidpoint.y, dropTargetPos.y, t);
 
                 const headY = char.group.position.y + 1.65;
                 const heightDiff = basePos.y - headY;
@@ -5080,6 +5095,16 @@ export function startGame(CharacterClass) {
                 }
 
                 actualSpeed = resolveRemotePlayerCollision(char.group.position, finalMoveDir, actualSpeed);
+
+                // Exposed so a charge punch's projectile (ClimbGame.html,
+                // spawnChargeAttackProjectile) can add the player's own
+                // motion into the throw, same as throwing a ball while
+                // running adds your own running speed to it - captured here,
+                // before finalMoveDir below gets multiplied down into a
+                // per-frame displacement (it stops being a direction vector
+                // after that line).
+                window.playerVelocityVec = window.playerVelocityVec || new THREE.Vector3();
+                window.playerVelocityVec.copy(finalMoveDir).multiplyScalar(actualSpeed);
 
                 // Frozen during carry_start AND carry drop: both lerps
                 // (pickup below, drop further down) blend the object between
