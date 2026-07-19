@@ -96,9 +96,24 @@
         #json-modal { display: none; position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 600px; background: rgba(0,0,0,0.9); padding: 20px; border: 1px solid #fff; z-index: 100; color: #fff; font-family: monospace; }
         #json-modal textarea { width: 100%; height: 300px; background: #222; color: #0f0; font-family: monospace; margin-top: 10px; margin-bottom: 10px; }
         #json-modal button { padding: 5px 10px; margin-right: 10px; cursor: pointer; }
+        #loading-overlay {
+            position: fixed; inset: 0; z-index: 1000;
+            background: #1a1a1a;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #fff; font-family: monospace;
+            transition: opacity 0.4s ease;
+        }
+        #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+        #loading-spinner {
+            width: 48px; height: 48px; margin-bottom: 16px;
+            border: 4px solid rgba(255,255,255,0.2); border-top-color: #fff;
+            border-radius: 50%; animation: loading-spin 0.8s linear infinite;
+        }
+        @keyframes loading-spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div id="loading-overlay"><div id="loading-spinner"></div><div>Loading...</div></div>
     <canvas id="gameCanvas"></canvas>
 
     <div id="stamina-container"><div id="stamina-bar"></div></div>
@@ -217,6 +232,12 @@
                     <label><input type="checkbox" id="toggle-angle-labels"> Show Angle Labels</label><br>
                     <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
                     <label><input type="checkbox" id="toggle-foot-ik-goals"> Show Foot IK Goals + Knees</label><br>
+                    <label><input type="checkbox" id="toggle-side-ray"> Ray 1: Side Ray (cyan/magenta)</label><br>
+                    <label>Side Ray Hit Dist: <span id="side-ray-hit-display">-</span></label><br>
+                    <label><input type="checkbox" id="toggle-wrap-top-ray"> Ray 2: Corner-Wrap Ledge Top (orange)</label><br>
+                    <label><input type="checkbox" id="toggle-fallback-fwd-ray"> Ray 3: Fallback Forward Wall (yellow)</label><br>
+                    <label><input type="checkbox" id="toggle-ledge-top-ray"> Ray 4: Fallback Ledge Top (green/red)</label><br>
+                    <label>Ledge Top Valid: <span id="ledge-top-valid-display">-</span></label><br>
                     <label>Collider Density: <span id="collider-density-val">8</span></label><br>
                     <input type="range" id="collider-density-slider" min="4" max="32" step="2" value="8" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label>
@@ -2604,6 +2625,13 @@ updateClimbing(delta) {
                     }
                 }
 
+                // A short-but-nonzero blend (0.06s) was tried here to soften
+                // forceSnap's instant cut into the hang pose - it still let
+                // the head clip through the wall, just for a couple frames
+                // instead of one full 0.2s blend. Instant (0s) is the one
+                // that actually avoids the clip, at the cost of feeling like
+                // a more noticeable snap - kept as the tradeoff that matters
+                // more here.
                 const dur = forceSnap ? 0 : 0.2;
                 let isPunching = window.combat && window.combat.punchState > 0;
 

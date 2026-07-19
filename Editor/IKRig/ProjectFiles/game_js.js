@@ -812,8 +812,17 @@ export function startGame(CharacterClass) {
             const mesh = new THREE.Mesh(geom, shinyJarMat);
             mesh.castShadow = true; mesh.receiveShadow = true;
             jarTemplate = mesh;
-            
-            if (currentLevel === "local_stairs") buildLevel();
+
+            // Used to call the full buildLevel() here whenever this (slow-
+            // to-fetch) FBX finished loading after the level had already
+            // been built once - but a full rebuild while the player might
+            // already be mid-climb/mid-carry (or just mid-load of another
+            // async prop like Cubes.glb) resets collidables/carryables out
+            // from under them, and can silently wipe out anything another
+            // in-flight async loader was about to add. If the level's
+            // already up, just add the jar grid on top of it instead - same
+            // fix already applied to the StarKey.glb loader below.
+            if (currentLevel === "local_stairs" && stairsLevelBuilt) spawnJarGrid();
         }
     });
 
@@ -1915,6 +1924,36 @@ export function startGame(CharacterClass) {
     // unlike CurvedRamps_UniRamp.glb, trusting the raw origin here would
     // leave it floating deep underground, so this corrects for that
     // specific gap instead.
+    // Split out of buildStairsLevel() so the Jar.fbx loader (below) can spawn
+    // the jar grid on its own, the same way spawnTestKeyAndLock already
+    // handles StarKey.glb finishing late - a bare `if (jarTemplate)` block
+    // used to mean the only way to retroactively populate jars once Jar.fbx
+    // finished loading was a full buildLevel() rebuild, which wipes
+    // collidables/carryables out from under anything already loaded (see the
+    // comment above spawnTestKeyAndLock's call site for the incident that
+    // pattern caused).
+    function spawnJarGrid() {
+        if (!jarTemplate) return;
+        const startX = 3.0;
+        const startZ = 1.0;
+        const spacing = 1.2;
+        for (let r = 0; r < 3; r++) {
+            for (let c = 0; c < 3; c++) {
+                const jarMesh = jarTemplate.clone();
+                jarMesh.position.set(startX + r * spacing, 0.5, startZ + c * spacing);
+                jarMesh.userData.isCarryable = true;
+                jarMesh.userData.isJar = true;
+                // Exactly one jar in the grid holds the key - checked in
+                // destroyJarCarryable once this one actually shatters.
+                if (r === 0 && c === 0) jarMesh.userData.containsKey = true;
+                levelGroup.add(jarMesh);
+                collidables.push(jarMesh);
+                const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+                carryables.push(carryJar); addCarryableDebugHelper(carryJar);
+            }
+        }
+    }
+
     function loadCubesProp(x, z) {
         const propLoader = new GLTFLoader();
         propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
@@ -1930,6 +1969,12 @@ export function startGame(CharacterClass) {
 
             levelGroup.add(model);
             model.traverse(c => { if (c.isMesh) collidables.push(c); });
+            // Remote GLTF fetch takes several seconds on a cold load - the
+            // loading overlay (hidden once this and char.isLoaded are both
+            // true, see animate()) stays up until this prop can actually be
+            // grabbed, instead of the player being able to reach it before
+            // it's in collidables at all.
+            window._cubesLoaded = true;
         });
     }
 
@@ -2086,6 +2131,14 @@ export function startGame(CharacterClass) {
         // worth being able to see that they're not quite the same shape.
         addWireframeBoxDebugHelper(mBox.position, cubeSize, cubeSize, cubeSize);
 
+        // Sharp (non-rounded) cube next to the pushable one, for testing
+        // ledge-grab corner behavior on true 90-degree edges.
+        const sharpBoxGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+        const sharpBox = new THREE.Mesh(sharpBoxGeo, movableBoxMat);
+        sharpBox.position.set(-10, cubeSize / 2, 6);
+        sharpBox.castShadow = true; sharpBox.receiveShadow = true;
+        levelGroup.add(sharpBox); collidables.push(sharpBox);
+
         const checkerData = new Uint8Array([255,255,255,255, 0,0,0,255, 0,0,0,255, 255,255,255,255]);
         const checkerTex = new THREE.DataTexture(checkerData, 2, 2);
         checkerTex.colorSpace = THREE.SRGBColorSpace;
@@ -2124,26 +2177,7 @@ export function startGame(CharacterClass) {
         const carry3 = { mesh: sph, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
         carryables.push(carry3); addCarryableDebugHelper(carry3);
 
-        if (jarTemplate) {
-            const startX = 3.0;
-            const startZ = 1.0;
-            const spacing = 1.2;
-            for (let r = 0; r < 3; r++) {
-                for (let c = 0; c < 3; c++) {
-                    const jarMesh = jarTemplate.clone();
-                    jarMesh.position.set(startX + r * spacing, 0.5, startZ + c * spacing); 
-                    jarMesh.userData.isCarryable = true;
-                    jarMesh.userData.isJar = true;
-                    // Exactly one jar in the grid holds the key - checked in
-                    // destroyJarCarryable once this one actually shatters.
-                    if (r === 0 && c === 0) jarMesh.userData.containsKey = true;
-                    levelGroup.add(jarMesh);
-                    collidables.push(jarMesh);
-                    const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
-                    carryables.push(carryJar); addCarryableDebugHelper(carryJar);
-                }
-            }
-        }
+        spawnJarGrid();
 
         star.position.set(0, (5 * cubeSize * 0.9) + cubeSize + 2, -10 - 5 * cubeSize); star.visible = true;
         char.group.position.set(0, cubeSize, 0); char.group.rotation.y = Math.PI;
@@ -2511,6 +2545,17 @@ export function startGame(CharacterClass) {
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
 
     let stamina = 100, isGrounded = false, isLedgeGrabbing = false, isClimbingUp = false, ledgeTarget = new THREE.Vector3(), jumpMomentum = new THREE.Vector3();
+    // Set true the instant a ledge grab commits (position also hard-snaps
+    // onto the wall that same frame - see isLedgeGrabbing's own set site).
+    // Consumed (and cleared) the very next frame, the first one the 'ledge'
+    // state's own animate() call actually runs - passed through as
+    // forceSnap so that one frame cuts straight to the hang pose instead of
+    // the usual 0.2s crossfade. Blending a still-outstretched falling pose
+    // at a position that's already snug against the wall was exactly what
+    // read as the head clipping into the wall - there's no physically
+    // sensible in-between pose to blend through when the position itself
+    // didn't ease in either.
+    let justGrabbedLedge = false;
     // Slope sliding: was flickering on/off right around the entry angle
     // (any tiny per-frame change in exact foot position, from the slide
     // push itself or from fighting it with input, could nudge the raycast
@@ -2647,6 +2692,9 @@ export function startGame(CharacterClass) {
     // the two silently disagree until the user first touches the slider.
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 0.6, landingTimer = 0, initialLandingTimer = 0;
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
+    let ledgeCornerBufferApplied = false;
+    let ledgeCornerRetreating = false;
+    const ledgeCornerRetreatTarget = new THREE.Vector3();
     let wallStopThreshold = 0.90;
     // How fast the character's facing turns to match the movement/slide
     // direction (a slerp factor, higher = snappier) - was 15, bumped to 40
@@ -3109,9 +3157,16 @@ export function startGame(CharacterClass) {
         if (char.hipsMarker) char.hipsMarker.visible = showJoints;
     });
 
+    let gameReadyOverlayHidden = false;
     function animate() {
         requestAnimationFrame(animate);
         const delta = Math.min(clock.getDelta(), 0.1), time = Date.now()*0.001;
+
+        if (!gameReadyOverlayHidden && char.isLoaded && window._cubesLoaded) {
+            gameReadyOverlayHidden = true;
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) overlay.classList.add('hidden');
+        }
 
         char.updateHitFlash(delta);
 
@@ -4340,7 +4395,21 @@ export function startGame(CharacterClass) {
             document.getElementById('ledge-hint-container').style.transform = `rotate(${hint}rad)`;
 
             let currentPushS = 0;
-            if (moveMag < 0.1) { ledgeMoveLocked = false; ledgeSidewaysGesture = false; }
+            if (moveMag < 0.1) { ledgeMoveLocked = false; ledgeSidewaysGesture = false; ledgeCornerBufferApplied = false; }
+
+            // Runs every frame regardless of ledgeMoveLocked (unlike the
+            // shimmy block below, which stops running the instant that's
+            // set) so the corner-edge retreat below keeps easing in instead
+            // of freezing right after the single frame that starts it.
+            if (ledgeCornerRetreating) {
+                char.group.position.x = THREE.MathUtils.lerp(char.group.position.x, ledgeCornerRetreatTarget.x, Math.min(1, 12 * delta));
+                char.group.position.z = THREE.MathUtils.lerp(char.group.position.z, ledgeCornerRetreatTarget.z, Math.min(1, 12 * delta));
+                if (Math.abs(char.group.position.x - ledgeCornerRetreatTarget.x) < 0.01 && Math.abs(char.group.position.z - ledgeCornerRetreatTarget.z) < 0.01) {
+                    char.group.position.x = ledgeCornerRetreatTarget.x;
+                    char.group.position.z = ledgeCornerRetreatTarget.z;
+                    ledgeCornerRetreating = false;
+                }
+            }
 
             if (moveMag > 0.1 && !isSlipping) {
                 if (lockedHintAngle === null) lockedHintAngle = hint;
@@ -4404,6 +4473,31 @@ export function startGame(CharacterClass) {
 
                     const sideRay = new THREE.Raycaster(chest, mDir);
                     const sH = sideRay.intersectObjects(solidCollidables);
+                    // Debug: THIS is the ray that actually decides whether a
+                    // corner turn happens (wrap-success below calls
+                    // char.group.lookAt(...) to re-orient) - the ledge-top
+                    // ray added earlier only gates the plain sideways drift
+                    // when this one finds nothing, it never turns anything.
+                    // Cyan, same 'Show Ledge Top Ray' toggle.
+                    if (!window._sideRayLine) {
+                        const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                        window._sideRayLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, depthTest: false }));
+                        window._sideRayLine.raycast = () => {};
+                        window._sideRayLine.renderOrder = 999;
+                        scene.add(window._sideRayLine);
+                    }
+                    const sideRayToggle = document.getElementById('toggle-side-ray');
+                    const showSideRay = !!sideRayToggle && sideRayToggle.checked;
+                    if (showSideRay) {
+                        const sideRayEnd = sH.length > 0 ? sH[0].point.clone() : chest.clone().addScaledVector(mDir, 1.5);
+                        window._sideRayLine.geometry.setFromPoints([chest.clone(), sideRayEnd]);
+                        window._sideRayLine.material.color.setHex(sH.length > 0 && sH[0].distance < 0.8 ? 0x00ffff : 0xff00ff);
+                        window._sideRayLine.visible = true;
+                    } else {
+                        window._sideRayLine.visible = false;
+                    }
+                    const sideRayHitDisplay = document.getElementById('side-ray-hit-display');
+                    if (sideRayHitDisplay) sideRayHitDisplay.textContent = sH.length > 0 ? sH[0].distance.toFixed(2) : 'none';
                     const isBlockedByWall = sH.length > 0 && sH[0].distance < 0.65;
                     const isBlocked = isBlockedByWall && !handled;
 
@@ -4412,6 +4506,26 @@ export function startGame(CharacterClass) {
                         const n = sH[0].face.normal.clone().transformDirection(sH[0].object.matrixWorld).setY(0).normalize();
                         const top = sH[0].point.clone().add(n.clone().multiplyScalar(-0.2)).setY(sH[0].point.y+2.0);
                         rayDown.set(top, _downVec); const h = rayDown.intersectObjects(solidCollidables);
+                        // Debug: ray #3 - the ledge-top check for the CORNER
+                        // WRAP path specifically (different from ray #4's
+                        // fallback-path ledge-top check below) - orange,
+                        // own toggle, default off.
+                        if (!window._wrapTopRayLine) {
+                            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                            window._wrapTopRayLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false }));
+                            window._wrapTopRayLine.raycast = () => {};
+                            window._wrapTopRayLine.renderOrder = 999;
+                            scene.add(window._wrapTopRayLine);
+                        }
+                        const wrapTopRayToggle = document.getElementById('toggle-wrap-top-ray');
+                        if (wrapTopRayToggle && wrapTopRayToggle.checked) {
+                            const wrapTopEnd = h.length > 0 ? h[0].point.clone() : top.clone().addScaledVector(_downVec, 4.0);
+                            window._wrapTopRayLine.geometry.setFromPoints([top.clone(), wrapTopEnd]);
+                            window._wrapTopRayLine.material.color.setHex(h.length > 0 ? 0xff8800 : 0xff0000);
+                            window._wrapTopRayLine.visible = true;
+                        } else {
+                            window._wrapTopRayLine.visible = false;
+                        }
                         if (h.length > 0) debugHeightDiff = Math.abs(h[0].point.y - (char.group.position.y + 1.85));
                         if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
                             const candX = sH[0].point.x + n.x*ledgeOffset;
@@ -4432,17 +4546,137 @@ export function startGame(CharacterClass) {
                         const currentWallObj = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
 
                         if (isHangPositionClear(_tempVec3.x, _tempVec3.y, _tempVec3.z, currentWallObj)) {
-                            char.group.position.copy(_tempVec3);
-
                             const freshFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion);
-                            _tempVec2.copy(char.group.position).setY(char.group.position.y + 1.1);
+                            _tempVec2.copy(_tempVec3).setY(_tempVec3.y + 1.1);
                             rayFwd.set(_tempVec2, freshFwd);
                             const freshWallHits = rayFwd.intersectObjects(solidCollidables);
+                            // Debug: ray #4 - the fallback path's own
+                            // forward wall check (from the tentatively
+                            // shifted position, still facing the OLD
+                            // direction) - yellow, own toggle, default off.
+                            if (!window._fallbackFwdRayLine) {
+                                const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                                window._fallbackFwdRayLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffff00, depthTest: false }));
+                                window._fallbackFwdRayLine.raycast = () => {};
+                                window._fallbackFwdRayLine.renderOrder = 999;
+                                scene.add(window._fallbackFwdRayLine);
+                            }
+                            const fallbackFwdRayToggle = document.getElementById('toggle-fallback-fwd-ray');
+                            if (fallbackFwdRayToggle && fallbackFwdRayToggle.checked) {
+                                const fwdEnd = freshWallHits.length > 0 ? freshWallHits[0].point.clone() : _tempVec2.clone().addScaledVector(freshFwd, 2.0);
+                                window._fallbackFwdRayLine.geometry.setFromPoints([_tempVec2.clone(), fwdEnd]);
+                                window._fallbackFwdRayLine.material.color.setHex(freshWallHits.length > 0 && freshWallHits[0].distance < 0.8 ? 0xffff00 : 0xff0000);
+                                window._fallbackFwdRayLine.visible = true;
+                            } else {
+                                window._fallbackFwdRayLine.visible = false;
+                            }
+
+                            // Debug: the "is there a ledge/cube up there"
+                            // probe (Debug Vis: 'Show Ledge Top Ray', default
+                            // on) - GREEN when it finds a real ledge surface
+                            // within height tolerance (movement commits),
+                            // RED when it doesn't (movement stays put) - the
+                            // color IS the pass/fail condition, not just
+                            // where the ray goes.
+                            if (!window._ledgeTopRayLine) {
+                                const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+                                window._ledgeTopRayLine = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xff0000, depthTest: false }));
+                                window._ledgeTopRayLine.raycast = () => {};
+                                window._ledgeTopRayLine.renderOrder = 999;
+                                scene.add(window._ledgeTopRayLine);
+                            }
+                            const ledgeTopRayToggle = document.getElementById('toggle-ledge-top-ray');
+                            const showLedgeTopRay = !!ledgeTopRayToggle && ledgeTopRayToggle.checked;
+
+                            let validLedgeTop = false;
+                            let rayOrigin, rayEnd;
                             if (freshWallHits.length > 0 && freshWallHits[0].distance < 0.8) {
-                                _tempVec3.copy(freshWallHits[0].point).addScaledVector(freshFwd, 0.2).setY(freshWallHits[0].point.y + 3.0);
-                                rayDown.set(_tempVec3, _downVec);
+                                const ledgeTopProbe = freshWallHits[0].point.clone().add(freshFwd.clone().multiplyScalar(0.2)).setY(freshWallHits[0].point.y + 3.0);
+                                rayOrigin = ledgeTopProbe.clone();
+                                rayDown.set(ledgeTopProbe, _downVec);
                                 const freshLedgeHits = rayDown.intersectObjects(solidCollidables);
-                                if (freshLedgeHits.length > 0) ledgeTarget.copy(freshLedgeHits[0].point);
+                                rayEnd = freshLedgeHits.length > 0 ? freshLedgeHits[0].point.clone() : ledgeTopProbe.clone().addScaledVector(_downVec, 4.0);
+                                if (freshLedgeHits.length > 0 && Math.abs(freshLedgeHits[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                                    validLedgeTop = true;
+                                    char.group.position.copy(_tempVec3);
+                                    ledgeTarget.copy(freshLedgeHits[0].point);
+                                }
+                            } else {
+                                // No wall at all directly ahead of the
+                                // shifted position - nothing to probe upward
+                                // from, so this shows where that forward
+                                // probe itself ended up instead (always red,
+                                // nothing here to hold onto either way) -
+                                // this is the actual "hit a sharp corner's
+                                // edge" case, which previously just hid the
+                                // ray entirely instead of showing red.
+                                rayOrigin = _tempVec2.clone();
+                                rayEnd = _tempVec2.clone().addScaledVector(freshFwd, 1.5);
+                            }
+                            if (showLedgeTopRay) {
+                                window._ledgeTopRayLine.geometry.setFromPoints([rayOrigin, rayEnd]);
+                                window._ledgeTopRayLine.material.color.setHex(validLedgeTop ? 0x00ff00 : 0xff0000);
+                                window._ledgeTopRayLine.visible = true;
+                            } else {
+                                window._ledgeTopRayLine.visible = false;
+                            }
+                            const ledgeTopValidDisplay = document.getElementById('ledge-top-valid-display');
+                            if (ledgeTopValidDisplay) ledgeTopValidDisplay.textContent = validLedgeTop;
+                            if (!validLedgeTop) {
+                                currentPushS = 0;
+                                // Forward/ledge check above is intentionally
+                                // unshifted (margin-free) so round corners
+                                // can still get close enough to trigger the
+                                // wrap-success branch above - this only runs
+                                // once we've genuinely confirmed there's
+                                // nowhere left to go. A single retreat here
+                                // (not a per-frame one) gives the grab-hand
+                                // animation's fixed lateral offset some
+                                // clearance instead of overhanging past a
+                                // dead-end edge; ledgeMoveLocked stops this
+                                // from oscillating forward-and-back while the
+                                // shimmy key is still held.
+                                if (!ledgeCornerBufferApplied) {
+                                    // isHangPositionClear only confirms there's
+                                    // nothing IN THE WAY - it says nothing about
+                                    // whether there's still a wall to hang onto
+                                    // at all, so on its own it can't tell "safe
+                                    // retreat" from "step into open air past
+                                    // the ledge" (the same gap documented for
+                                    // it elsewhere). A real forward-wall
+                                    // raycast at the retreat point is required
+                                    // too, or this can yank the player off a
+                                    // perfectly good grab.
+                                    const HAND_EDGE_BUFFER = 0.3;
+                                    _tempVec1.copy(char.group.position).addScaledVector(mDir, -HAND_EDGE_BUFFER);
+                                    if (isHangPositionClear(_tempVec1.x, char.group.position.y, _tempVec1.z, currentWallObj)) {
+                                        _tempVec2.copy(_tempVec1).setY(_tempVec1.y + 1.1);
+                                        rayFwd.set(_tempVec2, freshFwd);
+                                        const retreatWallHits = rayFwd.intersectObjects(solidCollidables);
+                                        if (retreatWallHits.length > 0 && retreatWallHits[0].distance < 0.8) {
+                                            const retreatLedgeProbe = retreatWallHits[0].point.clone().add(freshFwd.clone().multiplyScalar(0.2)).setY(retreatWallHits[0].point.y + 3.0);
+                                            rayDown.set(retreatLedgeProbe, _downVec);
+                                            const retreatLedgeHits = rayDown.intersectObjects(solidCollidables);
+                                            if (retreatLedgeHits.length > 0 && Math.abs(retreatLedgeHits[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                                                // Eased into over a few frames
+                                                // (below, every frame) instead
+                                                // of snapped instantly - the
+                                                // last valid forward step
+                                                // already lands right at the
+                                                // true edge for one frame, so
+                                                // an instant jump back reads
+                                                // as a visible pop; easing
+                                                // hides that as a quick settle
+                                                // instead.
+                                                ledgeCornerRetreatTarget.set(_tempVec1.x, char.group.position.y, _tempVec1.z);
+                                                ledgeCornerRetreating = true;
+                                                ledgeTarget.copy(retreatLedgeHits[0].point);
+                                            }
+                                        }
+                                    }
+                                    ledgeCornerBufferApplied = true;
+                                    ledgeMoveLocked = true;
+                                }
                             }
                         }
                     }
@@ -4459,7 +4693,8 @@ export function startGame(CharacterClass) {
             // back level while hanging, same rate (10*delta) as the normal
             // branch already uses elsewhere.
             char.setSlopeTilt(_upVec, delta, null, 0, char.hitTwistAngle);
-            char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS);
+            char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS, justGrabbedLedge);
+            justGrabbedLedge = false;
             networkStateName = 'hang_idle';
         } else {
             if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
@@ -4934,7 +5169,7 @@ export function startGame(CharacterClass) {
                         const hangGroupY = lH[0].point.y - 1.85;
 
                         if (isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
-                            isLedgeGrabbing = true; ledgeMoveLocked = true;
+                            isLedgeGrabbing = true; ledgeMoveLocked = true; justGrabbedLedge = true;
                             if (yVelocity < -22) { isSlipping = true; slipTimer = 0; } else isSlipping = false;
                             yVelocity = 0; ledgeTarget.copy(lH[0].point);
                             char.group.position.y = hangGroupY; char.group.position.x = hangX; char.group.position.z = hangZ;
@@ -5495,7 +5730,7 @@ export function startGame(CharacterClass) {
         // active clip) stacked below it, each on its own row instead of
         // crammed onto one line together.
         const SPEED_LABEL_LINE_H = 40;
-        const SPEED_LABEL_MAX_LINES = 4;
+        const SPEED_LABEL_MAX_LINES = 8;
         if (!window._speedLabelSprite && char && char.group) {
             const cv2 = document.createElement('canvas');
             cv2.width = 256; cv2.height = SPEED_LABEL_LINE_H * SPEED_LABEL_MAX_LINES;
@@ -5513,8 +5748,14 @@ export function startGame(CharacterClass) {
         if (window._speedLabelSprite) {
             const spd = window._dbgActualSpeed || 0;
             const parts = [];
-            ['idle', 'walk', 'run'].forEach(name => {
-                const a = char.actions && char.actions[name];
+            // Every clip on the mixer, not just the base locomotion trio -
+            // was hardcoded to ['idle','walk','run'] only, so anything else
+            // playing (ledge/hang_idle, air, climbing, upper-body actions
+            // like punches, ...) was invisible here even though it's
+            // exactly what you'd need to see to debug a transition between
+            // two non-locomotion states.
+            Object.keys(char.actions || {}).forEach(name => {
+                const a = char.actions[name];
                 // getEffectiveWeight() alone is misleading here - it
                 // reflects the action's configured weight regardless of
                 // whether the action has actually been started (played)
@@ -5525,9 +5766,10 @@ export function startGame(CharacterClass) {
                 // tells them apart.
                 if (!a || !a.isRunning()) return;
                 const w = Math.round(a.getEffectiveWeight() * 100);
-                if (w > 0) parts.push(name + ' ' + w + '%');
+                if (w > 0) parts.push({ name, w });
             });
-            const lines = [spd.toFixed(1) + ' u/s'].concat(parts.length ? parts : ['-']);
+            parts.sort((a, b) => b.w - a.w);
+            const lines = [spd.toFixed(1) + ' u/s'].concat(parts.length ? parts.map(p => p.name + ' ' + p.w + '%') : ['-']).slice(0, SPEED_LABEL_MAX_LINES);
             const txt = lines.join('|');
             if (txt !== window._speedLabelLast) {
                 window._speedLabelLast = txt;
