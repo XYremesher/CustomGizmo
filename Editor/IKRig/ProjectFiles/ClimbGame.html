@@ -148,8 +148,7 @@
 </head>
 <body>
     <div id="loading-overlay"><div id="loading-spinner"></div><div>Loading...</div></div>
-    <!-- Disabled for now during dev so it doesn't block testing - re-enable by removing class="hidden" here. -->
-    <div id="start-overlay" class="hidden">
+    <div id="start-overlay">
         <div id="start-title-row">
             <img id="start-title-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="">
             <h1 id="start-title">PEAK PUNCHERS</h1>
@@ -3222,7 +3221,7 @@ import { startGame } from './game_js.js';
         //   Remote/GitLab Pages (https page):             wss://<tunnel-url>
         //   (an https page can ONLY reach a wss:// socket - ws:// is blocked)
         // ====================================================================
-        const DEFAULT_MP_SERVER = 'ws://localhost:8080';
+        const DEFAULT_MP_SERVER = 'wss://newport-benjamin-cult-dish.trycloudflare.com';
 
         const startOverlay = document.getElementById('start-overlay');
         const startJoinBtn = document.getElementById('start-join-btn');
