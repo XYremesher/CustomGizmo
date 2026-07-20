@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -170,8 +171,9 @@ export function startGame(CharacterClass) {
     }
 
     class ShooterBox {
-        constructor(parent, x, y, z, intensity = 'high') {
+        constructor(parent, x, y, z, intensity = 'high', fireDir = new THREE.Vector3(-1, 0, 0)) {
             this.intensity = intensity;
+            this.fireDir = fireDir;
             let color = 0xff2222;
             if (intensity === 'low') color = 0x22ff22;
             else if (intensity === 'medium') color = 0xffff22;
@@ -211,7 +213,7 @@ export function startGame(CharacterClass) {
             pMesh.position.copy(this.mesh.position);
             scene.add(pMesh);
 
-            const direction = _tempVec1.set(-1, 0, 0);
+            const direction = _tempVec1.copy(this.fireDir);
             const velocity = direction.multiplyScalar(projSpeed).clone();
             projectiles.push({ 
                 mesh: pMesh, 
@@ -886,18 +888,47 @@ export function startGame(CharacterClass) {
     const starFrontFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
     const activeKeyGroups = []; // rescaled live by the Key Scale slider (key + lock share it)
     window.keyScale = 2.0;
+    // Blender's glTF export splits a mesh into one child primitive per
+    // material slot as soon as it has more than one material, wrapping
+    // those primitives in a Group that keeps the ORIGINAL node's name -
+    // that's what happened to LockBase (it picked up a second material at
+    // some point) - so a part that used to come back from traverse() as a
+    // single named Mesh can just as easily come back as a same-named Group
+    // of anonymous sub-meshes instead. Flattens it back into one Mesh
+    // (multi-material via geometry groups) so cloneMeshClean/safeWorldBox/
+    // buildStarAssembly and the collision code's `.parent.userData.isLock`
+    // check all keep working unchanged regardless of which shape the
+    // export produced.
+    function flattenMultiMaterialNode(node) {
+        if (!node || node.isMesh) return node;
+        const meshes = node.children.filter(c => c.isMesh);
+        if (meshes.length === 0) return node;
+        const merged = BufferGeometryUtils.mergeGeometries(meshes.map(m => m.geometry), true);
+        const flat = new THREE.Mesh(merged, meshes.map(m => m.material));
+        flat.name = node.name;
+        flat.position.copy(node.position);
+        flat.quaternion.copy(node.quaternion);
+        flat.scale.copy(node.scale);
+        return flat;
+    }
     const gltfLoader = new GLTFLoader();
     gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.glb', (gltf) => {
         const object = gltf.scene;
         let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
-            if (!child.isMesh) return;
+            // Matches by name only (not isMesh) - see flattenMultiMaterialNode
+            // above for why a target part might arrive as a Group instead.
             if (child.name === 'KeyBase') keyBase = child;
             else if (child.name === 'KeyStarContainer') keyStarContainer = child;
             else if (child.name === 'Star') star = child;
             else if (child.name === 'LockBase') lockBase = child;
             else if (child.name === 'LockStarContainer') lockStarContainer = child;
         });
+        keyBase = flattenMultiMaterialNode(keyBase);
+        keyStarContainer = flattenMultiMaterialNode(keyStarContainer);
+        star = flattenMultiMaterialNode(star);
+        lockBase = flattenMultiMaterialNode(lockBase);
+        lockStarContainer = flattenMultiMaterialNode(lockStarContainer);
         if (keyBase && keyStarContainer && star) {
             // KeyBase/KeyStarContainer share the exact same local position in
             // the source file - normalize the whole assembly's scale off
@@ -2086,7 +2117,7 @@ export function startGame(CharacterClass) {
                 // actually visually ends.
                 const label = makeTextSprite(columnTag + (i + 1));
                 label.position.set(xCenter, h / 2 + i * cubeSize * 0.9 + h / 2 + 0.2, -10 - i * cubeSize);
-                label.visible = true;
+                label.visible = document.getElementById('toggle-step-labels').checked;
                 levelGroup.add(label);
                 stairNumberLabels.push(label);
             }
@@ -2170,6 +2201,26 @@ export function startGame(CharacterClass) {
             const t = i / WALKWAY_LEG2_SEGMENTS;
             addWalkwaySegment(ROW_END_X, THREE.MathUtils.lerp(14.5, 13.5, t), THREE.MathUtils.lerp(-25, -11, t));
         }
+        // Last BUILT leg-2 segment (i=2 above, since i=WALKWAY_LEG2_SEGMENTS
+        // itself is skipped) sits at (ROW_END_X, 13.83, -15.67), an 8x0.6x8
+        // slab - top surface at y≈14.13, spanning z from about -19.67 to
+        // -11.67. This is the actual elevated walkway a player crosses to
+        // reach the ramp row, not ground level - the turret and finish
+        // diamond both belong up here, at the walkway's own far end (close
+        // to the ramp-side gap), not down at the base of a ramp.
+        const WALKWAY_END_X = ROW_END_X, WALKWAY_END_Y = 14.13 + 1.4, WALKWAY_END_Z = -13;
+
+        // Orange (medium_high) turret moved onto leg 1 - the arm that runs
+        // from this same corner (where leg 2/the ramp-side platform ends)
+        // back toward the stairs - instead of leg 2. Placed one segment in
+        // from that corner (t=11/12, same lerp leg 1's own loop above
+        // uses) and hovering above THAT segment's surface, firing +X
+        // (toward the stairs, where leg 1 actually leads) instead of -Z.
+        const LEG1_TURRET_T = 11 / 12;
+        const leg1TurretX = THREE.MathUtils.lerp(0, ROW_END_X, LEG1_TURRET_T);
+        const leg1TurretSurfaceY = THREE.MathUtils.lerp(16.5, 14.5, LEG1_TURRET_T) + 0.3;
+        const rampEndShooter = new ShooterBox(levelGroup, leg1TurretX, leg1TurretSurfaceY + 1.4, -25, 'medium_high', new THREE.Vector3(1, 0, 0));
+        shooters.push(rampEndShooter); collidables.push(rampEndShooter.mesh);
 
         buildNarrowLedgeTestRig(15, 8, 1.2);
         buildNarrowLedgeTestRig(20, 8, 0.4);
@@ -2340,7 +2391,11 @@ export function startGame(CharacterClass) {
         spawnJarGrid();
         spawnStairJar();
 
-        star.position.set(0, (5 * cubeSize * 0.9) + cubeSize + 2, -10 - 5 * cubeSize); star.visible = true;
+        // Finish marker moved from the top of the stairs to the far end of
+        // the elevated walkway leading to the ramp row - right next to the
+        // new orange turret above (WALKWAY_END_X/Y/Z), not down at ground
+        // level where a player crossing the walkway would never see it.
+        star.position.set(WALKWAY_END_X, WALKWAY_END_Y, WALKWAY_END_Z); star.visible = true;
         char.group.position.set(0, cubeSize, 0); char.group.rotation.y = Math.PI;
         stairsLevelBuilt = true;
 
@@ -2494,6 +2549,19 @@ export function startGame(CharacterClass) {
 
     let heldCarryable = null;
     let carryStartElapsed = 0;
+    // Gradual "step back to make room" phase, tried before a drop/throw
+    // when something's too close in front for the object to land clear of
+    // it (see attemptCarryAction below) - slides the player backward over
+    // MAKE_ROOM_DURATION, same as yesterday's approach on flat ground,
+    // rather than snapping them back instantly (that read as the player
+    // teleporting) or leaving the object to spawn embedded (that read as
+    // the object teleporting once the physics loop shoved it back out).
+    let isMakingRoom = false;
+    let makeRoomElapsed = 0;
+    const makeRoomStartPos = new THREE.Vector3();
+    const makeRoomTargetPos = new THREE.Vector3();
+    let pendingCarryAction = null; // 'drop' | 'throw' - which one fires once the pullback above finishes
+    const MAKE_ROOM_DURATION = 0.17;
     const carryBtn = document.getElementById('carry-btn');
     const dropBtn = document.getElementById('drop-btn');
     const throwBtn = document.getElementById('throw-btn');
@@ -2530,8 +2598,45 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // Tests whether a carryable-sized box (_carrySizeVec - the same 1x1x1
+    // box the per-frame physics loop above resolves overlaps against, see
+    // its own comment on why that's a fixed size regardless of the actual
+    // model) at `pos` overlaps any solid collidable. Used by both drop and
+    // throw below so neither ever hands an object off to that physics loop
+    // already embedded in something - an object that spawns overlapping
+    // gets shoved out sideways by that loop's X/Z push-out in a single,
+    // un-animated step the very next frame, which is what reads as the
+    // object "teleporting" next to whatever it was placed into.
+    const _carryOverlapBox = new THREE.Box3();
+    const _carryObstacleBox = new THREE.Box3();
+    function overlapsSolidCollidable(pos, excludeMesh) {
+        _carryOverlapBox.setFromCenterAndSize(pos, _carrySizeVec);
+        return collidables.some(obj => {
+            if (obj === ground || obj === excludeMesh || (obj.userData && (obj.userData.isCarryable || obj.userData.isSandbagCollider)) || activeLockInstances.includes(obj)) return false;
+            getObstacleBox(obj, _carryObstacleBox);
+            return _carryOverlapBox.intersectsBox(_carryObstacleBox);
+        });
+    }
+
+    // Whether `pos` is solid ground to stand on - a real collidable OR
+    // plain open ground (ground itself counts here, unlike the drop
+    // search above which deliberately excludes it - see its own comment)
+    // - and roughly the same height as the player's current spot, not a
+    // big drop or rise. Used before gradually stepping the player back to
+    // make room for a drop/throw: stepping back without checking what's
+    // actually behind them is what glitched on a narrow elevated block
+    // yesterday - it could walk them straight off the platform's back
+    // edge into open air.
+    const _safeSpotProbe = new THREE.Vector3();
+    function isSafeStandingSpot(pos, referenceY) {
+        _safeSpotProbe.set(pos.x, referenceY + 2.0, pos.z);
+        rayDown.set(_safeSpotProbe, _downVec);
+        const hits = rayDown.intersectObjects(collidables.filter(c => c !== heldCarryable).concat(ground));
+        return hits.length > 0 && Math.abs(hits[0].point.y - referenceY) < 0.6;
+    }
+
     carryBtn.addEventListener('pointerdown', () => {
-        if (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && carryTargetObj) {
+        if (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && carryTargetObj) {
             window.isCarryStarting = true;
             carryStartElapsed = 0;
             heldCarryable = carryTargetObj;
@@ -2564,7 +2669,48 @@ export function startGame(CharacterClass) {
         }
     });
 
-    dropBtn.addEventListener('pointerdown', () => {
+    // Tries a drop/throw immediately; if a wall's close enough in front
+    // that the object couldn't land clear of it, steps the player back
+    // first (gradually - see isMakingRoom above) so the normal full-reach
+    // placement below has room, instead of relying only on that
+    // placement logic's own closer-in fallback (still there as a backup
+    // for when no safe spot exists to step back into at all, e.g. boxed
+    // in on multiple sides).
+    function attemptCarryAction(action) {
+        _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+        // Same margin the drop/throw placement logic itself needs: how
+        // far forward an object has to clear (DROP_DISTANCE) plus its own
+        // rough half-width (matches _carrySizeVec/2) - plus a small extra
+        // buffer so the object's box ends up genuinely clear of the wall's
+        // rather than exactly touching it. Exactly touching (no buffer)
+        // still reads as an overlap to the physics loop's Box3 check (its
+        // bounds compare inclusively, same reason the floor-landing height
+        // below uses 0.51 instead of 0.5) and got the object shoved
+        // sideways anyway even after stepping the player back.
+        const NEEDED_CLEARANCE = 1.72;
+        rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
+        const wallHits = rayFwd.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
+        if (wallHits.length > 0 && wallHits[0].distance < NEEDED_CLEARANCE) {
+            const backstepNeeded = NEEDED_CLEARANCE - wallHits[0].distance;
+            const candidate = _makeRoomCandidate.copy(char.group.position).addScaledVector(_tempVec3, -backstepNeeded);
+            if (isSafeStandingSpot(candidate, char.group.position.y)) {
+                isMakingRoom = true;
+                makeRoomElapsed = 0;
+                makeRoomStartPos.copy(char.group.position);
+                makeRoomTargetPos.copy(candidate).setY(char.group.position.y);
+                pendingCarryAction = action;
+                return;
+            }
+            // No safe spot to step back into (e.g. boxed in on more than
+            // one side) - fall through to the immediate attempt below;
+            // its own overlap-avoidance still keeps the object from
+            // spawning embedded, it just won't have full room to work with.
+        }
+        if (action === 'drop') performDrop(); else performThrow();
+    }
+    const _makeRoomCandidate = new THREE.Vector3();
+
+    function performDrop() {
         if (window.isCarryingObj && heldCarryable) {
             window.isCarryDropping = true;
             carryStartElapsed = 0;
@@ -2573,20 +2719,24 @@ export function startGame(CharacterClass) {
 
             _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
 
-            // If a wall (or any other solid obstacle) sits closer than the
-            // drop distance, the object would spawn embedded in it - a deep
-            // overlap resolves as a hard fling to whichever side has more
-            // room, not the gentle boundary nudge a shallow touch gets (see
-            // objectHeightOffset's own comment below for that mechanism).
-            // Step the player back first so the drop point actually clears
-            // it, instead of trying to special-case the embedded-in-a-wall
-            // resolution itself.
-            const DROP_DISTANCE = 1.2;
-            const DROP_CLEARANCE = 0.5; // rough half-width of a dropped object
-            rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
-            const dropWallHits = rayFwd.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
-            if (dropWallHits.length > 0 && dropWallHits[0].distance < DROP_DISTANCE + DROP_CLEARANCE) {
-                char.group.position.addScaledVector(_tempVec3, dropWallHits[0].distance - (DROP_DISTANCE + DROP_CLEARANCE));
+            // 0.51, not 0.5: dropping it landing EXACTLY on a surface's own
+            // top (touching, not clear of it) reads as a horizontal
+            // collision to the carryable physics loop the instant it
+            // resumes (X/Z overlap is resolved before Y each substep - see
+            // spawnStairJar's comment for the full mechanism) and shoves it
+            // sideways off whatever it was dropped onto. Confirmed live:
+            // at exactly +0.5 a box dropped near a platform's edge jumped
+            // about a full unit sideways the same frame; +0.51 didn't move
+            // at all. Harmless on flat ground too (ground is excluded from
+            // that collision loop entirely), so no need to special-case it.
+            // Computed up front (not after picking dropDist below) since
+            // the overlap check in that search needs the object's real
+            // final Y, not just its X/Z, to test accurately.
+            let objectHeightOffset = 0.51;
+            if (heldCarryable.geometry) {
+                if (heldCarryable.geometry.type === 'SphereGeometry') objectHeightOffset = 0.51;
+                else if (heldCarryable.geometry.type === 'CylinderGeometry') objectHeightOffset = 0.51;
+                else if (heldCarryable.geometry.type === 'RoundedBoxGeometry') objectHeightOffset = 0.51;
             }
 
             // Tries the full drop distance first, then progressively closer
@@ -2599,10 +2749,21 @@ export function startGame(CharacterClass) {
             // through the old hardcoded 0 default, sending the object all
             // the way down to the real ground instead of just short of the
             // edge on the same platform the player is standing on.
+            const DROP_DISTANCE = 1.2;
             const DROP_REACH = 1.5; // also caps how far ABOVE the player a hit may place it
             const dropScratch = new THREE.Vector3();
+            const dropCandidatePos = new THREE.Vector3();
             let detectedFloorY = char.group.position.y;
-            let dropDist = 0;
+            // Defaults to the FULL reach, not 0 - collidables deliberately
+            // excludes `ground` (see the filter below), so standing on
+            // plain open grass with no step/platform underneath means
+            // every distance in the loop finds no hit and it falls through
+            // without ever assigning dropDist. That used to leave it at a
+            // stale 0 initializer, dropping the object right on top of the
+            // player instead of out at arm's reach - only a real nearby
+            // collidable (a platform edge closer than DROP_DISTANCE) should
+            // ever pull the drop point in this close.
+            let dropDist = DROP_DISTANCE;
             for (const dist of [DROP_DISTANCE, 0.9, 0.6, 0.3, 0]) {
                 dropScratch.copy(char.group.position).addScaledVector(_tempVec3, dist).setY(char.group.position.y + 3.0);
                 rayDown.set(dropScratch, _downVec);
@@ -2610,27 +2771,21 @@ export function startGame(CharacterClass) {
                 if (hits.length > 0 && hits[0].point.y <= char.group.position.y + DROP_REACH) {
                     detectedFloorY = hits[0].point.y;
                     dropDist = dist;
-                    break;
+                    // A valid floor here isn't enough on its own - a wall
+                    // or prop off to one side of dead-center can still
+                    // overlap the object's real (_carrySizeVec) box even
+                    // though the floor ray straight down missed it
+                    // entirely. Keep stepping to a closer candidate rather
+                    // than handing off an embedded spot; the closest
+                    // (dist=0, right where the player is legally already
+                    // standing) is the last-resort fallback if every
+                    // farther option overlaps something.
+                    dropCandidatePos.copy(char.group.position).addScaledVector(_tempVec3, dist);
+                    dropCandidatePos.y = detectedFloorY + objectHeightOffset;
+                    if (!overlapsSolidCollidable(dropCandidatePos, heldCarryable)) break;
                 }
             }
             dropTargetPos.copy(char.group.position).addScaledVector(_tempVec3, dropDist);
-
-            // 0.51, not 0.5: dropping it landing EXACTLY on a surface's own
-            // top (touching, not clear of it) reads as a horizontal
-            // collision to the carryable physics loop the instant it
-            // resumes (X/Z overlap is resolved before Y each substep - see
-            // spawnStairJar's comment for the full mechanism) and shoves it
-            // sideways off whatever it was dropped onto. Confirmed live:
-            // at exactly +0.5 a box dropped near a platform's edge jumped
-            // about a full unit sideways the same frame; +0.51 didn't move
-            // at all. Harmless on flat ground too (ground is excluded from
-            // that collision loop entirely), so no need to special-case it.
-            let objectHeightOffset = 0.51;
-            if (heldCarryable.geometry) {
-                if (heldCarryable.geometry.type === 'SphereGeometry') objectHeightOffset = 0.51;
-                else if (heldCarryable.geometry.type === 'CylinderGeometry') objectHeightOffset = 0.51;
-                else if (heldCarryable.geometry.type === 'RoundedBoxGeometry') objectHeightOffset = 0.51;
-            }
             dropTargetPos.y = detectedFloorY + objectHeightOffset;
             dropTargetRot.copy(char.group.quaternion);
 
@@ -2644,9 +2799,9 @@ export function startGame(CharacterClass) {
             throwBtn.style.display = 'none';
             char.playCarryDrop();
         }
-    });
+    }
 
-    throwBtn.addEventListener('pointerdown', () => {
+    function performThrow() {
         if (window.isCarryingObj && heldCarryable) {
             const cObj = carryables.find(c => c.mesh === heldCarryable);
             if (cObj) {
@@ -2667,8 +2822,16 @@ export function startGame(CharacterClass) {
                 // Snapping to a carryHeight-based Y here used to cause a
                 // visible upward pop at the moment of throwing even with
                 // throwVerticalSpeed at 0, independent of the actual launch
-                // velocity.
-                cObj.mesh.position.addScaledVector(_tempVec3, 0.15);
+                // velocity. Skipped if that nudge would land inside
+                // something solid right in front (a wall thrown into
+                // point-blank) - isCarried just went false above, so the
+                // very next physics substep would otherwise shove the
+                // object sideways out of that overlap before its own throw
+                // velocity ever got a chance to carry it anywhere, reading
+                // as if it launched from the wall's own side instead of the
+                // player's hand.
+                _tempVec2.copy(cObj.mesh.position).addScaledVector(_tempVec3, 0.15);
+                if (!overlapsSolidCollidable(_tempVec2, cObj.mesh)) cObj.mesh.position.copy(_tempVec2);
 
                 cObj.velocity.copy(_tempVec3).multiplyScalar(window.throwHorizontalSpeed).setY(window.throwVerticalSpeed);
 
@@ -2697,6 +2860,14 @@ export function startGame(CharacterClass) {
             dropBtn.style.display = 'none';
             throwBtn.style.display = 'none';
         }
+    }
+
+    dropBtn.addEventListener('pointerdown', () => {
+        if (window.isCarryingObj && heldCarryable && !isMakingRoom) attemptCarryAction('drop');
+    });
+
+    throwBtn.addEventListener('pointerdown', () => {
+        if (window.isCarryingObj && heldCarryable && !isMakingRoom) attemptCarryAction('throw');
     });
 
     function forceDropCarriedObject(velocity = null) {
@@ -2712,6 +2883,8 @@ export function startGame(CharacterClass) {
             window.isCarryingObj = false;
             window.isCarryStarting = false;
             window.isCarryDropping = false;
+            isMakingRoom = false;
+            pendingCarryAction = null;
             heldCarryable = null;
             document.getElementById('drop-btn').style.display = 'none';
             document.getElementById('throw-btn').style.display = 'none';
@@ -2979,7 +3152,10 @@ export function startGame(CharacterClass) {
     window.comboHit1Time = 0.15;
     window.chargePunchForce = 80.0;
     window.rampWalkAnimSpeed = 1.3;
-    window.chargePunchKnockback = 15.0;
+    // Matches orangeRecoilForce's own default - a mature charge punch
+    // should launch its target exactly as far as an orange-intensity hit
+    // does, not by its own separate, much weaker number.
+    window.chargePunchKnockback = 60.0;
     window.chargeAttackProjectileSpeed = 5.0;
     window.chargeAttackProjectileFadeRate = 3.0;
     window.chargeAttackProjectileHitCutoff = 0.3;
@@ -3002,6 +3178,16 @@ export function startGame(CharacterClass) {
     window.aiBotStaggerRegenRate = 20.0;
     window.aiBotStaggerRegenDelay = 2.5;
     window.aiBotStaggerRegenCooldown = 0;
+    // How much of the stagger pool each hit tier chips away (ClimbGame.html's
+    // AI-bot block and multiplayer.js's _applyPunchEvent both read these).
+    // Tuned so the full left->right->5-hit combo (6 'medium' hits at the
+    // escalating-but-capped-under-45 forceMagnitude, then one 'medium_high'
+    // final blow) lands right at the edge of the pool (6*10 + 35 = 95 of
+    // 100) instead of emptying it partway through - the whole combo should
+    // stagger hard without alone causing a knockdown; a bit more punching
+    // after that is what should tip it into ragdoll.
+    window.staggerDamageMedium = 10.0;
+    window.staggerDamageMediumHigh = 35.0;
     const STAMINA_MAX = 100, REGEN_RATE = 25, HANG_DRAIN = 2, JUMP_COST = 8, LEDGE_JUMP_COST = 12, LEDGE_MOVE_COST = 4, CLIMB_COST = 4;
     // Between HANG_DRAIN (passive hanging) and CLIMB_COST (the quick
     // ledge climb-up action) - actively climbing a steep/slidable ramp
@@ -3228,6 +3414,12 @@ export function startGame(CharacterClass) {
     });
     document.getElementById('toggle-speed-label').addEventListener('change', e => {
         if (window._speedLabelSprite) window._speedLabelSprite.visible = e.target.checked;
+    });
+    document.getElementById('toggle-step-labels').addEventListener('change', e => {
+        stairNumberLabels.forEach(l => { l.visible = e.target.checked; });
+    });
+    document.getElementById('toggle-fps').addEventListener('change', e => {
+        if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
 
     window.toonOutlineEnabled = false;
@@ -5015,6 +5207,27 @@ export function startGame(CharacterClass) {
                 document.getElementById('base-left').classList.add('hold-mode');
             }
 
+            // Gradual step-back before a drop/throw that had a wall too
+            // close in front - see attemptCarryAction/isMakingRoom's own
+            // comment. Movement/turning are already gated off elsewhere
+            // (the !isMakingRoom checks added alongside isCarryStarting/
+            // isCarryDropping) so this is the only thing moving the player
+            // during this window; the "actively carrying" branch further
+            // below keeps the held object glued to the hands throughout,
+            // same as it already does while just standing still holding
+            // something.
+            if (isMakingRoom) {
+                makeRoomElapsed += delta;
+                const t = Math.min(1, makeRoomElapsed / MAKE_ROOM_DURATION);
+                char.group.position.lerpVectors(makeRoomStartPos, makeRoomTargetPos, t);
+                if (t >= 1) {
+                    isMakingRoom = false;
+                    const action = pendingCarryAction;
+                    pendingCarryAction = null;
+                    if (action === 'drop') performDrop(); else if (action === 'throw') performThrow();
+                }
+            }
+
             if (!isHoldingMovable && !window.isCarryingObj && !char.isRagdoll && isGrounded && !window.isCarryStarting && !window.isCarryDropping) {
                 _tempVec3.set(0,0,1).applyQuaternion(char.group.quaternion);
                 rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
@@ -5395,7 +5608,7 @@ export function startGame(CharacterClass) {
                 // arriving in-hand (pickup) or landing where aimed (drop).
                 // Standing still for the duration removes that moving-target
                 // problem entirely.
-                if (!isBuilding && !window.isCarryStarting && !window.isCarryDropping && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
+                if (!isBuilding && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && actualSpeed > 0.05) char.group.position.add(finalMoveDir.multiplyScalar(actualSpeed * delta));
                 effectiveMoveMag = isBuilding ? 0 : actualSpeed / (window.isCarryingObj ? 4.0 : 8.0);
                 window._dbgActualSpeed = actualSpeed;
                 if (isHitRecovering) {
@@ -5428,7 +5641,7 @@ export function startGame(CharacterClass) {
                 // backwards/forwards in whichever direction the hit
                 // actually pushed, WITHOUT turning to face travel
                 // direction the way normal movement does.
-                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
             }
 
             // Walking downhill (stairs, a shallow ramp, the hemisphere,

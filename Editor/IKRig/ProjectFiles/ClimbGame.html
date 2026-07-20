@@ -97,6 +97,7 @@
         #json-modal textarea { width: 100%; height: 300px; background: #222; color: #0f0; font-family: monospace; margin-top: 10px; margin-bottom: 10px; }
         #json-modal button { padding: 5px 10px; margin-right: 10px; cursor: pointer; }
         #fps-counter {
+            display: none; /* toggled via the 'toggle-fps' Debug Vis checkbox, unchecked by default */
             position: fixed; bottom: 8px; right: 8px; z-index: 50;
             color: #0f0; font-family: monospace; font-size: 14px;
             background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 6px;
@@ -283,7 +284,9 @@
                     <label><input type="checkbox" id="toggle-hitbox"> Show Hitboxes</label><br>
                     <label><input type="checkbox" id="toggle-ragdoll-colliders"> Show Ragdoll Overlay</label><br>
                     <label><input type="checkbox" id="toggle-angle-labels"> Show Angle Labels</label><br>
+                    <label><input type="checkbox" id="toggle-step-labels"> Show Step Labels (A1/B2...)</label><br>
                     <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
+                    <label><input type="checkbox" id="toggle-fps"> Show FPS Counter</label><br>
                     <label><input type="checkbox" id="toggle-foot-ik-goals"> Show Foot IK Goals + Knees</label><br>
                     <label><input type="checkbox" id="toggle-side-ray"> Ray 1: Side Ray (cyan/magenta)</label><br>
                     <label>Side Ray Hit Dist: <span id="side-ray-hit-display">-</span></label><br>
@@ -986,25 +989,28 @@
                 // ragdoll button.
                 const isMatureCharge = isChargePunch && this.chargeMaturity >= 1.0;
                 const chargePunchForce = window.chargePunchForce !== undefined ? window.chargePunchForce : 80;
-                // Regular combo hits escalate through the same 'medium_high'
-                // intensity band the orange shooter projectile's own recoil
-                // uses - RagdollPhysics.applyProceduralRecoil always pushes a
-                // 'medium_high' hit at exactly window.orangeRecoilForce
+                // comboStep treats left(1)->right(2)->the 5 hits inside
+                // punch_combo(3-7) as one continuous sequence. Every hit
+                // before the combo's last one stays capped under 45 (the
+                // 'medium_high' cutoff below) - individually they're just
+                // 'medium' taps, each a little harder than the last, so
+                // stringing the whole combo together builds real pressure
+                // (via the stagger pool further down) without any single
+                // early hit alone pushing as hard as the finisher. Only the
+                // FINAL blow (isFinalComboBlow, flat 55) lands in the
+                // 'medium_high' band, where RagdollPhysics.applyProceduralRecoil
+                // always pushes at exactly window.orangeRecoilForce
                 // regardless of the specific forceMagnitude that triggered
-                // the classification, so landing anywhere in 45-69 already
-                // means "pushed like the orange projectile pushes us". Used
-                // to be a flat 22 (the weaker, disconnected 'medium' tier,
-                // fixed impulseMagnitude=12, nothing to do with
-                // orangeRecoilForce at all). comboStep treats
-                // left(1)->right(2)->the 5 hits inside punch_combo(3-7) as
-                // one continuous sequence, each hit pushing a little harder
-                // than the last, capped below the 70 ragdoll threshold - raw
-                // combo force alone should never itself cause a knockdown,
-                // only the stagger/juggle check further down does that now.
+                // the classification - so completing the whole combo is
+                // what earns "pushed like the orange projectile pushes us",
+                // not any single punch along the way. A mature charge punch
+                // still goes straight to 'high' (ragdoll) further down, at
+                // window.chargePunchKnockback - matched to orangeRecoilForce
+                // by default so it launches exactly as far too.
                 const comboStep = this.punchState === 3 ? (3 + hitIndex) : this.punchState;
                 let forceMagnitude = isFinalComboBlow ? 55
                     : (isChargePunch ? (isMatureCharge ? chargePunchForce : 30)
-                    : Math.min(66, 42 + comboStep * 4));
+                    : Math.min(40, 16 + comboStep * 4));
 
                 sacks.forEach(sack => {
                     if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) {
@@ -1060,7 +1066,7 @@
                         const intensity = forceMagnitude >= 70 ? 'high' : (forceMagnitude >= 45 ? 'medium_high' : 'medium');
                         const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
                         const strength = flashStrengthByIntensity[intensity] || 1.0;
-                        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 60;
                         const magnitudeForRagdoll = intensity === 'high' ? knockback : forceMagnitude;
                         const velocity = fwdDir.clone().multiplyScalar(magnitudeForRagdoll);
                         window.aiBot.triggerHitFlash(strength);
@@ -1079,7 +1085,9 @@
                             // instead of every non-charge hit only ever
                             // flinching it.
                             if (window.aiBotStagger === undefined) window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
-                            const staggerDamage = intensity === 'medium_high' ? 35 : 20;
+                            const staggerDamage = intensity === 'medium_high'
+                                ? (window.staggerDamageMediumHigh !== undefined ? window.staggerDamageMediumHigh : 35)
+                                : (window.staggerDamageMedium !== undefined ? window.staggerDamageMedium : 10);
                             window.aiBotStagger -= staggerDamage;
                             window.aiBotStaggerRegenCooldown = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
                             if (window.aiBotStagger <= 0) {
@@ -3274,7 +3282,14 @@ import { startGame } from './game_js.js';
             });
             document.addEventListener('fullscreenchange', updateFullscreenIcon);
         }
-
+// Service Worker Registration
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => console.log('✓ Service Worker registered'))
+      .catch(err => console.error('✗ Service Worker registration failed:', err));
+  });
+}
     </script>
 </body>
 </html>

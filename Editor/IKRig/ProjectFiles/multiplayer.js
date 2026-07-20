@@ -309,10 +309,12 @@ export class MultiplayerClient {
         // forceMagnitude (up to window.chargePunchForce for a mature charge
         // punch) is tuned for the sandbag's own hit response (wobble + flash),
         // not for how far it should send a player flying - fed straight into
-        // initRagdoll it noticeably out-launched even a "high" intensity
-        // shooter projectile (velocity ~20). window.chargePunchKnockback is
-        // the actual, independently tunable ragdoll launch speed.
-        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 20;
+        // initRagdoll it noticeably out-launched a "high" intensity shooter
+        // projectile. window.chargePunchKnockback is the actual,
+        // independently tunable ragdoll launch speed - defaults to match
+        // window.orangeRecoilForce so a mature charge punch sends someone
+        // exactly as far as an orange-intensity hit does.
+        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 60;
         const magnitudeForRagdoll = intensity === 'high' ? knockback : pu.m;
         const velocity = new THREE.Vector3(pu.d[0], pu.d[1], pu.d[2]).multiplyScalar(magnitudeForRagdoll);
         const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
@@ -335,7 +337,9 @@ export class MultiplayerClient {
         // chips away at it; once exhausted, that hit (even a "light" one)
         // knocks them down instead, then the pool refills.
         if (window.playerStagger === undefined) window.playerStagger = window.playerStaggerMax !== undefined ? window.playerStaggerMax : 100;
-        const staggerDamage = intensity === 'medium_high' ? 35 : 20;
+        const staggerDamage = intensity === 'medium_high'
+            ? (window.staggerDamageMediumHigh !== undefined ? window.staggerDamageMediumHigh : 35)
+            : (window.staggerDamageMedium !== undefined ? window.staggerDamageMedium : 10);
         window.playerStagger -= staggerDamage;
         window.playerStaggerRegenCooldown = window.playerStaggerRegenDelay !== undefined ? window.playerStaggerRegenDelay : 2.5;
 
