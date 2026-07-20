@@ -2894,7 +2894,10 @@ export function startGame(CharacterClass) {
     window.forceDropCarriedObject = forceDropCarriedObject;
 
     const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
-    const keys = { w: false, a: false, s: false, d: false };
+    // shift: held to run on keyboard - see the moveMag calc below, WASD
+    // alone only ever walks now instead of always landing at full run
+    // magnitude.
+    const keys = { w: false, a: false, s: false, d: false, shift: false };
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = 12, yVelocity = 0;
 
     function setupJoystick(baseId, stickId, inputRef) {
@@ -4329,9 +4332,17 @@ export function startGame(CharacterClass) {
         // actually tuned for - direction is preserved exactly, only the
         // magnitude is snapped.
         const JOYSTICK_DEADZONE = 0.15, JOYSTICK_RUN_THRESHOLD = 0.7, JOYSTICK_WALK_MAG = 0.6;
+        // Keyboard input only reaches full run magnitude while shift is
+        // held - WASD alone used to always land at rawMag 1.0 (a single key
+        // is fully on or off, nothing in between), which meant keyboard
+        // players could never walk at all, only run. The touch joystick is
+        // untouched by this - its own analog deflection still decides walk
+        // vs run exactly as before.
+        const isKeyboardInput = Math.abs(input.left.x) <= 0.1 && Math.abs(input.left.y) <= 0.1 && (keys.w || keys.a || keys.s || keys.d);
         let moveMag = 0, curX = 0, curY = 0;
         if (rawMag > JOYSTICK_DEADZONE) {
-            moveMag = rawMag >= JOYSTICK_RUN_THRESHOLD ? 1.0 : JOYSTICK_WALK_MAG;
+            const wantsRun = rawMag >= JOYSTICK_RUN_THRESHOLD;
+            moveMag = (wantsRun && (!isKeyboardInput || keys.shift)) ? 1.0 : JOYSTICK_WALK_MAG;
             curX = (rawX / rawMag) * moveMag;
             curY = (rawY / rawMag) * moveMag;
         }
