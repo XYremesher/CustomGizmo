@@ -46,6 +46,10 @@ export function startGame(CharacterClass) {
     // accumulates references to sprites that got removed along with their
     // old ramp meshes.
     const rampAngleLabels = [];
+    // Temporary debug numbering for the stair columns (buildStairColumn) -
+    // always visible, no toggle checkbox. Cleared at the top of
+    // buildStairsLevel() same as rampAngleLabels, same reason.
+    const stairNumberLabels = [];
     // Sandbag (constructed later from ClimbGame.html) takes a debugHelpers
     // array in its own constructor to push a hitbox wireframe into, but
     // without this it was getting a disconnected, throwaway [] instead of
@@ -836,7 +840,7 @@ export function startGame(CharacterClass) {
             // in-flight async loader was about to add. If the level's
             // already up, just add the jar grid on top of it instead - same
             // fix already applied to the StarKey.glb loader below.
-            if (currentLevel === "local_stairs" && stairsLevelBuilt) spawnJarGrid();
+            if (currentLevel === "local_stairs" && stairsLevelBuilt) { spawnJarGrid(); spawnStairJar(); }
         }
     });
 
@@ -937,24 +941,12 @@ export function startGame(CharacterClass) {
     });
 
     function spawnTestKeyAndLock() {
-        // Test-only key instance, sitting out in the open near spawn so it
-        // can be inspected/picked up without having to break a jar first.
-        const testKeyGroup = createKeyInstance();
-        if (testKeyGroup) {
-            // Sit exactly on the ground (y=0) instead of a guessed y=1.0 -
-            // the group's origin is the container's mass center, not the
-            // model's base, so the correct ground Y depends on floorOffset.
-            testKeyGroup.position.set(0, testKeyGroup.userData.floorOffset * window.keyScale, -3);
-            testKeyGroup.userData.isCarryable = true;
-            testKeyGroup.userData.isKey = true;
-            levelGroup.add(testKeyGroup);
-            collidables.push(testKeyGroup);
-            const carryTestKey = { mesh: testKeyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
-            carryables.push(carryTestKey); addCarryableDebugHelper(carryTestKey);
-            window.debugTestKeyGroup = testKeyGroup;
-        }
+        // The free-standing key that used to sit out in the open here (no
+        // jar needed) was removed - the jar grid's own key (see
+        // spawnJarGrid, containsKey on the r===0,c===0 jar) is now the only
+        // way to get one.
 
-        // Test-only lock instance next to the key - fixed in place (not
+        // Test-only lock instance - fixed in place (not
         // carryable), just to see it in the level; no unlock puzzle wired
         // up yet.
         const testLockGroup = createLockInstance();
@@ -966,6 +958,13 @@ export function startGame(CharacterClass) {
             // ahead of it, still on the flat ground.
             testLockGroup.position.set(0, testLockGroup.userData.floorOffset * window.keyScale, -8);
             testLockGroup.rotation.y = Math.PI;
+            // Marks this group (checked via a hit mesh's .parent, since the
+            // raycasts below hit baseClone/containerClone directly, not the
+            // group) so the ground-follow and wall-stop code can recognize
+            // it and, once userData.keyInserted flips true in
+            // triggerKeyInsertion, treat it like a climbable ramp/hemisphere
+            // instead of a solid wall - see isOnActiveLock below.
+            testLockGroup.userData.isLock = true;
             levelGroup.add(testLockGroup);
             collidables.push(testLockGroup);
             activeLockInstances.push(testLockGroup);
@@ -983,6 +982,20 @@ export function startGame(CharacterClass) {
             // being read as the real collider (it wasn't) rather than as a
             // rough visual stand-in for one.
             addWireframeSphereDebugHelper(testLockGroup.position, KEY_INSERT_DISTANCE);
+
+            // Companion box, flush against the lock's -x side (the side the
+            // jump-height test rig/tall blue boxes sit on, see
+            // buildStairsLevel) - matches the lock's own width/depth but
+            // only 2/5 (shortened by 3/5) of its height, rounded like the
+            // other blue boxes instead of sharp-cornered.
+            testLockGroup.updateMatrixWorld(true);
+            const lockBox = new THREE.Box3().setFromObject(testLockGroup);
+            const lockSize = lockBox.getSize(new THREE.Vector3());
+            const companionHeight = lockSize.y * 0.4;
+            const lockCompanionBox = new THREE.Mesh(new RoundedBoxGeometry(lockSize.x, companionHeight, lockSize.z, 1, 0.15), platMat);
+            lockCompanionBox.position.set(lockBox.min.x - lockSize.x / 2, companionHeight / 2, testLockGroup.position.z);
+            lockCompanionBox.castShadow = true; lockCompanionBox.receiveShadow = true;
+            levelGroup.add(lockCompanionBox); collidables.push(lockCompanionBox);
         }
     }
 
@@ -1941,6 +1954,47 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // A single jar sitting on top of stair_1 (the original column's 2nd
+    // step, y-top=5.7 per buildStairColumn's own h/2+i*cubeSize*0.9 - i=1,
+    // h=cubeSize=3.0 - formula, z=-13). Offset is 0.51, not exactly 0.5:
+    // the carryable physics loop gives every carryable a fixed 1x1x1
+    // collision box (_carrySizeVec) regardless of the jar's real visual
+    // size, and resolves X/Z overlap against other collidables BEFORE Y
+    // each substep. Landing at exactly 0.5 (the box's own half-height) put
+    // its collision box EXACTLY touching the stair's own top on the very
+    // first frame, before gravity had even moved it - read as a horizontal
+    // collision, not a landing, which shoved it sideways off the step
+    // entirely and sent it falling all the way to the real ground instead
+    // (breaking on impact). The extra 0.01 keeps it just clear of that
+    // touching boundary at spawn so it falls a hair and settles normally.
+    function spawnStairJar() {
+        if (!jarTemplate) return;
+        const jarMesh = jarTemplate.clone();
+        jarMesh.position.set(0, 5.7 + 0.51, -13);
+        jarMesh.userData.isCarryable = true;
+        jarMesh.userData.isJar = true;
+        levelGroup.add(jarMesh);
+        collidables.push(jarMesh);
+        const carryJar = { mesh: jarMesh, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+        carryables.push(carryJar); addCarryableDebugHelper(carryJar);
+
+        // Second jar, on top of B3 (stairL_2) - looked up by name instead
+        // of a hardcoded position since B3 gets moved down by one cubeSize
+        // elsewhere in buildStairsLevel; reading its live position here
+        // keeps this correct even if that offset ever changes.
+        const stairL2 = levelGroup.getObjectByName('stairL_2');
+        if (stairL2) {
+            const jarMesh2 = jarTemplate.clone();
+            jarMesh2.position.set(stairL2.position.x, stairL2.position.y + cubeSize / 2 + 0.51, stairL2.position.z);
+            jarMesh2.userData.isCarryable = true;
+            jarMesh2.userData.isJar = true;
+            levelGroup.add(jarMesh2);
+            collidables.push(jarMesh2);
+            const carryJar2 = { mesh: jarMesh2, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+            carryables.push(carryJar2); addCarryableDebugHelper(carryJar2);
+        }
+    }
+
     function loadCubesProp(x, z) {
         const propLoader = new GLTFLoader();
         propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
@@ -1967,6 +2021,7 @@ export function startGame(CharacterClass) {
 
     function buildStairsLevel() {
         rampAngleLabels.length = 0;
+        stairNumberLabels.length = 0;
         const hemisphere = new THREE.Mesh(new THREE.SphereGeometry(6, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshToonMaterial({ color: 0xaa5555, gradientMap: threeTone }));
         hemisphere.position.set(10, 0, -10); hemisphere.castShadow = true; hemisphere.receiveShadow = true;
         // See isOnHemisphere in the movement code.
@@ -1997,33 +2052,68 @@ export function startGame(CharacterClass) {
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
         levelGroup.add(startMesh); collidables.push(startMesh);
 
-        for (let i = 0; i < 6; i++) {
-            const mesh = new THREE.Mesh(boxGeoTemplate, platMat);
-            mesh.position.set(0, cubeSize/2 + i * cubeSize * 0.9, -10 - i * cubeSize);
-            mesh.name = 'stair_' + i;
-            mesh.castShadow = true; mesh.receiveShadow = true;
-            levelGroup.add(mesh); collidables.push(mesh);
-        }
+        // Builds one full column of 6 steps, centered at the given x -
+        // pulled out so a second, flush-adjacent column (see below) can
+        // reuse the exact same step heights/spacing instead of duplicating
+        // the loop by hand.
+        const buildStairColumn = (xCenter, namePrefix, columnTag) => {
+            for (let i = 0; i < 6; i++) {
+                // Step 0 is deliberately tall - built all the way up to step
+                // 1's own top (cubeSize*1.9, i.e. step 1's h +
+                // i*cubeSize*0.9 with i=1) instead of stopping partway, so
+                // climbing onto it lands flush with step 1 rather than
+                // leaving a second small step right after it. Once the lock
+                // down at z=-8 is opened, reaching this first step should
+                // take a jump followed by grabbing its edge (ledge grab),
+                // not a plain walk-up or a clean jump straight onto it.
+                const h = i === 0 ? cubeSize * 1.9 : cubeSize;
+                const mesh = new THREE.Mesh(i === 0 ? new RoundedBoxGeometry(cubeSize, h, cubeSize, 1, 0.15) : boxGeoTemplate, platMat);
+                mesh.position.set(xCenter, h / 2 + i * cubeSize * 0.9, -10 - i * cubeSize);
+                mesh.name = namePrefix + i;
+                mesh.castShadow = true; mesh.receiveShadow = true;
+                levelGroup.add(mesh); collidables.push(mesh);
 
-        // Jump-height test rig: two more ground-standing blocks flush
-        // against stair_0's own side (-x, same z, each cubeSize wide so
-        // touching just means stepping cubeSize over per block) - same
-        // footprint as stair_0, but 1/4 and 2/4 (1.25x/1.5x) taller, to
-        // see exactly how big a single-jump step-up the player can still
-        // clear before it turns into a climb/mantle situation. -x, not
+                // Temporary debug numbering (always visible, no toggle) so
+                // steps can be pointed at unambiguously by column+number
+                // instead of "3rd step" being guessable two different ways.
+                // Added to levelGroup in world space, NOT as a child of
+                // mesh - getObstacleBox's cached collision box for this
+                // step is a Box3().setFromObject(mesh), which recurses into
+                // children by default, so parenting the label to the step
+                // was silently inflating its own collision box upward by
+                // the label's height. That's what broke the stair-top jar
+                // again: its landing surface was no longer where the box
+                // actually visually ends.
+                const label = makeTextSprite(columnTag + (i + 1));
+                label.position.set(xCenter, h / 2 + i * cubeSize * 0.9 + h / 2 + 0.2, -10 - i * cubeSize);
+                label.visible = true;
+                levelGroup.add(label);
+                stairNumberLabels.push(label);
+            }
+        };
+        buildStairColumn(0, 'stair_', 'A');
+        // Second column flush against the first one's -x side (the ramp
+        // row's own direction, see ROW_START_X below) - touches edge to
+        // edge since each step is cubeSize wide, so offsetting the center
+        // by exactly cubeSize leaves no gap.
+        buildStairColumn(-cubeSize, 'stairL_', 'B');
+
+        // Jump-height test rig: one more ground-standing block flush
+        // against stair_0's own side (-x, same z, cubeSize wide) - same
+        // footprint as stair_0, but 2/4 (1.5x) taller, to see how big a
+        // single-jump step-up the player can still clear before it turns
+        // into a climb/mantle situation. The other block in this rig
+        // (1.25x, formerly at -cubeSize) is now stair_0 itself. -x, not
         // +x: the hemisphere sits at (10, 0, -10) with radius 6, reaching
-        // out to x=4 - +x put these blocks (and the marker below) partway
+        // out to x=4 - +x put this block (and the marker below) partway
         // inside its dome, invisible/clipped through solid geometry. -x is
         // clear all the way out past the ramp row (closest one starts at
         // x=-15, well past this rig's own x=-7.8 marker).
-        const JUMP_TEST_HEIGHTS = [1.25, 1.5];
-        JUMP_TEST_HEIGHTS.forEach((mult, i) => {
-            const h = cubeSize * mult;
-            const block = new THREE.Mesh(new RoundedBoxGeometry(cubeSize, h, cubeSize, 1, 0.15), platMat);
-            block.position.set(-cubeSize * (i + 1), h / 2, -10);
-            block.castShadow = true; block.receiveShadow = true;
-            levelGroup.add(block); collidables.push(block);
-        });
+        const jumpTestH = cubeSize * 1.5;
+        const jumpTestBlock = new THREE.Mesh(new RoundedBoxGeometry(cubeSize, jumpTestH, cubeSize, 1, 0.15), platMat);
+        jumpTestBlock.position.set(-cubeSize * 2, jumpTestH / 2, -10);
+        jumpTestBlock.castShadow = true; jumpTestBlock.receiveShadow = true;
+        levelGroup.add(jumpTestBlock); collidables.push(jumpTestBlock);
         // Reference marker for the SAME test: a thin, non-collidable plate
         // hovering at exactly the height the player's own head reaches at
         // the peak of a standing jump from flat ground (y=0), so it can be
@@ -2061,13 +2151,22 @@ export function startGame(CharacterClass) {
             seg.castShadow = true; seg.receiveShadow = true;
             levelGroup.add(seg); collidables.push(seg);
         };
+        // First segment (leg 1, i=0, right at the stairs' own top) and last
+        // segment (leg 2, its final i, right above the ramp row) are
+        // skipped so both ends of the walkway leave a real gap to jump
+        // instead of a flush, walk-straight-onto connection.
         const WALKWAY_LEG1_SEGMENTS = 12;
-        for (let i = 0; i <= WALKWAY_LEG1_SEGMENTS; i++) {
+        for (let i = 1; i <= WALKWAY_LEG1_SEGMENTS; i++) {
             const t = i / WALKWAY_LEG1_SEGMENTS;
-            addWalkwaySegment(THREE.MathUtils.lerp(0, ROW_END_X, t), THREE.MathUtils.lerp(16.5, 14.5, t), -25);
+            // Only the walkway's own first built element (i=1, the one
+            // resting closest to B6) is pulled down to B4's top
+            // (stairL_3, y=9.6 + cubeSize/2=11.1) - every other segment
+            // keeps the original 16.5->14.5 lerp untouched.
+            const y = i === 1 ? 11.1 : THREE.MathUtils.lerp(16.5, 14.5, t);
+            addWalkwaySegment(THREE.MathUtils.lerp(0, ROW_END_X, t), y, -25);
         }
         const WALKWAY_LEG2_SEGMENTS = 3;
-        for (let i = 1; i <= WALKWAY_LEG2_SEGMENTS; i++) {
+        for (let i = 1; i < WALKWAY_LEG2_SEGMENTS; i++) {
             const t = i / WALKWAY_LEG2_SEGMENTS;
             addWalkwaySegment(ROW_END_X, THREE.MathUtils.lerp(14.5, 13.5, t), THREE.MathUtils.lerp(-25, -11, t));
         }
@@ -2164,7 +2263,82 @@ export function startGame(CharacterClass) {
         const carry3 = { mesh: sph, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
         carryables.push(carry3); addCarryableDebugHelper(carry3);
 
+        // One-off tweaks to specific numbered steps (see the debug number
+        // labels added in buildStairColumn) - done here, after both
+        // columns already exist, by grabbing each step by its
+        // stair_/stairL_ name rather than re-parameterizing
+        // buildStairColumn again for a handful of one-off cases.
+        {
+            const stairL2 = levelGroup.getObjectByName('stairL_2'); // B3
+            const stairL3 = levelGroup.getObjectByName('stairL_3'); // B4
+            const stairL4 = levelGroup.getObjectByName('stairL_4'); // B5
+            const stair4 = levelGroup.getObjectByName('stair_4');   // A5
+            const stairL5 = levelGroup.getObjectByName('stairL_5'); // B6
+            const stair5 = levelGroup.getObjectByName('stair_5');   // A6
+            const stair3 = levelGroup.getObjectByName('stair_3');   // A4
+
+            // B3 down by one cubeSize (Jar added below, once jarTemplate is
+            // known ready - see spawnStairJar).
+            if (stairL2) stairL2.position.y -= cubeSize;
+
+            // B4: a plain flush support box directly underneath it.
+            if (stairL3) {
+                const under = new THREE.Mesh(boxGeoTemplate, platMat);
+                under.position.set(stairL3.position.x, stairL3.position.y - cubeSize, stairL3.position.z);
+                under.castShadow = true; under.receiveShadow = true;
+                levelGroup.add(under); collidables.push(under);
+            }
+
+            // B5: halved height, bottom edge kept where the full-height
+            // step's own bottom was (not re-centered) - can't just resize
+            // boxGeoTemplate, it's shared by every other plain step.
+            if (stairL4) {
+                const oldBottom = stairL4.position.y - cubeSize / 2;
+                stairL4.geometry = new RoundedBoxGeometry(cubeSize, cubeSize / 2, cubeSize, 1, 0.15);
+                stairL4.position.y = oldBottom + cubeSize / 4;
+            }
+
+            // A5 down by one cubeSize.
+            if (stair4) stair4.position.y -= cubeSize;
+
+            // B6 and A6: same flush support box as B4's.
+            [stairL5, stair5].forEach(step => {
+                if (!step) return;
+                const under = new THREE.Mesh(boxGeoTemplate, platMat);
+                under.position.set(step.position.x, step.position.y - cubeSize, step.position.z);
+                under.castShadow = true; under.receiveShadow = true;
+                levelGroup.add(under); collidables.push(under);
+            });
+
+            // A4: a pickup-able small box on top, deliberately off-center
+            // (A4's own footprint is cubeSize wide, so +0.6 in x stays well
+            // within it without sitting dead center). 0.51, not 0.5 -
+            // exactly touching a step's own top on spawn reads as a
+            // horizontal collision to the carryable physics loop before
+            // gravity ever moves it (see spawnStairJar's own comment on the
+            // stair-top jar for the full explanation) and shoves it off.
+            if (stair3) {
+                const topBox = new THREE.Mesh(new RoundedBoxGeometry(1.0, 1.0, 1.0, 1, 0.05), smallMat);
+                topBox.position.set(stair3.position.x + 0.6, stair3.position.y + cubeSize / 2 + 0.51, stair3.position.z);
+                topBox.castShadow = true; topBox.receiveShadow = true;
+                topBox.userData.isCarryable = true;
+                levelGroup.add(topBox); collidables.push(topBox);
+                const carryTop = { mesh: topBox, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+                carryables.push(carryTop); addCarryableDebugHelper(carryTop);
+            }
+
+            // Debug number labels aren't parented to their steps (see their
+            // own comment on why), so moving/resizing a step above leaves
+            // its label floating at the old spot unless repositioned here
+            // too. Indices: A's are 0-5 (label i = array index i), B's are
+            // 6-11 (array index 6+i).
+            if (stairNumberLabels[8] && stairL2) stairNumberLabels[8].position.y = stairL2.position.y + cubeSize / 2 + 0.2;
+            if (stairNumberLabels[4] && stair4) stairNumberLabels[4].position.y = stair4.position.y + cubeSize / 2 + 0.2;
+            if (stairNumberLabels[10] && stairL4) stairNumberLabels[10].position.y = stairL4.position.y + cubeSize / 4 + 0.2;
+        }
+
         spawnJarGrid();
+        spawnStairJar();
 
         star.position.set(0, (5 * cubeSize * 0.9) + cubeSize + 2, -10 - 5 * cubeSize); star.visible = true;
         char.group.position.set(0, cubeSize, 0); char.group.rotation.y = Math.PI;
@@ -2398,19 +2572,64 @@ export function startGame(CharacterClass) {
             dropStartRot.copy(heldCarryable.quaternion);
 
             _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
-            dropTargetPos.copy(char.group.position).addScaledVector(_tempVec3, 1.2);
 
-            _tempVec1.copy(dropTargetPos).setY(dropTargetPos.y + 3.0);
-            rayDown.set(_tempVec1, _downVec);
-            const dropHits = rayDown.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
-            let detectedFloorY = 0;
-            if (dropHits.length > 0) detectedFloorY = dropHits[0].point.y;
+            // If a wall (or any other solid obstacle) sits closer than the
+            // drop distance, the object would spawn embedded in it - a deep
+            // overlap resolves as a hard fling to whichever side has more
+            // room, not the gentle boundary nudge a shallow touch gets (see
+            // objectHeightOffset's own comment below for that mechanism).
+            // Step the player back first so the drop point actually clears
+            // it, instead of trying to special-case the embedded-in-a-wall
+            // resolution itself.
+            const DROP_DISTANCE = 1.2;
+            const DROP_CLEARANCE = 0.5; // rough half-width of a dropped object
+            rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
+            const dropWallHits = rayFwd.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
+            if (dropWallHits.length > 0 && dropWallHits[0].distance < DROP_DISTANCE + DROP_CLEARANCE) {
+                char.group.position.addScaledVector(_tempVec3, dropWallHits[0].distance - (DROP_DISTANCE + DROP_CLEARANCE));
+            }
 
-            let objectHeightOffset = 0.5;
+            // Tries the full drop distance first, then progressively closer
+            // points back toward the player - a fixed 1.2-unit forward
+            // offset regularly overshoots the edge of the narrower steps in
+            // this level (they're only cubeSize=3 wide), landing the
+            // target in open air past them with nothing underneath. Ground
+            // itself is excluded from the raycast (same as the wall-check
+            // above), so that used to read as "no floor found" and fall
+            // through the old hardcoded 0 default, sending the object all
+            // the way down to the real ground instead of just short of the
+            // edge on the same platform the player is standing on.
+            const DROP_REACH = 1.5; // also caps how far ABOVE the player a hit may place it
+            const dropScratch = new THREE.Vector3();
+            let detectedFloorY = char.group.position.y;
+            let dropDist = 0;
+            for (const dist of [DROP_DISTANCE, 0.9, 0.6, 0.3, 0]) {
+                dropScratch.copy(char.group.position).addScaledVector(_tempVec3, dist).setY(char.group.position.y + 3.0);
+                rayDown.set(dropScratch, _downVec);
+                const hits = rayDown.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
+                if (hits.length > 0 && hits[0].point.y <= char.group.position.y + DROP_REACH) {
+                    detectedFloorY = hits[0].point.y;
+                    dropDist = dist;
+                    break;
+                }
+            }
+            dropTargetPos.copy(char.group.position).addScaledVector(_tempVec3, dropDist);
+
+            // 0.51, not 0.5: dropping it landing EXACTLY on a surface's own
+            // top (touching, not clear of it) reads as a horizontal
+            // collision to the carryable physics loop the instant it
+            // resumes (X/Z overlap is resolved before Y each substep - see
+            // spawnStairJar's comment for the full mechanism) and shoves it
+            // sideways off whatever it was dropped onto. Confirmed live:
+            // at exactly +0.5 a box dropped near a platform's edge jumped
+            // about a full unit sideways the same frame; +0.51 didn't move
+            // at all. Harmless on flat ground too (ground is excluded from
+            // that collision loop entirely), so no need to special-case it.
+            let objectHeightOffset = 0.51;
             if (heldCarryable.geometry) {
-                if (heldCarryable.geometry.type === 'SphereGeometry') objectHeightOffset = 0.5;
-                else if (heldCarryable.geometry.type === 'CylinderGeometry') objectHeightOffset = 0.5;
-                else if (heldCarryable.geometry.type === 'RoundedBoxGeometry') objectHeightOffset = 0.5;
+                if (heldCarryable.geometry.type === 'SphereGeometry') objectHeightOffset = 0.51;
+                else if (heldCarryable.geometry.type === 'CylinderGeometry') objectHeightOffset = 0.51;
+                else if (heldCarryable.geometry.type === 'RoundedBoxGeometry') objectHeightOffset = 0.51;
             }
             dropTargetPos.y = detectedFloorY + objectHeightOffset;
             dropTargetRot.copy(char.group.quaternion);
@@ -3143,14 +3362,42 @@ export function startGame(CharacterClass) {
     });
 
     let gameReadyOverlayHidden = false;
+    // Uses the RAW (unclamped) per-frame delta, not the 0.1s-capped `delta`
+    // used everywhere else - the cap exists specifically to stop a slow
+    // frame from blowing up physics/animation timing, which would otherwise
+    // hide exactly what this counter is for (seeing how bad a real stall on
+    // low-end/mobile hardware actually gets). minFps never recovers once
+    // it drops, on purpose - leave the game running and come back later to
+    // see the worst frame this session ever had, not just whatever the
+    // instantaneous reading happens to be at the moment you look.
+    const fpsCounterEl = document.getElementById('fps-counter');
+    let fpsSmoothed = 60;
+    let fpsMin = Infinity;
+    let fpsDisplayAccum = 0;
     function animate() {
         requestAnimationFrame(animate);
-        const delta = Math.min(clock.getDelta(), 0.1), time = Date.now()*0.001;
+        const rawDelta = clock.getDelta();
+        const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
+
+        if (fpsCounterEl && rawDelta > 0) {
+            const instFps = 1 / rawDelta;
+            fpsSmoothed = fpsSmoothed * 0.9 + instFps * 0.1;
+            if (instFps < fpsMin) fpsMin = instFps;
+            fpsDisplayAccum += rawDelta;
+            if (fpsDisplayAccum > 0.3) {
+                fpsDisplayAccum = 0;
+                fpsCounterEl.textContent = `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})`;
+            }
+        }
 
         if (!gameReadyOverlayHidden && char.isLoaded && window._cubesLoaded) {
             gameReadyOverlayHidden = true;
             const overlay = document.getElementById('loading-overlay');
             if (overlay) overlay.classList.add('hidden');
+            // Otherwise the one-time asset-loading hitch (everything up to
+            // this point) permanently poisons the min reading before actual
+            // gameplay even starts.
+            fpsMin = Infinity;
         }
 
         char.updateHitFlash(delta);
@@ -3596,8 +3843,17 @@ export function startGame(CharacterClass) {
                 // regardless of local steepness fixes both zones the same
                 // way ramps already are.
                 const isOnHemisphere = groundHitObject && groundHitObject.userData && groundHitObject.userData.isHemisphere;
+                // Same coarse-AABB problem as the hemisphere/ramps, but for
+                // the lock: its cachedBox3 fallback is a tall, narrow shape
+                // nothing like a normal climbable step, so stepping onto it
+                // reads as blocked almost everywhere. Only bypassed once
+                // unlocked (userData.keyInserted, set in
+                // triggerKeyInsertion) - while still locked it must stay a
+                // solid, un-standable obstacle.
+                const hitLockGroup = groundHitObject && groundHitObject.parent && groundHitObject.parent.userData && groundHitObject.parent.userData.isLock ? groundHitObject.parent : null;
+                const isOnActiveLock = !!(hitLockGroup && hitLockGroup.userData.keyInserted);
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
-                const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp && !isOnHemisphere &&
+                const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp && !isOnHemisphere && !isOnActiveLock &&
                     !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null);
                 // Entry refusal for slidable faces, ground-path version of
                 // the CLIMB_INTENT_DOT wall gate: walking nearly parallel
@@ -4855,7 +5111,26 @@ export function startGame(CharacterClass) {
                 // whole clip. Matches that fade's duration (see the
                 // isCarryDropping branch in animate()) exactly, so this lerp
                 // and the arm motion it's tracking finish together.
-                const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.55;
+                //
+                // Default is the clip's own natural length, not an arbitrary
+                // shorter number - the reversed clip itself always plays back
+                // at a flat real-time rate (playCarryDrop's timeScale is a
+                // constant -1, untouched by this value), so a shorter
+                // duration here only ends isCarryDropping (and hands off to
+                // idle/walk) before carry_start had actually finished
+                // reverse-playing to its true end pose, cutting it off
+                // mid-motion every time.
+                //
+                // Full clip length alone read as too slow overall - rather
+                // than shortening this back down (which reintroduces the
+                // cutoff), playCarryDrop() now reverse-plays the clip faster
+                // (timeScale -carryDropSpeedMult instead of a flat -1), so it
+                // still covers the whole clip and reaches its true end pose,
+                // just in less real time. This duration is derived from that
+                // same speed so everything keeps finishing together.
+                const clipDur = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 0.667;
+                const speedMult = window.carryDropSpeedMult !== undefined ? window.carryDropSpeedMult : 2.2;
+                const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : (clipDur / speedMult);
                 const t = Math.max(0.0, Math.min(1.0, carryStartElapsed / duration));
 
                 // Tracks the live hand position (not a fixed snapshot from
@@ -5047,7 +5322,13 @@ export function startGame(CharacterClass) {
                     const realNormal = actualHits[0].face.normal.clone().transformDirection(actualHits[0].object.matrixWorld);
                     const realSurfaceAngle = realNormal.angleTo(_upVec);
                     const wallCutoffForHit = actualHits[0].object.userData?.isSlopeRamp ? RAMP_WALK_BLOCK_ANGLE : SLOPE_WALL_CUTOFF;
-                    let treatAsWall = realSurfaceAngle > wallCutoffForHit;
+                    // Same isOnActiveLock exemption as the ground-follow
+                    // gate above - an unlocked lock's near-vertical faces
+                    // must stop reading as a wall too, or the character
+                    // never gets close enough to climb onto it.
+                    const hitParent = actualHits[0].object.parent;
+                    const isActiveLockWall = !!(hitParent && hitParent.userData && hitParent.userData.isLock && hitParent.userData.keyInserted);
+                    let treatAsWall = !isActiveLockWall && realSurfaceAngle > wallCutoffForHit;
                     // Slidable-but-climbable faces (past the slide-entry
                     // angle but under the hard cutoff above) are a wall
                     // only for movement with NO uphill component (walking

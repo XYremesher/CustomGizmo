@@ -96,6 +96,12 @@
         #json-modal { display: none; position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 600px; background: rgba(0,0,0,0.9); padding: 20px; border: 1px solid #fff; z-index: 100; color: #fff; font-family: monospace; }
         #json-modal textarea { width: 100%; height: 300px; background: #222; color: #0f0; font-family: monospace; margin-top: 10px; margin-bottom: 10px; }
         #json-modal button { padding: 5px 10px; margin-right: 10px; cursor: pointer; }
+        #fps-counter {
+            position: fixed; bottom: 8px; right: 8px; z-index: 50;
+            color: #0f0; font-family: monospace; font-size: 14px;
+            background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 6px;
+            pointer-events: none; white-space: pre;
+        }
         #loading-overlay {
             position: fixed; inset: 0; z-index: 1000;
             background: #1a1a1a;
@@ -110,11 +116,58 @@
             border-radius: 50%; animation: loading-spin 0.8s linear infinite;
         }
         @keyframes loading-spin { to { transform: rotate(360deg); } }
+        #start-overlay {
+            position: fixed; inset: 0; z-index: 1001;
+            background: radial-gradient(ellipse at center, #223 0%, #0d0d12 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #fff; font-family: monospace; text-align: center; padding: 20px;
+            transition: opacity 0.4s ease;
+        }
+        #start-overlay.hidden { opacity: 0; pointer-events: none; }
+        #start-title-row { display: flex; align-items: center; justify-content: center; gap: 14px; }
+        #start-title-icon, .start-title-icon { height: clamp(28px, 8vw, 56px); width: auto; filter: drop-shadow(0 2px 12px rgba(0,0,0,0.6)); }
+        .start-title-icon.flipped { transform: scaleX(-1); }
+        #start-title { font-size: clamp(28px, 8vw, 56px); font-weight: bold; letter-spacing: 2px; margin: 0; text-shadow: 0 2px 12px rgba(0,0,0,0.6); }
+        #start-subtitle { font-size: clamp(12px, 3vw, 16px); opacity: 0.7; margin: 8px 0 4px; }
+        #start-hint { font-size: clamp(10px, 2.6vw, 13px); opacity: 0.55; max-width: 420px; line-height: 1.5; margin: 14px 0 24px; }
+        .start-btn {
+            width: min(320px, 80vw); padding: 14px; margin: 6px 0; border-radius: 10px;
+            font-family: monospace; font-size: 17px; font-weight: bold; cursor: pointer; border: none;
+            color: #fff; transition: transform 0.08s ease, filter 0.15s ease;
+        }
+        .start-btn:active { transform: scale(0.97); }
+        #start-play-btn { background: linear-gradient(135deg, #2e9d4f, #1c7a38); }
+        #start-join-btn { background: linear-gradient(135deg, #0096ff, #0066cc); }
+        #start-adv-toggle { margin-top: 18px; font-size: 11px; opacity: 0.5; cursor: pointer; text-decoration: underline; }
+        #start-adv { display: none; margin-top: 10px; }
+        #start-adv.open { display: block; }
+        #start-server-input { width: min(320px, 80vw); box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid #444; background: #1a1a22; color: #fff; font-family: monospace; font-size: 12px; }
+        #start-status { font-size: 12px; opacity: 0.8; margin-top: 10px; min-height: 16px; }
     </style>
 </head>
 <body>
     <div id="loading-overlay"><div id="loading-spinner"></div><div>Loading...</div></div>
+    <!-- Disabled for now during dev so it doesn't block testing - re-enable by removing class="hidden" here. -->
+    <div id="start-overlay" class="hidden">
+        <div id="start-title-row">
+            <img id="start-title-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="">
+            <h1 id="start-title">PEAK PUNCHERS</h1>
+            <img class="start-title-icon flipped" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="">
+        </div>
+        <div id="start-subtitle">A competitive multiplayer climb-race</div>
+        <div id="start-hint">
+            Left stick / WASD to move &middot; Jump to climb ledges &middot; Punch or throw objects to sabotage rivals &middot; Reach the finish first.
+        </div>
+        <button class="start-btn" id="start-join-btn">JOIN MULTIPLAYER</button>
+        <button class="start-btn" id="start-play-btn">PLAY SOLO</button>
+        <div id="start-status"></div>
+        <div id="start-adv-toggle">Advanced: change server</div>
+        <div id="start-adv">
+            <input type="text" id="start-server-input" placeholder="wss://...">
+        </div>
+    </div>
     <canvas id="gameCanvas"></canvas>
+    <div id="fps-counter">FPS: --</div>
 
     <div id="stamina-container"><div id="stamina-bar"></div></div>
     <button id="hud-connect-btn">
@@ -2271,6 +2324,11 @@
                     startAction.reset();
                     startAction.time = 0;
                     startAction.setEffectiveTimeScale(1.0);
+                    // Undo playCarryDrop's LoopOnce (reset() does NOT restore
+                    // loop mode) so the forward pickup behaves as it always
+                    // has - see the drop side for why it changes this.
+                    startAction.setLoop(THREE.LoopRepeat, Infinity);
+                    startAction.clampWhenFinished = false;
                 }
                 this.fadeToAction('carry_start', 0.1);
             }
@@ -2304,20 +2362,38 @@
                     const previousAction = this.activeAction;
                     this.activeAction = dropAction;
 
+                    // Reverse-plays faster than -1 (see game_js.js's drop
+                    // duration comment for why: full-clip-length-at-flat-rate
+                    // read as too slow overall, but going shorter than the
+                    // clip's own length cuts it off before its true end pose)
+                    // - covers the same full clip, just in less real time.
+                    const speedMult = window.carryDropSpeedMult !== undefined ? window.carryDropSpeedMult : 2.2;
                     dropAction.reset();
                     dropAction.time = dropAction.getClip().duration;
-                    dropAction.setEffectiveTimeScale(-1.0);
+                    dropAction.setEffectiveTimeScale(-speedMult);
                     dropAction.setEffectiveWeight(1);
+                    // Reverse playback + the default LoopRepeat: the frame
+                    // where time crosses below 0 WRAPS back up near the
+                    // clip's end - a sudden visual snap from the crouched
+                    // start pose to the standing hold pose. At high FPS the
+                    // overshoot past 0 is a few ms of clip-time (lands so
+                    // close to the end it's invisible), but at mobile
+                    // framerates a single frame overshoots far enough to
+                    // land mid-clip - the very visible "pop" during
+                    // lowering. LoopOnce + clamp freezes it at time 0 (the
+                    // clip's true final drop pose) instead of wrapping.
+                    dropAction.setLoop(THREE.LoopOnce, 1);
+                    dropAction.clampWhenFinished = true;
 
                     // This is the actual carry_upper -> carry_start crossfade
                     // - was hardcoded to 0.1s regardless of how long the rest
                     // of the drop (stopUpperAction's own fade, the position
                     // lerp) was set to take, so carry_start's pose became
                     // fully dominant almost instantly no matter how much
-                    // slower everything else was tuned to be. Matches
-                    // carryDropLowerDuration now so this isn't the odd one
-                    // out finishing in a tenth of a second.
-                    const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.85;
+                    // slower everything else was tuned to be. Matches the
+                    // clip's own (sped-up) playback time, same as the
+                    // position lerp's default in game_js.js.
+                    const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : (dropAction.getClip().duration / speedMult);
                     if (previousAction && previousAction !== dropAction) previousAction.fadeOut(duration);
                     dropAction.fadeIn(duration);
                     dropAction.play();
@@ -2656,8 +2732,14 @@ updateClimbing(delta) {
                         // playback barely changes hand height on its own (see
                         // game_js.js's drop duration comment). At 0.2s it
                         // read as near-instant; matches the position lerp's
-                        // own (also lengthened) duration below.
-                        this.stopUpperAction(window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : 0.55);
+                        // own default (the clip's length divided by
+                        // carryDropSpeedMult) unless overridden.
+                        {
+                            const csAction = this.actions['carry_start'];
+                            const csSpeedMult = window.carryDropSpeedMult !== undefined ? window.carryDropSpeedMult : 2.2;
+                            const csDuration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : (csAction ? csAction.getClip().duration / csSpeedMult : 0.5);
+                            this.stopUpperAction(csDuration);
+                        }
                         this.playCarryDrop();
                     } else if (window.throwTimer > 0) {
                         this.stopUpperAction(dur);
@@ -2737,6 +2819,25 @@ updateClimbing(delta) {
                             this.punchCorrectionNew = this.activeUpperAction;
                         }
                     } else if (window.isCarryingObj) {
+                        // Self-heal for a low-FPS fade race (mobile): the
+                        // bookkeeping can claim these are active while the
+                        // mixer has actually stopped them (a completed
+                        // fadeOut from the drop landing on the same frame a
+                        // quick re-pickup re-triggered them). The guards in
+                        // fadeToAction/fadeToUpperAction compare against the
+                        // bookkeeping, so once it lies, they skip re-starting
+                        // the action forever. Critical for carry_upper
+                        // specifically: the _lower splits carry NO spine/arm
+                        // tracks (see isUpperBodyTrack), so a dead
+                        // carry_upper leaves the spine frozen at whatever
+                        // pose it last had - the carry_start crouch - which
+                        // the spine-stabilize damping (below in this method)
+                        // then actively holds forever: the mobile
+                        // "stuck bent over, object at head height" state.
+                        // Nulling the stale reference makes the two calls
+                        // right below re-trigger them cleanly.
+                        if (this.activeUpperAction && !this.activeUpperAction.isRunning()) this.activeUpperAction = null;
+                        if (this.activeAction && !this.activeAction.isRunning()) this.activeAction = null;
                         this.fadeToAction(baseMoveState, dur);
                         this.fadeToUpperAction('carry_upper', dur);
                     } else {
@@ -2812,10 +2913,36 @@ updateClimbing(delta) {
                     }
 
                     if (!recoilStillSettling) {
-                        const activeDampFactor = dampFactor * this.stabilizeWeight;
+                        // dampFactor is a PER-FRAME retention (each frame the
+                        // bone keeps `dampFactor` of the cached pose) - as a
+                        // raw constant its real-time strength depends
+                        // entirely on frame rate: at 30fps the spine got
+                        // dragged behind pose transitions far longer than on
+                        // a 120fps PC, visibly holding the carry_start crouch
+                        // into the hold pose on mobile. Math.pow rescales the
+                        // retention so the per-SECOND smoothing matches a
+                        // 120fps reference (~the PC this was tuned on) at any
+                        // frame rate.
+                        const frameNormalizedDamp = Math.pow(dampFactor, delta * 120);
+                        const activeDampFactor = frameNormalizedDamp * this.stabilizeWeight;
 
-                        if (!this.lastGroupQuat) this.lastGroupQuat = this.group.quaternion.clone();
-                        const groupDeltaQuat = this.group.quaternion.clone().multiply(this.lastGroupQuat.clone().invert());
+                        // Composed root = group yaw AND fbxModel's own tilt
+                        // (turn lean / slope tilt / slide lean all live on
+                        // fbxModel.quaternion). The caches are WORLD-space
+                        // references, and compensating only for group yaw
+                        // meant any fbxModel tilt present at capture time got
+                        // baked into the "resting" reference - a hit landing
+                        // mid-turn re-captures the caches (see the recoil
+                        // reset above) with the motorcycle lean still in
+                        // them, and the damping then held that lean as the
+                        // pose to return to long after the real lean decayed.
+                        // Tracking the full root delta un-tilts the caches in
+                        // step with the model itself, so damping only ever
+                        // damps bone-level animation motion - its actual job.
+                        const rootQuatNow = this.group.quaternion.clone();
+                        if (this.fbxModel) rootQuatNow.multiply(this.fbxModel.quaternion);
+                        if (!this.lastGroupQuat) this.lastGroupQuat = rootQuatNow.clone();
+                        const groupDeltaQuat = rootQuatNow.clone().multiply(this.lastGroupQuat.clone().invert());
 
                         const applyDamping = (bone, lastWorldRef) => {
                             if (!bone) return;
@@ -2836,7 +2963,7 @@ updateClimbing(delta) {
                         applyDamping(this.spine1, 'lastSpine1World');
                         applyDamping(this.neck, 'lastNeckWorld');
 
-                        this.lastGroupQuat.copy(this.group.quaternion);
+                        this.lastGroupQuat.copy(rootQuatNow);
                     }
                 } else if (this.spine && this.hips &&
                     ((this.punchCorrectionNew && this.punchCorrectionNew.getEffectiveWeight() > 0.001) ||
@@ -3051,19 +3178,22 @@ import { startGame } from './game_js.js';
         const hudConnectedInfo = document.getElementById('hud-connected-info');
         const hudPlayerCount = document.getElementById('hud-player-count');
 
+        // Shared so both the debug-panel connect and the start-screen JOIN
+        // update the top-right HUD indicator identically.
+        function updateHudConnectStatus(text) {
+            if (mpStatus) mpStatus.textContent = text;
+            const isConnected = text.startsWith('connected');
+            if (hudConnectBtn) hudConnectBtn.classList.toggle('connected', isConnected);
+            if (hudConnectIcon) hudConnectIcon.style.display = isConnected ? 'none' : 'block';
+            if (hudConnectedInfo) hudConnectedInfo.style.display = isConnected ? 'flex' : 'none';
+            if (isConnected && hudPlayerCount) {
+                const match = text.match(/\((\d+)/);
+                hudPlayerCount.textContent = 'x' + (match ? match[1] : '1');
+            }
+        }
         function doMpConnect() {
             if (!window.multiplayerClient) return;
-            window.multiplayerClient.onStatusChange = (text) => {
-                if (mpStatus) mpStatus.textContent = text;
-                const isConnected = text.startsWith('connected');
-                if (hudConnectBtn) hudConnectBtn.classList.toggle('connected', isConnected);
-                if (hudConnectIcon) hudConnectIcon.style.display = isConnected ? 'none' : 'block';
-                if (hudConnectedInfo) hudConnectedInfo.style.display = isConnected ? 'flex' : 'none';
-                if (isConnected && hudPlayerCount) {
-                    const match = text.match(/\((\d+)/);
-                    hudPlayerCount.textContent = 'x' + (match ? match[1] : '1');
-                }
-            };
+            window.multiplayerClient.onStatusChange = updateHudConnectStatus;
             window.multiplayerClient.connect(mpServerInput.value.trim());
         }
 
@@ -3072,6 +3202,51 @@ import { startGame } from './game_js.js';
         if (mpConnectBtn) {
             mpConnectBtn.addEventListener('click', doMpConnect);
         }
+
+        // ====================================================================
+        // START SCREEN + one-tap JOIN. The single source of truth for the
+        // multiplayer server address is DEFAULT_MP_SERVER below. Before the
+        // presentation, start the local server, expose it with a fresh
+        // Cloudflare tunnel, and paste that wss:// URL here (and into the
+        // debug panel's tunnel quickfill). Joiners just tap "JOIN
+        // MULTIPLAYER" and never touch the debug panel.
+        //   Local host testing (game served over http):  ws://localhost:8080
+        //   Remote/GitLab Pages (https page):             wss://<tunnel-url>
+        //   (an https page can ONLY reach a wss:// socket - ws:// is blocked)
+        // ====================================================================
+        const DEFAULT_MP_SERVER = 'ws://localhost:8080';
+
+        const startOverlay = document.getElementById('start-overlay');
+        const startJoinBtn = document.getElementById('start-join-btn');
+        const startPlayBtn = document.getElementById('start-play-btn');
+        const startStatus = document.getElementById('start-status');
+        const startAdvToggle = document.getElementById('start-adv-toggle');
+        const startAdv = document.getElementById('start-adv');
+        const startServerInput = document.getElementById('start-server-input');
+        if (startServerInput) startServerInput.value = DEFAULT_MP_SERVER;
+
+        function dismissStartOverlay() {
+            if (startOverlay) startOverlay.classList.add('hidden');
+        }
+        if (startPlayBtn) startPlayBtn.addEventListener('click', dismissStartOverlay);
+        if (startAdvToggle) startAdvToggle.addEventListener('click', () => {
+            if (startAdv) startAdv.classList.toggle('open');
+        });
+        if (startJoinBtn) startJoinBtn.addEventListener('click', () => {
+            const url = (startServerInput && startServerInput.value.trim()) || DEFAULT_MP_SERVER;
+            if (mpServerInput) mpServerInput.value = url; // keep debug panel in sync
+            if (startStatus) startStatus.textContent = 'connecting...';
+            if (!window.multiplayerClient) { if (startStatus) startStatus.textContent = 'still loading, try again'; return; }
+            // Drives the same HUD indicator the debug panel's own connect
+            // button uses, so JOIN and the debug panel never disagree about
+            // connection state, plus closes the start screen once connected.
+            window.multiplayerClient.onStatusChange = (text) => {
+                updateHudConnectStatus(text);
+                if (startStatus) startStatus.textContent = text;
+                if (text.startsWith('connected')) setTimeout(dismissStartOverlay, 400);
+            };
+            window.multiplayerClient.connect(url);
+        });
 
         // Mobile browsers can shift the page's visual viewport upward once the
         // on-screen keyboard used to type the server address closes (address
