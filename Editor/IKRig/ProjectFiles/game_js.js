@@ -8,6 +8,7 @@ import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { LevelEditor, CUT_PROP_GROUPS } from './level_editor.js';
 
 export function startGame(CharacterClass) {
     window.isCarryingObj = false;
@@ -28,10 +29,51 @@ export function startGame(CharacterClass) {
         });
     });
 
-    const threeTone = new THREE.DataTexture(new Uint8Array([0, 128, 255]), 3, 1, THREE.RedFormat);
+    // Same 3 tone bands (dark/mid/light) the toon gradient always used
+    // (0, 128, 255), just now baked into a wider 64-texel ramp instead of
+    // one texel per band, so a smoothness value can blend each band
+    // partway into the next instead of only ever being a hard step -
+    // smoothness 0 reproduces the exact old look (flat plateau covering
+    // the whole band, instant jump at the boundary); 1 blends across the
+    // entire band, reading as a soft, almost-continuous gradient instead
+    // of visible cel-shading steps. LinearFilter (was Nearest) just
+    // antialiases the single-texel-wide jump that's still there at
+    // smoothness 0, rather than adding any softening of its own - at 64
+    // texels that's sub-pixel, not a visible change to the hard-edge look.
+    const TOON_BAND_VALUES = [0, 128, 255];
+    const TOON_GRADIENT_SIZE = 64;
+    function buildToonGradientData(smoothness) {
+        const n = TOON_BAND_VALUES.length;
+        const data = new Uint8Array(TOON_GRADIENT_SIZE);
+        for (let i = 0; i < TOON_GRADIENT_SIZE; i++) {
+            const t = i / (TOON_GRADIENT_SIZE - 1);
+            const scaled = t * n;
+            const bandIndex = Math.min(n - 1, Math.floor(scaled));
+            const localT = scaled - bandIndex;
+            const currentVal = TOON_BAND_VALUES[bandIndex];
+            const nextVal = TOON_BAND_VALUES[Math.min(n - 1, bandIndex + 1)];
+            let blendT = 0;
+            if (smoothness > 0) {
+                const edgeStart = 1 - smoothness; // where the blend-toward-next-band zone starts within this band
+                blendT = localT <= edgeStart ? 0 : (localT - edgeStart) / smoothness;
+            }
+            data[i] = Math.round(THREE.MathUtils.lerp(currentVal, nextVal, blendT));
+        }
+        return data;
+    }
+    window.toonSmoothness = 0.0;
+    const threeTone = new THREE.DataTexture(buildToonGradientData(window.toonSmoothness), TOON_GRADIENT_SIZE, 1, THREE.RedFormat);
     threeTone.needsUpdate = true;
-    threeTone.minFilter = THREE.NearestFilter;
-    threeTone.magFilter = THREE.NearestFilter;
+    threeTone.minFilter = THREE.LinearFilter;
+    threeTone.magFilter = THREE.LinearFilter;
+    // Every MeshToonMaterial in the game shares this one texture by
+    // reference, so rewriting its data in place (instead of building a new
+    // DataTexture each time) updates every material's shading at once.
+    function setToonSmoothness(v) {
+        window.toonSmoothness = v;
+        threeTone.image.data.set(buildToonGradientData(v));
+        threeTone.needsUpdate = true;
+    }
 
     const projectiles = [];
     const shooters = [];
@@ -427,7 +469,7 @@ export function startGame(CharacterClass) {
     // light, not the lighting math itself), so it's cheap to have a second
     // directional source giving depth/rim definition from the side instead
     // of everything being lit from directly overhead.
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 1.0);
     fillLight.position.set(-25, 15, -20);
     fillLight.castShadow = false;
     scene.add(fillLight); scene.add(fillLight.target);
@@ -436,6 +478,16 @@ export function startGame(CharacterClass) {
     window.collidables = collidables;
     const levelGroup = new THREE.Group();
     scene.add(levelGroup);
+
+    // In-game level editor (select/move/rotate/scale/add-shape) - see
+    // level_editor.js and CLAUDE.md for scope. Built eagerly (not lazily on
+    // first activation) so toggling it on is instant, same reasoning as
+    // the pixelation composer above; it's fully inert while
+    // window.editorModeActive is false (see animate()'s own gate below and
+    // LevelEditor's pointerdown guard).
+    window.editorModeActive = false;
+    const levelEditor = new LevelEditor(scene, renderer, levelGroup, collidables);
+    window.levelEditor = levelEditor;
 
     const texLoader = new THREE.TextureLoader();
     const groundTex = texLoader.load('https://media.istockphoto.com/id/865924416/de/vektor/cartoon-rasen.jpg?s=612x612&w=0&k=20&c=RPfx_iiW2SZsn_MinDtdgzJyeCKDbONn8Gn-8CSdg0s=');
@@ -2898,7 +2950,33 @@ export function startGame(CharacterClass) {
     // alone only ever walks now instead of always landing at full run
     // magnitude.
     const keys = { w: false, a: false, s: false, d: false, shift: false };
-    let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = 12, yVelocity = 0;
+    // Tighter than the naive full spherical range [0.1, 3.0] on purpose -
+    // the follow-cam formula down in animate() (targetCamX/Y/Z) scales
+    // its HORIZONTAL offset from the player by sin(cameraPhi), which
+    // shrinks toward 0 as phi approaches either pole. With the old wider
+    // range, tilting the view far up or down swung the camera in close to
+    // directly above/below the player (radius stayed the same, but almost
+    // none of it was horizontal anymore) - reads as the camera suddenly
+    // rushing toward the player. This range still allows a good look up/
+    // down sweep, just stops short of the extremes where that shrink
+    // becomes severe.
+    const CAMERA_PHI_MIN = 0.5, CAMERA_PHI_MAX = 2.6;
+    // Live-tunable via the panel's "Camera" sliders:
+    // - cameraDistance: the normal orbit distance (was a fixed 12, felt
+    //   too far - now adjustable, and also the value cameraRadius starts
+    //   at below).
+    // - cameraCloseStartAngle: how close cameraPhi has to get to either
+    //   CAMERA_PHI_MIN/MAX (in radians) before the follow-cam's horizontal
+    //   distance starts shrinking below its normal sin(phi)-scaled value.
+    //   0 disables the extra shrink entirely (tilting to the clamp limits
+    //   just uses the plain formula, same as before this control existed).
+    // - cameraMinCloseDistance: the horizontal distance it shrinks toward
+    //   right at the clamp limits.
+    // See the targetCamX/Y/Z block in animate() for where these are read.
+    window.cameraDistance = 9.0;
+    window.cameraCloseStartAngle = 0.7;
+    window.cameraMinCloseDistance = 5.0;
+    let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
 
     function setupJoystick(baseId, stickId, inputRef) {
         const base = document.getElementById(baseId), stick = document.getElementById(stickId);
@@ -3309,7 +3387,7 @@ export function startGame(CharacterClass) {
         }
     }
 
-    window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = true; if (e.code === 'Space') handleJump(); if (k === 'l' && window.debugTestLockGroup) revealLockStar(window.debugTestLockGroup); });
+    window.addEventListener('keydown', e => { if (window.editorModeActive) return; const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = true; if (e.code === 'Space') handleJump(); if (k === 'l' && window.debugTestLockGroup) revealLockStar(window.debugTestLockGroup); });
     window.addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = false; });
     document.getElementById('jump-btn').addEventListener('pointerdown', handleJump);
 
@@ -3319,7 +3397,7 @@ export function startGame(CharacterClass) {
         if (e.clientX > window.innerWidth - 200 && e.clientY > window.innerHeight - 200) return;
         if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { isLook = true; lX=e.clientX; lY=e.clientY; } 
     });
-    window.addEventListener('pointermove', e => { if (isLook) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(0.1, Math.min(3.0, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
+    window.addEventListener('pointermove', e => { if (isLook) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
     window.addEventListener('pointerup', () => isLook=false);
     document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { cameraTheta = char.group.rotation.y + Math.PI; cameraPhi = Math.PI/3; });
 
@@ -3354,6 +3432,9 @@ export function startGame(CharacterClass) {
         { id: 'proj-size-slider', vId: 'proj-size-val', func: v => projSize = v, raw: true },
         { id: 'proj-speed-slider', vId: 'proj-speed-val', func: v => projSpeed = v, raw: true },
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
+        { id: 'camera-distance-slider', vId: 'camera-distance-val', func: v => { window.cameraDistance = v; cameraRadius = v; }, fix: 1 },
+        { id: 'camera-close-start-slider', vId: 'camera-close-start-val', func: v => window.cameraCloseStartAngle = v, fix: 2 },
+        { id: 'camera-close-min-slider', vId: 'camera-close-min-val', func: v => window.cameraMinCloseDistance = v, fix: 1 },
         { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
         { id: 'ragdoll-lateral-stiffness-slider', vId: 'ragdoll-lateral-stiffness-val', func: v => window.ragdollLateralStiffness = v },
         { id: 'ragdoll-damping-slider', vId: 'ragdoll-damping-val', func: v => window.ragdollDamping = v },
@@ -3425,11 +3506,169 @@ export function startGame(CharacterClass) {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
 
+    // Reverse of the follow-cam formula a few hundred lines down
+    // (targetCamX/Y/Z from camTarget + cameraRadius/cameraTheta/cameraPhi) -
+    // solves for the orbit angles/radius that reproduce the camera's
+    // CURRENT actual position relative to camTarget. Needed because
+    // "Use Player Camera" editor mode drives window.gameCamera directly via
+    // OrbitControls, leaving cameraTheta/cameraPhi/cameraRadius stale at
+    // whatever they were before entering editor mode - without this,
+    // exiting handed control back to the normal follow-cam lerp (15*delta,
+    // see its own site) chasing an unrelated old orbit position, which
+    // swooped the camera across the level every single time editor mode
+    // turned off instead of continuing smoothly from where it visually was.
+    function resyncCameraFollowFromCurrentPosition() {
+        const dx = camera.position.x - camTarget.x;
+        const dz = camera.position.z - camTarget.z;
+        const dyAdj = camera.position.y - camTarget.y - 1.5;
+        const radiusSinPhi = Math.sqrt(dx * dx + dz * dz);
+        const newRadius = Math.sqrt(radiusSinPhi * radiusSinPhi + dyAdj * dyAdj);
+        if (newRadius > 0.001) {
+            cameraRadius = newRadius;
+            cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, Math.atan2(radiusSinPhi, dyAdj)));
+        }
+        if (radiusSinPhi > 0.001) cameraTheta = Math.atan2(dx, dz);
+    }
+
+    const editorPanelEl = document.getElementById('level-editor-panel');
+    const editorToggleBtnEl = document.getElementById('fullscreen-btn'); // repurposed top-right button, see ClimbGame.html
+    // Single source of truth for showing/hiding the on-screen game
+    // controls (joysticks + action buttons) - the CSS class does the
+    // actual hiding (see body.hide-game-controls in ClimbGame.html); this
+    // just keeps the panel checkbox in sync with it.
+    const editorControlsCb = document.getElementById('toggle-editor-controls');
+    function setGameControlsVisible(visible) {
+        document.body.classList.toggle('hide-game-controls', !visible);
+        if (editorControlsCb) editorControlsCb.checked = visible;
+    }
+    if (editorControlsCb) editorControlsCb.addEventListener('change', e => setGameControlsVisible(e.target.checked));
+    document.getElementById('toggle-editor-mode').addEventListener('change', e => {
+        window.editorModeActive = e.target.checked;
+        if (editorPanelEl) editorPanelEl.style.display = e.target.checked ? 'block' : 'none';
+        if (editorToggleBtnEl) editorToggleBtnEl.classList.toggle('editor-active', e.target.checked);
+        if (e.target.checked) {
+            levelEditor.activate();
+            // Clear the joysticks/buttons out from under your hands while
+            // editing - unchecked by default on entry, per request.
+            setGameControlsVisible(false);
+        } else {
+            if (levelEditor.cameraMode === 'player') resyncCameraFollowFromCurrentPosition();
+            levelEditor.deactivate();
+            // "Use Player Camera" is scoped to an active editing session -
+            // reset it (state + checkbox) on exit so window.gameCamera is
+            // never left associated with the editor's OrbitControls once
+            // you're back to just playing, and re-entering editor mode
+            // later starts from a clean, predictable default rather than
+            // whatever was left over from last time.
+            levelEditor.setCameraMode('free');
+            const playerCamCb = document.getElementById('toggle-editor-player-camera');
+            if (playerCamCb) playerCamCb.checked = false;
+            // Restore the game controls for actually playing again.
+            setGameControlsVisible(true);
+        }
+    });
+    // Dockable panel: collapse/expand just the body, leaving the header
+    // (and its toggle) always visible - same idea as the debug panel's own
+    // #dock-btn, so the panel can be tucked out of the way without exiting
+    // editor mode.
+    const editorDockBtn = document.getElementById('level-editor-dock-btn');
+    const editorHeaderEl = document.getElementById('level-editor-header');
+    if (editorHeaderEl && editorPanelEl) {
+        editorHeaderEl.addEventListener('pointerdown', () => {
+            const docked = editorPanelEl.classList.toggle('docked');
+            if (editorDockBtn) editorDockBtn.textContent = docked ? '▼' : '▲';
+        });
+    }
+    const editorModeBtns = document.querySelectorAll('.editor-mode-btn');
+    editorModeBtns.forEach(btn => {
+        btn.addEventListener('pointerdown', () => {
+            levelEditor.setMode(btn.dataset.mode);
+            editorModeBtns.forEach(b => b.classList.toggle('active', b === btn));
+        });
+    });
+    document.querySelectorAll('.editor-add-btn').forEach(btn => {
+        btn.addEventListener('pointerdown', () => levelEditor.addShape(btn.dataset.shape));
+    });
+    const toggleEditorSnapEl = document.getElementById('toggle-editor-snap');
+    if (toggleEditorSnapEl) {
+        levelEditor.setSnapEnabled(toggleEditorSnapEl.checked);
+        toggleEditorSnapEl.addEventListener('change', e => levelEditor.setSnapEnabled(e.target.checked));
+    }
+    const editorFocusBtnEl = document.getElementById('editor-focus-btn');
+    if (editorFocusBtnEl) editorFocusBtnEl.addEventListener('pointerdown', () => levelEditor.focus());
+    const editorDuplicateBtnEl = document.getElementById('editor-duplicate-btn');
+    if (editorDuplicateBtnEl) editorDuplicateBtnEl.addEventListener('pointerdown', () => levelEditor.duplicate());
+    const editorExportBtnEl = document.getElementById('editor-export-btn');
+    if (editorExportBtnEl) editorExportBtnEl.addEventListener('pointerdown', () => levelEditor.exportGLTF());
+    const toggleEditorWireframeEl = document.getElementById('toggle-editor-wireframe');
+    if (toggleEditorWireframeEl) toggleEditorWireframeEl.addEventListener('change', e => levelEditor.setWireframe(e.target.checked));
+    const toggleEditorPlayerCameraEl = document.getElementById('toggle-editor-player-camera');
+    if (toggleEditorPlayerCameraEl) {
+        levelEditor.setCameraMode(toggleEditorPlayerCameraEl.checked ? 'player' : 'free');
+        toggleEditorPlayerCameraEl.addEventListener('change', e => levelEditor.setCameraMode(e.target.checked ? 'player' : 'free'));
+    }
+
+    // Cut/cap/flip/offset properties panel for the selected shape - only
+    // dim/radius/segment (handled by the 3D shape gizmo, see level_editor.js)
+    // are left out here; everything in CUT_PROP_GROUPS shows as a plain
+    // checkbox/number input instead, same fields Editor.html's own
+    // renderGeometryUI exposes (minus the dim/radius/segment group it
+    // handles separately too).
+    const shapePropsContainer = document.getElementById('shape-props-container');
+    function renderShapePropsPanel(obj) {
+        if (!shapePropsContainer) return;
+        shapePropsContainer.innerHTML = '';
+        if (!obj || !obj.userData.shapeType) { shapePropsContainer.style.display = 'none'; return; }
+        shapePropsContainer.style.display = 'block';
+        const params = obj.userData.params;
+        CUT_PROP_GROUPS.forEach(group => {
+            if (params[group.toggle] === undefined) return;
+            const toggleLabel = document.createElement('label');
+            const toggleCb = document.createElement('input');
+            toggleCb.type = 'checkbox'; toggleCb.checked = !!params[group.toggle];
+            toggleCb.addEventListener('change', () => {
+                levelEditor.setShapeProp(group.toggle, toggleCb.checked);
+                renderShapePropsPanel(obj);
+            });
+            toggleLabel.appendChild(toggleCb);
+            toggleLabel.appendChild(document.createTextNode(' ' + group.toggle));
+            shapePropsContainer.appendChild(toggleLabel);
+            shapePropsContainer.appendChild(document.createElement('br'));
+
+            if (params[group.toggle]) {
+                const sub = document.createElement('div');
+                sub.style.cssText = 'padding-left: 10px; border-left: 1px solid #444; margin: 2px 0 4px 2px;';
+                group.subs.forEach(subKey => {
+                    if (params[subKey] === undefined) return;
+                    const isBool = typeof params[subKey] === 'boolean';
+                    const row = document.createElement('label');
+                    const inp = document.createElement('input');
+                    inp.type = isBool ? 'checkbox' : 'number';
+                    if (isBool) inp.checked = params[subKey]; else { inp.value = params[subKey]; inp.step = '0.1'; inp.style.width = '55px'; }
+                    inp.addEventListener(isBool ? 'change' : 'input', () => {
+                        levelEditor.setShapeProp(subKey, isBool ? inp.checked : parseFloat(inp.value));
+                    });
+                    row.appendChild(inp);
+                    row.appendChild(document.createTextNode(' ' + subKey));
+                    sub.appendChild(row);
+                    sub.appendChild(document.createElement('br'));
+                });
+                shapePropsContainer.appendChild(sub);
+            }
+        });
+    }
+    levelEditor.onSelectionChange = renderShapePropsPanel;
+
     window.toonOutlineEnabled = false;
     window.toonOutlineThickness = 0.02;
     document.getElementById('toggle-toon-outline').addEventListener('change', e => {
         window.toonOutlineEnabled = e.target.checked;
         char.setOutlineEnabled(e.target.checked);
+    });
+    document.getElementById('toon-smoothness-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        setToonSmoothness(v);
+        document.getElementById('toon-smoothness-val').textContent = v.toFixed(2);
     });
     document.getElementById('toon-outline-thickness-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -3573,6 +3812,18 @@ export function startGame(CharacterClass) {
         requestAnimationFrame(animate);
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
+
+        // Editor mode short-circuits the entire rest of this function - it's
+        // one big ~2900-line closure, not decomposed into per-system update
+        // calls, so there's no clean seam to thread a check through every
+        // subsystem individually. Nothing below this (movement, physics,
+        // AI, network sync, the normal render call) runs while active;
+        // LevelEditor owns its own camera/controls/gizmo update and render.
+        if (window.editorModeActive) {
+            levelEditor.update(delta);
+            levelEditor.render();
+            return;
+        }
 
         if (fpsCounterEl && rawDelta > 0) {
             const instFps = 1 / rawDelta;
@@ -3834,7 +4085,7 @@ export function startGame(CharacterClass) {
 
         if (Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05) {
             cameraTheta -= input.right.x * 0.04;
-            cameraPhi = Math.max(0.1, Math.min(3.0, cameraPhi - input.right.y * 0.04));
+            cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi - input.right.y * 0.04));
         }
 
         let lightTrack = _tempVec2.copy(char.group.position);
@@ -5198,6 +5449,66 @@ export function startGame(CharacterClass) {
             char.animate(delta, 'ledge', currentPushS !== 0 ? moveMag : 0, time, 0, currentPushS, justGrabbedLedge);
             justGrabbedLedge = false;
             networkStateName = 'hang_idle';
+
+            // Hand IK: pin each hand onto the actual grabbed surface. The
+            // hang_idle/hang_left/hang_right clips assume one fixed grip
+            // shape which visibly floats or embeds on a rounded/beveled
+            // block edge (the whole reason for this - see the level
+            // editor's radius-adjustable shapes). MUST run here, right
+            // after char.animate('ledge') has posed the skeleton for this
+            // frame - the whole rest of the frame's per-state logic
+            // (including the leg-IK block) lives in the sibling `else`
+            // branch that never executes while hanging, which is exactly
+            // where an earlier version of this wrongly sat and so never
+            // ran at all.
+            //
+            // Targeting: keep EACH hand's own animated X/Z (the hang clip
+            // already spreads/places the hands correctly relative to the
+            // body - moving them to a guessed shared spread instead is what
+            // made the arms look warped/mislocated), and correct ONLY the
+            // height, dropping each hand onto the real surface directly
+            // under it. The downward probe starts from a touch forward of
+            // the hand (toward the wall the character faces) so a hand
+            // sitting right at the front edge still lands on the top
+            // surface rather than shooting the ray straight past the edge
+            // into empty space below. If no surface is found within a
+            // sane band of the hand's current height, that hand's target
+            // is left null - the arm-aim call then leaves that arm's
+            // animated pose alone for the frame rather than yanking it
+            // somewhere wrong.
+            //
+            // Uses applyArmAim (shoulder-only re-aim, keeps the animated
+            // arm shape) by default rather than the full 2-bone applyArmIK
+            // (which warped the arm when its elbow pole was off) - the
+            // whole problem is only a small rounded/beveled-edge float, so
+            // nudging the arm's aim toward the real contact point looks far
+            // more natural than a hard exact solve. window.ledgeHandUseIK
+            // flips back to the full solve if ever wanted.
+            if (char.fbxModel && char.leftHandBone && char.rightHandBone && ledgeTarget.lengthSq() > 0) {
+                // Aim each arm at the ACTUAL grip point on the grabbed
+                // block (ledgeTarget - the surface point the grab/shimmy
+                // logic already computed, so it's a real point ON the
+                // block, not wherever the clip's hand happens to float in
+                // front of a rounded edge). A plain downward probe from the
+                // hand itself misses exactly this case (the floating hand
+                // is in front of the block, so the ray drops past the edge
+                // to the ground). Spread the two aim points left/right of
+                // ledgeTarget along the character's own right axis so the
+                // hands don't converge. Aim (not full IK) keeps the clip's
+                // natural arm shape and just pivots it toward the grip, so
+                // an approximate target can't warp the arm.
+                const rgt = _tempVec1.set(1, 0, 0).applyQuaternion(char.group.quaternion);
+                const spread = window.ledgeHandSpread !== undefined ? window.ledgeHandSpread : 0.45;
+                const yLift = window.ledgeHandGrip !== undefined ? window.ledgeHandGrip : 0.0;
+                const lt = _tempVec2.copy(ledgeTarget).addScaledVector(rgt, -spread); lt.y += yLift;
+                const rt = _tempVec3.copy(ledgeTarget).addScaledVector(rgt, spread); rt.y += yLift;
+                const ikW = window.ledgeHandIKWeight !== undefined ? window.ledgeHandIKWeight : 1.0;
+                if (window.ledgeHandUseIK) char.applyArmIK(lt, rt, ikW);
+                else char.applyArmAim(lt, rt, ikW);
+                window._dbgHangIK = { ran: true, ledgeTargetY: +ledgeTarget.y.toFixed(2), spread };
+            } else {
+                window._dbgHangIK = { ran: false, ledgeTargetLen: +ledgeTarget.lengthSq().toFixed(2) };
+            }
         } else {
             if (isLedgeGrabbing) stamina -= HANG_DRAIN*delta;
             else if (isClimbingSlope) {
@@ -6255,9 +6566,25 @@ export function startGame(CharacterClass) {
         
         camTarget.lerp(trackingPoint, 10 * delta);
 
-        let targetCamX = camTarget.x + cameraRadius * Math.sin(cameraPhi) * Math.sin(cameraTheta);
+        // Horizontal follow distance: normally just the plain sin(phi)-
+        // scaled spherical formula, but blended down toward
+        // cameraMinCloseDistance once cameraPhi gets within
+        // cameraCloseStartAngle of either clamp limit (CAMERA_PHI_MIN/MAX)
+        // - see this block's own declaration comment. closeStartAngle=0
+        // reproduces the old unconditional formula exactly.
+        const rawHorizDist = cameraRadius * Math.sin(cameraPhi);
+        const closeStartAngle = window.cameraCloseStartAngle !== undefined ? window.cameraCloseStartAngle : 0.7;
+        const minCloseDist = window.cameraMinCloseDistance !== undefined ? window.cameraMinCloseDistance : 5.0;
+        const distFromPhiLimit = Math.min(cameraPhi - CAMERA_PHI_MIN, CAMERA_PHI_MAX - cameraPhi);
+        let horizDist = rawHorizDist;
+        if (closeStartAngle > 0 && distFromPhiLimit < closeStartAngle) {
+            const t = Math.max(0, distFromPhiLimit) / closeStartAngle;
+            horizDist = THREE.MathUtils.lerp(minCloseDist, rawHorizDist, t);
+        }
+
+        let targetCamX = camTarget.x + horizDist * Math.sin(cameraTheta);
         let targetCamY = Math.max(floorY + 0.5, camTarget.y + cameraRadius * Math.cos(cameraPhi) + 1.5);
-        let targetCamZ = camTarget.z + cameraRadius * Math.sin(cameraPhi) * Math.cos(cameraTheta);
+        let targetCamZ = camTarget.z + horizDist * Math.cos(cameraTheta);
 
         camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
         camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
@@ -6289,6 +6616,7 @@ export function startGame(CharacterClass) {
         // inspection (e.g. via Playwright) while chasing ledge-grab
         // reach reports. Cheap (plain property writes), fine to leave.
         window._dbgIsGrounded = isGrounded;
+        window._dbgCameraPhi = cameraPhi;
         window._dbgYVelocity = yVelocity;
         window._dbgIsLedgeGrabbing = isLedgeGrabbing;
         window._dbgIsClimbingUp = isClimbingUp;
@@ -6479,6 +6807,7 @@ if (leftArrow) {
         camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
         composer.setSize(window.innerWidth, window.innerHeight);
         updateOrthoFrustum();
+        levelEditor.camera.aspect = window.innerWidth/window.innerHeight; levelEditor.camera.updateProjectionMatrix();
     }
     window.addEventListener('resize', handleViewportResize);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', handleViewportResize);

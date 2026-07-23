@@ -40,7 +40,35 @@
 
         #fullscreen-btn { position: absolute; top: 55px; right: 10px; width: 34px; height: 34px; padding: 0; background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3); border-radius: 4px; cursor: pointer; z-index: 100; display: flex; align-items: center; justify-content: center; }
         #fullscreen-btn:active { background: rgba(0, 0, 0, 0.7); }
+        #fullscreen-btn.editor-active { background: rgba(0, 150, 255, 0.7); border-color: rgba(255, 255, 255, 0.6); }
         #fullscreen-btn svg { width: 18px; height: 18px; fill: white; pointer-events: none; }
+
+        #level-editor-panel {
+            position: fixed; top: 95px; right: 10px; width: 240px; z-index: 100;
+            background: rgba(0,0,0,0.85); color: #fff; font-family: monospace; font-size: 12px;
+            border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
+            max-height: calc(100vh - 110px); box-sizing: border-box;
+        }
+        #level-editor-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; cursor: pointer; user-select: none; }
+        #level-editor-header span { font-weight: bold; }
+        #level-editor-dock-btn { background: none; border: none; color: #fff; font-size: 14px; cursor: pointer; padding: 0 4px; }
+        #level-editor-body { padding: 0 10px 10px; overflow-y: auto; max-height: calc(100vh - 150px); }
+        #level-editor-panel.docked #level-editor-body { display: none; }
+        #level-editor-panel button { font-family: monospace; font-size: 11px; padding: 6px 2px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; }
+        #level-editor-panel button:active, #level-editor-panel button.active { background: rgba(0, 150, 255, 0.7); border-color: rgba(255,255,255,0.6); }
+        #level-editor-body label { display: block; margin: 3px 0; }
+        /* Set on <body> while editing to clear the on-screen game controls
+           (joysticks + action buttons) out from under your hands - toggled
+           by the panel's own "Show Game Controls" checkbox. */
+        body.hide-game-controls #base-left,
+        body.hide-game-controls #base-right,
+        body.hide-game-controls #jump-btn,
+        body.hide-game-controls #build-btn,
+        body.hide-game-controls #hold-btn,
+        body.hide-game-controls #carry-btn,
+        body.hide-game-controls #drop-btn,
+        body.hide-game-controls #throw-btn,
+        body.hide-game-controls #punch-btn { display: none !important; }
 
         .joystick-base { position: absolute; bottom: 30px; width: 120px; height: 120px; background: rgba(255, 255, 255, 0.1); border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.3); display: flex; justify-content: center; align-items: center; touch-action: none; z-index: 10; }
         #base-left { left: 30px; } #base-right { right: 30px; }
@@ -179,9 +207,46 @@
             <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Multiplayer/ConnectedIcon.png" alt="Connected">
         </span>
     </button>
-    <button id="fullscreen-btn" title="Fullscreen">
-        <svg id="fullscreen-icon" viewBox="0 0 24 24"><path d="M4 4h6V2H2v8h2V4zm14 0v6h2V2h-8v2h6zM4 14H2v8h8v-2H4v-6zm14 6h-6v2h8v-8h-2v6z"/></svg>
+    <button id="fullscreen-btn" title="Level Editor">
+        <svg id="fullscreen-icon" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
     </button>
+
+    <!-- Standalone Level Editor toolbar - separate from the collapsible
+         #ui debug panel entirely (that panel isn't practically reachable
+         on mobile). Shown/hidden by the same 'toggle-editor-mode' checkbox
+         change handler in game_js.js that drives everything else about
+         entering/exiting editor mode. -->
+    <div id="level-editor-panel" style="display: none;">
+        <div id="level-editor-header">
+            <span>Level Editor</span>
+            <button id="level-editor-dock-btn" title="Collapse / expand panel">▲</button>
+        </div>
+        <div id="level-editor-body">
+            <label><input type="checkbox" id="toggle-editor-wireframe"> Wireframe</label>
+            <label><input type="checkbox" id="toggle-editor-player-camera"> Use Player Camera</label>
+            <label><input type="checkbox" id="toggle-editor-snap" checked> Snap to Surface</label>
+            <label><input type="checkbox" id="toggle-editor-controls"> Show Game Controls</label>
+            <div style="display: flex; gap: 4px; margin-bottom: 4px;">
+                <button class="editor-mode-btn active" data-mode="translate" style="flex:1;">Move</button>
+                <button class="editor-mode-btn" data-mode="rotate" style="flex:1;">Rotate</button>
+                <button class="editor-mode-btn" data-mode="scale" style="flex:1;">Scale</button>
+                <button class="editor-mode-btn" data-mode="shape" style="flex:1;">Shape</button>
+            </div>
+            <div style="display: flex; gap: 4px; margin-bottom: 6px;">
+                <button id="editor-focus-btn" style="flex:1;">Focus</button>
+                <button id="editor-duplicate-btn" style="flex:1;">Duplicate</button>
+            </div>
+            <div style="display: flex; gap: 4px;">
+                <button class="editor-add-btn" data-shape="box" style="flex:1;">+ Box</button>
+                <button class="editor-add-btn" data-shape="sphere" style="flex:1;">+ Sphere</button>
+                <button class="editor-add-btn" data-shape="cyl" style="flex:1;">+ Cylinder</button>
+                <button class="editor-add-btn" data-shape="cone" style="flex:1;">+ Cone</button>
+                <button class="editor-add-btn" data-shape="torus" style="flex:1;">+ Torus</button>
+            </div>
+            <button id="editor-export-btn" style="width: 100%; margin-top: 6px;">Export Level (.glb)</button>
+            <div id="shape-props-container" style="display: none; margin-top: 8px; font-size: 11px;"></div>
+        </div>
+    </div>
 
     <div id="ui" class="collapsed">
         <button id="dock-btn">▶</button>
@@ -192,6 +257,18 @@
                     <label>Select Level:</label><br>
                     <select id="level-select" style="width: 100%; margin-bottom: 10px; color: black;"></select><br>
                     <button id="btn-show-json" style="width: 100%; padding: 5px; color: black;">Import/Export JSON</button>
+                </div>
+            </div>
+
+            <div class="category">
+                <div class="category-header">Camera</div>
+                <div class="category-content">
+                    <label>Distance: <span id="camera-distance-val">9.0</span></label><br>
+                    <input type="range" id="camera-distance-slider" min="3.0" max="20.0" step="0.5" value="9.0" style="width: 100%;"><br>
+                    <label>Close-In Start Angle: <span id="camera-close-start-val">0.70</span></label><br>
+                    <input type="range" id="camera-close-start-slider" min="0.0" max="1.5" step="0.05" value="0.70" style="width: 100%;"><br>
+                    <label>Close-In Min Distance: <span id="camera-close-min-val">5.0</span></label><br>
+                    <input type="range" id="camera-close-min-slider" min="1.0" max="15.0" step="0.5" value="5.0" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -301,16 +378,25 @@
             </div>
 
             <div class="category">
+                <div class="category-header">Level Editor</div>
+                <div class="category-content">
+                    <label><input type="checkbox" id="toggle-editor-mode"> Enable Editor Mode</label><br>
+                </div>
+            </div>
+
+            <div class="category">
                 <div class="category-header">Shader Test</div>
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-toon-outline"> Cell + Outline</label><br>
+                    <label>Cell Shading Smoothness: <span id="toon-smoothness-val">0.00</span></label><br>
+                    <input type="range" id="toon-smoothness-slider" min="0.0" max="1.0" step="0.05" value="0.00" style="width: 100%;"><br>
                     <label>Outline Thickness: <span id="toon-outline-thickness-val">0.02</span></label><br>
                     <input type="range" id="toon-outline-thickness-slider" min="0.0" max="0.08" step="0.005" value="0.02" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-phong-lambert"> Phong (dynamic) / Lambert (static)</label><br>
                     <label>Light Intensity: <span id="light-intensity-val">1.00</span></label><br>
                     <input type="range" id="light-intensity-slider" min="0.0" max="3.0" step="0.05" value="1.00" style="width: 100%;"><br>
-                    <label>Fill Light Intensity: <span id="fill-light-intensity-val">0.40</span></label><br>
-                    <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="0.40" style="width: 100%;"><br>
+                    <label>Fill Light Intensity: <span id="fill-light-intensity-val">1.00</span></label><br>
+                    <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-pixel-effect"> Pixelate (postprocessing)</label><br>
                     <label>Pixel Size: <span id="pixel-size-val">6</span></label><br>
                     <input type="range" id="pixel-size-slider" min="1" max="16" step="1" value="6" style="width: 100%;"><br>
@@ -1695,6 +1781,21 @@
                     this.lLowerLegLen = boneWorldDist(this.lKneeBone, this.lFootBone);
                     this.rUpperLegLen = boneWorldDist(this.rThighBone, this.rKneeBone);
                     this.rLowerLegLen = boneWorldDist(this.rKneeBone, this.rFootBone);
+
+                    // Arm IK chain, same purpose/pattern as the leg one just
+                    // above (applyArmIK, used while ledge-hanging to plant
+                    // each hand on the actual grabbed surface instead of
+                    // wherever the fixed hang clip alone leaves it - never
+                    // accounted for a rounded/beveled ledge edge).
+                    // lShoulderBone/lElbowBone/rElbowBone are new; rShoulderBone
+                    // and both hand bones already exist above for other uses.
+                    this.lShoulderBone = findBone('leftarm') || findBone('leftshoulder');
+                    this.lElbowBone = findBone('leftforearm');
+                    this.rElbowBone = findBone('rightforearm');
+                    this.lUpperArmLen = boneWorldDist(this.lShoulderBone, this.lElbowBone);
+                    this.lLowerArmLen = boneWorldDist(this.lElbowBone, this.leftHandBone);
+                    this.rUpperArmLen = boneWorldDist(this.rShoulderBone, this.rElbowBone);
+                    this.rLowerArmLen = boneWorldDist(this.rElbowBone, this.rightHandBone);
 
                     const keyBones = [
                         { id: 'hips', bone: this.hips, radius: 0.18, length: 0.15 },
@@ -3256,31 +3357,28 @@ import { startGame } from './game_js.js';
             window.multiplayerClient.connect(url);
         });
 
-        // Mobile browsers can shift the page's visual viewport upward once the
-        // on-screen keyboard used to type the server address closes (address
-        // bar/chrome not reclaiming its space right away), pushing fixed HUD
-        // buttons like #hud-connect-btn off the top of the screen. Fullscreen
-        // removes that browser chrome entirely so there's nothing to shift.
+        // Repurposed from a fullscreen toggle to a one-tap Level Editor
+        // toggle - the debug panel's own "Enable Editor Mode" checkbox
+        // (inside a collapsed side panel meant for desktop debugging) isn't
+        // practically reachable on mobile, so this always-visible top-right
+        // button drives the exact same checkbox/change-event path instead
+        // of duplicating its on/off logic (panel show/hide, camera resync,
+        // etc. - see game_js.js's own 'toggle-editor-mode' listener).
         const fullscreenBtn = document.getElementById('fullscreen-btn');
-        const fullscreenIcon = document.getElementById('fullscreen-icon');
-        const EXPAND_PATH = 'M4 4h6V2H2v8h2V4zm14 0v6h2V2h-8v2h6zM4 14H2v8h8v-2H4v-6zm14 6h-6v2h8v-8h-2v6z';
-        const COMPRESS_PATH = 'M8 4H2v2h6V4zm0 14H2v2h6v-2zM22 6V4h-6v2h6zM16 18v2h6v-2h-6zM10 2H8v6H2v2h8V2zm4 8h8V8h-6V2h-2v8zM2 14v2h6v6h2v-8H2zm12 8h2v-6h6v-2h-8v8z';
 
-        function updateFullscreenIcon() {
-            if (!fullscreenIcon) return;
-            fullscreenIcon.querySelector('path').setAttribute('d', document.fullscreenElement ? COMPRESS_PATH : EXPAND_PATH);
+        function updateEditorToggleBtn() {
+            if (fullscreenBtn) fullscreenBtn.classList.toggle('editor-active', !!window.editorModeActive);
         }
 
         if (fullscreenBtn) {
             fullscreenBtn.addEventListener('pointerdown', (e) => {
                 e.stopPropagation();
-                if (!document.fullscreenElement) {
-                    document.documentElement.requestFullscreen().catch(() => {});
-                } else {
-                    document.exitFullscreen().catch(() => {});
-                }
+                const cb = document.getElementById('toggle-editor-mode');
+                if (!cb) return;
+                cb.checked = !cb.checked;
+                cb.dispatchEvent(new Event('change'));
+                updateEditorToggleBtn();
             });
-            document.addEventListener('fullscreenchange', updateFullscreenIcon);
         }
 // Service Worker Registration
 if ('serviceWorker' in navigator) {

@@ -21,6 +21,8 @@ const _ikParentWorldQuat = new THREE.Quaternion();
 const _ikBoneWorldQuat = new THREE.Quaternion();
 const _ikNewWorldQuat = new THREE.Quaternion();
 const _legPoleWorldDir = new THREE.Vector3();
+const _armPoleScratch = new THREE.Vector3();
+const _armRightScratch = new THREE.Vector3();
 
 export const LegIK = {
     // Rotates `bone` so its WORLD orientation becomes
@@ -132,5 +134,65 @@ export const LegIK = {
         _legPoleWorldDir.set(0, 0, 1).applyQuaternion(this.group.quaternion);
         if (leftTarget) this.solveLegIK(this.lThighBone, this.lKneeBone, this.lFootBone, this.lUpperLegLen, this.lLowerLegLen, leftTarget, weight);
         if (rightTarget) this.solveLegIK(this.rThighBone, this.rKneeBone, this.rFootBone, this.rUpperLegLen, this.rLowerLegLen, rightTarget, weight);
+    },
+
+    // Same solve, same shared pole-direction scratch as applyLegIK above -
+    // reusing it here is safe since the two are never called in the same
+    // frame (leg IK is explicitly gated off while ledge-hanging, arm IK is
+    // only used during it - see game_js.js's own call sites). leftTarget/
+    // rightTarget: world-space point on the actual grabbed surface for
+    // each hand, or null to leave that arm's animated hang pose untouched
+    // for the frame (e.g. no valid surface found directly above/below that
+    // specific hand's current position).
+    applyArmIK(leftTarget, rightTarget, weight = 1.0) {
+        if (!this.fbxModel) return;
+        // Pole direction = where the ELBOW should bulge. Legs reuse a plain
+        // "forward" pole (knees bend forward), but an arm reaching UP to a
+        // ledge that way bends the elbow forward INTO the wall, which reads
+        // as the whole arm twisting/warping ("çarp"). A hanging arm's elbow
+        // instead points down-and-outward (left arm out to the left, right
+        // arm out to the right) - built per-arm below from the character's
+        // own world right axis plus a downward component. Down is kept the
+        // smaller term so there's always a solid outward component left
+        // after solveLegIK flattens the pole perpendicular to the (mostly
+        // vertical) shoulder->hand direction, avoiding the degenerate
+        // near-antiparallel case.
+        _armRightScratch.set(1, 0, 0).applyQuaternion(this.group.quaternion);
+        if (leftTarget) {
+            _legPoleWorldDir.copy(_armRightScratch).multiplyScalar(-1.0).add(_armPoleScratch.set(0, -0.6, 0)).normalize();
+            this.solveLegIK(this.lShoulderBone, this.lElbowBone, this.leftHandBone, this.lUpperArmLen, this.lLowerArmLen, leftTarget, weight);
+        }
+        if (rightTarget) {
+            _legPoleWorldDir.copy(_armRightScratch).add(_armPoleScratch.set(0, -0.6, 0)).normalize();
+            this.solveLegIK(this.rShoulderBone, this.rElbowBone, this.rightHandBone, this.rUpperArmLen, this.rLowerArmLen, rightTarget, weight);
+        }
+    },
+
+    // Lighter alternative to applyArmIK: instead of a full 2-bone solve
+    // (which needs a correct elbow pole and warps the arm if that's off),
+    // just re-aim each whole arm at its grip target by rotating ONLY the
+    // shoulder so the shoulder->hand line points at the target. The
+    // forearm/elbow keep their animated bend relative to the upper arm, so
+    // the arm keeps the hang clip's natural shape and only pivots to reach
+    // - no pole vector, nothing to warp. The hand lands near (not exactly
+    // on) the target, which is all the rounded/beveled-edge float actually
+    // needs. weight blends the aim in from the animated pose.
+    _aimArmAt(shoulderBone, handBone, targetWorldPos, weight) {
+        if (!shoulderBone || !handBone) return;
+        const shoulderPos = _ikVec1; shoulderBone.getWorldPosition(shoulderPos);
+        const handPos = _ikVec2; handBone.getWorldPosition(handPos);
+        const curDir = _ikVec3.copy(handPos).sub(shoulderPos);
+        const tgtDir = _ikVec4.copy(targetWorldPos).sub(shoulderPos);
+        if (curDir.lengthSq() < 1e-8 || tgtDir.lengthSq() < 1e-8) return;
+        curDir.normalize(); tgtDir.normalize();
+        _ikQuat1.setFromUnitVectors(curDir, tgtDir);
+        this.applyWorldDeltaRotation(shoulderBone, _ikQuat1, weight);
+        shoulderBone.updateMatrixWorld(true);
+    },
+
+    applyArmAim(leftTarget, rightTarget, weight = 1.0) {
+        if (!this.fbxModel) return;
+        if (leftTarget) this._aimArmAt(this.lShoulderBone, this.leftHandBone, leftTarget, weight);
+        if (rightTarget) this._aimArmAt(this.rShoulderBone, this.rightHandBone, rightTarget, weight);
     }
 };
