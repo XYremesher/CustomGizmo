@@ -523,6 +523,31 @@ export function startGame(CharacterClass) {
     // button) so it doesn't wander into every normal test session uninvited.
     let aiBot = null;
     const AI_WANDER_SPEED = 5.0, AI_CHASE_SPEED = 6.5;
+
+    // ---- Companion ----
+    // HYBRID follower:
+    //  - FOLLOW (manual): walks toward the player and stands near, distance-
+    //    based so a pure turn doesn't swing it around, Y hugs the ground
+    //    (falls to follow you down, small step-up for ramps). This is the
+    //    normal "stay near me" behaviour.
+    //  - CLIMB (breadcrumb REPLAY): we always record the player's pose+anim
+    //    state into a trail; when the companion is stuck below a wall the
+    //    player just climbed, it replays that recorded climb segment - your
+    //    real ledge motion, frame-for-frame - to get up the same wall. No
+    //    geometry AI, no flying. And it won't top out while the player is
+    //    standing on the exact spot it would emerge (waits until you move).
+    let companion = null;
+    const COMP_FOLLOW_DIST = 1.8;   // manual-follow stand-off distance
+    const COMP_TRAIL_KEEP = 5.0;    // seconds of trail kept (must cover a climb)
+    const _compTrail = [];          // {t,x,y,z,qx,qy,qz,qw,state}
+    let _compTrailT = 0;
+    let _compMode = 'follow';       // 'follow' | 'replay'
+    let _replayStartT = 0, _replayT = 0;
+    const _compFaceEuler = new THREE.Euler();
+    const _compFaceQuat = new THREE.Quaternion();
+    const _compGroundOrigin = new THREE.Vector3();
+    const _compGroundList = [];
+    window.companionEnabled = true;
     const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     const aiBotState = {
@@ -849,6 +874,130 @@ export function startGame(CharacterClass) {
         if (spawnBtn) spawnBtn.style.display = 'block';
         if (despawnBtn) despawnBtn.style.display = 'none';
         if (statusEl) statusEl.textContent = 'not spawned';
+    }
+
+    function spawnCompanion() {
+        if (companion) return;
+        companion = new RemoteAvatar(scene, threeTone, 'companion');
+        window.companion = companion;
+        companion.group.position.copy(char.group.position);
+    }
+
+    // Highest solid surface under (x,z) (falls back to fallbackY on a miss).
+    // Casts against _compGroundList, rebuilt once per updateCompanion frame.
+    function companionGroundY(x, z, fallbackY) {
+        _compGroundOrigin.set(x, Math.max(fallbackY, char.group.position.y) + 3.0, z);
+        rayDown.set(_compGroundOrigin, _downVec);
+        const hits = rayDown.intersectObjects(_compGroundList, true);
+        return hits.length ? hits[0].point.y : fallbackY;
+    }
+
+    function updateCompanion(delta) {
+        if (!window.companionEnabled) { if (companion) companion.group.visible = false; return; }
+        if (!companion) spawnCompanion();
+        if (!companion) return;
+        if (!companion.isLoaded) { companion.update(delta); return; }
+        companion.group.visible = true;
+        if (companion.isRagdoll || companion.isStandingUp) { companion.update(delta); return; }
+
+        // Ground-cast list for this frame's rays.
+        _compGroundList.length = 0;
+        for (let i = 0; i < collidables.length; i++) _compGroundList.push(collidables[i]);
+        _compGroundList.push(ground);
+
+        // Always record the player's exact pose + anim state into the trail.
+        const p = char.group.position, q = char.group.quaternion;
+        const c = companion.group.position;
+        _compTrailT += delta;
+        const last = _compTrail.length ? _compTrail[_compTrail.length - 1] : null;
+        if (last && Math.hypot(p.x - last.x, p.y - last.y, p.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
+        _compTrail.push({ t: _compTrailT, x: p.x, y: p.y, z: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
+        while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
+
+        const gy = companionGroundY(c.x, c.z, c.y);
+        const playerElevated = isGrounded && !isLedgeGrabbing && !isClimbingUp && (p.y - gy) > 1.0;
+
+        // ---- CLIMB (breadcrumb replay) ----
+        if (_compMode === 'replay') {
+            _replayT += delta;
+            const endCr = _compTrail[_compTrail.length - 1];
+            const wantT = _replayStartT + _replayT;
+            let cr = endCr;
+            for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t >= wantT) { cr = _compTrail[i]; break; } }
+            // About to top out onto the exact spot the player is standing? Hang
+            // and wait until they move (bodies can't share the spot).
+            const toppingOut = cr.y >= p.y - 0.6;
+            const blocked = toppingOut && Math.hypot(cr.x - p.x, cr.z - p.z) < 0.9;
+            if (blocked) {
+                _replayT -= delta; // freeze the replay
+                let hangCr = cr;
+                for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t <= wantT && _compTrail[i].y <= p.y - 1.2) hangCr = _compTrail[i]; }
+                companion.group.position.set(hangCr.x, hangCr.y, hangCr.z);
+                companion.group.quaternion.set(hangCr.qx, hangCr.qy, hangCr.qz, hangCr.qw);
+                companion.setNetworkState([hangCr.x, hangCr.y, hangCr.z], [hangCr.qx, hangCr.qy, hangCr.qz, hangCr.qw], 'hang_idle', false);
+                companion.update(delta);
+                return;
+            }
+            companion.group.position.set(cr.x, cr.y, cr.z);
+            companion.group.quaternion.set(cr.qx, cr.qy, cr.qz, cr.qw);
+            companion.setNetworkState([cr.x, cr.y, cr.z], [cr.qx, cr.qy, cr.qz, cr.qw], cr.state, false);
+            companion.update(delta);
+            if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow'; // topped out / trail end
+            return;
+        }
+
+        // Below a wall the player just climbed: walk precisely to the takeoff
+        // spot (nearest trail crumb at our own height), then replay the recorded
+        // climb from there. If no such crumb exists (player didn't actually
+        // climb here), fall through to normal follow and just wait below.
+        if (playerElevated && (p.y - c.y) > 1.0) {
+            let bi = -1, bd = Infinity;
+            for (let i = 0; i < _compTrail.length; i++) {
+                const cr = _compTrail[i];
+                if (Math.abs(cr.y - c.y) > 0.8) continue;          // only crumbs at our (base) height
+                const d = (cr.x - c.x) * (cr.x - c.x) + (cr.z - c.z) * (cr.z - c.z);
+                if (d < bd) { bd = d; bi = i; }
+            }
+            if (bi >= 0) {
+                const tk = _compTrail[bi];
+                const dTk = Math.hypot(tk.x - c.x, tk.z - c.z);
+                if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; return; }
+                // Walk to the takeoff spot.
+                const s = Math.min(dTk, 7.5 * delta);
+                const nx = c.x + (tk.x - c.x) / dTk * s, nz = c.z + (tk.z - c.z) / dTk * s;
+                const gyH = companionGroundY(nx, nz, c.y);
+                let ny = c.y; const dyy = gyH - c.y;
+                if (dyy < -0.05) ny += Math.max(dyy, -16 * delta); else if (dyy > 0.05 && dyy < 0.9) ny += Math.min(dyy, 6 * delta);
+                _compFaceEuler.set(0, Math.atan2(tk.x - c.x, tk.z - c.z), 0);
+                _compFaceQuat.setFromEuler(_compFaceEuler);
+                const mv = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
+                companion.group.position.set(nx, ny, nz);
+                companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], mv > 3.5 ? 'run' : (mv > 0.4 ? 'walk' : 'idle'), false);
+                companion.update(delta);
+                return;
+            }
+        }
+
+        // ---- FOLLOW (manual, distance-based) ----
+        let dirx = c.x - p.x, dirz = c.z - p.z; let len = Math.hypot(dirx, dirz);
+        if (len < 0.001) { dirx = 0; dirz = 1; len = 1; }
+        dirx /= len; dirz /= len;
+        let tgx = p.x + dirx * COMP_FOLLOW_DIST, tgz = p.z + dirz * COMP_FOLLOW_DIST;
+        if (playerElevated && (p.y - c.y) < 1.0) { tgx = p.x + dirx * 0.9; tgz = p.z + dirz * 0.9; } // up on the block: hug close
+        const toX = tgx - c.x, toZ = tgz - c.z; const h = Math.hypot(toX, toZ);
+        let nx = c.x, nz = c.z;
+        if (h > 1e-4) { const s = Math.min(h, 7.5 * delta); nx += (toX / h) * s; nz += (toZ / h) * s; }
+        const gyHere = companionGroundY(nx, nz, c.y);
+        let ny = c.y; const dy = gyHere - c.y;
+        if (dy < -0.05) ny += Math.max(dy, -16 * delta);            // fall to follow down
+        else if (dy > 0.05 && dy < 0.9) ny += Math.min(dy, 6 * delta); // small step up (ramps); taller = replay's job
+        _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+        _compFaceQuat.setFromEuler(_compFaceEuler);
+        const movedH = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
+        const st = movedH > 3.5 ? 'run' : (movedH > 0.4 ? 'walk' : 'idle');
+        companion.group.position.set(nx, ny, nz);
+        companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
+        companion.update(delta);
     }
 
     const aiBotSpawnBtn = document.getElementById('ai-bot-spawn-btn');
@@ -3552,17 +3701,15 @@ export function startGame(CharacterClass) {
             // editing - unchecked by default on entry, per request.
             setGameControlsVisible(false);
         } else {
+            // On exit, if editing was through the player camera, hand it
+            // back to gameplay's follow-cam FROM WHERE THE EDITOR LEFT IT
+            // (resync reverse-solves the orbit angles from the camera's
+            // current position) so the view stays put instead of snapping.
+            // Player-camera mode is left ON (checkbox stays checked) per
+            // request - so this continuity holds and re-entering the editor
+            // resumes from the same spot rather than a detached free cam.
             if (levelEditor.cameraMode === 'player') resyncCameraFollowFromCurrentPosition();
             levelEditor.deactivate();
-            // "Use Player Camera" is scoped to an active editing session -
-            // reset it (state + checkbox) on exit so window.gameCamera is
-            // never left associated with the editor's OrbitControls once
-            // you're back to just playing, and re-entering editor mode
-            // later starts from a clean, predictable default rather than
-            // whatever was left over from last time.
-            levelEditor.setCameraMode('free');
-            const playerCamCb = document.getElementById('toggle-editor-player-camera');
-            if (playerCamCb) playerCamCb.checked = false;
             // Restore the game controls for actually playing again.
             setGameControlsVisible(true);
         }
@@ -3579,27 +3726,100 @@ export function startGame(CharacterClass) {
             if (editorDockBtn) editorDockBtn.textContent = docked ? '▼' : '▲';
         });
     }
+    // Multi-select select icon (4 squares) vs single-select cursor arrow,
+    // swapped in when the already-active Select button is clicked again.
+    const SELECT_ICON_MULTI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>';
+    const SELECT_ICON_SINGLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path></svg>';
     const editorModeBtns = document.querySelectorAll('.editor-mode-btn');
     editorModeBtns.forEach(btn => {
         btn.addEventListener('pointerdown', () => {
+            // Re-clicking the already-active Select button toggles its
+            // single/multi sub-mode instead of re-entering select mode.
+            if (btn.dataset.mode === 'select' && btn.classList.contains('active')) {
+                const multi = levelEditor.toggleMultiSelect();
+                btn.innerHTML = multi ? SELECT_ICON_MULTI : SELECT_ICON_SINGLE;
+                btn.title = multi ? 'Multi-Select (click again for Single)' : 'Single-Select (click again for Multi)';
+                return;
+            }
             levelEditor.setMode(btn.dataset.mode);
             editorModeBtns.forEach(b => b.classList.toggle('active', b === btn));
         });
     });
-    document.querySelectorAll('.editor-add-btn').forEach(btn => {
-        btn.addEventListener('pointerdown', () => levelEditor.addShape(btn.dataset.shape));
+    // Inline dropdown panels (gear/add/prefab/export/props) live in the
+    // panel body - a .editor-panel-toggle button shows its own panel and
+    // hides every other, and marks itself active. Clicking the same toggle
+    // again closes its panel. No off-screen floating.
+    const editorPanelToggles = document.querySelectorAll('.editor-panel-toggle');
+    const closeAllEditorPanels = (exceptId) => editorPanelToggles.forEach(t => {
+        const p = document.getElementById(t.dataset.panel);
+        if (t.dataset.panel !== exceptId) { if (p) p.style.display = 'none'; t.classList.remove('active'); }
     });
-    const toggleEditorSnapEl = document.getElementById('toggle-editor-snap');
-    if (toggleEditorSnapEl) {
-        levelEditor.setSnapEnabled(toggleEditorSnapEl.checked);
-        toggleEditorSnapEl.addEventListener('change', e => levelEditor.setSnapEnabled(e.target.checked));
+    editorPanelToggles.forEach(t => {
+        t.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            const p = document.getElementById(t.dataset.panel);
+            if (!p) return;
+            const willOpen = p.style.display === 'none';
+            closeAllEditorPanels(t.dataset.panel);
+            p.style.display = willOpen ? 'block' : 'none';
+            t.classList.toggle('active', willOpen);
+        });
+    });
+    // Add-object: each shape button adds its shape; closes the add panel
+    // afterwards UNLESS the pin is active (series-add mode).
+    const editorAddPinEl = document.getElementById('editor-add-pin');
+    if (editorAddPinEl) editorAddPinEl.addEventListener('pointerdown', (e) => { e.stopPropagation(); editorAddPinEl.classList.toggle('active'); });
+    document.querySelectorAll('.editor-add-btn').forEach(btn => {
+        btn.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            levelEditor.addShape(btn.dataset.shape);
+            if (!(editorAddPinEl && editorAddPinEl.classList.contains('active'))) closeAllEditorPanels();
+        });
+    });
+    // Export panel: Level vs Selection.
+    const exportLevelBtn = document.getElementById('export-level-btn');
+    if (exportLevelBtn) exportLevelBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); levelEditor.exportGLTF(false); closeAllEditorPanels(); });
+    const exportSelectionBtn = document.getElementById('export-selection-btn');
+    if (exportSelectionBtn) exportSelectionBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); levelEditor.exportGLTF(true); closeAllEditorPanels(); });
+    // Snap toggle button (moved out of the gear settings onto the toolbar).
+    const editorSnapBtnEl = document.getElementById('editor-snap-btn');
+    if (editorSnapBtnEl) {
+        levelEditor.setSnapEnabled(editorSnapBtnEl.classList.contains('active'));
+        editorSnapBtnEl.addEventListener('pointerdown', () => {
+            const on = !editorSnapBtnEl.classList.contains('active');
+            editorSnapBtnEl.classList.toggle('active', on);
+            levelEditor.setSnapEnabled(on);
+        });
+    }
+    // World / Local gizmo space toggle (button label flips WLD<->LCL).
+    const editorSpaceBtnEl = document.getElementById('editor-space-btn');
+    if (editorSpaceBtnEl) {
+        editorSpaceBtnEl.addEventListener('pointerdown', () => {
+            const nowLocal = levelEditor.gizmo.config.space !== 'local';
+            levelEditor.gizmo.setSpace(nowLocal ? 'local' : 'world');
+            editorSpaceBtnEl.textContent = nowLocal ? 'LCL' : 'WLD';
+        });
     }
     const editorFocusBtnEl = document.getElementById('editor-focus-btn');
     if (editorFocusBtnEl) editorFocusBtnEl.addEventListener('pointerdown', () => levelEditor.focus());
     const editorDuplicateBtnEl = document.getElementById('editor-duplicate-btn');
     if (editorDuplicateBtnEl) editorDuplicateBtnEl.addEventListener('pointerdown', () => levelEditor.duplicate());
-    const editorExportBtnEl = document.getElementById('editor-export-btn');
-    if (editorExportBtnEl) editorExportBtnEl.addEventListener('pointerdown', () => levelEditor.exportGLTF());
+    const editorGroupBtnEl = document.getElementById('editor-group-btn');
+    if (editorGroupBtnEl) editorGroupBtnEl.addEventListener('pointerdown', () => levelEditor.group());
+    const editorUngroupBtnEl = document.getElementById('editor-ungroup-btn');
+    if (editorUngroupBtnEl) editorUngroupBtnEl.addEventListener('pointerdown', () => levelEditor.ungroup());
+    const outlineStrengthEl = document.getElementById('outline-strength-slider');
+    if (outlineStrengthEl) outlineStrengthEl.addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        levelEditor.outlinePass.edgeStrength = v;
+        document.getElementById('outline-strength-val').textContent = v.toFixed(1);
+    });
+    const outlineThicknessEl = document.getElementById('outline-thickness-slider');
+    if (outlineThicknessEl) outlineThicknessEl.addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        levelEditor.outlinePass.edgeThickness = v;
+        document.getElementById('outline-thickness-val').textContent = v.toFixed(1);
+    });
     const toggleEditorWireframeEl = document.getElementById('toggle-editor-wireframe');
     if (toggleEditorWireframeEl) toggleEditorWireframeEl.addEventListener('change', e => levelEditor.setWireframe(e.target.checked));
     const toggleEditorPlayerCameraEl = document.getElementById('toggle-editor-player-camera');
@@ -3614,12 +3834,37 @@ export function startGame(CharacterClass) {
     // checkbox/number input instead, same fields Editor.html's own
     // renderGeometryUI exposes (minus the dim/radius/segment group it
     // handles separately too).
+    // Properties dropdown: the "Properties ▾" toggle button only appears
+    // when a shape (something with editable cut/cap params) is selected;
+    // clicking it expands/collapses the cut-props container below it.
+    // Properties: the toolbar's editor-props-toggle button (a
+    // .editor-panel-toggle, wired generically above to open the inline
+    // #editor-props-panel) only makes sense when a shape is selected -
+    // renderShapePropsPanel shows/hides that toolbar button and fills the
+    // panel's #shape-props-container with the cut/cap controls.
     const shapePropsContainer = document.getElementById('shape-props-container');
+    const propsToggleEl = document.getElementById('editor-props-toggle');
+    const propsPanelEl = document.getElementById('editor-props-panel');
     function renderShapePropsPanel(obj) {
         if (!shapePropsContainer) return;
         shapePropsContainer.innerHTML = '';
-        if (!obj || !obj.userData.shapeType) { shapePropsContainer.style.display = 'none'; return; }
-        shapePropsContainer.style.display = 'block';
+        const isShape = obj && obj.userData && obj.userData.shapeType;
+        if (propsToggleEl) propsToggleEl.style.display = isShape ? 'flex' : 'none';
+        // Nothing shape-like selected: hide the panel + clear the toggle's
+        // active state so a leftover-open props panel doesn't linger.
+        if (!isShape) {
+            if (propsPanelEl) propsPanelEl.style.display = 'none';
+            if (propsToggleEl) propsToggleEl.classList.remove('active');
+            return;
+        }
+        // Auto-open the properties panel when a shape is selected (restores
+        // the old behaviour where picking an added object surfaced its
+        // cut/cap props straight away). Closes whatever other panel was up.
+        if (propsPanelEl && propsToggleEl) {
+            closeAllEditorPanels('editor-props-panel');
+            propsPanelEl.style.display = 'block';
+            propsToggleEl.classList.add('active');
+        }
         const params = obj.userData.params;
         CUT_PROP_GROUPS.forEach(group => {
             if (params[group.toggle] === undefined) return;
@@ -3657,7 +3902,205 @@ export function startGame(CharacterClass) {
             }
         });
     }
-    levelEditor.onSelectionChange = renderShapePropsPanel;
+    // ---- Outliner (scene hierarchy tree) ----
+    // Mirrors editTarget's object graph as clickable rows: click selects,
+    // shift-click adds to the selection, the twisty expands a container
+    // (entity / group with non-helper children), the eye toggles .visible.
+    // Rebuilt on any structural change; selection highlight is patched in
+    // place (cheap) on selection change rather than rebuilding.
+    const outlinerTreeEl = document.getElementById('editor-outliner-tree');
+    const outlinerRowMap = new Map();       // uuid -> row element
+    const outlinerExpanded = new Set();      // uuids currently expanded
+    function outlinerLabel(o) {
+        if (o.name) return o.name;
+        if (o.userData && o.userData.isEntity) return 'Entity';
+        if (o.userData && o.userData.shapeType) return o.userData.shapeType;
+        return o.type || 'Object';
+    }
+    const outlinerChildrenOf = (o) => o.children.filter(c => !(c.userData && c.userData.isWireframeHelper));
+    function addOutlinerRow(o, depth) {
+        const row = document.createElement('div');
+        row.className = 'outliner-row' + ((o.userData && o.userData.isEntity) ? ' entity' : '');
+        row.style.paddingLeft = (depth * 12 + 3) + 'px';
+        const kids = outlinerChildrenOf(o);
+        const isContainer = kids.length > 0;
+        const expanded = outlinerExpanded.has(o.uuid);
+        const tw = document.createElement('span');
+        tw.className = 'outliner-twisty';
+        tw.textContent = isContainer ? (expanded ? '▼' : '▶') : '';
+        if (isContainer) tw.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            if (expanded) outlinerExpanded.delete(o.uuid); else outlinerExpanded.add(o.uuid);
+            buildOutliner();
+        });
+        row.appendChild(tw);
+        const eye = document.createElement('span');
+        eye.className = 'outliner-eye' + (o.visible ? '' : ' hidden');
+        eye.textContent = o.visible ? '◉' : '○';
+        eye.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            o.visible = !o.visible;
+            eye.className = 'outliner-eye' + (o.visible ? '' : ' hidden');
+            eye.textContent = o.visible ? '◉' : '○';
+        });
+        row.appendChild(eye);
+        const lbl = document.createElement('span');
+        lbl.className = 'outliner-label';
+        lbl.textContent = outlinerLabel(o);
+        row.appendChild(lbl);
+        row.addEventListener('pointerdown', (e) => { levelEditor.select(o, e.shiftKey); });
+        // Double-click the label to rename the object/entity inline.
+        lbl.addEventListener('dblclick', (e) => { e.stopPropagation(); startOutlinerRename(o, lbl); });
+        outlinerTreeEl.appendChild(row);
+        outlinerRowMap.set(o.uuid, row);
+        if (isContainer && expanded) kids.forEach(c => addOutlinerRow(c, depth + 1));
+    }
+    function buildOutliner() {
+        if (!outlinerTreeEl) return;
+        outlinerTreeEl.innerHTML = '';
+        outlinerRowMap.clear();
+        levelEditor.editTarget.children
+            .filter(o => !(o.userData && o.userData.isWireframeHelper))
+            .forEach(o => addOutlinerRow(o, 0));
+        updateOutlinerSelection();
+    }
+    function updateOutlinerSelection() {
+        const sel = new Set(levelEditor.selection.map(o => o.uuid));
+        outlinerRowMap.forEach((row, uuid) => row.classList.toggle('selected', sel.has(uuid)));
+    }
+    // Inline rename: swap a row's label span for a text input, commit the
+    // trimmed value onto obj.name (Enter or blur), cancel on Escape. Rebuilds
+    // the tree afterwards so the label reflects the new name.
+    function startOutlinerRename(o, lbl) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = o.name || outlinerLabel(o);
+        input.style.cssText = 'flex:1; min-width:0; font:inherit; background:#111; color:#fff; border:1px solid #06f; border-radius:2px; padding:0 2px;';
+        lbl.replaceWith(input);
+        let done = false;
+        const commit = (save) => {
+            if (done) return; done = true;
+            if (save) { const v = input.value.trim(); if (v) o.name = v; }
+            buildOutliner();
+        };
+        input.addEventListener('pointerdown', (e) => e.stopPropagation());
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commit(true);
+            else if (e.key === 'Escape') commit(false);
+        });
+        // Focus + wire blur on the next tick so the click that opened this
+        // rename doesn't immediately blur the fresh input and commit-close it.
+        setTimeout(() => { input.focus(); input.select(); input.addEventListener('blur', () => commit(true)); }, 0);
+    }
+    levelEditor.onStructureChange = buildOutliner;
+    levelEditor.onSelectionChange = (sel) => { renderShapePropsPanel(sel); updateOutlinerSelection(); };
+    // New editor objects that carry gameplay userData (a carryable jar made
+    // into a prefab, a duplicated jar, ...) need a matching entry in the
+    // `carryables` array or drop/throw physics never sees them and they hang
+    // in mid-air where the carry animation left them. Register every
+    // isCarryable mesh in the freshly added object (works for a lone mesh or
+    // an entity full of them). isMovable objects don't need a wrapper.
+    levelEditor.onObjectAdded = (obj) => {
+        obj.traverse(n => {
+            if (!(n.isMesh && n.userData && n.userData.isCarryable)) return;
+            if (carryables.some(c => c.mesh === n)) return;
+            const carry = { mesh: n, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+            carryables.push(carry);
+            addCarryableDebugHelper(carry);
+        });
+    };
+    // Build once the outliner is first opened (editTarget can hold hundreds
+    // of built-level nodes - no point paying for the rows until it's shown).
+    const outlinerToggleEl = document.getElementById('editor-outliner-toggle');
+    if (outlinerToggleEl) outlinerToggleEl.addEventListener('pointerdown', () => buildOutliner());
+    const editorDeleteBtnEl = document.getElementById('editor-delete-btn');
+    if (editorDeleteBtnEl) editorDeleteBtnEl.addEventListener('pointerdown', (e) => { e.stopPropagation(); levelEditor.deleteSelected(); });
+
+    // ---- Prefabs ----
+    // Save the primary selection as a reusable template (serialized to
+    // localStorage so it survives a reload); the panel lists saved prefabs
+    // as buttons that instantiate a fresh copy in front of the camera.
+    const PREFAB_KEY = 'levelEditorPrefabs_v1';
+    // Fill only the list sub-div - the Group/Ungroup buttons live statically
+    // above it in the same panel and must survive re-renders.
+    const prefabPanelEl = document.getElementById('editor-prefab-list');
+    let prefabs = [];
+    try { prefabs = JSON.parse(localStorage.getItem(PREFAB_KEY) || '[]'); } catch (e) { prefabs = []; }
+    function savePrefabs() { try { localStorage.setItem(PREFAB_KEY, JSON.stringify(prefabs)); } catch (e) { /* quota / private mode - keep them in-memory this session */ } }
+    function renderPrefabPanel(autoRenameIndex = -1) {
+        if (!prefabPanelEl) return;
+        prefabPanelEl.innerHTML = '';
+        const saveBtn = document.createElement('button');
+        saveBtn.textContent = '+ Save selection as prefab';
+        saveBtn.style.cssText = 'display:block;width:100%;text-align:left;margin-bottom:6px;';
+        saveBtn.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            const json = levelEditor.serializeSelected();
+            if (!json) { saveBtn.textContent = 'Select something first!'; setTimeout(() => { saveBtn.textContent = '+ Save selection as prefab'; }, 1200); return; }
+            const base = (levelEditor.selected && levelEditor.selected.name) || 'Prefab';
+            prefabs.push({ name: base, json });
+            savePrefabs();
+            // Re-render and drop straight into renaming the new prefab so the
+            // user can give it a meaningful name right away.
+            renderPrefabPanel(prefabs.length - 1);
+        });
+        prefabPanelEl.appendChild(saveBtn);
+        if (!prefabs.length) {
+            const empty = document.createElement('div');
+            empty.style.cssText = 'opacity:0.6;padding:2px;';
+            empty.textContent = 'No prefabs yet.';
+            prefabPanelEl.appendChild(empty);
+            return;
+        }
+        prefabs.forEach((p, i) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;gap:4px;align-items:center;margin-bottom:3px;';
+            const btn = document.createElement('button');
+            btn.textContent = p.name;
+            btn.title = 'Add ' + p.name;
+            btn.style.cssText = 'flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;';
+            btn.addEventListener('pointerdown', (e) => { e.stopPropagation(); levelEditor.instantiate(p.json, p.name); });
+            const ren = document.createElement('button');
+            ren.textContent = '✎';
+            ren.title = 'Rename prefab';
+            ren.style.cssText = 'flex:0 0 auto;width:24px;';
+            ren.addEventListener('pointerdown', (e) => { e.stopPropagation(); startPrefabRename(i, btn); });
+            const del = document.createElement('button');
+            del.textContent = '×';
+            del.title = 'Delete prefab';
+            del.style.cssText = 'flex:0 0 auto;width:24px;';
+            del.addEventListener('pointerdown', (e) => { e.stopPropagation(); prefabs.splice(i, 1); savePrefabs(); renderPrefabPanel(); });
+            row.appendChild(btn); row.appendChild(ren); row.appendChild(del);
+            prefabPanelEl.appendChild(row);
+            if (i === autoRenameIndex) startPrefabRename(i, btn);
+        });
+    }
+    // Inline-rename a prefab: swap its instantiate button for a text input,
+    // commit onto prefabs[i].name (Enter/blur), cancel on Escape.
+    function startPrefabRename(i, btn) {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = prefabs[i].name;
+        input.style.cssText = 'flex:1; min-width:0; font:inherit; background:#111; color:#fff; border:1px solid #06f; border-radius:2px; padding:0 2px;';
+        btn.replaceWith(input);
+        let done = false;
+        const commit = (save) => {
+            if (done) return; done = true;
+            if (save) { const v = input.value.trim(); if (v) { prefabs[i].name = v; savePrefabs(); } }
+            renderPrefabPanel();
+        };
+        input.addEventListener('pointerdown', (e) => e.stopPropagation());
+        input.addEventListener('keydown', (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commit(true);
+            else if (e.key === 'Escape') commit(false);
+        });
+        // Defer focus + blur wiring one tick so the opening click (its own
+        // pointerup/click still pending) doesn't blur-and-commit immediately.
+        setTimeout(() => { input.focus(); input.select(); input.addEventListener('blur', () => commit(true)); }, 0);
+    }
+    renderPrefabPanel();
 
     window.toonOutlineEnabled = false;
     window.toonOutlineThickness = 0.02;
@@ -3808,6 +4251,99 @@ export function startGame(CharacterClass) {
     let fpsSmoothed = 60;
     let fpsMin = Infinity;
     let fpsDisplayAccum = 0;
+
+    // Ledge hand-IK debug visualization (Debug Vis: 'Show Ledge Hand IK').
+    // Lazily builds a set of scene markers/lines + a head-mounted text
+    // sprite, updates them to show what the hang-hand aim is computing each
+    // frame, and is hidden when the toggle is off (see setHangIKDebugVisible
+    // below, called from the always-run debug section in animate()). Kept
+    // out of the hot path when the toggle is off - the caller only invokes
+    // updateHangIKDebugViz while actually hanging AND checks the toggle here.
+    const _hangDbg = { built: false };
+    function buildHangIKDebugViz() {
+        const mkMarker = (color) => {
+            const m = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+            m.renderOrder = 1000; m.raycast = () => {}; m.visible = false; scene.add(m); return m;
+        };
+        const mkLine = (color) => {
+            const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color, depthTest: false }));
+            l.renderOrder = 1000; l.raycast = () => {}; l.visible = false; scene.add(l); return l;
+        };
+        _hangDbg.leftMarker = mkMarker(0xff3333);
+        _hangDbg.rightMarker = mkMarker(0x3388ff);
+        _hangDbg.ledgeMarker = mkMarker(0xffff00);
+        _hangDbg.leftLine = mkLine(0xff3333);
+        _hangDbg.rightLine = mkLine(0x3388ff);
+        _hangDbg.normalLine = mkLine(0x00ff88); // grabbed-surface normal (green)
+        const cv = document.createElement('canvas');
+        cv.width = 320; cv.height = 200;
+        _hangDbg.ctx = cv.getContext('2d');
+        _hangDbg.tex = new THREE.CanvasTexture(cv);
+        const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: _hangDbg.tex, depthTest: false }));
+        spr.scale.set(3.2, 2.0, 1); spr.position.set(0, 3.3, 0); spr.raycast = () => {}; spr.visible = false;
+        if (char && char.group) char.group.add(spr);
+        _hangDbg.sprite = spr;
+        _hangDbg.built = true;
+    }
+    function setHangIKDebugVisible(v) {
+        if (!_hangDbg.built) return;
+        _hangDbg.leftMarker.visible = v; _hangDbg.rightMarker.visible = v; _hangDbg.ledgeMarker.visible = v;
+        _hangDbg.leftLine.visible = v; _hangDbg.rightLine.visible = v; _hangDbg.sprite.visible = v;
+        _hangDbg.normalLine.visible = v;
+    }
+    const _hangDbgLH = new THREE.Vector3(), _hangDbgRH = new THREE.Vector3(), _hangDbgNEnd = new THREE.Vector3();
+    function updateHangIKDebugViz(lt, rt, ledgeTgt, ch, spread, yLift, ikW) {
+        const on = !!(document.getElementById('toggle-hang-ik-dbg') && document.getElementById('toggle-hang-ik-dbg').checked);
+        if (!on) { if (_hangDbg.built) setHangIKDebugVisible(false); return; }
+        if (!_hangDbg.built) buildHangIKDebugViz();
+        setHangIKDebugVisible(true);
+        ch.leftHandBone.getWorldPosition(_hangDbgLH);
+        ch.rightHandBone.getWorldPosition(_hangDbgRH);
+        _hangDbg.leftMarker.position.copy(lt);
+        _hangDbg.rightMarker.position.copy(rt);
+        _hangDbg.ledgeMarker.position.copy(ledgeTgt);
+        _hangDbg.leftLine.geometry.setFromPoints([_hangDbgLH, lt]);
+        _hangDbg.rightLine.geometry.setFromPoints([_hangDbgRH, rt]);
+        // Grabbed-surface normal (green) drawn out from the ledge point, so
+        // the face's real steepness is visible in 3D alongside the number.
+        if (window._dbgGrabWallNormal) {
+            _hangDbgNEnd.copy(ledgeTgt).addScaledVector(window._dbgGrabWallNormal, 1.2);
+            _hangDbg.normalLine.geometry.setFromPoints([ledgeTgt, _hangDbgNEnd]);
+        }
+        const lGapV = _hangDbgLH.distanceTo(lt), rGapV = _hangDbgRH.distanceTo(rt);
+        const angDeg = window._dbgGrabWallAngleDeg, cutDeg = window._dbgGrabWallCutoffDeg;
+        const ctx = _hangDbg.ctx;
+        ctx.clearRect(0, 0, 320, 200);
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, 320, 200);
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = 'bold 20px monospace';
+        // Surface angle first (the climbability question) - green if the
+        // face is genuinely wall-steep, orange if it only just cleared the
+        // grab cutoff (a surprisingly shallow face that still grabs).
+        if (angDeg !== undefined) {
+            const marginal = angDeg < (cutDeg + 5);
+            ctx.fillStyle = marginal ? '#ffaa44' : '#66ff88';
+            ctx.fillText(`face ${angDeg.toFixed(1)}deg  cut ${cutDeg.toFixed(1)}`, 8, 8);
+        } else {
+            ctx.fillStyle = '#888888'; ctx.fillText(`face --`, 8, 8);
+        }
+        ctx.fillStyle = '#ffff88';
+        ctx.fillText(`ledge ${ledgeTgt.x.toFixed(1)},${ledgeTgt.y.toFixed(1)},${ledgeTgt.z.toFixed(1)}`, 8, 40);
+        ctx.fillStyle = '#ff8888';
+        ctx.fillText(`L gap ${lGapV.toFixed(3)}`, 8, 72);
+        ctx.fillStyle = '#88bbff';
+        ctx.fillText(`R gap ${rGapV.toFixed(3)}`, 8, 104);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`spread ${spread}  grip ${yLift}`, 8, 136);
+        // Corner-retreat flag - if this ever shows RETREAT right after a
+        // fresh grab, the stale-retreat teleport bug is back (see the
+        // fresh-grab reset). ledgeCornerRetreating is a closure var in
+        // scope here.
+        ctx.fillStyle = ledgeCornerRetreating ? '#ff4444' : '#ffffff';
+        ctx.fillText(`${window.ledgeHandUseIK ? 'IK' : 'AIM'} w${ikW}  ${ledgeCornerRetreating ? 'RETREAT' : 'hang'}`, 8, 168);
+        _hangDbg.tex.needsUpdate = true;
+    }
+
     function animate() {
         requestAnimationFrame(animate);
         const rawDelta = clock.getDelta();
@@ -5498,14 +6034,24 @@ export function startGame(CharacterClass) {
                 // natural arm shape and just pivots it toward the grip, so
                 // an approximate target can't warp the arm.
                 const rgt = _tempVec1.set(1, 0, 0).applyQuaternion(char.group.quaternion);
-                const spread = window.ledgeHandSpread !== undefined ? window.ledgeHandSpread : 0.45;
-                const yLift = window.ledgeHandGrip !== undefined ? window.ledgeHandGrip : 0.0;
+                const spread = window.ledgeHandSpread !== undefined ? window.ledgeHandSpread : -0.3;
+                const yLift = window.ledgeHandGrip !== undefined ? window.ledgeHandGrip : 0.3;
                 const lt = _tempVec2.copy(ledgeTarget).addScaledVector(rgt, -spread); lt.y += yLift;
                 const rt = _tempVec3.copy(ledgeTarget).addScaledVector(rgt, spread); rt.y += yLift;
                 const ikW = window.ledgeHandIKWeight !== undefined ? window.ledgeHandIKWeight : 1.0;
                 if (window.ledgeHandUseIK) char.applyArmIK(lt, rt, ikW);
                 else char.applyArmAim(lt, rt, ikW);
                 window._dbgHangIK = { ran: true, ledgeTargetY: +ledgeTarget.y.toFixed(2), spread };
+                // Debug viz (Debug Vis: 'Show Ledge Hand IK') - draws the
+                // two aim targets (red=left, blue=right), the ledgeTarget
+                // (yellow), a line from each actual hand bone to its aim
+                // target (so the gap the arm is trying to close is visible),
+                // and a readout above the head. All created lazily and
+                // updated in place, hidden when the toggle is off (handled
+                // in the always-run debug section further down). lt/rt were
+                // read AFTER applyArmAim moved the arms above, so grab the
+                // current hand world positions here for the gap lines.
+                updateHangIKDebugViz(lt, rt, ledgeTarget, char, spread, yLift, ikW);
             } else {
                 window._dbgHangIK = { ran: false, ledgeTargetLen: +ledgeTarget.lengthSq().toFixed(2) };
             }
@@ -6042,6 +6588,15 @@ export function startGame(CharacterClass) {
                 const realWallNormal = wH.length > 0 ? wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld) : null;
                 const isRampHit = wH.length > 0 && wH[0].object.userData?.isSlopeRamp;
                 if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
+                    // Captured BEFORE the setY(0) flatten below destroys the
+                    // real 3D normal - this is the grabbed face's actual
+                    // steepness (its normal's angle from straight up; 90deg
+                    // = a dead-vertical wall, less = a leaning/sloped face).
+                    // Stashed for the hang-angle debug readout so it's
+                    // possible to see WHY a surprisingly steep-looking face
+                    // was still grabbable (anything past SLOPE_WALL_CUTOFF).
+                    const grabWallAngleDeg = realWallNormal.angleTo(_upVec) * 180 / Math.PI;
+                    const grabWallNormalWorld = realWallNormal.clone();
                     const n = realWallNormal.setY(0).normalize();
                     const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
@@ -6073,8 +6628,28 @@ export function startGame(CharacterClass) {
 
                         if (isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
                             isLedgeGrabbing = true; ledgeMoveLocked = true; justGrabbedLedge = true;
+                            // Clear any leftover corner-retreat from a PREVIOUS
+                            // hang - if you shimmied into a corner (which arms
+                            // ledgeCornerRetreating + ledgeCornerRetreatTarget)
+                            // and released before that ease-in finished, the
+                            // flag stayed set with the old target. On this
+                            // fresh grab the hang branch's retreat lerp would
+                            // then immediately drag you from THIS ledge back to
+                            // that stale spot - the "grab somewhere, then grab
+                            // elsewhere and teleport back to the first grab"
+                            // bug. Reset the whole corner-retreat/shimmy
+                            // sub-state here so a new grab always starts clean.
+                            ledgeCornerRetreating = false;
+                            ledgeCornerBufferApplied = false;
+                            ledgeSidewaysGesture = false;
+                            lockedHintAngle = null;
                             if (yVelocity < -22) { isSlipping = true; slipTimer = 0; } else isSlipping = false;
                             yVelocity = 0; ledgeTarget.copy(lH[0].point);
+                            // Grabbed-surface info for the hang-angle debug
+                            // readout (Debug Vis: 'Show Ledge Hand IK').
+                            window._dbgGrabWallAngleDeg = grabWallAngleDeg;
+                            window._dbgGrabWallCutoffDeg = SLOPE_WALL_CUTOFF * 180 / Math.PI;
+                            window._dbgGrabWallNormal = grabWallNormalWorld;
                             char.group.position.y = hangGroupY; char.group.position.x = hangX; char.group.position.z = hangZ;
                             char.group.lookAt(_tempVec3.copy(char.group.position).sub(n)); jumpMomentum.set(0,0,0);
                             // The lookAt above snaps facing straight at the wall in a
@@ -6553,6 +7128,7 @@ export function startGame(CharacterClass) {
             network.update(delta);
         }
         updateAiBot(delta);
+        updateCompanion(delta);
         // Broadcasts under a fixed id ('ai-bot-1') so every connected client
         // renders the same bot, driven by whoever spawned it - not
         // synced/cleaned up if that person disconnects, it just stays put
@@ -6619,6 +7195,11 @@ export function startGame(CharacterClass) {
         window._dbgCameraPhi = cameraPhi;
         window._dbgYVelocity = yVelocity;
         window._dbgIsLedgeGrabbing = isLedgeGrabbing;
+        // Hang hand-IK debug markers/lines only make sense while hanging -
+        // updateHangIKDebugViz shows/updates them during the hang branch;
+        // hide them here every other frame so they don't freeze on-screen
+        // at the last grip spot after letting go.
+        if (!isLedgeGrabbing) setHangIKDebugVisible(false);
         window._dbgIsClimbingUp = isClimbingUp;
         window._dbgStamina = stamina;
         window._dbgLedgeGrabCooldown = ledgeGrabCooldown;
@@ -6808,6 +7389,7 @@ if (leftArrow) {
         composer.setSize(window.innerWidth, window.innerHeight);
         updateOrthoFrustum();
         levelEditor.camera.aspect = window.innerWidth/window.innerHeight; levelEditor.camera.updateProjectionMatrix();
+        levelEditor.setSize(window.innerWidth, window.innerHeight);
     }
     window.addEventListener('resize', handleViewportResize);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', handleViewportResize);

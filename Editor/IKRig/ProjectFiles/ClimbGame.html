@@ -52,7 +52,41 @@
         #level-editor-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; cursor: pointer; user-select: none; }
         #level-editor-header span { font-weight: bold; }
         #level-editor-dock-btn { background: none; border: none; color: #fff; font-size: 14px; cursor: pointer; padding: 0 4px; }
-        #level-editor-body { padding: 0 10px 10px; overflow-y: auto; max-height: calc(100vh - 150px); }
+        #level-editor-toolbar { padding: 0 10px; }
+        #level-editor-panel.docked #level-editor-toolbar { padding-bottom: 10px; }
+        .editor-icon-row { display: flex; gap: 4px; margin-bottom: 4px; }
+        #level-editor-toolbar .editor-mode-btn { flex: 1; height: 30px; display: flex; align-items: center; justify-content: center; padding: 0; }
+        #level-editor-toolbar svg { width: 16px; height: 16px; }
+        #editor-space-btn { width: 38px; height: 30px; font-size: 10px; font-weight: bold; flex: 0 0 auto; }
+        /* Icon buttons on the toolbar rows share one square footprint. */
+        #editor-focus-btn, #editor-snap-btn, #editor-duplicate-btn,
+        #editor-add-toggle, #editor-prefab-toggle, #editor-outliner-toggle, #editor-props-toggle, #editor-export-toggle {
+            width: 34px; height: 30px; display: flex; align-items: center; justify-content: center; padding: 0; flex: 0 0 auto;
+        }
+        /* Gear moved into the header, adjacent to the dock arrow (dock stays far right). */
+        #level-editor-header-right { display: flex; align-items: center; gap: 4px; }
+        #level-editor-header #editor-gear-btn { width: 26px; height: 24px; display: flex; align-items: center; justify-content: center; padding: 0; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
+        #level-editor-header #editor-gear-btn svg { width: 14px; height: 14px; }
+        #level-editor-header #editor-gear-btn.active { background: rgba(0,150,255,0.7); border-color: rgba(255,255,255,0.6); }
+        /* Outliner tree rows */
+        .outliner-row { display: flex; align-items: center; gap: 4px; padding: 2px 3px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+        .outliner-row:hover { background: rgba(255,255,255,0.08); }
+        .outliner-row.selected { background: rgba(0,150,255,0.45); }
+        .outliner-row.entity > .outliner-label { color: #ffd23f; }
+        .outliner-twisty { width: 12px; text-align: center; opacity: 0.7; flex: 0 0 auto; font-size: 9px; }
+        .outliner-eye { width: 14px; flex: 0 0 auto; opacity: 0.75; text-align: center; }
+        .outliner-eye.hidden { opacity: 0.3; }
+        .outliner-label { overflow: hidden; text-overflow: ellipsis; }
+        /* A panel-toggle whose inline dropdown is currently open reads as active (blue). */
+        #level-editor-toolbar button.active { background: rgba(0, 150, 255, 0.7); border-color: rgba(255,255,255,0.6); }
+        /* Inline dropdown panels (gear/add/prefab/export/props) - live in the
+           body, never float off-screen. */
+        .editor-dropdown-panel { background: rgba(255,255,255,0.05); border: 1px solid #444; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; }
+        .editor-dropdown-panel label { display: block; margin: 3px 0; }
+        .editor-dropdown-panel button:hover { background: rgba(0,150,255,0.7); }
+        #editor-add-panel .editor-add-btn, #editor-add-pin { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; padding: 0; flex: 0 0 auto; }
+        #editor-add-pin.active { background: rgba(0,150,255,0.7); border-color: rgba(255,255,255,0.6); }
+        #level-editor-body { padding: 8px 10px 10px; overflow-y: auto; max-height: calc(100vh - 190px); }
         #level-editor-panel.docked #level-editor-body { display: none; }
         #level-editor-panel button { font-family: monospace; font-size: 11px; padding: 6px 2px; cursor: pointer; background: #222; color: #fff; border: 1px solid #555; border-radius: 4px; }
         #level-editor-panel button:active, #level-editor-panel button.active { background: rgba(0, 150, 255, 0.7); border-color: rgba(255,255,255,0.6); }
@@ -219,32 +253,83 @@
     <div id="level-editor-panel" style="display: none;">
         <div id="level-editor-header">
             <span>Level Editor</span>
-            <button id="level-editor-dock-btn" title="Collapse / expand panel">▲</button>
+            <div id="level-editor-header-right">
+                <button id="editor-gear-btn" class="editor-panel-toggle" data-panel="editor-gear-panel" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H2a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H8a1.65 1.65 0 0 0 1-1.51V2a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V8a1.65 1.65 0 0 0 1.51 1H22a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
+                <button id="level-editor-dock-btn" title="Collapse / expand panel">▲</button>
+            </div>
         </div>
+        <!-- Always-visible toolbar: stays put even when the panel is docked
+             (only #level-editor-body below collapses). -->
+        <div id="level-editor-toolbar">
+            <div class="editor-icon-row">
+                <button class="editor-mode-btn active" id="editor-select-btn" data-mode="select" title="Single-Select (click again for Multi)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path></svg></button>
+                <button class="editor-mode-btn" data-mode="translate" title="Move"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M19 9l3 3-3 3M9 19l3 3-3 3M2 12h20M12 2v20"></path></svg></button>
+                <button class="editor-mode-btn" data-mode="rotate" title="Rotate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg></button>
+                <button class="editor-mode-btn" data-mode="scale" title="Scale"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 3l-6 6M21 3v6M21 3h-6M3 21l6-6M3 21v-6M3 21h6M15 15l6 6M15 15v6M15 15h6M9 9L3 3M9 9V3M9 9H3"></path></svg></button>
+                <button class="editor-mode-btn" data-mode="shape" title="Shape Controls" style="color:#ffaa00;font-size:15px;">⚒</button>
+                <button id="editor-space-btn" title="World / Local space">WLD</button>
+                <button id="editor-focus-btn" title="Focus Selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="1"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg></button>
+                <button id="editor-snap-btn" class="active" title="Snap to Surface"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v7a6 6 0 0 0 12 0V3h-4v7a2 2 0 0 1-4 0V3z"></path></svg></button>
+            </div>
+            <div class="editor-icon-row">
+                <button id="editor-duplicate-btn" title="Duplicate Selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path><path d="M15 12v6M12 15h6"></path></svg></button>
+                <button id="editor-add-toggle" class="editor-panel-toggle" data-panel="editor-add-panel" title="Add Object"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg></button>
+                <button id="editor-prefab-toggle" class="editor-panel-toggle" data-panel="editor-prefab-panel" title="Add Prefab / Entity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg></button>
+                <button id="editor-outliner-toggle" class="editor-panel-toggle" data-panel="editor-outliner-panel" title="Outliner (scene hierarchy)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg></button>
+                <button id="editor-props-toggle" class="editor-panel-toggle" data-panel="editor-props-panel" title="Object Properties" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line><line x1="1" y1="14" x2="7" y2="14"></line><line x1="9" y1="8" x2="15" y2="8"></line><line x1="17" y1="16" x2="23" y2="16"></line></svg></button>
+                <div style="flex:1;"></div>
+                <button id="editor-export-toggle" class="editor-panel-toggle" data-panel="editor-export-panel" title="Export"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></button>
+            </div>
+        </div>
+        <!-- Inline dropdown panels: opened one-at-a-time by the toolbar's
+             .editor-panel-toggle buttons; stay inside the panel (never
+             float off-screen) and collapse with it when docked. -->
         <div id="level-editor-body">
-            <label><input type="checkbox" id="toggle-editor-wireframe"> Wireframe</label>
-            <label><input type="checkbox" id="toggle-editor-player-camera"> Use Player Camera</label>
-            <label><input type="checkbox" id="toggle-editor-snap" checked> Snap to Surface</label>
-            <label><input type="checkbox" id="toggle-editor-controls"> Show Game Controls</label>
-            <div style="display: flex; gap: 4px; margin-bottom: 4px;">
-                <button class="editor-mode-btn active" data-mode="translate" style="flex:1;">Move</button>
-                <button class="editor-mode-btn" data-mode="rotate" style="flex:1;">Rotate</button>
-                <button class="editor-mode-btn" data-mode="scale" style="flex:1;">Scale</button>
-                <button class="editor-mode-btn" data-mode="shape" style="flex:1;">Shape</button>
+            <div id="editor-gear-panel" class="editor-dropdown-panel" style="display:none;">
+                <label><input type="checkbox" id="toggle-editor-wireframe"> Wireframe</label>
+                <label><input type="checkbox" id="toggle-editor-player-camera" checked> Use Player Camera</label>
+                <label><input type="checkbox" id="toggle-editor-controls"> Show Game Controls</label>
+                <div style="border-top: 1px solid #444; margin-top: 6px; padding-top: 6px;">
+                    <label>Outline Strength: <span id="outline-strength-val">5.0</span></label>
+                    <input type="range" id="outline-strength-slider" min="0.5" max="10" step="0.5" value="5.0" style="width: 100%;">
+                    <label>Outline Thickness: <span id="outline-thickness-val">1.0</span></label>
+                    <input type="range" id="outline-thickness-slider" min="0.5" max="4" step="0.5" value="1.0" style="width: 100%;">
+                </div>
             </div>
-            <div style="display: flex; gap: 4px; margin-bottom: 6px;">
-                <button id="editor-focus-btn" style="flex:1;">Focus</button>
-                <button id="editor-duplicate-btn" style="flex:1;">Duplicate</button>
+            <div id="editor-add-panel" class="editor-dropdown-panel" style="display:none;">
+                <div style="display:flex; gap:4px; align-items:center;">
+                    <button class="editor-add-btn" data-shape="box" title="Box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg></button>
+                    <button class="editor-add-btn" data-shape="sphere" title="Sphere"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path><path d="M2 12h20"></path></svg></button>
+                    <button class="editor-add-btn" data-shape="cyl" title="Cylinder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 19c0 1.66-4.03 3-9 3s-9-1.34-9-3V5"></path><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path></svg></button>
+                    <button class="editor-add-btn" data-shape="cone" title="Cone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 20h20L12 2z"></path><path d="M12 22c-5.52 0-10-1.79-10-4s4.48-4 10-4 10 1.79 10 4-4.48 4-10 4z"></path></svg></button>
+                    <button class="editor-add-btn" data-shape="torus" title="Torus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="10" ry="6"></ellipse><ellipse cx="12" cy="12" rx="3.5" ry="2"></ellipse></svg></button>
+                    <div style="flex:1;"></div>
+                    <button id="editor-add-pin" title="Pin (keep open to add in series)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14l-1.6-3.2a2 2 0 0 1-.2-.9V5a2 2 0 0 0-2-2H8.8a2 2 0 0 0-2 2v7.9a2 2 0 0 1-.2.9L5 17z"></path></svg></button>
+                </div>
             </div>
-            <div style="display: flex; gap: 4px;">
-                <button class="editor-add-btn" data-shape="box" style="flex:1;">+ Box</button>
-                <button class="editor-add-btn" data-shape="sphere" style="flex:1;">+ Sphere</button>
-                <button class="editor-add-btn" data-shape="cyl" style="flex:1;">+ Cylinder</button>
-                <button class="editor-add-btn" data-shape="cone" style="flex:1;">+ Cone</button>
-                <button class="editor-add-btn" data-shape="torus" style="flex:1;">+ Torus</button>
+            <div id="editor-prefab-panel" class="editor-dropdown-panel" style="display:none;">
+                <div style="display:flex; gap:4px; margin-bottom:6px;">
+                    <button id="editor-group-btn" title="Group selected objects into one entity" style="flex:1;">⧉ Group into Entity</button>
+                    <button id="editor-ungroup-btn" title="Ungroup the selected entity" style="flex:1;">Ungroup Entity</button>
+                </div>
+                <div style="border-top:1px solid #444; margin-bottom:6px;"></div>
+                <div id="editor-prefab-list"></div>
             </div>
-            <button id="editor-export-btn" style="width: 100%; margin-top: 6px;">Export Level (.glb)</button>
-            <div id="shape-props-container" style="display: none; margin-top: 8px; font-size: 11px;"></div>
+            <div id="editor-export-panel" class="editor-dropdown-panel" style="display:none;">
+                <button id="export-level-btn" style="display:block;width:100%;text-align:left;margin-bottom:4px;">Export Level (.glb)</button>
+                <button id="export-selection-btn" style="display:block;width:100%;text-align:left;">Export Selection (.glb)</button>
+            </div>
+            <div id="editor-outliner-panel" class="editor-dropdown-panel" style="display:none;">
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <span style="opacity:0.6; font-size:10px;">Scene</span>
+                    <div style="flex:1;"></div>
+                    <button id="editor-delete-btn" title="Delete Selected" style="font-size:11px; padding:2px 8px;">Delete</button>
+                </div>
+                <div id="editor-outliner-tree" style="font-size:11px; max-height:220px; overflow-y:auto; overflow-x:hidden;"></div>
+            </div>
+            <div id="editor-props-panel" class="editor-dropdown-panel" style="display:none;">
+                <div id="shape-props-container" style="font-size: 11px;"></div>
+            </div>
         </div>
     </div>
 
@@ -364,6 +449,7 @@
                     <label><input type="checkbox" id="toggle-step-labels"> Show Step Labels (A1/B2...)</label><br>
                     <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
                     <label><input type="checkbox" id="toggle-fps"> Show FPS Counter</label><br>
+                    <label><input type="checkbox" id="toggle-hang-ik-dbg"> Show Ledge Hand IK (targets + readout)</label><br>
                     <label><input type="checkbox" id="toggle-foot-ik-goals"> Show Foot IK Goals + Knees</label><br>
                     <label><input type="checkbox" id="toggle-side-ray"> Ray 1: Side Ray (cyan/magenta)</label><br>
                     <label>Side Ray Hit Dist: <span id="side-ray-hit-display">-</span></label><br>

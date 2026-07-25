@@ -1,17 +1,29 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-// Same repo-root Gizmo.js the standalone Geometry Editor Pro tool
-// (Editor/Editor.html) already uses, loaded the same way it does (a CDN
-// URL, not a relative path) - this file lives inside ProjectFiles/, which
-// is also the root the game is normally served from during local testing
-// (python -m http.server from ProjectFiles/), so a relative "../../../"
-// path up to the repo root wouldn't resolve under that setup. The CDN
-// path works identically locally and once deployed, same as every model/
-// texture asset the game already loads this way.
-import Gizmo from 'https://cdn.jsdelivr.net/gh/XYremesher/CustomGizmo@main/Gizmo.js';
+// LOCAL copy of the repo-root Gizmo.js (kept in sync with ../../../Gizmo.js,
+// the version Editor/Editor.html uses). Imported relatively rather than from
+// the jsdelivr CDN so (a) edits to the gizmo deploy with a normal push
+// instead of waiting on the CDN's @main cache to purge, and (b) it resolves
+// under the local test server, whose root IS this ProjectFiles/ folder (so a
+// "../../../" path up to the repo root wouldn't reach outside it). If you
+// change gizmo behaviour, edit the repo-root Gizmo.js and copy it here too.
+import Gizmo from './Gizmo.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OutlinePass } from 'three/addons/postprocessing/OutlinePass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShapeGenerator } from './shape_generator.js';
 import { ShapeGizmo } from './shape_gizmo.js';
+
+// Scratch matrices/vectors for the multi-select group-move math (see
+// LevelEditor.update's multi-drag block) - reused every frame so a
+// continuous drag doesn't allocate.
+const _mDelta = new THREE.Matrix4();
+const _mTarget = new THREE.Matrix4();
+const _mParentInv = new THREE.Matrix4();
+const _vCentroid = new THREE.Vector3();
+const _vTmp = new THREE.Vector3();
 
 // The cut/cap/flip/offset fields shown in the properties panel when a
 // shape is selected - not exposed as 3D handles (Editor.html's own
@@ -83,6 +95,32 @@ export class LevelEditor {
         // needing EditorCore's separate gizmoScene/clearDepth trick.
         this.gizmo = new Gizmo(scene, this.camera, renderer, this.controls);
 
+        // Selection outline via a dedicated post-processing composer, same
+        // approach as Editor.html's own OutlinePass. Only ever run through
+        // in render() below (called while editor mode is active), so it
+        // adds nothing to normal gameplay's render path. renderPass/
+        // outlinePass cameras are refreshed each render() to follow the
+        // active editor camera (free vs player). Its selectedObjects array
+        // is what actually gets outlined - set in _select().
+        this.composer = new EffectComposer(renderer);
+        this.renderPass = new RenderPass(scene, this.camera);
+        this.composer.addPass(this.renderPass);
+        this.outlinePass = new OutlinePass(new THREE.Vector2(window.innerWidth, window.innerHeight), scene, this.camera);
+        // Matches Editor.html's own OutlinePass tuning. downSampleRatio=1
+        // is the key sharpness lever - the default 2 renders the edge mask
+        // at half resolution (softer/blurrier edges); 1 keeps it full-res
+        // (crisp). Re-run setSize after changing it so the edge render
+        // targets actually get recreated at the new ratio.
+        this.outlinePass.downSampleRatio = 1;
+        this.outlinePass.edgeStrength = 5.0;
+        this.outlinePass.edgeGlow = 0.0;
+        this.outlinePass.edgeThickness = 1.0;
+        this.outlinePass.visibleEdgeColor.set('#ffffff');
+        this.outlinePass.hiddenEdgeColor.set('#444444');
+        this.outlinePass.setSize(window.innerWidth, window.innerHeight);
+        this.composer.addPass(this.outlinePass);
+        this.composer.addPass(new OutputPass());
+
         this.shapeGenerator = new ShapeGenerator();
         this.shapeGizmo = new ShapeGizmo(this.camera, renderer.domElement);
         this.shapeGizmo.onUpdate = (paramName, value, posOffset) => {
@@ -101,9 +139,33 @@ export class LevelEditor {
         this._snapRaycaster = new THREE.Raycaster();
         this._snapOrigin = new THREE.Vector3();
         this._snapDown = new THREE.Vector3(0, -1, 0);
+        // selection is the full set; `selected` is the PRIMARY (last-picked)
+        // one, kept for shape mode + the props panel which only ever act on
+        // a single object. A single-object selection has selection=[obj],
+        // selected=obj. Empty means selection=[], selected=null.
+        this.selection = [];
         this.selected = null;
+        // Single-select is the DEFAULT (matches the old Editor.html): a plain
+        // click selects one object and left-drag ORBITS the camera. Re-clicking
+        // the already-active Select tool switches to multi, where left-drag
+        // instead runs the marquee box-select and accumulates onto the
+        // selection (orbit moves to right-drag / two-finger there).
+        this.multiSelectMode = false;
+        this._selectClickPending = false;
+        // Gizmo anchor for a multi-object selection - moved to the group's
+        // centroid, gizmo attaches to THIS instead of any one object, and
+        // update() propagates its drag delta onto every selected object
+        // (see the multi-move block there). Identity rotation/scale each
+        // time it's re-centered so the delta math starts clean.
+        this.pivot = new THREE.Group();
+        scene.add(this.pivot);
+        this._multiDragging = false;
+        this._childStartMatrices = [];
+        this._pivotStartInv = new THREE.Matrix4();
         this.addedShapes = [];
-        this.mode = 'translate'; // 'translate' | 'rotate' | 'scale' | 'shape'
+        this._shapeCounter = 0;   // for naming added shapes (Box 1, Sphere 2...)
+        this._entityCounter = 0;  // for naming grouped entities (Entity 1...)
+        this.mode = 'select'; // 'select' | 'translate' | 'rotate' | 'scale' | 'shape'
         this.wireframeEnabled = false;
         // Gates both the drag-time surface snap (update(), vertical-only,
         // tight distance) and addShape's own placement snap (screen-center
@@ -119,18 +181,46 @@ export class LevelEditor {
         // every shapeGizmo drag (those only touch dim/radius/segment
         // params, which aren't in this panel).
         this.onSelectionChange = null;
+        // Fired whenever the object tree changes shape (add / duplicate /
+        // group / ungroup / delete) so the outliner can rebuild its rows.
+        this.onStructureChange = null;
+        // Fired with each brand-new top-level object (addShape / duplicate /
+        // prefab instantiate) so the game can wire it into gameplay systems
+        // the editor doesn't own - e.g. registering a carryable jar into the
+        // `carryables` array so drop/throw physics actually applies to it.
+        this.onObjectAdded = null;
+
+        // Marquee (drag box) select - only active in 'select' mode (where
+        // the transform gizmo is off, so a drag can't be a handle drag).
+        // A screen-space <div> drawn during the drag; on release, every
+        // editTarget child whose projected bounding box overlaps the box
+        // gets selected. In select mode the left mouse / one-finger touch
+        // is handed to the marquee instead of OrbitControls (see setMode),
+        // so orbit there is right-drag / two-finger.
+        this._marqueeEl = document.createElement('div');
+        this._marqueeEl.style.cssText = 'position:fixed;border:1px solid #00aaff;background:rgba(0,150,255,0.15);pointer-events:none;z-index:150;display:none;';
+        document.body.appendChild(this._marqueeEl);
+        this._marqueeActive = false;
+        this._marqueeStart = new THREE.Vector2();
+        this._marqueeBox = new THREE.Box3();
 
         this._onPointerDown = this._onPointerDown.bind(this);
         this._onPointerMove = this._onPointerMove.bind(this);
         this._onPointerUp = this._onPointerUp.bind(this);
+        this._onDblClick = this._onDblClick.bind(this);
         renderer.domElement.addEventListener('pointerdown', this._onPointerDown);
         renderer.domElement.addEventListener('pointermove', this._onPointerMove);
         window.addEventListener('pointerup', this._onPointerUp);
+        renderer.domElement.addEventListener('dblclick', this._onDblClick);
     }
 
     activate() {
         this.controls.enabled = true;
         this.controls.update();
+        // Apply the current mode's side effects (e.g. select mode frees the
+        // left mouse button for the marquee, detaches the gizmo) so entering
+        // editor mode matches the toolbar's default-active Select tool.
+        this.setMode(this.mode);
     }
 
     deactivate() {
@@ -155,6 +245,8 @@ export class LevelEditor {
         this.controls.object = cam;
         this.gizmo.camera = cam;
         this.shapeGizmo.camera = cam;
+        this.renderPass.camera = cam;
+        this.outlinePass.renderCamera = cam;
         // OrbitControls orbits around `target`, not wherever the camera
         // happens to already be looking - re-aim it at a point in front of
         // whichever camera just became active, otherwise switching to the
@@ -177,10 +269,25 @@ export class LevelEditor {
             // while supposedly in shape mode.
             this.gizmo.detach();
             this._syncShapeGizmo();
+        } else if (mode === 'select') {
+            // Pure selection mode: clicking still selects/outlines objects,
+            // but NO transform gizmo is shown, so you can pick without any
+            // chance of dragging. Both gizmos off. The left-drag behaviour
+            // depends on the single/multi sub-mode (see _applySelectControls):
+            // single leaves orbit on left-drag, multi hands it to the marquee.
+            this.shapeGizmo.detach();
+            this.gizmo.detach();
+            this._applySelectControls();
         } else {
             this.shapeGizmo.detach();
             this.gizmo.updateMode(mode);
-            if (this.selected) this.gizmo.attach(this.selected);
+            // Restore normal orbit on left-drag / one-finger for the
+            // transform modes.
+            this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+            this.controls.touches.ONE = THREE.TOUCH.ROTATE;
+            // Re-attach the gizmo to whatever's selected - single object or
+            // the multi-select pivot - via the shared visuals refresh.
+            this._refreshSelectionVisuals();
         }
     }
 
@@ -203,28 +310,44 @@ export class LevelEditor {
         this.controls.update();
     }
 
-    // Downloads the whole current level (everything in editTarget - the
-    // original built level plus anything added/moved in this editor
-    // session) as a single .glb file. No import path yet - this is just
-    // "get it out of the browser tab before a refresh loses it", not a
-    // load-back pipeline (see CLAUDE.md for what's still out of scope).
-    // Exports a clone, not the live objects, and strips the wireframe
-    // helper lines (see _addWireframeHelper) so they don't end up as
-    // stray geometry in the file.
-    exportGLTF() {
-        const clone = this.editTarget.clone(true);
-        clone.updateMatrixWorld(true);
-        const toRemove = [];
-        clone.traverse(n => { if (n.userData && n.userData.isWireframeHelper) toRemove.push(n); });
-        toRemove.forEach(n => { if (n.parent) n.parent.remove(n); });
+    // Downloads a .glb of either the WHOLE level (selectionOnly=false -
+    // everything in editTarget, the built level plus editor additions) or
+    // just the current selection (selectionOnly=true). No import path yet -
+    // this is "get it out of the tab before a refresh loses it", not a
+    // load-back pipeline (see CLAUDE.md). Exports clones, not the live
+    // objects (so their world transforms can be baked without disturbing
+    // the scene), and strips the wireframe helper lines so they don't end
+    // up as stray geometry in the file.
+    exportGLTF(selectionOnly = false) {
+        const exportRoot = new THREE.Group();
+        let sources;
+        if (selectionOnly) {
+            if (this.selection.length === 0) return;
+            sources = this.selection;
+        } else {
+            sources = this.editTarget.children;
+        }
+        sources.forEach(o => {
+            if (o.userData && o.userData.isWireframeHelper) return;
+            o.updateMatrixWorld(true);
+            const c = o.clone(true);
+            // Bake the object's world transform onto the clone so a
+            // selection exported out of its parent still lands correctly.
+            c.matrix.copy(o.matrixWorld);
+            c.matrix.decompose(c.position, c.quaternion, c.scale);
+            const toRemove = [];
+            c.traverse(n => { if (n.userData && n.userData.isWireframeHelper) toRemove.push(n); });
+            toRemove.forEach(n => { if (n.parent) n.parent.remove(n); });
+            exportRoot.add(c);
+        });
 
         const exporter = new GLTFExporter();
-        exporter.parse(clone, (result) => {
+        exporter.parse(exportRoot, (result) => {
             const blob = new Blob([result], { type: 'application/octet-stream' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'level.glb';
+            a.download = selectionOnly ? 'selection.glb' : 'level.glb';
             a.click();
             URL.revokeObjectURL(url);
         }, (err) => console.error('GLTF export failed:', err), { binary: true });
@@ -255,12 +378,165 @@ export class LevelEditor {
         if (this.wireframeEnabled) this._addWireframeHelper(clone);
         if (this.collidables && !this.collidables.includes(clone)) this.collidables.push(clone);
 
+        if (original.name) clone.name = original.name + ' copy';
         this.addedShapes.push(clone);
         this._select(clone);
+        this._objectAdded(clone);
+        this._structureChanged();
         return clone;
     }
 
     setSnapEnabled(enabled) { this.snapEnabled = enabled; }
+
+    // Re-clicking the already-active Select tool flips single<->multi.
+    // Returns the new state so the caller can swap the toolbar icon.
+    toggleMultiSelect() {
+        this.multiSelectMode = !this.multiSelectMode;
+        // Re-apply the left-drag behaviour if we're in select mode right now
+        // (single = orbit the camera, multi = marquee box-select).
+        if (this.mode === 'select') this._applySelectControls();
+        return this.multiSelectMode;
+    }
+
+    // In select mode, single sub-mode keeps OrbitControls on left-drag /
+    // one-finger (so you can orbit the camera; a plain click still selects),
+    // while multi sub-mode hands left-drag to the marquee box-select and
+    // leaves orbit on right-drag / two-finger only. Matches Editor.html,
+    // where marquee lived behind an explicit multi-select toggle and normal
+    // select never stole the orbit drag.
+    _applySelectControls() {
+        if (this.mode !== 'select') return;
+        if (this.multiSelectMode) {
+            this.controls.mouseButtons.LEFT = null;
+            this.controls.touches.ONE = null;
+        } else {
+            this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+            this.controls.touches.ONE = THREE.TOUCH.ROTATE;
+        }
+    }
+
+    // Groups the current selection under a new entity (a THREE.Group with
+    // userData.isEntity, so it outlines yellow and a plain click selects the
+    // whole thing; double-click drills into a child - see _onDblClick). The
+    // group's origin sits at the selection's world centroid, and each member
+    // is re-parented with world transforms preserved (Object3D.attach). The
+    // members leave editTarget's top level but stay reachable through the
+    // group; the raycast walk-up in the pointer handlers already stops at
+    // editTarget's direct child, so it lands on the group. Needs 2+ objects.
+    group() {
+        const members = this.selection.filter(o => o && o.parent === this.editTarget);
+        if (members.length < 2) return null;
+        _vCentroid.set(0, 0, 0);
+        members.forEach(o => { o.getWorldPosition(_vTmp); _vCentroid.add(_vTmp); });
+        _vCentroid.multiplyScalar(1 / members.length);
+        const grp = new THREE.Group();
+        grp.userData.isEntity = true;
+        grp.name = 'Entity ' + (++this._entityCounter);
+        grp.position.copy(_vCentroid);
+        this.editTarget.add(grp);
+        grp.updateMatrixWorld(true);
+        // attach() preserves each child's world transform under the new parent.
+        members.forEach(o => grp.attach(o));
+        this._select(grp);
+        this._structureChanged();
+        return grp;
+    }
+
+    // Dissolves the selected entity group(s): re-parents their children back
+    // to editTarget (world transforms preserved) and removes the now-empty
+    // group, then selects the freed children. Non-entity selections are left
+    // alone. The inverse of group().
+    ungroup() {
+        const groups = this.selection.filter(o => o && o.userData && o.userData.isEntity);
+        if (!groups.length) return;
+        const freed = [];
+        groups.forEach(grp => {
+            // Snapshot children first - attach() mutates grp.children mid-loop.
+            grp.children.slice().forEach(child => {
+                this.editTarget.attach(child);
+                freed.push(child);
+            });
+            this.editTarget.remove(grp);
+        });
+        this.selection = freed;
+        this.selected = freed.length ? freed[freed.length - 1] : null;
+        this._refreshSelectionVisuals();
+        if (this.onSelectionChange) this.onSelectionChange(this.selected);
+        this._structureChanged();
+    }
+
+    // Public selection entry point for external UI (e.g. the outliner
+    // clicking a row). Thin wrapper over the internal _select.
+    select(obj, additive = false) { this._select(obj, additive); }
+
+    // Removes the current selection from the scene: detaches from its parent,
+    // drops it from collidables/addedShapes so the game stops colliding with
+    // it and it won't reappear, then clears the selection. Recurses into
+    // entity children so grouped meshes are cleaned up too.
+    deleteSelected() {
+        if (!this.selection.length) return;
+        const victims = this.selection.slice();
+        victims.forEach(obj => {
+            obj.traverse(n => {
+                if (this.collidables) {
+                    const ci = this.collidables.indexOf(n);
+                    if (ci >= 0) this.collidables.splice(ci, 1);
+                }
+                const ai = this.addedShapes.indexOf(n);
+                if (ai >= 0) this.addedShapes.splice(ai, 1);
+            });
+            if (obj.parent) obj.parent.remove(obj);
+        });
+        this._select(null);
+        this._structureChanged();
+    }
+
+    _structureChanged() { if (this.onStructureChange) this.onStructureChange(); }
+    _objectAdded(obj) { if (this.onObjectAdded) this.onObjectAdded(obj); }
+
+    // ---- Prefabs ----
+    // Serializes the PRIMARY selected object (a shape mesh, or an entity group
+    // with all its children) to a plain-JSON template the UI can stash in
+    // localStorage and re-instantiate later. Wireframe helper lines are
+    // stripped from the copy so they don't bake into the prefab. Returns null
+    // if nothing is selected. Group first if you want a multi-object prefab.
+    serializeSelected() {
+        const o = this.selected;
+        if (!o) return null;
+        o.updateMatrixWorld(true);
+        const clone = o.clone(true);
+        const helpers = [];
+        clone.traverse(n => { if (n.userData && n.userData.isWireframeHelper) helpers.push(n); });
+        helpers.forEach(h => { if (h.parent) h.parent.remove(h); });
+        return clone.toJSON();
+    }
+
+    // Rebuilds an object from a serializeSelected() template and drops it into
+    // the level in front of the camera (same spawn placement as addShape),
+    // registering its meshes as collidable and selecting it. Preserves the
+    // prefab's own rotation/scale and, for entities, its whole child
+    // hierarchy (so isEntity / double-click drill still work on the copy).
+    instantiate(json, baseName) {
+        if (!json) return null;
+        const obj = new THREE.ObjectLoader().parse(json);
+        const spawn = new THREE.Vector3();
+        this.camera.getWorldDirection(spawn).multiplyScalar(6).add(this.camera.position);
+        obj.position.copy(spawn);
+        obj.name = (baseName || obj.name || 'Prefab') + ' ' + (++this._shapeCounter);
+        this.editTarget.add(obj);
+        obj.updateMatrixWorld(true);
+        obj.traverse(n => {
+            if (n.isMesh && this.collidables && !this.collidables.includes(n)) this.collidables.push(n);
+        });
+        // Only surface-snap a plain mesh; snapping an entity would drop its
+        // group origin onto the surface and sink the children below it.
+        if (this.snapEnabled && obj.isMesh && !this._placeViaScreenCenterRay(obj)) this._trySnapToSurface(obj);
+        if (obj.isMesh) this.addedShapes.push(obj);
+        this._select(obj);
+        this._objectAdded(obj);
+        this._structureChanged();
+        return obj;
+    }
 
     // Both snap raycasts below need to hit the plain grass ground too, not
     // just built level objects - `window.ground` (the big flat plane) is
@@ -374,6 +650,8 @@ export class LevelEditor {
         mesh.castShadow = true; mesh.receiveShadow = true;
         mesh.userData.shapeType = type;
         mesh.userData.params = params;
+        // Name it so it's identifiable in the outliner (Box 1, Sphere 2, ...).
+        mesh.name = type.charAt(0).toUpperCase() + type.slice(1) + ' ' + (++this._shapeCounter);
 
         const spawnPos = new THREE.Vector3();
         this.camera.getWorldDirection(spawnPos).multiplyScalar(6).add(this.camera.position);
@@ -405,6 +683,8 @@ export class LevelEditor {
 
         this.addedShapes.push(mesh);
         this._select(mesh);
+        this._objectAdded(mesh);
+        this._structureChanged();
         return mesh;
     }
 
@@ -461,43 +741,283 @@ export class LevelEditor {
             return;
         }
 
+        // SELECT mode splits by sub-mode:
+        //  - MULTI: a press begins a *pending* marquee - the choice between a
+        //    plain single-select (a click that never moved) and a box-select
+        //    (a drag) is deferred to pointerup. It deliberately does NOT
+        //    raycast-select on the way down (the press point can sit over
+        //    distant background even when you mean to drag a box across empty
+        //    foreground - letting that pre-empt the drag was the "marquee only
+        //    selects one" bug). OrbitControls' left-drag is off in this mode.
+        //  - SINGLE: no marquee at all. OrbitControls keeps left-drag to orbit
+        //    the camera; we only remember the press point so pointerup can
+        //    tell a select-click (didn't move) from an orbit-drag (did move).
+        if (this.mode === 'select' && (e.pointerType !== 'mouse' || e.button === 0)) {
+            this._marqueeShift = e.shiftKey;
+            this._marqueeStart.set(e.clientX, e.clientY);
+            if (this.multiSelectMode) {
+                this._marqueePending = true;
+                this._marqueeActive = false;
+                this._selectClickPending = false;
+            } else {
+                this._marqueePending = false;
+                this._marqueeActive = false;
+                this._selectClickPending = true;
+            }
+            return;
+        }
+
         const hits = this.raycaster.intersectObjects(this.editTarget.children, true);
         if (hits.length > 0) {
             let obj = hits[0].object;
             while (obj.parent && obj.parent !== this.editTarget) obj = obj.parent;
-            this._select(obj);
-        } else {
+            // Shift-click adds/removes from the selection (multi-select);
+            // plain click replaces it with just this object.
+            this._select(obj, e.shiftKey);
+        } else if (!e.shiftKey) {
+            // Plain click on empty space clears; shift-click on empty space
+            // leaves the current multi-selection alone.
             this._select(null);
         }
     }
 
     _onPointerMove(e) {
-        if (!window.editorModeActive || this.mode !== 'shape') return;
+        if (!window.editorModeActive) return;
+        if (this._marqueePending || this._marqueeActive) {
+            const dx = e.clientX - this._marqueeStart.x, dy = e.clientY - this._marqueeStart.y;
+            // Promote pending -> active only once the pointer actually
+            // moves past a small threshold, so a plain click stays a click.
+            if (!this._marqueeActive && (dx * dx + dy * dy) > 16) {
+                this._marqueeActive = true;
+                this._marqueeEl.style.display = 'block';
+            }
+            if (this._marqueeActive) {
+                this._marqueeEl.style.left = Math.min(this._marqueeStart.x, e.clientX) + 'px';
+                this._marqueeEl.style.top = Math.min(this._marqueeStart.y, e.clientY) + 'px';
+                this._marqueeEl.style.width = Math.abs(e.clientX - this._marqueeStart.x) + 'px';
+                this._marqueeEl.style.height = Math.abs(e.clientY - this._marqueeStart.y) + 'px';
+            }
+            return;
+        }
+        if (this.mode !== 'shape') return;
         this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
         this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
         this.raycaster.setFromCamera(this.mouse, this.camera);
         this.shapeGizmo.pointerMove(e, this.raycaster);
     }
 
-    _onPointerUp() {
+    _onPointerUp(e) {
         if (!window.editorModeActive) return;
+        if (this._marqueePending || this._marqueeActive) {
+            const wasActive = this._marqueeActive;
+            this._marqueePending = false;
+            this._marqueeActive = false;
+            this._marqueeEl.style.display = 'none';
+            const ex = (e && e.clientX !== undefined) ? e.clientX : this._marqueeStart.x;
+            const ey = (e && e.clientY !== undefined) ? e.clientY : this._marqueeStart.y;
+            if (!wasActive) {
+                // Never dragged: treat as a plain click - raycast-select the
+                // object under the release point (or clear on empty). A tap
+                // is additive only with shift held; in multi mode a plain
+                // tap still replaces (selects the single object under it).
+                const tapAdditive = this._marqueeShift;
+                this.mouse.x = (ex / window.innerWidth) * 2 - 1;
+                this.mouse.y = -(ey / window.innerHeight) * 2 + 1;
+                this.raycaster.setFromCamera(this.mouse, this.camera);
+                const hits = this.raycaster.intersectObjects(this.editTarget.children, true);
+                if (hits.length > 0) {
+                    let obj = hits[0].object;
+                    while (obj.parent && obj.parent !== this.editTarget) obj = obj.parent;
+                    this._select(obj, tapAdditive);
+                } else if (!tapAdditive) {
+                    this._select(null);
+                }
+                return;
+            }
+            // Dragged: box-select every editTarget child overlapping the rect.
+            // The drag accumulates onto the existing selection in multi mode
+            // (or with shift); in single mode it replaces.
+            const dragAdditive = this._marqueeShift || this.multiSelectMode;
+            const minX = Math.min(this._marqueeStart.x, ex), maxX = Math.max(this._marqueeStart.x, ex);
+            const minY = Math.min(this._marqueeStart.y, ey), maxY = Math.max(this._marqueeStart.y, ey);
+            const picked = [];
+            this.editTarget.children.forEach(o => { if (o.userData && o.userData.isWireframeHelper) return; if (this._checkIntersectScreen(o, minX, minY, maxX, maxY)) picked.push(o); });
+            if (!dragAdditive) this.selection = [];
+            picked.forEach(o => { if (!this.selection.includes(o)) this.selection.push(o); });
+            this.selected = this.selection.length ? this.selection[this.selection.length - 1] : null;
+            this._refreshSelectionVisuals();
+            if (this.onSelectionChange) this.onSelectionChange(this.selected);
+            return;
+        }
+        // Single select mode: OrbitControls owned the drag. If the pointer
+        // barely moved it was a select-click (raycast-select under it);
+        // if it moved, it was an orbit-drag - leave the selection alone.
+        if (this._selectClickPending) {
+            this._selectClickPending = false;
+            const ex = (e && e.clientX !== undefined) ? e.clientX : this._marqueeStart.x;
+            const ey = (e && e.clientY !== undefined) ? e.clientY : this._marqueeStart.y;
+            const dx = ex - this._marqueeStart.x, dy = ey - this._marqueeStart.y;
+            if ((dx * dx + dy * dy) > 25) return; // dragged past ~5px -> orbit, not a click
+            const clickAdditive = this._marqueeShift;
+            this.mouse.x = (ex / window.innerWidth) * 2 - 1;
+            this.mouse.y = -(ey / window.innerHeight) * 2 + 1;
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+            const hits = this.raycaster.intersectObjects(this.editTarget.children, true);
+            if (hits.length > 0) {
+                let obj = hits[0].object;
+                while (obj.parent && obj.parent !== this.editTarget) obj = obj.parent;
+                this._select(obj, clickAdditive);
+            } else if (!clickAdditive) {
+                this._select(null);
+            }
+            return;
+        }
         if (this.shapeGizmo.pointerUp()) this.controls.enabled = true;
     }
 
-    _select(obj) {
-        this.selected = obj;
-        if (this.mode === 'shape') {
-            this._syncShapeGizmo();
-        } else {
-            this.gizmo.attach(obj);
+    // Double-click drills INTO an entity: single-click selects the whole
+    // entity group (yellow), double-click steps one level deeper toward the
+    // child under the cursor. Repeated double-clicks keep drilling through
+    // nested entities down to the leaf mesh. Only meaningful in select mode.
+    _onDblClick(e) {
+        if (!window.editorModeActive || this.mode !== 'select') return;
+        this.mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        this.mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        this.raycaster.setFromCamera(this.mouse, this.camera);
+        const hits = this.raycaster.intersectObjects(this.editTarget.children, true);
+        if (!hits.length) return;
+        // Build the ancestor chain from the top-level editTarget child (index
+        // 0) down to the hit node, skipping wireframe helpers.
+        const chain = [];
+        let c = hits[0].object;
+        while (c && c !== this.editTarget) {
+            if (!(c.userData && c.userData.isWireframeHelper)) chain.unshift(c);
+            c = c.parent;
         }
-        if (this.onSelectionChange) this.onSelectionChange(obj);
+        if (!chain.length) return;
+        // Find the deepest node in the chain that's already selected, then
+        // select one level deeper (or the top entity if nothing here is
+        // selected yet, or stay on the leaf if already at the bottom).
+        let ds = -1;
+        for (let i = 0; i < chain.length; i++) if (this.selection.includes(chain[i])) ds = i;
+        let target;
+        if (ds === -1) target = chain[0];
+        else if (ds < chain.length - 1) target = chain[ds + 1];
+        else target = chain[ds];
+        this._select(target);
+    }
+
+    // True if `obj`'s world-space bounding box projects to a screen rect
+    // that overlaps the given marquee rectangle (all in CSS pixels). Mirrors
+    // Editor.html's own checkIntersect - projects the 8 box corners, takes
+    // their screen-space AABB, and does a 2D overlap test.
+    _checkIntersectScreen(obj, minX, minY, maxX, maxY) {
+        this._marqueeBox.setFromObject(obj);
+        if (this._marqueeBox.isEmpty() || !isFinite(this._marqueeBox.min.x)) return false;
+        const b = this._marqueeBox;
+        let sMinX = Infinity, sMaxX = -Infinity, sMinY = Infinity, sMaxY = -Infinity;
+        for (let i = 0; i < 8; i++) {
+            _vTmp.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z);
+            _vTmp.project(this.camera);
+            if (_vTmp.z > 1) return false; // behind the camera
+            const sx = (_vTmp.x * 0.5 + 0.5) * window.innerWidth;
+            const sy = (-_vTmp.y * 0.5 + 0.5) * window.innerHeight;
+            sMinX = Math.min(sMinX, sx); sMaxX = Math.max(sMaxX, sx);
+            sMinY = Math.min(sMinY, sy); sMaxY = Math.max(sMaxY, sy);
+        }
+        return sMinX <= maxX && sMaxX >= minX && sMinY <= maxY && sMaxY >= minY;
+    }
+
+    // obj: the picked object (or null to clear). additive (shift-click):
+    // toggle obj in/out of the current selection instead of replacing it.
+    _select(obj, additive = false) {
+        if (additive && obj) {
+            const i = this.selection.indexOf(obj);
+            if (i >= 0) this.selection.splice(i, 1); else this.selection.push(obj);
+        } else {
+            this.selection = obj ? [obj] : [];
+        }
+        // Primary = last one still in the set (drives shape mode + props
+        // panel, which only make sense for a single object).
+        this.selected = this.selection.length ? this.selection[this.selection.length - 1] : null;
+        this._refreshSelectionVisuals();
+        if (this.onSelectionChange) this.onSelectionChange(this.selected);
+    }
+
+    // Re-applies outline + gizmo attachment for the current selection set.
+    // Split out of _select so grouping/ungrouping (later) can reuse it.
+    _refreshSelectionVisuals() {
+        // Outline every selected object. Yellow if the (primary) selection
+        // is an entity/parent group (userData.isEntity), white otherwise.
+        this.outlinePass.selectedObjects = this.selection.slice();
+        const anyEntity = this.selection.some(o => o.userData && o.userData.isEntity);
+        this.outlinePass.visibleEdgeColor.set(anyEntity ? '#ffff00' : '#ffffff');
+
+        if (this.mode === 'shape') {
+            // Shape mode only ever edits a single primary object.
+            this._syncShapeGizmo();
+            return;
+        }
+        if (this.mode === 'select') {
+            // Selection-only mode never shows a transform gizmo.
+            this.gizmo.detach();
+            return;
+        }
+        if (this.selection.length === 0) {
+            this.gizmo.detach();
+        } else if (this.selection.length === 1) {
+            this.gizmo.attach(this.selection[0]);
+        } else {
+            // Multi: anchor the gizmo on a fresh pivot at the selection's
+            // centroid (identity rotation/scale), and update() propagates
+            // its drag onto every member.
+            _vCentroid.set(0, 0, 0);
+            this.selection.forEach(o => { o.getWorldPosition(_vTmp); _vCentroid.add(_vTmp); });
+            _vCentroid.multiplyScalar(1 / this.selection.length);
+            this.pivot.position.copy(_vCentroid);
+            this.pivot.quaternion.identity();
+            this.pivot.scale.set(1, 1, 1);
+            this.pivot.updateMatrixWorld(true);
+            this.gizmo.attach(this.pivot);
+        }
     }
 
     update(delta) {
         this.controls.update();
         this.gizmo.update();
         if (this.mode === 'shape') this.shapeGizmo.update();
+
+        // Multi-select group move: while 2+ objects are selected and the
+        // gizmo is being dragged, the gizmo moves the shared `pivot`; here
+        // we propagate the pivot's transform delta (since drag start) onto
+        // every selected object, preserving their relative offsets. Uses
+        // full world-matrix deltas so translate/rotate/scale all work the
+        // same way. gizmo.activeAxis transitioning null->set marks the drag
+        // start (snapshot), set->null marks the end.
+        if (this.selection.length > 1) {
+            const dragging = !!this.gizmo.activeAxis;
+            if (dragging && !this._multiDragging) {
+                this._multiDragging = true;
+                this.pivot.updateMatrixWorld(true);
+                this._pivotStartInv.copy(this.pivot.matrixWorld).invert();
+                this._childStartMatrices = this.selection.map(o => { o.updateMatrixWorld(true); return o.matrixWorld.clone(); });
+            } else if (dragging && this._multiDragging) {
+                this.pivot.updateMatrixWorld(true);
+                _mDelta.multiplyMatrices(this.pivot.matrixWorld, this._pivotStartInv);
+                this.selection.forEach((o, i) => {
+                    if (!this._childStartMatrices[i]) return;
+                    _mTarget.multiplyMatrices(_mDelta, this._childStartMatrices[i]);
+                    // Bring the new world matrix back into o's local space
+                    // (its parent is editTarget) before decomposing.
+                    o.parent.updateMatrixWorld(true);
+                    _mParentInv.copy(o.parent.matrixWorld).invert();
+                    _mTarget.premultiply(_mParentInv);
+                    _mTarget.decompose(o.position, o.quaternion, o.scale);
+                });
+            } else if (!dragging && this._multiDragging) {
+                this._multiDragging = false;
+            }
+        }
         // Snap-while-dragging: checked here (once per rendered frame)
         // rather than from a pointermove handler - this class's own
         // pointermove listener is registered on the canvas, which (being
@@ -508,12 +1028,22 @@ export class LevelEditor {
         // moves this frame. Tight 1.5-unit distance (vs. addShape's
         // Infinity) so it only assists near a surface instead of yanking
         // the object away from a precise mid-air placement.
-        if (this.snapEnabled && this.mode === 'translate' && this.gizmo.activeAxis && this.selected) {
+        if (this.snapEnabled && this.mode === 'translate' && this.gizmo.activeAxis && this.selection.length === 1 && this.selected) {
             this._trySnapToSurface(this.selected, 1.5);
         }
     }
 
     render() {
-        this.renderer.render(this.scene, this.camera);
+        // Keep the composer's passes pointed at whichever camera is active
+        // this frame (free/player can be swapped live via setCameraMode,
+        // but this also covers the very first frame before any swap).
+        this.renderPass.camera = this.camera;
+        this.outlinePass.renderCamera = this.camera;
+        this.composer.render();
+    }
+
+    setSize(w, h) {
+        this.composer.setSize(w, h);
+        this.outlinePass.setSize(w, h);
     }
 }
