@@ -550,7 +550,7 @@ export function startGame(CharacterClass) {
     const _compGroundOrigin = new THREE.Vector3();
     const _compGroundList = [];
     const _compVisPos = new THREE.Vector3();   // player's VISUAL (fbxModel) world pos
-    window.companionEnabled = true;
+    window.companionEnabled = false;   // off by default - added from the panel ('Companion' → Add Companion)
     const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     const aiBotState = {
@@ -1012,6 +1012,14 @@ export function startGame(CharacterClass) {
     const aiBotDespawnBtn = document.getElementById('ai-bot-despawn-btn');
     if (aiBotSpawnBtn) aiBotSpawnBtn.addEventListener('pointerdown', spawnAiBot);
     if (aiBotDespawnBtn) aiBotDespawnBtn.addEventListener('pointerdown', despawnAiBot);
+
+    // Companion: off by default, added from the panel. updateCompanion spawns
+    // it lazily on the first enabled frame and just hides it when disabled.
+    const toggleCompanionEl = document.getElementById('toggle-companion');
+    if (toggleCompanionEl) {
+        toggleCompanionEl.checked = window.companionEnabled;
+        toggleCompanionEl.addEventListener('change', e => { window.companionEnabled = e.target.checked; });
+    }
 
     let jarTemplate = null;
     let brokenJarTemplate = null;
