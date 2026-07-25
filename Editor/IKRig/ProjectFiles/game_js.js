@@ -538,7 +538,9 @@ export function startGame(CharacterClass) {
     //    standing on the exact spot it would emerge (waits until you move).
     let companion = null;
     const COMP_FOLLOW_DIST = 1.8;   // manual-follow stand-off distance
-    const COMP_TRAIL_KEEP = 5.0;    // seconds of trail kept (must cover a climb)
+    const COMP_TRAIL_KEEP = 15.0;   // seconds of trail kept - long enough that after a
+                                    // fall the companion can walk back and re-replay the
+                                    // same recorded climb instead of being stuck below
     const _compTrail = [];          // {t,x,y,z,qx,qy,qz,qw,state}
     let _compTrailT = 0;
     let _compMode = 'follow';       // 'follow' | 'replay'
@@ -547,6 +549,7 @@ export function startGame(CharacterClass) {
     const _compFaceQuat = new THREE.Quaternion();
     const _compGroundOrigin = new THREE.Vector3();
     const _compGroundList = [];
+    const _compVisPos = new THREE.Vector3();   // player's VISUAL (fbxModel) world pos
     window.companionEnabled = true;
     const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
@@ -905,13 +908,19 @@ export function startGame(CharacterClass) {
         for (let i = 0; i < collidables.length; i++) _compGroundList.push(collidables[i]);
         _compGroundList.push(ground);
 
-        // Always record the player's exact pose + anim state into the trail.
+        // Always record the player's pose + anim state into the trail. Use the
+        // player's VISUAL position (fbxModel world pos), not the raw group: at
+        // the climb-end the group SNAPS to ledgeTarget while the model is
+        // offset back to hide it (see the isClimbingUp transition) - recording
+        // the compensated visual means the companion replays that SMOOTH climb-
+        // out instead of the raw root snap (the extra pop it used to show).
         const p = char.group.position, q = char.group.quaternion;
         const c = companion.group.position;
+        if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(p);
         _compTrailT += delta;
         const last = _compTrail.length ? _compTrail[_compTrail.length - 1] : null;
-        if (last && Math.hypot(p.x - last.x, p.y - last.y, p.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
-        _compTrail.push({ t: _compTrailT, x: p.x, y: p.y, z: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
+        if (last && Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
+        _compTrail.push({ t: _compTrailT, x: _compVisPos.x, y: _compVisPos.y, z: _compVisPos.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
         while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
 
         const gy = companionGroundY(c.x, c.z, c.y);
@@ -924,12 +933,10 @@ export function startGame(CharacterClass) {
             const wantT = _replayStartT + _replayT;
             let cr = endCr;
             for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t >= wantT) { cr = _compTrail[i]; break; } }
-            // About to top out onto the exact spot the player is standing? Hang
-            // and wait until they move (bodies can't share the spot).
-            const toppingOut = cr.y >= p.y - 0.6;
-            const blocked = toppingOut && Math.hypot(cr.x - p.x, cr.z - p.z) < 0.9;
+            // Wait (hang) if we'd top out onto the exact spot the player stands.
+            const blocked = cr.y >= p.y - 0.6 && Math.hypot(cr.x - p.x, cr.z - p.z) < 0.9;
             if (blocked) {
-                _replayT -= delta; // freeze the replay
+                _replayT -= delta;
                 let hangCr = cr;
                 for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t <= wantT && _compTrail[i].y <= p.y - 1.2) hangCr = _compTrail[i]; }
                 companion.group.position.set(hangCr.x, hangCr.y, hangCr.z);
@@ -938,11 +945,12 @@ export function startGame(CharacterClass) {
                 companion.update(delta);
                 return;
             }
+            // Pure replay of the recorded climb - exact pose + state.
             companion.group.position.set(cr.x, cr.y, cr.z);
             companion.group.quaternion.set(cr.qx, cr.qy, cr.qz, cr.qw);
             companion.setNetworkState([cr.x, cr.y, cr.z], [cr.qx, cr.qy, cr.qz, cr.qw], cr.state, false);
             companion.update(delta);
-            if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow'; // topped out / trail end
+            if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow';
             return;
         }
 
