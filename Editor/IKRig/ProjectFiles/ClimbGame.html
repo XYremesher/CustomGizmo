@@ -1674,14 +1674,7 @@
                 const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
                 const loader = new FBXLoader();
 
-                // Player model is swappable for A/B testing different-proportion
-                // rigs: open ClimbGame.html?char=tall for StickMan_Tall, or set
-                // window.charModelFile before load. The IK re-measures bone
-                // lengths from whatever skeleton loads, so proportions adapt;
-                // height-dependent tuning (ledge/hang offsets) may still be off.
-                const CHAR_MODEL_FILE = window.charModelFile
-                    || (new URLSearchParams(location.search).get('char') === 'tall' ? 'StickMan_Tall.fbx' : 'StickMan.fbx');
-                loader.load(baseUrl + CHAR_MODEL_FILE, (object) => {
+                loader.load(baseUrl + 'StickMan.fbx', (object) => {
                     this.fbxModel = object;
                     object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
                     
