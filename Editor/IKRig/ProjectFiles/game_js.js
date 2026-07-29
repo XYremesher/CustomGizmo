@@ -345,7 +345,7 @@ export function startGame(CharacterClass) {
     scene.add(compassMesh);
     window.compassMesh = compassMesh;
     const compassGltfLoader = new GLTFLoader();
-    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Compass.glb', (gltf) => {
+    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Compass.glb', (gltf) => {
         const model = gltf.scene;
         // The model's two halves (a yellow-tipped cone and a white-tipped
         // cone, base to base) are built pointing along local Y, spanning
@@ -1025,7 +1025,7 @@ export function startGame(CharacterClass) {
     let brokenJarTemplate = null;
     const fbxLoader = new FBXLoader();
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar.fbx', (object) => {
+    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar.fbx', (object) => {
         let originalMesh = null;
         object.traverse((child) => {
             if (child.isMesh && !originalMesh) originalMesh = child;
@@ -1063,7 +1063,7 @@ export function startGame(CharacterClass) {
         }
     });
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar_Broken.fbx', (object) => {
+    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar_Broken.fbx', (object) => {
         object.traverse((child) => {
             if (child.isMesh) {
                 child.castShadow = true;
@@ -1129,7 +1129,7 @@ export function startGame(CharacterClass) {
         return flat;
     }
     const gltfLoader = new GLTFLoader();
-    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/StarKey.glb', (gltf) => {
+    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.glb', (gltf) => {
         const object = gltf.scene;
         let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
@@ -1174,7 +1174,7 @@ export function startGame(CharacterClass) {
     // the level dropdown) just assembles the already-loaded scene. Tries
     // the local copy first (ProjectFiles/LevelModel/, kept alongside the
     // FBX clips so the dev server can reach it - the authored original
-    // lives outside the server root at Editor/PeakPunchers/LevelModel/), falls
+    // lives outside the server root at Editor/IKRig/LevelModel/), falls
     // back to the repo's raw URL like every other remote asset.
     let levelGlbScene = null;
     let pendingGlbLevelBuild = false;
@@ -1184,7 +1184,7 @@ export function startGame(CharacterClass) {
         if (pendingGlbLevelBuild) { pendingGlbLevelBuild = false; buildLevelFromGlb(); }
     };
     levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
-        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/LevelModel/Level.glb',
+        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
             onLevelGlbLoaded, undefined, (e) => console.error('Level.glb load failed:', e));
     });
 
@@ -2245,7 +2245,7 @@ export function startGame(CharacterClass) {
 
     function loadCubesProp(x, z) {
         const propLoader = new GLTFLoader();
-        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/LevelModel/Cubes.glb', (gltf) => {
+        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
             const model = gltf.scene;
             model.scale.setScalar(0.65);
             model.position.set(x, 0, z);

@@ -3,7 +3,7 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { RagdollPhysics } from './ragdoll_physics.js';
 import { LegIK } from './leg_ik.js';
 
-const BASE_URL = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/';
+const BASE_URL = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
 
 const REMOTE_ANIMS = [
     { name: 'idle', file: 'Idle.fbx' },

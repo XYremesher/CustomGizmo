@@ -61,7 +61,7 @@ server from this directory (e.g. `python -m http.server 8123`) and open
 ## Multiplayer / public link workflow
 
 The client HTML is served from GitHub Pages
-(`https://xyremesher.github.io/CustomGizmo/Editor/PeakPunchers/ProjectFiles/ClimbGame.html`,
+(`https://xyremesher.github.io/CustomGizmo/Editor/IKRig/ProjectFiles/ClimbGame.html`,
 10-minute CDN cache) — only the WebSocket relay needs to run somewhere
 reachable, since GitHub Pages can't host it. Workflow to get other people
 playing:

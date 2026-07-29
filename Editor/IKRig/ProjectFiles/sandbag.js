@@ -15,7 +15,7 @@ export class Sandbag {
                 this.flashStrength = 1.0;
 
                 const loader = new FBXLoader();
-                loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Combat/SandSack.fbx', (fbx) => {
+                loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
                     fbx.scale.setScalar(0.0065);
                     this.group.add(fbx);
                     fbx.updateMatrixWorld(true);

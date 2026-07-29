@@ -404,7 +404,7 @@
                 this.recoilRotation = new THREE.Vector3(0, 0, 0);
                 this.recoilVelocity = new THREE.Vector3(0, 0, 0);  
 
-                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/';
+                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
                 const loader = new FBXLoader();
 
                 loader.load(baseUrl + 'StickMan.fbx', (object) => {
@@ -1297,7 +1297,7 @@
         let brokenJarTemplate = null;
         const fbxLoader = new FBXLoader();
 
-        fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar.fbx', (object) => {
+        fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar.fbx', (object) => {
             let originalMesh = null;
             object.traverse((child) => {
                 if (child.isMesh && !originalMesh) {
@@ -1332,7 +1332,7 @@
             }
         });
 
-        fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar_Broken.fbx', (object) => {
+        fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar_Broken.fbx', (object) => {
             object.traverse((child) => {
                 if (child.isMesh) {
                     child.castShadow = true;
