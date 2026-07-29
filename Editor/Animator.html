@@ -1,0 +1,1671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Animation Track Editor</title>
+    <style>
+        :root {
+            --bg-dark: #121212;
+            --panel-bg: #1e1e1e;
+            --accent: #4CAF50;
+            --border: #333;
+            --text: #eee;
+            --selected: #2196F3;
+            --key-color: #fff;
+            --key-selected: #FFEB3B;
+            --overlap-color: rgba(255, 87, 34, 0.6);
+        }
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: var(--bg-dark);
+            color: var(--text);
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        #top-area {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #library-panel {
+            width: 320px;
+            flex-shrink: 0;
+            background: var(--panel-bg);
+            border-right: 1px solid var(--border);
+            padding: 15px;
+            overflow-y: auto;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+        #right-panel {
+            width: 250px;
+            flex-shrink: 0;
+            background: var(--panel-bg);
+            border-left: 1px solid var(--border);
+            padding: 15px;
+            overflow-y: auto;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            background: #000;
+        }
+        #timeline-area {
+            height: 300px;
+            background: var(--panel-bg);
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+        #timeline-header {
+            height: 40px;
+            background: #252525;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 12px;
+        }
+        #timeline-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #track-headers {
+            width: 140px;
+            background: #1a1a1a;
+            border-right: 1px solid var(--border);
+            overflow-y: hidden;
+            flex-shrink: 0;
+        }
+        #tracks-container {
+            flex: 1;
+            overflow-x: auto;
+            overflow-y: auto;
+            position: relative;
+            background: repeating-linear-gradient(90deg, transparent, transparent 99px, #2a2a2a 100px);
+            background-size: 100px 100%;
+            touch-action: none;
+        }
+        .track-wrapper {
+            display: flex;
+            border-bottom: 1px solid #2a2a2a;
+            position: relative;
+        }
+        .track-header {
+            height: 50px;
+            box-sizing: border-box;
+            border-bottom: 1px solid #2a2a2a;
+            padding: 5px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            position: relative;
+        }
+        .track-header input {
+            background: transparent;
+            border: 1px solid transparent;
+            color: #888;
+            font-size: 11px;
+            padding: 2px;
+            width: 60%;
+        }
+        .track-header input:hover, .track-header input:focus {
+            background: #2a2a2a;
+            border-color: #444;
+            color: #fff;
+        }
+        .track-header.selected {
+            background: #333;
+            border-left: 3px solid var(--accent);
+        }
+        .track-eye-btn {
+            position: absolute;
+            right: 25px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .track-eye-btn:hover { color: #fff; }
+        .track-delete-btn {
+            position: absolute;
+            right: 5px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            color: #ff5252;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            opacity: 0.5;
+        }
+        .track-delete-btn:hover {
+            opacity: 1;
+        }
+        .track-content {
+            height: 50px;
+            box-sizing: border-box;
+            border-bottom: 1px solid #2a2a2a;
+            position: relative;
+            width: 10000px;
+        }
+        .track-content[data-hidden="true"] {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+        .clip-block {
+            position: absolute;
+            height: 40px;
+            top: 5px;
+            background: #2e7d32;
+            border: 1px solid #4CAF50;
+            border-radius: 4px;
+            font-size: 11px;
+            line-height: 40px;
+            cursor: move;
+            user-select: none;
+            overflow: hidden;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            z-index: 5;
+            box-sizing: border-box;
+        }
+        .clip-block.selected-clip {
+            outline: 2px solid var(--selected);
+            outline-offset: -2px;
+            z-index: 11;
+        }
+        .clip-name {
+            pointer-events: none;
+            padding: 0 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .clip-block.layer-clip {
+            background: #000;
+            border-color: #444;
+        }
+        .clip-block.active {
+            border-color: #fff;
+            z-index: 10;
+        }
+        .trim-handle {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            cursor: ew-resize;
+            z-index: 20;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .trim-handle::after {
+            content: '';
+            width: 2px;
+            height: 15px;
+            background: #fff;
+            border-radius: 1px;
+        }
+        .trim-handle:hover {
+            background: rgba(255, 255, 255, 0.6);
+        }
+        .trim-handle.left { left: 0; }
+        .trim-handle.right { right: 0; }
+        
+        .overlap-marker {
+            position: absolute;
+            height: 40px;
+            top: 5px;
+            background: var(--overlap-color);
+            pointer-events: none;
+            z-index: 12;
+            border-radius: 4px;
+        }
+        .key-marker {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: var(--key-color);
+            top: 16px;
+            transform: rotate(45deg);
+            cursor: pointer;
+            z-index: 25;
+            border: 1px solid #000;
+        }
+        .key-marker.selected {
+            background: var(--key-selected);
+            transform: rotate(45deg) scale(1.3);
+            box-shadow: 0 0 5px var(--key-selected);
+        }
+        .loop-overlay {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 50;
+            pointer-events: none;
+        }
+        .loop-handle {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 10px;
+            background: rgba(255, 152, 0, 0.8);
+            cursor: ew-resize;
+            pointer-events: auto;
+        }
+        .loop-handle:hover {
+            background: rgba(255, 152, 0, 1);
+        }
+        #handle-start { right: 0; }
+        #handle-end { left: 0; }
+        #playhead {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 2px;
+            height: 100%;
+            background: #ff5252;
+            z-index: 100;
+            cursor: ew-resize;
+        }
+        #playhead::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -6px;
+            border-left: 7px solid transparent;
+            border-right: 7px solid transparent;
+            border-top: 10px solid #ff5252;
+        }
+        .control-btn {
+            background: #444;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-right: 6px;
+            text-transform: uppercase;
+        }
+        .control-btn:hover { background: #555; }
+        .control-btn.primary { background: var(--accent); }
+        .control-btn.blue { background: var(--selected); }
+        .control-btn.orange { background: #E65100; }
+        
+        h3 { font-size: 11px; margin: 15px 0 8px 0; text-transform: uppercase; color: #888; border-bottom: 1px solid #333; padding-bottom: 4px; }
+        
+        #hierarchy-tree {
+            font-size: 11px;
+            max-height: calc(100vh - 350px);
+            overflow-y: auto;
+            background: #151515;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .hierarchy-item {
+            cursor: pointer;
+            padding: 2px 5px;
+            border-radius: 2px;
+            white-space: nowrap;
+        }
+        .hierarchy-item:hover { background: #333; }
+        .hierarchy-item.selected { background: var(--selected); color: white; }
+
+        .list-item {
+            background: #2a2a2a;
+            margin-bottom: 6px;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .list-item button {
+            background: var(--accent);
+            border: none;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        
+        .axis-controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr auto auto;
+            gap: 5px;
+        }
+        .axis-btn {
+            background: #333;
+            border: 1px solid #444;
+            color: #ccc;
+            padding: 5px;
+            font-size: 10px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        .axis-btn:hover { background: #444; }
+        
+        .square-btn {
+            width: 26px;
+            height: 26px;
+            background: #333;
+            border: 1px solid #444;
+            color: #ccc;
+            cursor: pointer;
+            border-radius: 3px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 14px;
+            padding: 0;
+        }
+        .square-btn:hover { background: #444; color: #fff; }
+        .square-btn.active { background: var(--selected); border-color: var(--selected); color: #fff; }
+
+        .loop-inputs {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .loop-inputs input {
+            background: #2a2a2a;
+            color: #fff;
+            border: 1px solid #444;
+            width: 45px;
+            font-size: 11px;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="top-area">
+        <div id="library-panel">
+            <h3>Import Model</h3>
+            <input type="file" id="model-upload" accept=".fbx,.glb,.gltf" style="width:100%; font-size:11px;">
+            
+            <div class="axis-controls" style="margin-top:10px;">
+                <button class="axis-btn" onclick="setRotation(-90)">Rot -90° X</button>
+                <button class="axis-btn" onclick="setRotation(0)">Rot 0° X</button>
+                <button class="axis-btn" onclick="setRotation(90)">Rot 90° X</button>
+                <button id="toggle-space-btn" class="square-btn" onclick="toggleSpace()" title="Toggle World/Local Space">L</button>
+                <button id="toggle-joints-btn" class="square-btn" onclick="toggleJoints()" title="Toggle Joints Overlay">🦴</button>
+            </div>
+
+            <h3>Keyframe Tools</h3>
+            <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:5px;">
+                <button class="control-btn blue" onclick="addLayerClip()">+ New Layer</button>
+                <button class="control-btn primary" onclick="setKey()">Set Key (K)</button>
+                <button class="control-btn" onclick="performUndo()">Undo (Ctrl+Z)</button>
+            </div>
+            <div style="font-size: 10px; color: #666; margin-top: 5px;">W: Translate | E: Rotate | R: Scale | F: Focus | Del: Delete | Ctrl+C/V: Copy/Paste Key</div>
+
+            <h3>Animation Library</h3>
+            <input type="file" id="anim-upload" accept=".fbx" multiple style="width:100%; font-size:11px; margin-bottom:10px;">
+            <div id="anim-library"></div>
+        </div>
+        <div id="canvas-container"></div>
+        <div id="right-panel">
+            <h3>Joint Hierarchy</h3>
+            <div id="hierarchy-tree">Loading...</div>
+        </div>
+    </div>
+
+    <div id="timeline-area">
+        <div id="timeline-header">
+            <button class="control-btn" id="play-pause-btn">Play</button>
+            <button class="control-btn" id="stop-btn">Stop</button>
+            <button class="control-btn orange" onclick="bakeTimeline()">Bake</button>
+            <button class="control-btn blue" onclick="setLoopToSelection()">Loop Selection</button>
+            <button class="control-btn" onclick="addTrack()">+ Track</button>
+            
+            <div class="loop-inputs" style="margin-left:15px;">
+                <label style="font-size:10px; color:#888;">LOOP:</label>
+                <input type="number" id="loop-start" value="0" step="0.1">
+                <span style="color:#888;">-</span>
+                <input type="number" id="loop-end" value="10" step="0.1">
+            </div>
+
+            <span id="time-display" style="margin-left:20px; font-family:monospace; font-size:14px; color:#4CAF50;">00:00.00</span>
+            <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+                <label style="font-size:10px; color:#888;">ZOOM:</label>
+                <input type="range" id="zoom-slider" min="20" max="600" value="100" style="width:100px;">
+            </div>
+        </div>
+        <div id="timeline-body">
+            <div id="track-headers"></div>
+            <div id="tracks-container" onclick="seekTimeline(event)">
+                <div id="loop-left" class="loop-overlay"><div class="loop-handle" id="handle-start"></div></div>
+                <div id="loop-right" class="loop-overlay"><div class="loop-handle" id="handle-end"></div></div>
+                <div id="playhead"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, controls, gizmo, mixer, clock;
+        let model, modelContainer, animationClips = [];
+        let timelineClips = [];
+        let trackCount = 0;
+        let selectedTrackId = 0;
+        let selectedBones = [];
+        let selectedKeyData = null;
+        let selectedClips = new Set();
+        let isGizmoDragging = false;
+        let isPlayheadDragging = false;
+        let isClipDragging = false;
+        let isLoopStartDragging = false;
+        let isLoopEndDragging = false;
+        let dragStartX = 0;
+        let dragOffsets = new Map();
+        
+        let skeletonHelper = null;
+        let showJoints = false;
+        let highlightMeshes = [];
+        
+        let isPlaying = false;
+        let isBaking = false;
+        let currentTime = 0;
+        let pixelsPerSecond = 100;
+        let lastEvalTime = -1;
+        let needsAnimUpdate = true;
+        
+        let copiedKeyData = null;
+        let undoStack = [];
+        let clipIdCounter = 0;
+        const FPS = 30;
+
+        function snap(t) {
+            return Math.round(t * FPS) / FPS;
+        }
+
+        function cloneKeys(keysObj) {
+            const cloned = {};
+            for(let b in keysObj) {
+                cloned[b] = keysObj[b].map(k => ({
+                    time: k.time,
+                    pos: k.pos.clone(),
+                    quat: k.quat.clone(),
+                    scale: k.scale.clone()
+                }));
+            }
+            return cloned;
+        }
+
+        function saveUndoState() {
+            const state = [];
+            timelineClips.forEach(c => {
+                if(c.isLayer) {
+                    state.push({ clipId: c.clipId, keys: cloneKeys(c.keys) });
+                }
+            });
+            undoStack.push(state);
+            if(undoStack.length > 50) undoStack.shift();
+        }
+
+        window.performUndo = function() {
+            if(undoStack.length === 0) return;
+            const state = undoStack.pop();
+            state.forEach(savedLayer => {
+                const layer = timelineClips.find(c => c.clipId === savedLayer.clipId);
+                if(layer) {
+                    layer.keys = cloneKeys(savedLayer.keys);
+                    renderKeys(layer);
+                }
+            });
+            needsAnimUpdate = true;
+            applyAnimationsAndLayers(0, true, false);
+            selectedKeyData = null;
+        };
+
+        const fbxLoader = new FBXLoader();
+        const gltfLoader = new GLTFLoader();
+
+        const lerpPos = new THREE.Vector3();
+        const lerpQuat = new THREE.Quaternion();
+        const lerpScale = new THREE.Vector3(1, 1, 1);
+        const restPoses = new Map();
+
+        const DEFAULT_MODEL_URL = "https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/lowpoly_character.glb";
+
+        function updateHighlights() {
+            highlightMeshes.forEach(h => scene.remove(h.mesh));
+            highlightMeshes = [];
+            selectedBones.forEach(bone => {
+                const hGeo = new THREE.SphereGeometry(0.05, 16, 16);
+                const hMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false });
+                const mesh = new THREE.Mesh(hGeo, hMat);
+                mesh.renderOrder = 1000;
+                scene.add(mesh);
+                highlightMeshes.push({ mesh, bone });
+            });
+        }
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x111111);
+            clock = new THREE.Clock();
+
+            modelContainer = new THREE.Group();
+            scene.add(modelContainer);
+
+            const canvasHeight = window.innerHeight - 300;
+            const canvasWidth = window.innerWidth - 570;
+
+            camera = new THREE.PerspectiveCamera(45, canvasWidth / canvasHeight, 0.01, 100000);
+            camera.position.set(3, 3, 6);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(canvasWidth, canvasHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 1, 0);
+            controls.enableDamping = true;
+
+            gizmo = new TransformControls(camera, renderer.domElement);
+            gizmo.setMode('rotate');
+            gizmo.setSpace('local');
+            gizmo.addEventListener('dragging-changed', (event) => {
+                controls.enabled = !event.value;
+                isGizmoDragging = event.value;
+            });
+            scene.add(gizmo);
+
+            scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2));
+            const dl = new THREE.DirectionalLight(0xffffff, 2);
+            dl.position.set(5, 10, 5);
+            scene.add(dl);
+            scene.add(new THREE.GridHelper(20, 20, 0x333333, 0x222222));
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT') return;
+                const key = e.key.toLowerCase();
+                if (key === 'k') setKey();
+                if (key === 'delete' || key === 'backspace') deleteSelectedItems();
+                if (key === 'w') gizmo.setMode('translate');
+                if (key === 'e') gizmo.setMode('rotate');
+                if (key === 'r') gizmo.setMode('scale');
+                if ((e.ctrlKey || e.metaKey) && key === 'c') copyKey();
+                if ((e.ctrlKey || e.metaKey) && key === 'v') pasteKey();
+                if ((e.ctrlKey || e.metaKey) && key === 'z') window.performUndo();
+                if (key === 'f' && selectedBones.length > 0) {
+                    const targetPos = new THREE.Vector3();
+                    selectedBones[selectedBones.length - 1].getWorldPosition(targetPos);
+                    controls.target.copy(targetPos);
+                    const dir = new THREE.Vector3().subVectors(camera.position, targetPos).normalize();
+                    camera.position.copy(targetPos).add(dir.multiplyScalar(2));
+                    controls.update();
+                }
+            });
+            
+            document.getElementById('model-upload').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) loadModelFromURL(URL.createObjectURL(file), file.name.split('.').pop().toLowerCase());
+            };
+            
+            document.getElementById('anim-upload').onchange = loadAnimations;
+            document.getElementById('play-pause-btn').onclick = togglePlayback;
+            document.getElementById('stop-btn').onclick = stopPlayback;
+            
+            document.getElementById('zoom-slider').oninput = (e) => {
+                pixelsPerSecond = parseInt(e.target.value);
+                updateTimelineVisuals();
+            };
+
+            document.getElementById('loop-start').oninput = updateLoopVisuals;
+            document.getElementById('loop-end').oninput = updateLoopVisuals;
+
+            window.setRotation = (deg) => {
+                if (modelContainer) {
+                    modelContainer.rotation.x = THREE.MathUtils.degToRad(deg);
+                    needsAnimUpdate = true;
+                }
+            };
+
+            window.toggleSpace = function() {
+                const newSpace = gizmo.space === 'local' ? 'world' : 'local';
+                gizmo.setSpace(newSpace);
+                document.getElementById('toggle-space-btn').innerText = newSpace === 'local' ? 'L' : 'W';
+            };
+
+            window.toggleJoints = function() {
+                showJoints = !showJoints;
+                const btn = document.getElementById('toggle-joints-btn');
+                if (showJoints) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+                if (skeletonHelper) {
+                    skeletonHelper.visible = showJoints;
+                    needsAnimUpdate = true;
+                }
+            };
+
+            initDragHandlers();
+            
+            for(let i=0; i<3; i++) addTrack(i === 1 ? 'Layer Track' : `Track ${i}`);
+            
+            selectTrack(0);
+            loadModelFromURL(DEFAULT_MODEL_URL, 'glb');
+            updateLoopVisuals();
+        }
+
+        function selectTrack(id) {
+            selectedTrackId = id;
+            document.querySelectorAll('.track-header').forEach(el => {
+                if (parseInt(el.dataset.trackId) === id) {
+                    el.classList.add('selected');
+                } else {
+                    el.classList.remove('selected');
+                }
+            });
+        }
+
+        function addTrack(name = null) {
+            const id = trackCount++;
+            const headers = document.getElementById('track-headers');
+            const container = document.getElementById('tracks-container');
+            
+            const header = document.createElement('div');
+            header.className = 'track-header';
+            header.dataset.trackId = id;
+            header.onclick = (e) => {
+                if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON') {
+                    selectTrack(id);
+                }
+            };
+            
+            const input = document.createElement('input');
+            input.value = name || `Track ${id}`;
+            header.appendChild(input);
+
+            const eyeBtn = document.createElement('button');
+            eyeBtn.className = 'track-eye-btn';
+            eyeBtn.innerHTML = '👁';
+            eyeBtn.onclick = () => toggleTrackVisibility(id, eyeBtn);
+            header.appendChild(eyeBtn);
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'track-delete-btn';
+            delBtn.innerHTML = '×';
+            delBtn.onclick = () => removeTrack(id, header);
+            header.appendChild(delBtn);
+
+            headers.appendChild(header);
+            
+            const content = document.createElement('div');
+            content.className = 'track-content';
+            content.dataset.trackId = id;
+            content.dataset.hidden = 'false';
+            container.appendChild(content);
+            needsAnimUpdate = true;
+        }
+        window.addTrack = addTrack;
+
+        function toggleTrackVisibility(id, btn) {
+            const content = document.querySelector(`.track-content[data-track-id="${id}"]`);
+            if (!content) return;
+            const isHidden = content.dataset.hidden === 'true';
+            if (isHidden) {
+                content.dataset.hidden = 'false';
+                btn.style.opacity = '1';
+                btn.innerHTML = '👁';
+            } else {
+                content.dataset.hidden = 'true';
+                btn.style.opacity = '0.4';
+                btn.innerHTML = '—';
+            }
+            needsAnimUpdate = true;
+        }
+        window.toggleTrackVisibility = toggleTrackVisibility;
+
+        function isTrackHidden(id) {
+            const content = document.querySelector(`.track-content[data-track-id="${id}"]`);
+            return content && content.dataset.hidden === 'true';
+        }
+
+        function removeTrack(id, headerElement) {
+            timelineClips = timelineClips.filter(c => {
+                if (c.trackId === id) {
+                    c.div.remove();
+                    if(c.action) { c.action.stop(); }
+                    return false;
+                }
+                return true;
+            });
+            headerElement.remove();
+            const content = document.querySelector(`.track-content[data-track-id="${id}"]`);
+            if(content) content.remove();
+            
+            if (selectedTrackId === id) {
+                const firstAvailable = document.querySelector('.track-header');
+                if (firstAvailable) selectTrack(parseInt(firstAvailable.dataset.trackId));
+            }
+            
+            updateOverlaps();
+            needsAnimUpdate = true;
+        }
+
+        function initDragHandlers() {
+            const container = document.getElementById('tracks-container');
+            container.addEventListener('scroll', () => {
+                document.getElementById('track-headers').scrollTop = container.scrollTop;
+            });
+
+            document.getElementById('playhead').onmousedown = (e) => { isPlayheadDragging = true; e.stopPropagation(); };
+            document.getElementById('handle-start').onmousedown = (e) => { isLoopStartDragging = true; e.stopPropagation(); };
+            document.getElementById('handle-end').onmousedown = (e) => { isLoopEndDragging = true; e.stopPropagation(); };
+
+            window.addEventListener('mousemove', (e) => {
+                const rect = container.getBoundingClientRect();
+                const x = e.clientX - rect.left + container.scrollLeft;
+                const time = Math.max(0, x / pixelsPerSecond);
+
+                if (isPlayheadDragging) {
+                    currentTime = snap(time);
+                    updatePlayhead();
+                }
+
+                if (isLoopStartDragging) {
+                    const end = parseFloat(document.getElementById('loop-end').value);
+                    document.getElementById('loop-start').value = snap(Math.min(time, end - 0.1)).toFixed(2);
+                    updateLoopVisuals();
+                }
+
+                if (isLoopEndDragging) {
+                    const start = parseFloat(document.getElementById('loop-start').value);
+                    document.getElementById('loop-end').value = snap(Math.max(time, start + 0.1)).toFixed(2);
+                    updateLoopVisuals();
+                }
+
+                if (isClipDragging) {
+                    const deltaT = (e.clientX - dragStartX) / pixelsPerSecond;
+                    selectedClips.forEach(c => {
+                        let newStartTime = snap(Math.max(0, dragOffsets.get(c) + deltaT));
+                        c.startTime = newStartTime;
+                        c.div.style.left = (newStartTime * pixelsPerSecond) + 'px';
+                    });
+
+                    if (selectedClips.size === 1) {
+                        const inst = selectedClips.values().next().value;
+                        const relativeY = e.clientY - rect.top + container.scrollTop;
+                        const trackContents = Array.from(document.querySelectorAll('.track-content'));
+                        
+                        let newTrackId = inst.trackId;
+                        for(let i=0; i<trackContents.length; i++) {
+                            if (relativeY >= i*51 && relativeY < (i+1)*51) {
+                                newTrackId = parseInt(trackContents[i].dataset.trackId);
+                                break;
+                            }
+                        }
+                        
+                        if (newTrackId !== inst.trackId) {
+                            const newParent = document.querySelector(`.track-content[data-track-id="${newTrackId}"]`);
+                            if (newParent) {
+                                newParent.appendChild(inst.div);
+                                inst.trackId = newTrackId;
+                            }
+                        }
+                    }
+                    updateOverlaps();
+                    needsAnimUpdate = true;
+                }
+            });
+
+            window.addEventListener('mouseup', () => {
+                isPlayheadDragging = false;
+                isClipDragging = false;
+                isLoopStartDragging = false;
+                isLoopEndDragging = false;
+            });
+        }
+
+        function updateLoopVisuals() {
+            const loopStart = parseFloat(document.getElementById('loop-start').value) || 0;
+            const loopEnd = parseFloat(document.getElementById('loop-end').value) || 10;
+            
+            document.getElementById('loop-left').style.width = (loopStart * pixelsPerSecond) + 'px';
+            document.getElementById('loop-right').style.left = (loopEnd * pixelsPerSecond) + 'px';
+            document.getElementById('loop-right').style.width = '10000px'; 
+        }
+
+        async function loadModelFromURL(url, type) {
+            if (model) {
+                modelContainer.remove(model);
+                model.traverse(child => {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else child.material.dispose();
+                    }
+                });
+            }
+            if (skeletonHelper) {
+                scene.remove(skeletonHelper);
+            }
+            
+            timelineClips = [];
+            selectedClips.clear();
+            document.querySelectorAll('.clip-block').forEach(el => el.remove());
+            gizmo.detach();
+            selectedBones = []; 
+            updateHighlights();
+            
+            restPoses.clear();
+            undoStack = [];
+
+            const onLoad = (obj) => {
+                model = obj.scene || obj;
+                
+                if (url === DEFAULT_MODEL_URL) {
+                    model.traverse((child) => {
+                        if (child.isMesh) {
+                            child.material = new THREE.MeshStandardMaterial({
+                                color: 0xffffff,
+                                roughness: 0.7,
+                                metalness: 0.1,
+                                side: THREE.DoubleSide
+                            });
+                        }
+                    });
+                }
+                
+                modelContainer.add(model);
+
+                skeletonHelper = new THREE.SkeletonHelper(model);
+                skeletonHelper.material.depthTest = false; 
+                skeletonHelper.material.depthWrite = false; 
+                skeletonHelper.material.transparent = true;
+                skeletonHelper.material.color.setHex(0xffff00);
+                skeletonHelper.renderOrder = 999; 
+                skeletonHelper.visible = showJoints;
+                scene.add(skeletonHelper);
+
+                mixer = new THREE.AnimationMixer(model);
+                buildHierarchy(model);
+                needsAnimUpdate = true;
+            };
+
+            if (type === 'fbx') fbxLoader.load(url, onLoad);
+            else gltfLoader.load(url, onLoad);
+        }
+
+        function buildHierarchy(root) {
+            const tree = document.getElementById('hierarchy-tree');
+            tree.innerHTML = '';
+            restPoses.clear(); 
+            
+            let boneFound = false;
+            const addedNames = new Set();
+
+            root.traverse(child => {
+                if (!child.name || addedNames.has(child.name)) return;
+
+                const name = child.name.toLowerCase();
+                const isTarget = child.isBone || 
+                                 child.type === 'Bone' || 
+                                 name.includes('joint') || 
+                                 name.includes('mixamorig') ||
+                                 name.includes('bone') ||
+                                 name.includes('bip') ||
+                                 name.includes('spine') ||
+                                 name.includes('armature');
+                                 
+                if (isTarget) {
+                    boneFound = true;
+                    addedNames.add(child.name);
+                    
+                    restPoses.set(child.name, {
+                        position: child.position.clone(),
+                        quaternion: child.quaternion.clone(),
+                        scale: child.scale.clone()
+                    });
+
+                    const item = document.createElement('div');
+                    item.className = 'hierarchy-item';
+                    item.innerText = child.name;
+                    item.onclick = (e) => {
+                        if (e.ctrlKey || e.metaKey) {
+                            if (selectedBones.includes(child)) {
+                                selectedBones = selectedBones.filter(b => b !== child);
+                                item.classList.remove('selected');
+                            } else {
+                                selectedBones.push(child);
+                                item.classList.add('selected');
+                            }
+                        } else {
+                            document.querySelectorAll('.hierarchy-item').forEach(i => i.classList.remove('selected'));
+                            selectedBones = [child];
+                            item.classList.add('selected');
+                        }
+                        const activeBone = selectedBones[selectedBones.length - 1] || null;
+                        if (activeBone) gizmo.attach(activeBone);
+                        else gizmo.detach();
+                        updateHighlights();
+                    };
+                    tree.appendChild(item);
+                }
+            });
+            
+            if (!boneFound) {
+                root.traverse(child => {
+                    if (!child.name || addedNames.has(child.name)) return;
+
+                    if ((child.isMesh || child.type === 'Group' || child.type === 'Object3D') && child !== root) {
+                        addedNames.add(child.name);
+
+                        restPoses.set(child.name, {
+                            position: child.position.clone(),
+                            quaternion: child.quaternion.clone(),
+                            scale: child.scale.clone()
+                        });
+
+                        const item = document.createElement('div');
+                        item.className = 'hierarchy-item';
+                        item.innerText = child.name || child.type;
+                        item.onclick = (e) => {
+                            if (e.ctrlKey || e.metaKey) {
+                                if (selectedBones.includes(child)) {
+                                    selectedBones = selectedBones.filter(b => b !== child);
+                                    item.classList.remove('selected');
+                                } else {
+                                    selectedBones.push(child);
+                                    item.classList.add('selected');
+                                }
+                            } else {
+                                document.querySelectorAll('.hierarchy-item').forEach(i => i.classList.remove('selected'));
+                                selectedBones = [child];
+                                item.classList.add('selected');
+                            }
+                            const activeBone = selectedBones[selectedBones.length - 1] || null;
+                            if (activeBone) gizmo.attach(activeBone);
+                            else gizmo.detach();
+                            updateHighlights();
+                        };
+                        tree.appendChild(item);
+                    }
+                });
+            }
+
+            if (tree.innerHTML === '') {
+                tree.innerText = "No objects found in file.";
+            }
+        }
+
+        function loadAnimations(e) {
+            Array.from(e.target.files).forEach(file => {
+                fbxLoader.load(URL.createObjectURL(file), (fbx) => {
+                    if (fbx.animations.length > 0) {
+                        const clip = fbx.animations[0];
+                        clip.name = file.name;
+                        animationClips.push(clip);
+                        const item = document.createElement('div');
+                        item.className = 'list-item';
+                        item.innerHTML = `<span>${clip.name}</span><button onclick="addClipToTrack('${clip.name}')">+</button>`;
+                        document.getElementById('anim-library').appendChild(item);
+                    }
+                });
+            });
+        }
+
+        window.addClipToTrack = function(name) {
+            if (!mixer) return;
+            const clip = animationClips.find(c => c.name === name);
+            createClipInstance(clip, currentTime, selectedTrackId, 'anim');
+            updateOverlaps();
+            needsAnimUpdate = true;
+        };
+
+        window.addLayerClip = function() {
+            if (!mixer) return;
+            createClipInstance({ name: "Layer", duration: 20, isLayer: true, keys: {} }, currentTime, selectedTrackId, 'layer');
+            updateOverlaps();
+            needsAnimUpdate = true;
+        };
+
+        window.setLoopToSelection = function() {
+            if (selectedClips.size === 0) return;
+            let minTime = Infinity;
+            let maxTime = -Infinity;
+            selectedClips.forEach(c => {
+                if (c.startTime < minTime) minTime = c.startTime;
+                if (c.startTime + c.duration > maxTime) maxTime = c.startTime + c.duration;
+            });
+            document.getElementById('loop-start').value = snap(minTime).toFixed(2);
+            document.getElementById('loop-end').value = snap(maxTime).toFixed(2);
+            updateLoopVisuals();
+        };
+
+        function setKey() {
+            if (selectedBones.length === 0 || !mixer) return;
+            const activeLayer = timelineClips.find(c => c.isLayer && currentTime >= c.startTime && currentTime <= c.startTime + c.duration && !isTrackHidden(c.trackId));
+            if (!activeLayer) return;
+            
+            saveUndoState();
+
+            const states = selectedBones.map(bone => ({
+                bone: bone,
+                curPos: bone.position.clone(),
+                curQuat: bone.quaternion.clone(),
+                curScale: bone.scale.clone(),
+                tempKeys: activeLayer.keys[bone.name] ? [...activeLayer.keys[bone.name]] : null
+            }));
+            
+            states.forEach(state => activeLayer.keys[state.bone.name] = []);
+            
+            applyAnimationsAndLayers(0, true, false); 
+            
+            const localTime = snap(currentTime - activeLayer.startTime);
+            const internalTime = snap(localTime + activeLayer.trimStart);
+
+            states.forEach(state => {
+                const basePosVal = state.bone.position.clone();
+                const baseQuatVal = state.bone.quaternion.clone();
+                const baseScaleVal = state.bone.scale.clone();
+                
+                const offsetPos = new THREE.Vector3().subVectors(state.curPos, basePosVal);
+                const offsetQuat = baseQuatVal.clone().invert().multiply(state.curQuat).normalize();
+                const offsetScale = new THREE.Vector3().set(
+                    baseScaleVal.x !== 0 ? state.curScale.x / baseScaleVal.x : 1,
+                    baseScaleVal.y !== 0 ? state.curScale.y / baseScaleVal.y : 1,
+                    baseScaleVal.z !== 0 ? state.curScale.z / baseScaleVal.z : 1
+                );
+                
+                if (state.tempKeys) activeLayer.keys[state.bone.name] = state.tempKeys;
+                if (!activeLayer.keys[state.bone.name]) activeLayer.keys[state.bone.name] = [];
+                
+                const existingKey = activeLayer.keys[state.bone.name].find(k => Math.abs(k.time - internalTime) < 0.01);
+                
+                const keyData = { 
+                    time: internalTime, 
+                    pos: state.curPos.clone(),
+                    quat: state.curQuat.clone(),
+                    scale: state.curScale.clone()
+                };
+                
+                if (existingKey) Object.assign(existingKey, keyData);
+                else activeLayer.keys[state.bone.name].push(keyData);
+                
+                activeLayer.keys[state.bone.name].sort((a,b) => a.time - b.time);
+                
+                state.bone.position.copy(state.curPos);
+                state.bone.quaternion.copy(state.curQuat);
+                state.bone.scale.copy(state.curScale);
+            });
+
+            renderKeys(activeLayer);
+            applyAnimationsAndLayers(0, true, false); 
+            needsAnimUpdate = true;
+        }
+        window.setKey = setKey;
+
+        function copyKey() {
+            if (!selectedKeyData) return;
+            const inst = selectedKeyData.instance;
+            const bone = selectedKeyData.boneName;
+            const idx = selectedKeyData.index;
+            const key = inst.keys[bone][idx];
+            copiedKeyData = {
+                boneName: bone,
+                key: {
+                    pos: key.pos.clone(),
+                    quat: key.quat.clone(),
+                    scale: key.scale.clone()
+                }
+            };
+        }
+
+        function pasteKey() {
+            if (!copiedKeyData || !mixer) return;
+            const activeLayer = timelineClips.find(c => c.isLayer && currentTime >= c.startTime && currentTime <= c.startTime + c.duration && !isTrackHidden(c.trackId));
+            if (!activeLayer) return;
+
+            saveUndoState();
+
+            const localTime = snap(currentTime - activeLayer.startTime);
+            const internalTime = snap(localTime + activeLayer.trimStart);
+            const boneName = copiedKeyData.boneName;
+
+            if (!activeLayer.keys[boneName]) activeLayer.keys[boneName] = [];
+            
+            const newKey = {
+                time: internalTime,
+                pos: copiedKeyData.key.pos.clone(),
+                quat: copiedKeyData.key.quat.clone(),
+                scale: copiedKeyData.key.scale.clone()
+            };
+
+            const existingIdx = activeLayer.keys[boneName].findIndex(k => Math.abs(k.time - internalTime) < 0.01);
+            if (existingIdx >= 0) {
+                activeLayer.keys[boneName][existingIdx] = newKey;
+            } else {
+                activeLayer.keys[boneName].push(newKey);
+            }
+            
+            activeLayer.keys[boneName].sort((a,b) => a.time - b.time);
+            renderKeys(activeLayer);
+            needsAnimUpdate = true;
+            applyAnimationsAndLayers(0, true, false);
+        }
+
+        function renderKeys(instance) {
+            if (!instance || !instance.div) return;
+            instance.div.querySelectorAll('.key-marker').forEach(el => el.remove());
+            for (const boneName in instance.keys) {
+                instance.keys[boneName].forEach((key, index) => {
+                    const visualTime = key.time - instance.trimStart;
+                    if (visualTime < 0 || visualTime > instance.duration) return;
+
+                    const marker = document.createElement('div');
+                    marker.className = 'key-marker';
+                    marker.style.left = (visualTime * pixelsPerSecond - 4) + 'px';
+                    marker.onmousedown = (e) => {
+                        e.stopPropagation();
+                        selectKey(instance, boneName, index, marker);
+                        saveUndoState();
+                        startKeyDrag(e, instance, boneName, index, marker);
+                    };
+                    instance.div.appendChild(marker);
+                });
+            }
+        }
+
+        function selectKey(instance, boneName, index, el) {
+            document.querySelectorAll('.key-marker').forEach(k => k.classList.remove('selected'));
+            el.classList.add('selected');
+            selectedKeyData = { instance, boneName, index };
+            const bone = model.getObjectByName(boneName);
+            if (bone) {
+                selectedBones = [bone];
+                document.querySelectorAll('.hierarchy-item').forEach(i => {
+                    if (i.innerText === boneName) i.classList.add('selected');
+                    else i.classList.remove('selected');
+                });
+                gizmo.attach(bone);
+                updateHighlights();
+                
+                const key = instance.keys[boneName][index];
+                currentTime = snap(instance.startTime + key.time - instance.trimStart);
+                updatePlayhead();
+                needsAnimUpdate = true;
+                applyAnimationsAndLayers(0, true);
+            }
+        }
+
+        function startKeyDrag(e, instance, boneName, index, el) {
+            const startX = e.clientX, startKeyTime = instance.keys[boneName][index].time;
+            const onMove = (me) => {
+                const deltaT = (me.clientX - startX) / pixelsPerSecond;
+                let newTime = snap(startKeyTime + deltaT);
+                if(newTime < instance.trimStart) newTime = instance.trimStart;
+                if(newTime > instance.originalDuration - instance.trimEnd) newTime = instance.originalDuration - instance.trimEnd;
+                instance.keys[boneName][index].time = newTime;
+                el.style.left = ((newTime - instance.trimStart) * pixelsPerSecond - 4) + 'px';
+                
+                currentTime = snap(instance.startTime + newTime - instance.trimStart);
+                updatePlayhead();
+                needsAnimUpdate = true;
+                applyAnimationsAndLayers(0, true);
+            };
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                instance.keys[boneName].sort((a,b) => a.time - b.time);
+                renderKeys(instance);
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        }
+
+        function deleteSelectedItems() {
+            if (selectedKeyData) {
+                saveUndoState();
+                const inst = selectedKeyData.instance;
+                if (inst.keys[selectedKeyData.boneName]) {
+                    inst.keys[selectedKeyData.boneName].splice(selectedKeyData.index, 1);
+                }
+                selectedKeyData = null;
+                renderKeys(inst);
+            } else if (selectedClips.size > 0) {
+                selectedClips.forEach(clip => {
+                    clip.div.remove();
+                    timelineClips = timelineClips.filter(c => c !== clip);
+                    if(clip.action) clip.action.stop();
+                });
+                selectedClips.clear();
+                updateTimelineVisuals();
+            }
+            needsAnimUpdate = true;
+        }
+
+        function createClipInstance(clip, startTime, trackId, type) {
+            const div = document.createElement('div');
+            div.className = 'clip-block' + (type === 'layer' ? ' layer-clip' : '');
+            
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'clip-name';
+            nameSpan.innerText = clip.name;
+            div.appendChild(nameSpan);
+
+            const origDur = clip.duration || 20;
+            div.style.width = (origDur * pixelsPerSecond) + 'px';
+            div.style.left = (startTime * pixelsPerSecond) + 'px';
+            
+            const targetTrack = document.querySelector(`.track-content[data-track-id="${trackId}"]`);
+            if (targetTrack) targetTrack.appendChild(div);
+
+            let action = null;
+            if (type === 'anim') {
+                action = mixer.clipAction(clip);
+                action.enabled = true;
+                action.play();
+                action.paused = true;
+            }
+            const instance = { 
+                clipId: clipIdCounter++,
+                clip, startTime, originalDuration: origDur, duration: origDur, 
+                trimStart: 0, trimEnd: 0, trackId, action, div, 
+                isLayer: type === 'layer', keys: clip.keys || {} 
+            };
+            timelineClips.push(instance);
+            
+            makeDraggable(instance);
+            makeTrimmable(instance);
+            if (instance.isLayer) renderKeys(instance);
+        }
+
+        function makeTrimmable(instance) {
+            const leftHandle = document.createElement('div');
+            leftHandle.className = 'trim-handle left';
+            const rightHandle = document.createElement('div');
+            rightHandle.className = 'trim-handle right';
+            
+            instance.div.appendChild(leftHandle);
+            instance.div.appendChild(rightHandle);
+
+            leftHandle.onmousedown = (e) => {
+                e.stopPropagation();
+                let startX = e.clientX, initialTrimStart = instance.trimStart, initialStartTime = instance.startTime;
+                const onMove = (me) => {
+                    let newTrimStart = snap(initialTrimStart + (me.clientX - startX) / pixelsPerSecond);
+                    if (newTrimStart < 0) newTrimStart = 0;
+                    if (newTrimStart > instance.originalDuration - instance.trimEnd - 0.1) newTrimStart = instance.originalDuration - instance.trimEnd - 0.1;
+                    instance.trimStart = newTrimStart;
+                    instance.startTime = snap(initialStartTime + (newTrimStart - initialTrimStart));
+                    instance.duration = instance.originalDuration - instance.trimStart - instance.trimEnd;
+                    updateTimelineVisuals();
+                };
+                const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+            };
+
+            rightHandle.onmousedown = (e) => {
+                e.stopPropagation();
+                let startX = e.clientX, initialTrimEnd = instance.trimEnd;
+                const onMove = (me) => {
+                    let newTrimEnd = snap(initialTrimEnd - (me.clientX - startX) / pixelsPerSecond);
+                    if (newTrimEnd < 0) newTrimEnd = 0;
+                    if (newTrimEnd > instance.originalDuration - instance.trimStart - 0.1) newTrimEnd = instance.originalDuration - instance.trimStart - 0.1;
+                    instance.trimEnd = newTrimEnd;
+                    instance.duration = instance.originalDuration - instance.trimStart - instance.trimEnd;
+                    updateTimelineVisuals();
+                };
+                const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+            };
+        }
+
+        function makeDraggable(instance) {
+            instance.div.onmousedown = (e) => {
+                if (e.target.classList.contains('key-marker') || e.target.classList.contains('trim-handle')) return;
+                
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                    if (selectedClips.has(instance)) {
+                        selectedClips.delete(instance);
+                        instance.div.classList.remove('selected-clip');
+                    } else {
+                        selectedClips.add(instance);
+                        instance.div.classList.add('selected-clip');
+                    }
+                } else {
+                    if (!selectedClips.has(instance)) {
+                        selectedClips.forEach(c => c.div.classList.remove('selected-clip'));
+                        selectedClips.clear();
+                        selectedClips.add(instance);
+                        instance.div.classList.add('selected-clip');
+                    }
+                }
+                
+                isClipDragging = true;
+                dragStartX = e.clientX;
+                dragOffsets.clear();
+                selectedClips.forEach(c => dragOffsets.set(c, c.startTime));
+                e.stopPropagation();
+            };
+        }
+
+        function updateOverlaps() {
+            document.querySelectorAll('.overlap-marker').forEach(el => el.remove());
+            const tracks = {};
+            timelineClips.forEach(inst => { (tracks[inst.trackId] = tracks[inst.trackId] || []).push(inst); });
+            Object.keys(tracks).forEach(id => {
+                const trackClips = tracks[id];
+                for (let i = 0; i < trackClips.length; i++) {
+                    for (let j = i + 1; j < trackClips.length; j++) {
+                        const a = trackClips[i], b = trackClips[j];
+                        const start = Math.max(a.startTime, b.startTime);
+                        const end = Math.min(a.startTime + a.duration, b.startTime + b.duration);
+                        if (start < end) {
+                            const marker = document.createElement('div');
+                            marker.className = 'overlap-marker';
+                            marker.style.left = (start * pixelsPerSecond) + 'px';
+                            marker.style.width = ((end - start) * pixelsPerSecond) + 'px';
+                            document.querySelector(`.track-content[data-track-id="${id}"]`).appendChild(marker);
+                        }
+                    }
+                }
+            });
+        }
+
+        function togglePlayback() { 
+            isPlaying = !isPlaying; 
+            document.getElementById('play-pause-btn').innerText = isPlaying ? "Pause" : "Play"; 
+            if (isPlaying) gizmo.detach(); 
+            else currentTime = snap(currentTime);
+        }
+        
+        function stopPlayback() { 
+            isPlaying = false; 
+            currentTime = snap(parseFloat(document.getElementById('loop-start').value) || 0); 
+            document.getElementById('play-pause-btn').innerText = "Play"; 
+            updatePlayhead(); 
+        }
+        
+        function updatePlayhead() {
+            document.getElementById('playhead').style.left = (currentTime * pixelsPerSecond) + 'px';
+            const mins = Math.floor(currentTime / 60), secs = (currentTime % 60).toFixed(2);
+            document.getElementById('time-display').innerText = `${mins.toString().padStart(2, '0')}:${secs.padStart(5, '0')}`;
+        }
+
+        window.seekTimeline = function(e) {
+            if (e.target.id !== 'tracks-container' && !e.target.classList.contains('track-content')) return;
+            selectedClips.forEach(c => c.div.classList.remove('selected-clip'));
+            selectedClips.clear();
+            selectedKeyData = null;
+            document.querySelectorAll('.key-marker').forEach(k => k.classList.remove('selected'));
+            
+            const container = document.getElementById('tracks-container');
+            const rect = container.getBoundingClientRect();
+            currentTime = snap(Math.max(0, (e.clientX - rect.left + container.scrollLeft) / pixelsPerSecond));
+            updatePlayhead();
+            needsAnimUpdate = true;
+        };
+
+        function updateTimelineVisuals() {
+            timelineClips.forEach(inst => { 
+                inst.div.style.left = (inst.startTime * pixelsPerSecond) + 'px'; 
+                inst.div.style.width = (inst.duration * pixelsPerSecond) + 'px'; 
+                if (inst.isLayer) renderKeys(inst); 
+            });
+            updatePlayhead();
+            updateOverlaps();
+            updateLoopVisuals();
+            needsAnimUpdate = true;
+        }
+
+        function onWindowResize() {
+            const w = window.innerWidth - 570;
+            const h = window.innerHeight - 300;
+            camera.aspect = w / h; 
+            camera.updateProjectionMatrix(); 
+            renderer.setSize(w, h);
+        }
+
+        window.bakeTimeline = async function() {
+            if (!model || isBaking) return;
+            const loopStart = parseFloat(document.getElementById('loop-start').value) || 0;
+            const loopEnd = parseFloat(document.getElementById('loop-end').value) || 10;
+            const duration = loopEnd - loopStart;
+            if (duration <= 0) return;
+
+            isBaking = true;
+            const fps = 30;
+            const frameCount = Math.ceil(duration * fps);
+            const bones = [];
+            
+            restPoses.forEach((_, name) => {
+                const obj = model.getObjectByName(name);
+                if (obj) bones.push(obj);
+            });
+
+            if (bones.length === 0) {
+                isBaking = false;
+                return;
+            }
+
+            const sampleData = bones.map(bone => ({ name: bone.name, times: [], pos: [], quat: [], scale: [] }));
+
+            const prevTime = currentTime;
+            const prevState = isPlaying;
+            isPlaying = false;
+            
+            const bakeBtn = document.querySelector('.control-btn.orange');
+            bakeBtn.innerText = "Baking...";
+
+            for(let f = 0; f <= frameCount; f++) {
+                currentTime = loopStart + (f / fps);
+                updatePlayhead();
+                
+                applyAnimationsAndLayers(0, true, false); 
+                renderer.render(scene, camera);
+                
+                bones.forEach((bone, bIdx) => {
+                    const data = sampleData[bIdx];
+                    data.times.push(currentTime - loopStart); 
+                    data.pos.push(bone.position.x, bone.position.y, bone.position.z);
+                    bone.quaternion.normalize();
+                    data.quat.push(bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w);
+                    data.scale.push(bone.scale.x, bone.scale.y, bone.scale.z);
+                });
+                
+                await new Promise(resolve => requestAnimationFrame(resolve));
+            }
+
+            const tracks = [];
+            sampleData.forEach(d => {
+                tracks.push(new THREE.VectorKeyframeTrack(d.name + '.position', d.times, d.pos));
+                tracks.push(new THREE.QuaternionKeyframeTrack(d.name + '.quaternion', d.times, d.quat));
+                tracks.push(new THREE.VectorKeyframeTrack(d.name + '.scale', d.times, d.scale));
+            });
+
+            const bakedClip = new THREE.AnimationClip("BakedClip_" + Date.now(), duration, tracks);
+            animationClips.push(bakedClip);
+            
+            const item = document.createElement('div');
+            item.className = 'list-item';
+            item.innerHTML = `<span>${bakedClip.name}</span><button onclick="addClipToTrack('${bakedClip.name}')">+</button>`;
+            document.getElementById('anim-library').appendChild(item);
+
+            currentTime = prevTime;
+            isPlaying = prevState;
+            updatePlayhead();
+            needsAnimUpdate = true;
+            applyAnimationsAndLayers(0, true, false);
+            
+            bakeBtn.innerText = "Bake";
+            isBaking = false;
+        };
+
+        function applyAnimationsAndLayers(delta, forceTime = false, skipLayers = false) {
+            if (!mixer) return;
+            
+            const timeChanged = Math.abs(currentTime - lastEvalTime) > 0.001;
+            
+            if (!isPlaying && !forceTime && !timeChanged && !needsAnimUpdate) {
+                return;
+            }
+            
+            lastEvalTime = currentTime;
+            needsAnimUpdate = false;
+
+            let draggedState = null;
+            const activeBone = selectedBones[selectedBones.length - 1];
+            if (isGizmoDragging && activeBone && !forceTime) {
+                draggedState = {
+                    bone: activeBone,
+                    pos: activeBone.position.clone(),
+                    quat: activeBone.quaternion.clone(),
+                    scale: activeBone.scale.clone()
+                };
+            }
+
+            restPoses.forEach((p, name) => {
+                const b = model.getObjectByName(name);
+                if (b) {
+                    b.position.copy(p.position);
+                    b.quaternion.copy(p.quaternion);
+                    b.scale.copy(p.scale);
+                }
+            });
+
+            timelineClips.forEach(inst => { if (inst.action) inst.action.weight = 0; inst.div.classList.remove('active'); });
+
+            const activeByTrack = {};
+            timelineClips.forEach(inst => {
+                if (inst.isLayer || isTrackHidden(inst.trackId)) return;
+                const localTime = currentTime - inst.startTime;
+                if (localTime >= 0 && localTime <= inst.duration) {
+                    (activeByTrack[inst.trackId] = activeByTrack[inst.trackId] || []).push(inst);
+                    if (inst.action) {
+                        inst.action.time = localTime + inst.trimStart;
+                        inst.div.classList.add('active');
+                    }
+                }
+            });
+
+            Object.values(activeByTrack).forEach(actives => {
+                if (actives.length === 1) {
+                    if (actives[0].action) actives[0].action.weight = 1.0;
+                } else if (actives.length > 1) {
+                    actives.sort((a,b) => a.startTime - b.startTime);
+                    const a = actives[0], b = actives[1];
+                    const overlapStart = Math.max(a.startTime, b.startTime);
+                    const overlapEnd = Math.min(a.startTime + a.duration, b.startTime + b.duration);
+                    if (currentTime >= overlapStart && currentTime <= overlapEnd) {
+                        const t = (currentTime - overlapStart) / (overlapEnd - overlapStart);
+                        if (a.action) a.action.weight = 1.0 - t;
+                        if (b.action) b.action.weight = t;
+                    } else actives.forEach(inst => { if (inst.action) inst.action.weight = 1.0; });
+                }
+            });
+
+            mixer.update(forceTime ? 0 : delta);
+
+            if (!skipLayers) {
+                timelineClips.forEach(inst => {
+                    if (inst.isLayer && !isTrackHidden(inst.trackId)) {
+                        const localTime = currentTime - inst.startTime;
+                        if (localTime >= 0 && localTime <= inst.duration) {
+                            inst.div.classList.add('active');
+                            for (const boneName in inst.keys) {
+                                const bone = model.getObjectByName(boneName);
+                                if (!bone || (isGizmoDragging && activeBone === bone && !forceTime)) continue;
+                                const keys = inst.keys[boneName];
+                                if (keys.length === 0) continue;
+
+                                const internalTime = localTime + inst.trimStart;
+                                let nextIdx = keys.findIndex(k => k.time > internalTime);
+                                
+                                if (nextIdx === -1) {
+                                    const k = keys[keys.length - 1];
+                                    lerpPos.copy(k.pos); lerpQuat.copy(k.quat); lerpScale.copy(k.scale);
+                                } else if (nextIdx === 0) {
+                                    const k = keys[0];
+                                    lerpPos.copy(k.pos); lerpQuat.copy(k.quat); lerpScale.copy(k.scale);
+                                } else {
+                                    const k1 = keys[nextIdx - 1], k2 = keys[nextIdx];
+                                    const alpha = (internalTime - k1.time) / (k2.time - k1.time);
+                                    lerpPos.lerpVectors(k1.pos, k2.pos, alpha);
+                                    lerpQuat.slerpQuaternions(k1.quat, k2.quat, alpha);
+                                    lerpScale.lerpVectors(k1.scale, k2.scale, alpha);
+                                }
+                                bone.position.copy(lerpPos);
+                                bone.quaternion.copy(lerpQuat).normalize();
+                                bone.scale.copy(lerpScale);
+                            }
+                        }
+                    }
+                });
+            }
+
+            if (draggedState) {
+                draggedState.bone.position.copy(draggedState.pos);
+                draggedState.bone.quaternion.copy(draggedState.quat);
+                draggedState.bone.scale.copy(draggedState.scale);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (isPlaying && !isBaking) { 
+                currentTime += delta;
+                const loopStart = parseFloat(document.getElementById('loop-start').value) || 0;
+                const loopEnd = parseFloat(document.getElementById('loop-end').value) || 10;
+                if (currentTime > loopEnd) currentTime = loopStart;
+                updatePlayhead(); 
+            }
+            if (!isBaking) {
+                applyAnimationsAndLayers(delta);
+            }
+
+            highlightMeshes.forEach(h => h.bone.getWorldPosition(h.mesh.position));
+
+            controls.update();
+            if (!isBaking) renderer.render(scene, camera);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>

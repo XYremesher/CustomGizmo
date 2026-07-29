@@ -115,7 +115,7 @@
             width: 80px;
             height: 80px;
             margin: -40px 0 0 -40px;
-            background-image: url('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteArrow.png');
+            background-image: url('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/WhiteArrow.png');
             background-size: 100%;
             background-position: center;
             background-repeat: no-repeat;
@@ -213,9 +213,9 @@
     <!-- Disabled for now during dev so it doesn't block testing - re-enable by removing class="hidden" here. -->
     <div id="start-overlay" class="hidden">
         <div id="start-title-row">
-            <img id="start-title-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="">
+            <img id="start-title-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/RunningPlayerIcon.png" alt="">
             <h1 id="start-title">PEAK PUNCHERS</h1>
-            <img class="start-title-icon flipped" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="">
+            <img class="start-title-icon flipped" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/RunningPlayerIcon.png" alt="">
         </div>
         <div id="start-subtitle">A competitive multiplayer climb-race</div>
         <div id="start-hint">
@@ -234,11 +234,11 @@
 
     <div id="stamina-container"><div id="stamina-bar"></div></div>
     <button id="hud-connect-btn">
-        <img id="hud-connect-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Multiplayer/ConnectIcon.png" alt="Connect">
+        <img id="hud-connect-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/ProjectFiles/Multiplayer/ConnectIcon.png" alt="Connect">
         <span id="hud-connected-info">
-            <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/RunningPlayerIcon.png" alt="Players">
+            <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/RunningPlayerIcon.png" alt="Players">
             <span id="hud-player-count">x1</span>
-            <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Multiplayer/ConnectedIcon.png" alt="Connected">
+            <img src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/ProjectFiles/Multiplayer/ConnectedIcon.png" alt="Connected">
         </span>
     </button>
     <button id="fullscreen-btn" title="Level Editor">
@@ -341,6 +341,7 @@
                 <div class="category-content">
                     <label>Select Level:</label><br>
                     <select id="level-select" style="width: 100%; margin-bottom: 10px; color: black;"></select><br>
+                    <label><input type="checkbox" id="toggle-blank-white"> White backdrop</label><br>
                     <button id="btn-show-json" style="width: 100%; padding: 5px; color: black;">Import/Export JSON</button>
                 </div>
             </div>
@@ -348,8 +349,8 @@
             <div class="category">
                 <div class="category-header">Camera</div>
                 <div class="category-content">
-                    <label>Distance: <span id="camera-distance-val">9.0</span></label><br>
-                    <input type="range" id="camera-distance-slider" min="3.0" max="20.0" step="0.5" value="9.0" style="width: 100%;"><br>
+                    <label>Distance: <span id="camera-distance-val">13.0</span></label><br>
+                    <input type="range" id="camera-distance-slider" min="3.0" max="20.0" step="0.5" value="13.0" style="width: 100%;"><br>
                     <label>Close-In Start Angle: <span id="camera-close-start-val">0.70</span></label><br>
                     <input type="range" id="camera-close-start-slider" min="0.0" max="1.5" step="0.05" value="0.70" style="width: 100%;"><br>
                     <label>Close-In Min Distance: <span id="camera-close-min-val">5.0</span></label><br>
@@ -608,7 +609,7 @@
         </div>
     </div>
     <div id="compass-backdrop"></div>
-    <img id="compass-arrow" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/CompassArrow.png" alt="">
+    <img id="compass-arrow" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/CompassArrow.png" alt="">
     <div id="jump-btn">JUMP</div>
     <div id="build-btn">B</div>
     <div id="hold-btn">HOLD</div>
@@ -763,10 +764,10 @@
         window.speedParticles = [];
         let punchSpeedParticleGeometry = null;
         const punchSpeedParticleTexture = new THREE.TextureLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchProjectileParticle.png'
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Combat/PunchProjectileParticle.png'
         );
         new FBXLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchSpeedParticle.fbx',
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Combat/PunchSpeedParticle.fbx',
             (obj) => {
                 obj.traverse(child => {
                     if (child.isMesh && !punchSpeedParticleGeometry) {
@@ -806,7 +807,7 @@
         // small per-hit swing particles every punch type spawns.
         window.chargeAttackProjectiles = [];
         const chargeAttackTexture = new THREE.TextureLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/ChargeAttackProjectile.png'
+            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Combat/ChargeAttackProjectile.png'
         );
         window.spawnChargeAttackProjectile = function(position, direction, ownerId, extraVelocity) {
             if (!window.gameScene) return;
@@ -1671,7 +1672,7 @@
                     window.sacks.push(new Sandbag(scene, new THREE.Vector3(5, 0, 8), window.collidables || [], window.debugHelpers || [], threeTone));
                 }
 
-                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/';
                 const loader = new FBXLoader();
 
                 loader.load(baseUrl + 'StickMan.fbx', (object) => {
@@ -2621,7 +2622,7 @@ updateClimbing(delta) {
                     this.group.add(this.playerArrowGroup);
 
                     const textureLoader = new THREE.TextureLoader();
-                    const arrowTextureUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteArrow.png';
+                    const arrowTextureUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/WhiteArrow.png';
                     textureLoader.load(arrowTextureUrl, (texture) => {
                         const arrowGeo = new THREE.PlaneGeometry(2, 2);
                         

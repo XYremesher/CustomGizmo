@@ -345,7 +345,7 @@ export function startGame(CharacterClass) {
     scene.add(compassMesh);
     window.compassMesh = compassMesh;
     const compassGltfLoader = new GLTFLoader();
-    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Compass.glb', (gltf) => {
+    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Compass.glb', (gltf) => {
         const model = gltf.scene;
         // The model's two halves (a yellow-tipped cone and a white-tipped
         // cone, base to base) are built pointing along local Y, spanning
@@ -1025,7 +1025,7 @@ export function startGame(CharacterClass) {
     let brokenJarTemplate = null;
     const fbxLoader = new FBXLoader();
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar.fbx', (object) => {
+    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar.fbx', (object) => {
         let originalMesh = null;
         object.traverse((child) => {
             if (child.isMesh && !originalMesh) originalMesh = child;
@@ -1063,7 +1063,7 @@ export function startGame(CharacterClass) {
         }
     });
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar_Broken.fbx', (object) => {
+    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/Jar_Broken.fbx', (object) => {
         object.traverse((child) => {
             if (child.isMesh) {
                 child.castShadow = true;
@@ -1129,7 +1129,7 @@ export function startGame(CharacterClass) {
         return flat;
     }
     const gltfLoader = new GLTFLoader();
-    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.glb', (gltf) => {
+    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/Interactables/StarKey.glb', (gltf) => {
         const object = gltf.scene;
         let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
@@ -1174,7 +1174,7 @@ export function startGame(CharacterClass) {
     // the level dropdown) just assembles the already-loaded scene. Tries
     // the local copy first (ProjectFiles/LevelModel/, kept alongside the
     // FBX clips so the dev server can reach it - the authored original
-    // lives outside the server root at Editor/IKRig/LevelModel/), falls
+    // lives outside the server root at Editor/PeakPunchers/LevelModel/), falls
     // back to the repo's raw URL like every other remote asset.
     let levelGlbScene = null;
     let pendingGlbLevelBuild = false;
@@ -1184,7 +1184,7 @@ export function startGame(CharacterClass) {
         if (pendingGlbLevelBuild) { pendingGlbLevelBuild = false; buildLevelFromGlb(); }
     };
     levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
-        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
+        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/LevelModel/Level.glb',
             onLevelGlbLoaded, undefined, (e) => console.error('Level.glb load failed:', e));
     });
 
@@ -2245,7 +2245,7 @@ export function startGame(CharacterClass) {
 
     function loadCubesProp(x, z) {
         const propLoader = new GLTFLoader();
-        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
+        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/PeakPunchers/LevelModel/Cubes.glb', (gltf) => {
             const model = gltf.scene;
             model.scale.setScalar(0.65);
             model.position.set(x, 0, z);
@@ -2629,6 +2629,129 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // ---- Documentation / screenshot level -------------------------------
+    // A deliberately empty, untextured, greyscale scene. Everything in the
+    // normal levels - grass texture, blue sky gradient, ramps, props - is
+    // visual noise when the point of the shot is the UI itself: joysticks,
+    // contextual buttons, panels. Stripping the world to flat greys makes the
+    // interface read as the subject rather than something laid over a
+    // landscape.
+    //
+    // Captured once here (not inside the toggle) so the "off" branch restores
+    // the values the game actually shipped with rather than hardcoded guesses.
+    const presentationGroundMap = ground.material.map;
+    const presentationSkyTop = skyMat.uniforms.topColor.value.clone();
+    const presentationSkyBottom = skyMat.uniforms.bottomColor.value.clone();
+    const presentationFogColor = scene.fog.color.clone();
+
+    function setPresentationGreyscale(on) {
+        if (on) {
+            // Two backdrops, because they serve different shots. Grey keeps the
+            // character and the UI readable against it. White is for anything
+            // that has to be cut out or dropped onto a light document page -
+            // there the ground/sky seam is the problem, so it gets erased
+            // entirely rather than merely muted.
+            const white = document.getElementById('toggle-blank-white');
+            const useWhite = white && white.checked;
+            ground.material.map = null;
+            ground.material.color.setHex(useWhite ? 0xffffff : 0xb4b4b4);
+            skyMat.uniforms.topColor.value.setHex(useWhite ? 0xffffff : 0x8a8a8a);
+            skyMat.uniforms.bottomColor.value.setHex(useWhite ? 0xffffff : 0xdcdcdc);
+            scene.fog.color.setHex(useWhite ? 0xffffff : 0xdcdcdc);
+        } else {
+            ground.material.map = presentationGroundMap;
+            ground.material.color.setHex(0xffffff);
+            skyMat.uniforms.topColor.value.copy(presentationSkyTop);
+            skyMat.uniforms.bottomColor.value.copy(presentationSkyBottom);
+            scene.fog.color.copy(presentationFogColor);
+        }
+        ground.material.needsUpdate = true;
+    }
+
+    function buildBlankLevel() {
+        setPresentationGreyscale(true);
+
+        // Stations along one axis, far enough apart that walking to any one of
+        // them puts the others out of frame. The point is a separate clean shot
+        // per mechanic, so nothing may share a backdrop with anything else -
+        // hence the wide spacing rather than a compact test course.
+        const STATION_Z = -6;
+        const GAP = 20;
+        const stationX = i => i * GAP;
+
+        function addBox(x, y, z, sx = 1, sy = 1, sz = 1) {
+            const m = new THREE.Mesh(boxGeoTemplate, platMat);
+            m.position.set(x, y, z);
+            m.scale.set(sx, sy, sz);
+            m.castShadow = true; m.receiveShadow = true;
+            levelGroup.add(m); collidables.push(m);
+            return m;
+        }
+
+        // 0 - single box: contextual carry/climb buttons, i.e. the UI shot.
+        addBox(stationX(0), cubeSize / 2, STATION_Z);
+
+        // +1 - walkable slope: foot IK adapting to an incline.
+        buildSlopeTestRamp(stationX(1), STATION_Z, 30);
+
+        // +2 - curved surface: the hemisphere ground-follow case, which is a
+        // different code path from flat ground and from ramps.
+        const dome = new THREE.Mesh(
+            new THREE.SphereGeometry(4, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2),
+            new THREE.MeshToonMaterial({ color: 0xa8a8a8, gradientMap: threeTone }));
+        dome.position.set(stationX(2), 0, STATION_Z);
+        dome.castShadow = true; dome.receiveShadow = true;
+        dome.userData.isHemisphere = true;   // see isOnHemisphere in movement
+        levelGroup.add(dome); collidables.push(dome);
+
+        // +3 - stairs: step traversal.
+        for (let i = 0; i < 4; i++)
+            addBox(stationX(3), cubeSize / 2 + i * cubeSize, STATION_Z - i * cubeSize);
+
+        // +4 - climb wall: tall enough that it can only be passed by grabbing
+        // the ledge, not by stepping or jumping.
+        addBox(stationX(4), cubeSize * 1.5, STATION_Z, 3, 3, 1);
+
+        // -1 - carryables: jars, for carry / throw / break.
+        if (jarTemplate) {
+            for (let i = 0; i < 3; i++) {
+                const jar = jarTemplate.clone();
+                jar.position.set(stationX(-1) + (i - 1) * 1.3, 0.5, STATION_Z);
+                jar.userData.isCarryable = true;
+                jar.userData.isJar = true;
+                levelGroup.add(jar); collidables.push(jar);
+                const carryJar = { mesh: jar, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+                carryables.push(carryJar); addCarryableDebugHelper(carryJar);
+            }
+        }
+
+        // -2 - turret: projectile hit, recoil and ragdoll. Aimed back along the
+        // row so the character is shot while standing in front of it.
+        const turret = new ShooterBox(levelGroup, stationX(-2), 1.0, STATION_Z, 'medium_high',
+            new THREE.Vector3(0, 0, 1));
+        shooters.push(turret);
+        collidables.push(turret.mesh);
+
+        // -3 - lock: the unlock mechanic.
+        const lock = createLockInstance();
+        if (lock) {
+            lock.position.set(stationX(-3), 0, STATION_Z);
+            levelGroup.add(lock);
+        }
+
+        // -4 - a raised platform to fall from, for the ragdoll shot.
+        addBox(stationX(-4), cubeSize * 2, STATION_Z, 2, 4, 2);
+
+        // +5 - the finish diamond, at the end of the row where it belongs.
+        // Sat on the ground rather than floating: the octahedron's radius is
+        // 1.2, so that is exactly how high its centre has to be for the bottom
+        // vertex to touch. Note it disappears once the character gets within
+        // 3 units (that is the level-complete check), so shoot it from further
+        // back than that.
+        star.position.set(stationX(5), 1.2, STATION_Z);
+        star.visible = true;
+    }
+
     async function buildLevel() {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
@@ -2642,8 +2765,13 @@ export function startGame(CharacterClass) {
         // plane - reset here so switching back to any other level always
         // gets the grass back regardless of which level was active before.
         ground.visible = true;
+        // Same idea as ground.visible above: the blank level recolours shared
+        // scene state (ground material, sky, fog), so every other level has to
+        // put it back rather than assuming it was never touched.
+        if (currentLevel !== "local_blank") setPresentationGreyscale(false);
 
-        if (currentLevel === "local_stairs") buildStairsLevel();
+        if (currentLevel === "local_blank") buildBlankLevel();
+        else if (currentLevel === "local_stairs") buildStairsLevel();
         else if (currentLevel === "local_glb") buildLevelFromGlb();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else {
@@ -2668,7 +2796,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -2697,6 +2825,11 @@ export function startGame(CharacterClass) {
         try { buildLevelFromJson(JSON.parse(document.getElementById('json-textarea').value)); document.getElementById('json-modal').style.display = 'none'; } catch (e) {}
     });
     document.getElementById('level-select').addEventListener('change', (e) => { currentLevel = e.target.value; buildLevel(); });
+    // Re-applies immediately rather than waiting for a level rebuild, so the
+    // backdrop can be flipped while lining a shot up.
+    document.getElementById('toggle-blank-white').addEventListener('change', () => {
+        if (currentLevel === 'local_blank') setPresentationGreyscale(true);
+    });
 
     const buildPreview = new THREE.Mesh(boxGeoTemplate, new THREE.MeshStandardMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 }));
     buildPreview.visible = false; scene.add(buildPreview);
@@ -3138,7 +3271,7 @@ export function startGame(CharacterClass) {
     // - cameraMinCloseDistance: the horizontal distance it shrinks toward
     //   right at the clamp limits.
     // See the targetCamX/Y/Z block in animate() for where these are read.
-    window.cameraDistance = 9.0;
+    window.cameraDistance = 13.0;
     window.cameraCloseStartAngle = 0.7;
     window.cameraMinCloseDistance = 5.0;
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
