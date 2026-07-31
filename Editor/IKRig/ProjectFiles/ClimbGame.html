@@ -361,6 +361,13 @@
                     <label>Select Level:</label><br>
                     <select id="level-select" style="width: 100%; margin-bottom: 10px; color: black;"></select><br>
                     <label><input type="checkbox" id="toggle-blank-white"> White backdrop</label><br>
+                    <label><input type="checkbox" id="toggle-grass" checked> Scattered grass</label><br>
+                    <label>Grass Count: <span id="grass-count-val">1200</span></label><br>
+                    <input type="range" id="grass-count-slider" min="0" max="6000" step="100" value="1200" style="width: 100%;"><br>
+                    <label>Grass Size: <span id="grass-size-val">0.90</span></label><br>
+                    <input type="range" id="grass-size-slider" min="0.2" max="3.0" step="0.05" value="0.90" style="width: 100%;"><br>
+                    <label>Grass Area (radius): <span id="grass-area-val">70</span></label><br>
+                    <input type="range" id="grass-area-slider" min="10" max="150" step="5" value="70" style="width: 100%;"><br>
                     <button id="btn-show-json" style="width: 100%; padding: 5px; color: black;">Import/Export JSON</button>
                 </div>
             </div>

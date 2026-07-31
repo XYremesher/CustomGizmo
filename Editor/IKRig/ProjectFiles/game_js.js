@@ -596,6 +596,94 @@ export function startGame(CharacterClass) {
     
     window.ground = ground;
 
+    // ---- Scattered grass tufts ----
+    // Crossed quads (two planes at 90 degrees per tuft) rather than billboards:
+    // a billboard has to be re-oriented every frame, a cross looks the same
+    // from any angle for free and instances cleanly. One InstancedMesh per
+    // texture, so the whole field is two draw calls no matter how dense.
+    //
+    // raycast is disabled on both. Everything in this game probes the world
+    // with rays - ground scan, foot IK, carry placement, editor picking - and
+    // decorative geometry that answers those rays would break all of it (the
+    // ground scan in particular just spent a long session being made robust).
+    const grassTex2 = texLoader.load('grass2.png');
+    const grassTex3 = texLoader.load('grass3.png');
+    [grassTex2, grassTex3].forEach(t => { t.colorSpace = THREE.SRGBColorSpace; });
+    // alphaTest instead of transparent: cutout foliage sorts badly as
+    // transparent (tufts flicker against each other depending on camera
+    // angle), and grass edges don't need real blending.
+    const grassMats = [grassTex2, grassTex3].map(map => new THREE.MeshToonMaterial({
+        map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: 0.5, transparent: false,
+    }));
+    // Two crossed unit quads, pivot at the base so scaling grows them upward.
+    const grassCrossGeo = (() => {
+        const a = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+        const bGeo = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0).rotateY(Math.PI / 2);
+        return BufferGeometryUtils.mergeGeometries([a, bGeo]);
+    })();
+    const grassMeshes = [];
+    window.grassCount = 1200;
+    window.grassSize = 0.9;
+    window.grassArea = 70;
+    function clearGrass() {
+        grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
+        grassMeshes.length = 0;
+    }
+    // Scatters tufts on open ground only: a downward ray that hits anything
+    // other than `ground` means there is level geometry there, so skip it
+    // rather than have grass growing through a platform.
+    const _grassRay = new THREE.Raycaster();
+    const _grassDown = new THREE.Vector3(0, -1, 0);
+    const _grassFrom = new THREE.Vector3();
+    const _grassMat4 = new THREE.Matrix4();
+    const _grassQuat = new THREE.Quaternion();
+    const _grassPos = new THREE.Vector3();
+    const _grassScale = new THREE.Vector3();
+    function buildGrass() {
+        clearGrass();
+        const toggle = document.getElementById('toggle-grass');
+        if (toggle && !toggle.checked) return;
+        const total = Math.max(0, Math.round(window.grassCount));
+        if (!total) return;
+        const half = window.grassArea;
+        const blockers = collidables.filter(c => c !== ground);
+        const perMat = grassMats.map(() => []);
+        // Fixed attempt budget so a level that is mostly platforms can't spin
+        // here forever looking for open ground.
+        let attempts = 0;
+        const maxAttempts = total * 6;
+        let placed = 0;
+        while (placed < total && attempts++ < maxAttempts) {
+            const x = (Math.random() * 2 - 1) * half;
+            const z = (Math.random() * 2 - 1) * half;
+            _grassFrom.set(x, 60, z);
+            _grassRay.set(_grassFrom, _grassDown);
+            const hits = _grassRay.intersectObjects(blockers, true);
+            if (hits.length > 0) continue;            // something built here
+            const s = window.grassSize * (0.65 + Math.random() * 0.7);
+            _grassPos.set(x, 0, z);
+            _grassQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
+            _grassScale.set(s, s * (0.8 + Math.random() * 0.5), s);
+            perMat[placed % grassMats.length].push(
+                new THREE.Matrix4().compose(_grassPos, _grassQuat, _grassScale));
+            placed++;
+        }
+        perMat.forEach((mats, i) => {
+            if (!mats.length) return;
+            const inst = new THREE.InstancedMesh(grassCrossGeo, grassMats[i], mats.length);
+            mats.forEach((m, k) => inst.setMatrixAt(k, m));
+            inst.instanceMatrix.needsUpdate = true;
+            inst.castShadow = false;
+            inst.receiveShadow = false;
+            inst.raycast = () => {};                  // never answer a world probe
+            inst.frustumCulled = false;               // instances span the whole field
+            inst.userData.isGrass = true;
+            scene.add(inst);
+            grassMeshes.push(inst);
+        });
+    }
+    window.rebuildGrass = buildGrass;
+
     const cubeSize = 3.0;
     const platMat = new THREE.MeshToonMaterial({ color: 0x5555aa, gradientMap: threeTone });
     const boxGeoTemplate = new RoundedBoxGeometry(cubeSize, cubeSize, cubeSize, 1, 0.15);
@@ -2888,6 +2976,12 @@ export function startGame(CharacterClass) {
                 if (c && !collidables.includes(c)) collidables.push(c);
             });
         }
+
+        // Last, so the scatter's "is this spot free?" probe sees every
+        // collidable the level registered - including the sacks above.
+        // Anything that loads asynchronously afterwards (the Jar.fbx props)
+        // can still land on a tuft; window.rebuildGrass() re-scatters.
+        buildGrass();
     }
 
     async function populateLevelsAndLoad() {
@@ -4011,6 +4105,12 @@ export function startGame(CharacterClass) {
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
         { id: 'camera-distance-slider', vId: 'camera-distance-val', func: v => { window.cameraDistance = v; cameraRadius = v; }, fix: 1 },
         { id: 'camera-close-elev-slider', vId: 'camera-close-elev-val', func: v => window.cameraCloseStartElevation = v, fix: 0 },
+        // Grass rebuilds the whole instanced field, so these re-scatter on
+        // release rather than on every input tick - see the 'change' wiring
+        // below for that; the func here only records the value.
+        { id: 'grass-count-slider', vId: 'grass-count-val', func: v => window.grassCount = v, fix: 0 },
+        { id: 'grass-size-slider', vId: 'grass-size-val', func: v => window.grassSize = v, fix: 2 },
+        { id: 'grass-area-slider', vId: 'grass-area-val', func: v => window.grassArea = v, fix: 0 },
         { id: 'camera-close-start-slider', vId: 'camera-close-start-val', func: v => window.cameraCloseStartAngle = v, fix: 2 },
         { id: 'camera-close-min-slider', vId: 'camera-close-min-val', func: v => window.cameraMinCloseDistance = v, fix: 1 },
         { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
@@ -4077,6 +4177,16 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-speed-label').addEventListener('change', e => {
         if (window._speedLabelSprite) window._speedLabelSprite.visible = e.target.checked;
     });
+    // Grass: re-scatter on 'change' (slider release / checkbox click) rather
+    // than 'input'. Each rebuild raycasts once per tuft and rebuilds two
+    // InstancedMeshes, which is far too heavy to run on every drag tick.
+    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', () => buildGrass());
+    });
+    const grassToggleEl = document.getElementById('toggle-grass');
+    if (grassToggleEl) grassToggleEl.addEventListener('change', () => buildGrass());
+
     document.getElementById('toggle-step-labels').addEventListener('change', e => {
         stairNumberLabels.forEach(l => { l.visible = e.target.checked; });
     });
@@ -5413,8 +5523,13 @@ export function startGame(CharacterClass) {
             // corner: a cross-shaped hole about 0.1 wide, dead centre.
             const foundFarBelow = hitAnything && highestY < char.group.position.y - 0.6;
             if (!hitAnything || foundFarBelow) {
+                // Every pair is evaluated and the HIGHEST support wins, rather
+                // than stopping at the first that works. At the exact 4-block
+                // corner the axis probes land in the roundings' gutter while
+                // the diagonals reach flat top, so taking the first match put
+                // the character 0.3 low on the one spot they walk over most.
                 let bridged = false;
-                for (let k = 0; k < _crackProbeA.length && !bridged; k++) {
+                for (let k = 0; k < _crackProbeA.length; k++) {
                     let yA = null, objA = null, yB = null;
                     for (let side = 0; side < 2; side++) {
                         const off = side === 0 ? _crackProbeA[k] : _crackProbeB[k];
@@ -5434,15 +5549,20 @@ export function startGame(CharacterClass) {
                         }
                     }
                     if (yA !== null && yB !== null) {
+                        const pairY = Math.max(yA, yB);
+                        // Keep the best-supported pair, not the first one that
+                        // qualifies - see the comment above the loop.
+                        if (!bridged || pairY > highestY) {
+                            highestY = pairY;
+                            groundHitObject = objA;
+                        }
                         bridged = true;
                         hitAnything = true;
-                        highestY = Math.max(yA, yB);
                         // Flat by construction: the character is bridging two
                         // separate surfaces, so there is no single face whose
                         // normal is meaningful here. Reporting up keeps the
                         // slope/slide logic from reading the crack as terrain.
                         groundNormal.set(0, 1, 0);
-                        groundHitObject = objA;
                     }
                 }
             }
