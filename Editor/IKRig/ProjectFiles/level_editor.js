@@ -152,6 +152,11 @@ export class LevelEditor {
         // selection (orbit moves to right-drag / two-finger there).
         this.multiSelectMode = false;
         this._selectClickPending = false;
+        // On-screen stand-in for the Shift key, driven by a toolbar button
+        // (there is no Shift on a touchscreen). Everywhere the editor asks
+        // "is this additive?" it goes through _isAdditive(), which ORs this
+        // with the real modifier - so the button and the key are equivalent.
+        this.additiveModifier = false;
         // Gizmo anchor for a multi-object selection - moved to the group's
         // centroid, gizmo attaches to THIS instead of any one object, and
         // update() propagates its drag delta onto every selected object
@@ -388,6 +393,16 @@ export class LevelEditor {
 
     setSnapEnabled(enabled) { this.snapEnabled = enabled; }
 
+    // True if this event should ADD to the selection rather than replace it:
+    // either Shift is physically held, or the on-screen Shift button is
+    // latched. Pass no event to test the button alone (outliner drag, etc).
+    _isAdditive(e) { return this.additiveModifier || !!(e && e.shiftKey); }
+
+    // Latches/unlatches the on-screen Shift button. Returns the new state so
+    // the caller can light the button up.
+    setAdditiveModifier(on) { this.additiveModifier = !!on; return this.additiveModifier; }
+    toggleAdditiveModifier() { return this.setAdditiveModifier(!this.additiveModifier); }
+
     // Re-clicking the already-active Select tool flips single<->multi.
     // Returns the new state so the caller can swap the toolbar icon.
     toggleMultiSelect() {
@@ -468,6 +483,52 @@ export class LevelEditor {
     // Public selection entry point for external UI (e.g. the outliner
     // clicking a row). Thin wrapper over the internal _select.
     select(obj, additive = false) { this._select(obj, additive); }
+
+    // Replaces the whole selection set at once. The outliner's range-select
+    // drag recomputes the full span on every pointermove, so it needs to set
+    // the set outright rather than toggle objects one at a time.
+    setSelection(objs) {
+        this.selection = (objs || []).filter(o => o && !(o.userData && o.userData.isWireframeHelper));
+        this.selected = this.selection.length ? this.selection[this.selection.length - 1] : null;
+        this._refreshSelectionVisuals();
+        if (this.onSelectionChange) this.onSelectionChange(this.selected);
+    }
+
+    // Re-parents objects under newParent, preserving world transforms
+    // (Object3D.attach, same as group()/ungroup()). Pass null/editTarget as
+    // newParent to move them back out to the level root. Used by the
+    // outliner's drag-and-drop.
+    //
+    // The guards are the whole point: dropping something onto itself, or onto
+    // one of its own descendants, would splice the graph into a cycle that
+    // makes updateMatrixWorld recurse forever. Objects already parented to
+    // the target are skipped so a no-op drop doesn't churn the tree.
+    // Returns the number of objects actually moved.
+    reparent(objs, newParent) {
+        const list = (Array.isArray(objs) ? objs : [objs]).filter(Boolean);
+        const target = newParent || this.editTarget;
+        // A drop target inside the current drag set is just as cyclic as a
+        // self-drop, so reject against every dragged object, not only its own.
+        const isDescendantOfAny = (node) => {
+            for (let p = node; p; p = p.parent) if (list.includes(p)) return true;
+            return false;
+        };
+        if (target !== this.editTarget && isDescendantOfAny(target)) return 0;
+        let moved = 0;
+        target.updateMatrixWorld(true);
+        list.forEach(o => {
+            if (o === target) return;
+            if (o.userData && o.userData.isWireframeHelper) return;
+            if (o.parent === target) return;
+            target.attach(o);   // preserves the world transform
+            moved++;
+        });
+        if (moved) {
+            this._refreshSelectionVisuals();
+            this._structureChanged();
+        }
+        return moved;
+    }
 
     // Removes the current selection from the scene: detaches from its parent,
     // drops it from collidables/addedShapes so the game stops colliding with
@@ -753,7 +814,7 @@ export class LevelEditor {
         //    the camera; we only remember the press point so pointerup can
         //    tell a select-click (didn't move) from an orbit-drag (did move).
         if (this.mode === 'select' && (e.pointerType !== 'mouse' || e.button === 0)) {
-            this._marqueeShift = e.shiftKey;
+            this._marqueeShift = this._isAdditive(e);
             this._marqueeStart.set(e.clientX, e.clientY);
             if (this.multiSelectMode) {
                 this._marqueePending = true;
@@ -773,8 +834,8 @@ export class LevelEditor {
             while (obj.parent && obj.parent !== this.editTarget) obj = obj.parent;
             // Shift-click adds/removes from the selection (multi-select);
             // plain click replaces it with just this object.
-            this._select(obj, e.shiftKey);
-        } else if (!e.shiftKey) {
+            this._select(obj, this._isAdditive(e));
+        } else if (!this._isAdditive(e)) {
             // Plain click on empty space clears; shift-click on empty space
             // leaves the current multi-selection alone.
             this._select(null);

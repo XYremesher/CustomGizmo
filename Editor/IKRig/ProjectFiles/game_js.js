@@ -109,6 +109,102 @@ export function startGame(CharacterClass) {
     const _steepestNormalScratch = new THREE.Vector3();
     const _candidateNormalScratch = new THREE.Vector3();
     const _centerNormalScratch = new THREE.Vector3();
+    // Copy of the ground normal the slope logic settled on this frame, kept
+    // for the _dbg readout at the end of animate (groundNormal itself is
+    // scoped to the block that computes it).
+    const _dbgGroundNormalOut = new THREE.Vector3(0, 1, 0);
+    // Ground normal fitted through the five ground-ray hit points (see the
+    // bevel check in the ground scan).
+    const _fitNormalScratch = new THREE.Vector3();
+    // The single-triangle normal the scan started from, kept so the ground-ray
+    // debug view can show it next to the corrected one - seeing the raw facet
+    // swing sideways on a block edge while the used normal stays put is the
+    // whole point of that view.
+    const _facetNormalBeforeFit = new THREE.Vector3(0, 1, 0);
+
+    // ---- Ground-ray debug visualisation (Debug Vis > "Ray 5") ----
+    // Draws the five ground-scan rays, their hit points, and BOTH normals:
+    // magenta = the raw facet the centre ray landed on, cyan = what the slope
+    // logic actually uses after the plane fit. Same shape as the other Debug
+    // Vis toggles: built once, hidden by default, visibility driven by the
+    // checkbox.
+    const groundRayDbg = { built: false, group: null, lines: [], dots: [], facetArrow: null, finalArrow: null };
+    function buildGroundRayDbg() {
+        if (groundRayDbg.built) return;
+        groundRayDbg.built = true;
+        const g = new THREE.Group();
+        g.visible = false;
+        for (let i = 0; i < 5; i++) {
+            const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+            const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ff00, depthTest: false }));
+            line.renderOrder = 999;
+            g.add(line); groundRayDbg.lines.push(line);
+            const dot = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6),
+                new THREE.MeshBasicMaterial({ color: 0xffff00, depthTest: false }));
+            dot.renderOrder = 1000;
+            g.add(dot); groundRayDbg.dots.push(dot);
+        }
+        groundRayDbg.facetArrow = new THREE.ArrowHelper(_upVec.clone(), new THREE.Vector3(), 1.1, 0xff00ff, 0.22, 0.12);
+        groundRayDbg.finalArrow = new THREE.ArrowHelper(_upVec.clone(), new THREE.Vector3(), 1.4, 0x00ffff, 0.26, 0.14);
+        [groundRayDbg.facetArrow, groundRayDbg.finalArrow].forEach(a => {
+            a.line.material.depthTest = false; a.cone.material.depthTest = false;
+            a.line.renderOrder = 999; a.cone.renderOrder = 999;
+            g.add(a);
+        });
+        scene.add(g);
+        groundRayDbg.group = g;
+    }
+    const _grdA = new THREE.Vector3(), _grdB = new THREE.Vector3();
+    function updateGroundRayDbg(offsets, sampleY, facetNormal, finalNormal) {
+        const cb = document.getElementById('toggle-ground-rays');
+        const on = !!(cb && cb.checked);
+        if (!on) { if (groundRayDbg.group) groundRayDbg.group.visible = false; return; }
+        buildGroundRayDbg();
+        groundRayDbg.group.visible = true;
+        const p = char.group.position;
+        for (let i = 0; i < 5; i++) {
+            const off = offsets[i];
+            const topY = p.y + 1.2;
+            const hit = sampleY[i];
+            _grdA.set(p.x + off.x, topY, p.z + off.z);
+            _grdB.set(p.x + off.x, hit !== null && hit !== undefined ? hit : topY - 2.0, p.z + off.z);
+            const pos = groundRayDbg.lines[i].geometry.attributes.position;
+            pos.setXYZ(0, _grdA.x, _grdA.y, _grdA.z);
+            pos.setXYZ(1, _grdB.x, _grdB.y, _grdB.z);
+            pos.needsUpdate = true;
+            groundRayDbg.lines[i].geometry.computeBoundingSphere();
+            const didHit = hit !== null && hit !== undefined;
+            groundRayDbg.lines[i].material.color.setHex(didHit ? (i === 0 ? 0x00ff88 : 0x00aa44) : 0xff3333);
+            groundRayDbg.dots[i].visible = didHit;
+            if (didHit) groundRayDbg.dots[i].position.copy(_grdB);
+        }
+        _grdA.set(p.x, p.y + 0.05, p.z);
+        groundRayDbg.facetArrow.position.copy(_grdA);
+        groundRayDbg.facetArrow.setDirection(facetNormal);
+        groundRayDbg.finalArrow.position.copy(_grdA);
+        groundRayDbg.finalArrow.setDirection(finalNormal);
+        const fEl = document.getElementById('ground-facet-display');
+        const uEl = document.getElementById('ground-final-display');
+        if (fEl) fEl.textContent = THREE.MathUtils.radToDeg(facetNormal.angleTo(_upVec)).toFixed(1) + '°';
+        if (uEl) uEl.textContent = THREE.MathUtils.radToDeg(finalNormal.angleTo(_upVec)).toFixed(1) + '°';
+    }
+
+    // Crack-straddle probes, used only when the normal ground scan finds
+    // nothing under the character (see its own comment in the ground scan).
+    // Opposing pairs at the character's own body radius: index k in A is the
+    // mirror of index k in B, so "both hit" means solid ground on BOTH sides
+    // of whatever the character is standing over - a crack - as opposed to a
+    // platform edge, where only one side hits.
+    const CHAR_BODY_RADIUS = 0.45;   // matches isVerticalSpaceClear's bodyRadius
+    const _R = CHAR_BODY_RADIUS, _Rd = CHAR_BODY_RADIUS * 0.7071;
+    const _crackProbeA = [
+        new THREE.Vector3(_R, 0, 0), new THREE.Vector3(0, 0, _R),
+        new THREE.Vector3(_Rd, 0, _Rd), new THREE.Vector3(_Rd, 0, -_Rd),
+    ];
+    const _crackProbeB = [
+        new THREE.Vector3(-_R, 0, 0), new THREE.Vector3(0, 0, -_R),
+        new THREE.Vector3(-_Rd, 0, -_Rd), new THREE.Vector3(-_Rd, 0, _Rd),
+    ];
     const _tiltRefDirScratch = new THREE.Vector3();
     const _footWorldPosScratch = new THREE.Vector3();
     const _footRayOriginScratch = new THREE.Vector3();
@@ -2899,19 +2995,28 @@ export function startGame(CharacterClass) {
 
     let heldCarryable = null;
     let carryStartElapsed = 0;
-    // Gradual "step back to make room" phase, tried before a drop/throw
-    // when something's too close in front for the object to land clear of
-    // it (see attemptCarryAction below) - slides the player backward over
-    // MAKE_ROOM_DURATION, same as yesterday's approach on flat ground,
-    // rather than snapping them back instantly (that read as the player
-    // teleporting) or leaving the object to spawn embedded (that read as
-    // the object teleporting once the physics loop shoved it back out).
+    // Gradual "step back to make room" phase, run when something's too close
+    // in front for the object to land clear of it (see attemptCarryAction
+    // below) - slides the player backward rather than snapping them back
+    // instantly (that read as the player teleporting) or leaving the object
+    // to spawn embedded (that read as the object teleporting once the physics
+    // loop shoved it back out).
+    //
+    // The drop/throw now runs CONCURRENTLY with this slide, not after it -
+    // see attemptCarryAction. makeRoomDuration is therefore per-action rather
+    // than a constant: a drop matches carryDropDuration() so the slide and
+    // the lowering land on the same frame, a throw keeps the short default.
     let isMakingRoom = false;
     let makeRoomElapsed = 0;
     const makeRoomStartPos = new THREE.Vector3();
     const makeRoomTargetPos = new THREE.Vector3();
-    let pendingCarryAction = null; // 'drop' | 'throw' - which one fires once the pullback above finishes
     const MAKE_ROOM_DURATION = 0.17;
+    let makeRoomDuration = MAKE_ROOM_DURATION;
+    // Set only for a throw whose launch point is blocked - the one action that
+    // still has to wait for the slide to finish instead of running with it.
+    // See attemptCarryAction.
+    let pendingCarryAction = null;
+    const _throwLaunchProbe = new THREE.Vector3();
     const carryBtn = document.getElementById('carry-btn');
     const dropBtn = document.getElementById('drop-btn');
     const throwBtn = document.getElementById('throw-btn');
@@ -3040,15 +3145,91 @@ export function startGame(CharacterClass) {
         const NEEDED_CLEARANCE = 1.72;
         rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
         const wallHits = rayFwd.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
-        if (wallHits.length > 0 && wallHits[0].distance < NEEDED_CLEARANCE) {
-            const backstepNeeded = NEEDED_CLEARANCE - wallHits[0].distance;
+
+        // For a DROP, ask the placement search directly: is there already a
+        // good spot to put this down, right here, without moving? If so
+        // there's nothing to make room for - whatever the forward probe hit
+        // is something we can place on or beside, not something in the way.
+        //
+        // This replaces judging the obstacle by its height alone. Height
+        // answers "could I put it on top of that?" but not "is there
+        // anywhere clear to put it?", and only the second question decides
+        // whether stepping back helps. A low block with a wall right behind
+        // it passes the height test and still has nowhere clear at full
+        // reach; a tall pillar off to one side fails the height test while
+        // the spot in front of it is perfectly fine.
+        //
+        // dist is required to be near the full reach: a "clear" spot that is
+        // only reachable at 0.3 means the object would be set down almost
+        // between the player's feet, which is exactly what stepping back
+        // exists to avoid.
+        if (action === 'drop') {
+            const here = findDropPlacement(char.group.position, _tempVec3, 0.51);
+            if (here.clear && here.dist >= 0.9) { performDrop(); return; }
+        }
+
+        // A THROW has a much weaker requirement than a drop: the object leaves
+        // the hand with velocity immediately, so all it needs is a launch
+        // point that isn't already inside something. It does NOT need the
+        // 1.72 of forward room a drop needs to set the object DOWN. Checking
+        // the real launch point (hand + the same 0.15 nudge performThrow
+        // applies) instead of that placement margin means a throw next to a
+        // wall just fires, with no step-back and no stutter.
+        if (action === 'throw') {
+            const held = carryables.find(c => c.mesh === heldCarryable);
+            if (!held) { performThrow(); return; }
+            _throwLaunchProbe.copy(held.mesh.position).addScaledVector(_tempVec3, 0.15);
+            if (!overlapsSolidCollidable(_throwLaunchProbe, held.mesh)) { performThrow(); return; }
+            // Launch point IS blocked. This is the one case that genuinely has
+            // to wait: the object can only be released once the slide has
+            // opened up room, so the throw is deferred to the end of the
+            // step-back rather than run alongside it. Releasing it early would
+            // spawn it inside the wall and the physics would fling it out.
+        }
+
+        // Otherwise find the nearest hit that actually BLOCKS, so the
+        // step-back distance is measured against the real obstruction.
+        // Anything low enough to set the object on top of is skipped: on
+        // stairs the probe hits the next riser first, and judging only
+        // wallHits[0] let that low riser mask a genuine wall behind it.
+        // (intersectObjects returns hits sorted near-to-far.)
+        let blocking = null;
+        for (const h of wallHits) {
+            if (action === 'drop' && obstacleIsLowEnoughToDropOnto(h.object)) continue;
+            blocking = h;
+            break;
+        }
+        if (blocking && blocking.distance < NEEDED_CLEARANCE) {
+            const backstepNeeded = NEEDED_CLEARANCE - blocking.distance;
             const candidate = _makeRoomCandidate.copy(char.group.position).addScaledVector(_tempVec3, -backstepNeeded);
             if (isSafeStandingSpot(candidate, char.group.position.y)) {
                 isMakingRoom = true;
                 makeRoomElapsed = 0;
                 makeRoomStartPos.copy(char.group.position);
                 makeRoomTargetPos.copy(candidate).setY(char.group.position.y);
-                pendingCarryAction = action;
+                // Run the step-back and the action TOGETHER rather than one
+                // after the other. Sequencing them was the "player slides,
+                // then the drop happens" awkwardness: two short motions read
+                // as one long stutter. The placement is computed from
+                // makeRoomTargetPos - where the player is about to BE - so
+                // the object still lands in the cleared spot even though the
+                // player hasn't arrived yet. The drop lerp tracks the live
+                // hand bones (see the isCarryDropping branch in animate), so
+                // the object rides the slide and eases onto the fixed world
+                // target; nothing pops.
+                //
+                // A blocked throw is the exception - it waits for the slide to
+                // finish (see pendingCarryAction) because its launch point is
+                // only clear once the player has actually moved.
+                if (action === 'drop') {
+                    // Matched durations so the slide and the lowering finish
+                    // on the same frame.
+                    makeRoomDuration = carryDropDuration();
+                    performDrop(makeRoomTargetPos);
+                } else {
+                    makeRoomDuration = MAKE_ROOM_DURATION;
+                    pendingCarryAction = 'throw';
+                }
                 return;
             }
             // No safe spot to step back into (e.g. boxed in on more than
@@ -3060,8 +3241,106 @@ export function startGame(CharacterClass) {
     }
     const _makeRoomCandidate = new THREE.Vector3();
 
-    function performDrop() {
+    // Is the thing the forward ray hit short enough to place the carried
+    // object on top of, instead of backing away from it? Measured from the
+    // player's own feet up to the obstacle's box top, against
+    // window.dropOnTopMaxHeight (Carry & Throw panel).
+    const _dropOnTopBox = new THREE.Box3();
+    function obstacleIsLowEnoughToDropOnto(hitObject) {
+        // intersectObjects recurses, so the hit can be a child mesh - walk up
+        // to the registered collidable so the box covers the whole obstacle.
+        let obstacle = hitObject;
+        while (obstacle && !collidables.includes(obstacle) && obstacle.parent) obstacle = obstacle.parent;
+        if (!obstacle || obstacle === ground) return false;
+        getObstacleBox(obstacle, _dropOnTopBox);
+        const maxH = window.dropOnTopMaxHeight !== undefined ? window.dropOnTopMaxHeight : 1.5;
+        return (_dropOnTopBox.max.y - char.group.position.y) <= maxH;
+    }
+
+    // How long the drop's lowering motion takes. Shared by the animate()
+    // branch that drives it and by the step-back above, which matches its
+    // own duration to this so the two finish together.
+    function carryDropDuration() {
+        const clipDur = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 0.667;
+        const speedMult = window.carryDropSpeedMult !== undefined ? window.carryDropSpeedMult : 2.2;
+        return window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : (clipDur / speedMult);
+    }
+
+    // Searches forward from refPos for somewhere to set the carried object
+    // down: the full arm's reach first, then progressively closer. Returns
+    // { dist, floorY, clear }.
+    //
+    // `clear` is the important part - it means the chosen spot is genuinely
+    // free, not just the least-bad option. The caller steps the player back
+    // when it's false, because handing an object to the carryable physics
+    // already embedded in something gets it shoved sideways in a single
+    // un-animated step (which reads as the object teleporting).
+    //
+    // Two things this has to tell apart that used to look identical, both of
+    // which put the object somewhere wrong:
+    //   - open ground vs a VOID. The probe used to exclude `ground`, so
+    //     "flat grass ahead" and "standing at a ledge with nothing ahead"
+    //     both came back as no-hit, and the object got placed at the
+    //     player's own height either way - over the drop in the second case.
+    //     Ground is included here and the hit height is range-checked
+    //     instead.
+    //   - a surface too HIGH to place onto vs no surface. A hit above the
+    //     reach is skipped so a closer candidate gets tried, rather than
+    //     being treated as a floor.
+    const _dropScratch = new THREE.Vector3();
+    const _dropCandidate = new THREE.Vector3();
+    const DROP_DISTANCE = 1.2;
+    function findDropPlacement(refPos, fwd, heightOffset) {
+        // How far ABOVE the player's feet a surface can be and still be
+        // something to place onto - the Carry & Throw panel's Drop-On-Top Max
+        // Height.
+        const reach = window.dropOnTopMaxHeight !== undefined ? window.dropOnTopMaxHeight : 1.5;
+        // How far BELOW the feet still counts as "somewhere in front of me to
+        // set this down" rather than a drop-off to avoid placing out over.
+        // Symmetric with the reach above, so one knob covers both directions.
+        //
+        // This was briefly 0.6, which was far too strict: setting an object
+        // down on a ledge a step below you is completely normal, and the
+        // tight limit rejected those spots and pulled the drop all the way
+        // back to the player's own feet.
+        const MAX_STEP_DOWN = reach;
+        const probeTargets = collidables.filter(c => c !== heldCarryable);
+        let fallback = null;
+        // Why each candidate distance was passed over, for _dbgLastDrop. Cheap
+        // (a few short strings on a button press) and it is the difference
+        // between diagnosing a bad drop from a report and guessing at it.
+        const tried = [];
+        for (const dist of [DROP_DISTANCE, 0.9, 0.6, 0.3, 0]) {
+            _dropScratch.copy(refPos).addScaledVector(fwd, dist).setY(refPos.y + 3.0);
+            rayDown.set(_dropScratch, _downVec);
+            const hits = rayDown.intersectObjects(probeTargets);
+            if (!hits.length) { tried.push(dist + ':nothing-below'); continue; }
+            const floorY = hits[0].point.y;
+            const rel = +(floorY - refPos.y).toFixed(2);
+            if (floorY > refPos.y + reach) { tried.push(dist + ':too-high(' + rel + ')'); continue; }
+            if (floorY < refPos.y - MAX_STEP_DOWN) { tried.push(dist + ':too-low(' + rel + ')'); continue; }
+            _dropCandidate.copy(refPos).addScaledVector(fwd, dist).setY(floorY + heightOffset);
+            if (!overlapsSolidCollidable(_dropCandidate, heldCarryable)) {
+                tried.push(dist + ':OK(' + rel + ')');
+                return { dist, floorY, clear: true, tried };
+            }
+            tried.push(dist + ':overlaps(' + rel + ')');
+            fallback = fallback || { dist, floorY };
+        }
+        // Nothing clear anywhere. Land it at the player's own feet - a spot
+        // they are demonstrably standing in legally - rather than at the
+        // embedded candidate further out, which is what the physics loop
+        // would then have to shove out of the way.
+        return { dist: 0, floorY: refPos.y, clear: false, tried };
+    }
+
+    // refPos: where to compute the placement FROM. Defaults to the player's
+    // current position; the step-back path passes the position the player is
+    // sliding toward, so the drop can start on the same frame as the slide
+    // and still target the spot that's about to be cleared.
+    function performDrop(refPos) {
         if (window.isCarryingObj && heldCarryable) {
+            const dropRefPos = refPos || char.group.position;
             window.isCarryDropping = true;
             carryStartElapsed = 0;
 
@@ -3089,54 +3368,18 @@ export function startGame(CharacterClass) {
                 else if (heldCarryable.geometry.type === 'RoundedBoxGeometry') objectHeightOffset = 0.51;
             }
 
-            // Tries the full drop distance first, then progressively closer
-            // points back toward the player - a fixed 1.2-unit forward
-            // offset regularly overshoots the edge of the narrower steps in
-            // this level (they're only cubeSize=3 wide), landing the
-            // target in open air past them with nothing underneath. Ground
-            // itself is excluded from the raycast (same as the wall-check
-            // above), so that used to read as "no floor found" and fall
-            // through the old hardcoded 0 default, sending the object all
-            // the way down to the real ground instead of just short of the
-            // edge on the same platform the player is standing on.
-            const DROP_DISTANCE = 1.2;
-            const DROP_REACH = 1.5; // also caps how far ABOVE the player a hit may place it
-            const dropScratch = new THREE.Vector3();
-            const dropCandidatePos = new THREE.Vector3();
-            let detectedFloorY = char.group.position.y;
-            // Defaults to the FULL reach, not 0 - collidables deliberately
-            // excludes `ground` (see the filter below), so standing on
-            // plain open grass with no step/platform underneath means
-            // every distance in the loop finds no hit and it falls through
-            // without ever assigning dropDist. That used to leave it at a
-            // stale 0 initializer, dropping the object right on top of the
-            // player instead of out at arm's reach - only a real nearby
-            // collidable (a platform edge closer than DROP_DISTANCE) should
-            // ever pull the drop point in this close.
-            let dropDist = DROP_DISTANCE;
-            for (const dist of [DROP_DISTANCE, 0.9, 0.6, 0.3, 0]) {
-                dropScratch.copy(char.group.position).addScaledVector(_tempVec3, dist).setY(char.group.position.y + 3.0);
-                rayDown.set(dropScratch, _downVec);
-                const hits = rayDown.intersectObjects(collidables.filter(c => c !== heldCarryable && c !== ground));
-                if (hits.length > 0 && hits[0].point.y <= char.group.position.y + DROP_REACH) {
-                    detectedFloorY = hits[0].point.y;
-                    dropDist = dist;
-                    // A valid floor here isn't enough on its own - a wall
-                    // or prop off to one side of dead-center can still
-                    // overlap the object's real (_carrySizeVec) box even
-                    // though the floor ray straight down missed it
-                    // entirely. Keep stepping to a closer candidate rather
-                    // than handing off an embedded spot; the closest
-                    // (dist=0, right where the player is legally already
-                    // standing) is the last-resort fallback if every
-                    // farther option overlaps something.
-                    dropCandidatePos.copy(char.group.position).addScaledVector(_tempVec3, dist);
-                    dropCandidatePos.y = detectedFloorY + objectHeightOffset;
-                    if (!overlapsSolidCollidable(dropCandidatePos, heldCarryable)) break;
-                }
-            }
-            dropTargetPos.copy(char.group.position).addScaledVector(_tempVec3, dropDist);
-            dropTargetPos.y = detectedFloorY + objectHeightOffset;
+            // Full arm's reach first, then progressively closer - a fixed
+            // 1.2-unit forward offset regularly overshoots the edge of the
+            // narrower steps in this level (only cubeSize=3 wide). See
+            // findDropPlacement for what makes a candidate acceptable.
+            const placement = findDropPlacement(dropRefPos, _tempVec3, objectHeightOffset);
+            window._dbgLastDrop = {
+                dist: placement.dist, floorY: +placement.floorY.toFixed(3), clear: placement.clear,
+                feetY: +dropRefPos.y.toFixed(3), steppedBack: !!refPos,
+                reach: window.dropOnTopMaxHeight, tried: placement.tried,
+            };
+            dropTargetPos.copy(dropRefPos).addScaledVector(_tempVec3, placement.dist);
+            dropTargetPos.y = placement.floorY + objectHeightOffset;
             dropTargetRot.copy(char.group.quaternion);
 
             if (network) {
@@ -3234,6 +3477,11 @@ export function startGame(CharacterClass) {
             window.isCarryStarting = false;
             window.isCarryDropping = false;
             isMakingRoom = false;
+            // Must be cleared with isMakingRoom. Left set, a deferred throw
+            // survives the reset and fires at the end of some LATER step-back
+            // - during a drop - nulling heldCarryable out from under the
+            // drop's own animate branch, which then never runs its end
+            // condition and leaves the character stuck in the drop pose.
             pendingCarryAction = null;
             heldCarryable = null;
             document.getElementById('drop-btn').style.display = 'none';
@@ -3263,15 +3511,21 @@ export function startGame(CharacterClass) {
     // - cameraDistance: the normal orbit distance (was a fixed 12, felt
     //   too far - now adjustable, and also the value cameraRadius starts
     //   at below).
-    // - cameraCloseStartAngle: how close cameraPhi has to get to either
-    //   CAMERA_PHI_MIN/MAX (in radians) before the follow-cam's horizontal
-    //   distance starts shrinking below its normal sin(phi)-scaled value.
-    //   0 disables the extra shrink entirely (tilting to the clamp limits
-    //   just uses the plain formula, same as before this control existed).
+    // - cameraCloseStartElevation: the camera elevation ABOVE THE HORIZON,
+    //   in degrees, at which the follow-cam starts closing in on the player
+    //   as it keeps descending. 90 = straight overhead, 0 = level with the
+    //   player, negative = below. At 45 the approach begins while the camera
+    //   is still well above the player and reaches cameraMinCloseDistance at
+    //   the bottom clamp (CAMERA_PHI_MAX). Set very low (e.g. -30) to
+    //   effectively disable the downward close-in.
+    // - cameraCloseStartAngle: the same idea for the TOP of the range - how
+    //   close cameraPhi has to get to CAMERA_PHI_MIN (in radians) before the
+    //   horizontal distance starts shrinking. 0 disables it.
     // - cameraMinCloseDistance: the horizontal distance it shrinks toward
     //   right at the clamp limits.
     // See the targetCamX/Y/Z block in animate() for where these are read.
     window.cameraDistance = 13.0;
+    window.cameraCloseStartElevation = 45.0;
     window.cameraCloseStartAngle = 0.7;
     window.cameraMinCloseDistance = 5.0;
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
@@ -3326,6 +3580,9 @@ export function startGame(CharacterClass) {
     // steepness-dependent target while sliding, decays via friction
     // otherwise) instead of an instant on/off constant.
     let wasSliding = false, slideSpeed = 0;
+    // Ground-planting leg IK strength, faded to 0 while sliding so the slide
+    // clip's own foot pose isn't overwritten - see its use in animate().
+    let legIKBlend = 1;
     const SLIDE_ENTER_ANGLE = Math.PI * 0.22; // ~39.6deg
     const SLIDE_EXIT_ANGLE = Math.PI * 0.17; // ~30.6deg
     // Walking along a ramp's base line (nearly parallel to where it meets
@@ -3507,6 +3764,15 @@ export function startGame(CharacterClass) {
     window.throwVerticalSpeed = 1.0;
     window.throwHitForce = 35;
     window.throwHitRadius = 0.8;
+    // How high above the player's feet a surface can be and still be somewhere
+    // to set a carried object down. Below this, a drop places the object on
+    // the surface (a knee-high block, a step, a crate) instead of stepping the
+    // player away from it; above it, the surface counts as a wall and the
+    // step-back-to-make-room behaviour applies. Single knob: it is both the
+    // drop placement's upward reach and the wall/ledge cutoff, so lowering it
+    // really does turn low blocks back into walls. 1.5 is the reach this used
+    // to have hardcoded.
+    window.dropOnTopMaxHeight = 1.5;
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 60.0;
     window.hitRecoveryDelay = 0.02;
@@ -3689,14 +3955,26 @@ export function startGame(CharacterClass) {
     window.addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (keys.hasOwnProperty(k)) keys[k] = false; });
     document.getElementById('jump-btn').addEventListener('pointerdown', handleJump);
 
-    let isLook = false, lX, lY;
-    window.addEventListener('pointerdown', e => { 
+    // Look-drag. lookPointerId (not a bare boolean) is what makes this work
+    // alongside the joysticks on touch: with two fingers down, every one of
+    // these window-level handlers fires for BOTH pointers. Without an id
+    // check the joystick finger's moves were being fed into the camera as
+    // well - and since lX/lY were overwritten by whichever pointer moved
+    // last, each frame's delta was measured between the two fingers, which
+    // is what threw the camera around. The same went for pointerup: lifting
+    // the joystick finger ended a look drag that a different finger was
+    // still performing. null = no look drag in progress.
+    let lookPointerId = null, lX, lY;
+    window.addEventListener('pointerdown', e => {
+        if (lookPointerId !== null) return;   // one look finger at a time
         if (e.clientX < 200 && e.clientY > window.innerHeight - 200) return;
         if (e.clientX > window.innerWidth - 200 && e.clientY > window.innerHeight - 200) return;
-        if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { isLook = true; lX=e.clientX; lY=e.clientY; } 
+        if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { lookPointerId = e.pointerId; lX=e.clientX; lY=e.clientY; }
     });
-    window.addEventListener('pointermove', e => { if (isLook) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
-    window.addEventListener('pointerup', () => isLook=false);
+    window.addEventListener('pointermove', e => { if (e.pointerId === lookPointerId) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
+    const endLookDrag = e => { if (e.pointerId === lookPointerId) lookPointerId = null; };
+    window.addEventListener('pointerup', endLookDrag);
+    window.addEventListener('pointercancel', endLookDrag);
     document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { cameraTheta = char.group.rotation.y + Math.PI; cameraPhi = Math.PI/3; });
 
     const clock = new THREE.Clock();
@@ -3718,6 +3996,7 @@ export function startGame(CharacterClass) {
         { id: 'pose-dur-slider', vId: 'pose-dur-val', func: v => char.ragdollPoseDuration = v },
         { id: 'ramp-walk-speed-slider', vId: 'ramp-walk-speed-val', func: v => window.rampWalkAnimSpeed = v, fix: 2 },
         { id: 'carry-height-slider', vId: 'carry-height-val', func: v => carryHeight = v },
+        { id: 'drop-ontop-height-slider', vId: 'drop-ontop-height-val', func: v => window.dropOnTopMaxHeight = v, fix: 2 },
         { id: 'throw-speed-slider', vId: 'throw-speed-val', func: v => window.throwSpeedMult = v },
         { id: 'throw-horizontal-slider', vId: 'throw-horizontal-val', func: v => window.throwHorizontalSpeed = v, fix: 1 },
         { id: 'throw-vertical-slider', vId: 'throw-vertical-val', func: v => window.throwVerticalSpeed = v, fix: 1 },
@@ -3731,6 +4010,7 @@ export function startGame(CharacterClass) {
         { id: 'proj-speed-slider', vId: 'proj-speed-val', func: v => projSpeed = v, raw: true },
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
         { id: 'camera-distance-slider', vId: 'camera-distance-val', func: v => { window.cameraDistance = v; cameraRadius = v; }, fix: 1 },
+        { id: 'camera-close-elev-slider', vId: 'camera-close-elev-val', func: v => window.cameraCloseStartElevation = v, fix: 0 },
         { id: 'camera-close-start-slider', vId: 'camera-close-start-val', func: v => window.cameraCloseStartAngle = v, fix: 2 },
         { id: 'camera-close-min-slider', vId: 'camera-close-min-val', func: v => window.cameraMinCloseDistance = v, fix: 1 },
         { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
@@ -3862,6 +4142,7 @@ export function startGame(CharacterClass) {
             // Restore the game controls for actually playing again.
             setGameControlsVisible(true);
         }
+        updateEditorShiftBtn();
     });
     // Dockable panel: collapse/expand just the body, leaving the header
     // (and its toggle) always visible - same idea as the debug panel's own
@@ -3880,6 +4161,24 @@ export function startGame(CharacterClass) {
     const SELECT_ICON_MULTI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>';
     const SELECT_ICON_SINGLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path></svg>';
     const editorModeBtns = document.querySelectorAll('.editor-mode-btn');
+    // On-screen Shift: only meaningful while the Select tool is active (the
+    // transform modes never branch on the additive modifier), so it appears
+    // and disappears with that mode - and un-latches on the way out, so it
+    // can't silently still be held next time Select is picked.
+    const editorShiftBtn = document.getElementById('editor-shift-btn');
+    function updateEditorShiftBtn() {
+        if (!editorShiftBtn) return;
+        const show = window.editorModeActive && levelEditor.mode === 'select';
+        editorShiftBtn.style.display = show ? 'block' : 'none';
+        if (!show && levelEditor.additiveModifier) {
+            levelEditor.setAdditiveModifier(false);
+            editorShiftBtn.classList.remove('active');
+        }
+    }
+    if (editorShiftBtn) editorShiftBtn.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        editorShiftBtn.classList.toggle('active', levelEditor.toggleAdditiveModifier());
+    });
     editorModeBtns.forEach(btn => {
         btn.addEventListener('pointerdown', () => {
             // Re-clicking the already-active Select button toggles its
@@ -3892,6 +4191,7 @@ export function startGame(CharacterClass) {
             }
             levelEditor.setMode(btn.dataset.mode);
             editorModeBtns.forEach(b => b.classList.toggle('active', b === btn));
+            updateEditorShiftBtn();
         });
     });
     // Inline dropdown panels (gear/add/prefab/export/props) live in the
@@ -3912,6 +4212,13 @@ export function startGame(CharacterClass) {
             closeAllEditorPanels(t.dataset.panel);
             p.style.display = willOpen ? 'block' : 'none';
             t.classList.toggle('active', willOpen);
+            // The dropdown panels live inside #level-editor-body, which the
+            // dock collapses - opening one while docked would show nothing,
+            // so un-dock automatically.
+            if (willOpen && editorPanelEl && editorPanelEl.classList.contains('docked')) {
+                editorPanelEl.classList.remove('docked');
+                if (editorDockBtn) editorDockBtn.textContent = '▲';
+            }
         });
     });
     // Add-object: each shape button adds its shape; closes the add panel
@@ -4060,6 +4367,12 @@ export function startGame(CharacterClass) {
     const outlinerTreeEl = document.getElementById('editor-outliner-tree');
     const outlinerRowMap = new Map();       // uuid -> row element
     const outlinerExpanded = new Set();      // uuids currently expanded
+    // Flat, top-to-bottom list of the rows currently on screen ({obj, row}),
+    // in the same order addOutlinerRow appended them. Range-select needs to
+    // turn "the row I pressed on" and "the row I'm over now" into a
+    // contiguous span, which needs the visible ORDER - the uuid map alone
+    // can't give that.
+    const outlinerRowOrder = [];
     function outlinerLabel(o) {
         if (o.name) return o.name;
         if (o.userData && o.userData.isEntity) return 'Entity';
@@ -4097,17 +4410,19 @@ export function startGame(CharacterClass) {
         lbl.className = 'outliner-label';
         lbl.textContent = outlinerLabel(o);
         row.appendChild(lbl);
-        row.addEventListener('pointerdown', (e) => { levelEditor.select(o, e.shiftKey); });
+        row.addEventListener('pointerdown', (e) => outlinerDragStart(e, o));
         // Double-click the label to rename the object/entity inline.
         lbl.addEventListener('dblclick', (e) => { e.stopPropagation(); startOutlinerRename(o, lbl); });
         outlinerTreeEl.appendChild(row);
         outlinerRowMap.set(o.uuid, row);
+        outlinerRowOrder.push({ obj: o, row });
         if (isContainer && expanded) kids.forEach(c => addOutlinerRow(c, depth + 1));
     }
     function buildOutliner() {
         if (!outlinerTreeEl) return;
         outlinerTreeEl.innerHTML = '';
         outlinerRowMap.clear();
+        outlinerRowOrder.length = 0;
         levelEditor.editTarget.children
             .filter(o => !(o.userData && o.userData.isWireframeHelper))
             .forEach(o => addOutlinerRow(o, 0));
@@ -4116,6 +4431,109 @@ export function startGame(CharacterClass) {
     function updateOutlinerSelection() {
         const sel = new Set(levelEditor.selection.map(o => o.uuid));
         outlinerRowMap.forEach((row, uuid) => row.classList.toggle('selected', sel.has(uuid)));
+    }
+    // ---- Outliner drag: reparent, or range-select ----
+    // One gesture, two meanings, chosen at press time by whether the additive
+    // modifier is engaged (real Shift, or the on-screen Shift button - see
+    // levelEditor._isAdditive) or the Select tool is in its multi sub-mode:
+    //
+    //   plain drag      row onto row  -> re-parent (drop target becomes parent)
+    //                   row onto the tree's empty space -> back out to root
+    //   additive drag   sweep across rows -> range-select everything swept
+    //
+    // Pointer events rather than HTML5 drag-and-drop, because HTML5 DnD does
+    // not fire on touch at all and the whole editor has to work on a phone.
+    let outlinerDrag = null;
+    const outlinerRowIndex = (row) => outlinerRowOrder.findIndex(r => r.row === row);
+    // The row under a screen point. elementFromPoint (rather than the event
+    // target) is what makes this work on touch, where the pointer stays
+    // captured by the row it started on for the whole gesture.
+    function outlinerRowAt(x, y) {
+        const el = document.elementFromPoint(x, y);
+        return el ? el.closest('.outliner-row') : null;
+    }
+    function outlinerClearDropHint() {
+        outlinerRowOrder.forEach(r => r.row.classList.remove('drop-target'));
+    }
+    function outlinerDragStart(e, o) {
+        if (outlinerDrag) return;
+        const rangeMode = levelEditor._isAdditive(e) || levelEditor.multiSelectMode;
+        const row = outlinerRowMap.get(o.uuid);
+        outlinerDrag = {
+            pointerId: e.pointerId, obj: o, row, rangeMode, moved: false,
+            startX: e.clientX, startY: e.clientY,
+            // Range-select accumulates ON TOP of whatever was already
+            // selected, so the sweep can extend an existing multi-selection
+            // instead of wiping it.
+            baseSelection: levelEditor.selection.slice(),
+            anchorIndex: outlinerRowIndex(row),
+        };
+        if (rangeMode) levelEditor.select(o, true);
+        else levelEditor.select(o, false);
+        window.addEventListener('pointermove', outlinerDragMove);
+        window.addEventListener('pointerup', outlinerDragEnd);
+        window.addEventListener('pointercancel', outlinerDragEnd);
+    }
+    function outlinerDragMove(e) {
+        if (!outlinerDrag || e.pointerId !== outlinerDrag.pointerId) return;
+        const dx = e.clientX - outlinerDrag.startX, dy = e.clientY - outlinerDrag.startY;
+        // Same small threshold as the viewport marquee: a press that never
+        // really moved stays a plain click.
+        if (!outlinerDrag.moved && (dx * dx + dy * dy) < 16) return;
+        outlinerDrag.moved = true;
+        const overRow = outlinerRowAt(e.clientX, e.clientY);
+        if (outlinerDrag.rangeMode) {
+            if (!overRow) return;
+            const i = outlinerRowIndex(overRow);
+            if (i < 0 || outlinerDrag.anchorIndex < 0) return;
+            const lo = Math.min(i, outlinerDrag.anchorIndex), hi = Math.max(i, outlinerDrag.anchorIndex);
+            const next = outlinerDrag.baseSelection.slice();
+            for (let k = lo; k <= hi; k++) {
+                const obj = outlinerRowOrder[k].obj;
+                if (!next.includes(obj)) next.push(obj);
+            }
+            levelEditor.setSelection(next);
+        } else {
+            // Reparent drag: highlight whatever row would become the parent.
+            outlinerClearDropHint();
+            if (overRow && overRow !== outlinerDrag.row) overRow.classList.add('drop-target');
+        }
+    }
+    function outlinerDragEnd(e) {
+        if (!outlinerDrag || (e && e.pointerId !== undefined && e.pointerId !== outlinerDrag.pointerId)) return;
+        const drag = outlinerDrag;
+        outlinerDrag = null;
+        window.removeEventListener('pointermove', outlinerDragMove);
+        window.removeEventListener('pointerup', outlinerDragEnd);
+        window.removeEventListener('pointercancel', outlinerDragEnd);
+        outlinerClearDropHint();
+        if (!drag.moved || drag.rangeMode) return;
+        const x = (e && e.clientX !== undefined) ? e.clientX : drag.startX;
+        const y = (e && e.clientY !== undefined) ? e.clientY : drag.startY;
+        const overRow = outlinerRowAt(x, y);
+        if (overRow === drag.row) return;
+        // Drag the whole selection if the grabbed row was part of it (so a
+        // multi-selection re-parents in one go), otherwise just this object.
+        const movers = levelEditor.selection.includes(drag.obj) ? levelEditor.selection.slice() : [drag.obj];
+        let newParent = null;
+        if (overRow) {
+            const entry = outlinerRowOrder.find(r => r.row === overRow);
+            if (!entry) return;
+            newParent = entry.obj;
+        } else {
+            // Released over the tree's own empty space -> unparent back to the
+            // level root. Released anywhere else on screen -> cancel.
+            const treeRect = outlinerTreeEl.getBoundingClientRect();
+            const inTree = x >= treeRect.left && x <= treeRect.right && y >= treeRect.top && y <= treeRect.bottom;
+            if (!inTree) return;
+            newParent = levelEditor.editTarget;   // reparent(null) means the same
+        }
+        if (levelEditor.reparent(movers, newParent) > 0) {
+            // Open the new parent so the moved objects are visible where they
+            // landed, rather than silently vanishing into a collapsed row.
+            if (newParent !== levelEditor.editTarget) outlinerExpanded.add(newParent.uuid);
+            buildOutliner();
+        }
     }
     // Inline rename: swap a row's label span for a text input, commit the
     // trimmed value onto obj.name (Enter or blur), cancel on Escape. Rebuilds
@@ -4839,6 +5257,12 @@ export function startGame(CharacterClass) {
             ];
             let hitAnything = false;
             let highestY = -Infinity;
+            // Height each individual ray came back with, indexed to match
+            // rayOffsets (0 = centre, 1/2 = +x/-x, 3/4 = +z/-z), or null if
+            // that ray found nothing. Opposing pairs give the ground's real
+            // gradient across the character's footprint - see the bevel check
+            // after the loop.
+            const sampleY = [null, null, null, null, null];
             let steepestAngle = -Infinity;
             let hasSteepCandidate = false;
             let steepestY = 0;
@@ -4858,6 +5282,7 @@ export function startGame(CharacterClass) {
                     const hitY = hits[0].point.y;
                     if (hitY <= char.group.position.y + 0.8) {
                         hitAnything = true;
+                        sampleY[i] = hitY;
                         if (hitY > highestY) {
                             highestY = hitY;
                             groundNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
@@ -4909,6 +5334,47 @@ export function startGame(CharacterClass) {
                 highestY = centerY;
                 groundHitObject = centerHitObject;
             }
+            // NARROW GUTTER. Every place two blocks butt together has a
+            // channel between them: the blocks are RoundedBoxGeometry with
+            // radius 0.15, so two abutting roundings leave a groove roughly
+            // 0.3 wide and 0.15 deep. A ray has no thickness and drops
+            // straight to the bottom of it - measured on the A/B seam, the
+            // centre ray reads 5.55 where the rays 0.25 to either side read
+            // 5.70. The character then walks 15cm lower along every seam and
+            // steps up out of it again on the far side, which is what reads
+            // as tripping over the joins.
+            //
+            // A real body cannot fit in that groove. The character's radius is
+            // 0.45, the gutter is 0.3 across, so it would bridge and rest on
+            // the shoulders - exactly what a capsule or sphere-cast gives you
+            // for free, and what a single ray cannot. So: if the centre sits
+            // BELOW both rays of an opposing pair, and only slightly, stand on
+            // the shoulders instead of in the groove.
+            //
+            // Depth-limited on purpose. A real step down is also "lower than
+            // one side", but it is not lower than BOTH sides of a pair, and
+            // anything deeper than GUTTER_MAX_DEPTH is terrain to walk down
+            // rather than a seam to bridge.
+            const GUTTER_MAX_DEPTH = 0.3;
+            if (hasCenterHit) {
+                let shoulderY = null;
+                const considerPair = (a, b) => {
+                    if (sampleY[a] === null || sampleY[b] === null) return;
+                    const low = Math.min(sampleY[a], sampleY[b]);
+                    if (low > centerY && low - centerY <= GUTTER_MAX_DEPTH) {
+                        shoulderY = shoulderY === null ? low : Math.max(shoulderY, low);
+                    }
+                };
+                considerPair(1, 2);   // +x / -x
+                considerPair(3, 4);   // +z / -z
+                if (shoulderY !== null) {
+                    highestY = shoulderY;
+                    // Bridging two shoulders - the rounding facet under the
+                    // centre ray describes the groove, not the surface being
+                    // stood on.
+                    groundNormal.copy(_upVec);
+                }
+            }
             // While already sliding, stick with whichever offset ray sees
             // the steepest surface (as long as it's still above the exit
             // angle) instead of whichever is merely highest/centered - a
@@ -4920,7 +5386,120 @@ export function startGame(CharacterClass) {
                 highestY = steepestY;
                 groundHitObject = steepestHitObject;
             }
+            // CRACK BRIDGING. The scan above samples a 0.5-wide cross
+            // (offsets of 0.25), but the level's blocks are not butted
+            // together - measured across the stairs level, only 7 of 34
+            // level-topped neighbour pairs actually touch; the rest are
+            // separated by real cracks of 0.06 up to 0.97 units. A crack
+            // wider than 0.5 swallows every one of those five rays, the scan
+            // reports no ground at all, and the character drops into the gap
+            // and wedges there between the two blocks' collision boxes.
+            //
+            // So when nothing was found, check whether the character is
+            // actually STRADDLING something rather than standing over open
+            // air: probe opposing pairs a body-radius out, and only accept a
+            // pair where BOTH sides hit. Both sides solid = a crack narrower
+            // than the character, which they should stand across rather than
+            // fall into. One side solid = a platform edge, which must keep
+            // falling exactly as before - that asymmetry is the whole reason
+            // this uses pairs instead of just widening the cross above.
+            // Also runs when the scan DID find something but it is implausibly
+            // far below - which is what happens on a shared block edge. A ray
+            // landing exactly on the seam between two boxes can miss both
+            // triangles, sail past, and hit the ground plane 6 units down; the
+            // height filter above only rejects hits that are too HIGH, so that
+            // distant floor was accepted as "the ground" and the character
+            // walked off into the air on the spot. Measured on the A1/A2/B1/B2
+            // corner: a cross-shaped hole about 0.1 wide, dead centre.
+            const foundFarBelow = hitAnything && highestY < char.group.position.y - 0.6;
+            if (!hitAnything || foundFarBelow) {
+                let bridged = false;
+                for (let k = 0; k < _crackProbeA.length && !bridged; k++) {
+                    let yA = null, objA = null, yB = null;
+                    for (let side = 0; side < 2; side++) {
+                        const off = side === 0 ? _crackProbeA[k] : _crackProbeB[k];
+                        _tempVec1.copy(char.group.position).add(off);
+                        _tempVec1.y += 1.2;
+                        rayDown.set(_tempVec1, _downVec);
+                        const h = rayDown.intersectObjects(groundScanCollidables);
+                        // Band-limited on BOTH sides. Without the lower bound a
+                        // probe that also lands on a seam sails through to the
+                        // distant ground plane and gets accepted as support,
+                        // which "bridges" the character onto a floor 6 units
+                        // down - the very failure this is here to prevent.
+                        if (h.length > 0 && h[0].point.y <= char.group.position.y + 0.8
+                                         && h[0].point.y >= char.group.position.y - 0.6) {
+                            if (side === 0) { yA = h[0].point.y; objA = h[0].object; }
+                            else yB = h[0].point.y;
+                        }
+                    }
+                    if (yA !== null && yB !== null) {
+                        bridged = true;
+                        hitAnything = true;
+                        highestY = Math.max(yA, yB);
+                        // Flat by construction: the character is bridging two
+                        // separate surfaces, so there is no single face whose
+                        // normal is meaningful here. Reporting up keeps the
+                        // slope/slide logic from reading the crack as terrain.
+                        groundNormal.set(0, 1, 0);
+                        groundHitObject = objA;
+                    }
+                }
+            }
+            // ROUNDED-EDGE FALSE SLOPES. The level's blocks are not plain
+            // cubes: they are 3x3x3-segment boxes with their vertices pushed
+            // around, so every block edge is bevelled into a few facets. A
+            // ground ray that lands on one of those facets reports a 60-75
+            // degree normal even though the deck underfoot is flat, and that
+            // is well past SLIDE_ENTER_ANGLE - so walking near a block edge,
+            // and especially across the point where four blocks meet, kicked
+            // off a slide and threw the character off the platform.
+            //
+            // A single facet normal cannot tell a bevel from a real slope,
+            // but the SPREAD of the five ray heights can: measured at the
+            // 4-block junction the rays came back 5.616 / 5.671 / 5.7, an 8cm
+            // spread over a 0.5 footprint - about 9 degrees, i.e. flat - while
+            // the centre facet claimed 22.5 and a neighbour 73.6. So when the
+            // facet disagrees sharply with the height spread, trust the
+            // heights and call it flat. A genuine ramp has both in agreement
+            // (a 30 degree ramp drops 0.29 across the same span), so real
+            // slopes and real sliding are untouched.
+            // The gradient is measured by fitting a plane through the ray hits
+            // rather than by clamping to straight up. Clamping was wrong on a
+            // slope that also has bevelled edges: a real 30-degree ramp whose
+            // edge facet reads 70 would have been flattened to 0 and its slide
+            // killed. A fitted plane returns the ramp's actual 30.
+            //
+            // Opposing rays sit 0.5 apart, so with dy across each pair the
+            // surface tangents are (0.5, dyx, 0) and (0, dyz, 0.5); their
+            // cross product is proportional to (-2*dyx, 1, -2*dyz).
+            _facetNormalBeforeFit.copy(groundNormal);
+            const havePairX = sampleY[1] !== null && sampleY[2] !== null;
+            const havePairZ = sampleY[3] !== null && sampleY[4] !== null;
+            if (hitAnything && (havePairX || havePairZ)) {
+                const dyx = havePairX ? sampleY[1] - sampleY[2] : 0;
+                const dyz = havePairZ ? sampleY[3] - sampleY[4] : 0;
+                _fitNormalScratch.set(-2 * dyx, 1, -2 * dyz).normalize();
+                const facetSlope = groundNormal.angleTo(_upVec);
+                const fitSlope = _fitNormalScratch.angleTo(_upVec);
+                const FACET_DISAGREEMENT = THREE.MathUtils.degToRad(15);
+                // Only ever used to CALM DOWN an over-steep facet, never to
+                // introduce steepness. Standing beside a step, one ray can
+                // legitimately land 0.8 higher than its opposite and the fit
+                // would read ~58 degrees across ground that is really flat -
+                // so a fit steeper than the facet is discarded.
+                //
+                // Placed after the steepest-ray latch above rather than before
+                // it: that latch is what keeps an in-progress slide alive, so
+                // correcting here is also what lets a slide started by a bevel
+                // facet end again instead of running the length of the deck.
+                if (fitSlope < facetSlope - FACET_DISAGREEMENT) {
+                    groundNormal.copy(_fitNormalScratch);
+                }
+            }
             lastGroundObject = groundHitObject;
+            _dbgGroundNormalOut.copy(groundNormal);
+            updateGroundRayDbg(rayOffsets, sampleY, _facetNormalBeforeFit, groundNormal);
 
             if (hitAnything) {
                 // isStandPositionClear falls back to a cached, one-time
@@ -6224,24 +6803,22 @@ export function startGame(CharacterClass) {
                 document.getElementById('base-left').classList.add('hold-mode');
             }
 
-            // Gradual step-back before a drop/throw that had a wall too
+            // Gradual step-back accompanying a drop/throw that had a wall too
             // close in front - see attemptCarryAction/isMakingRoom's own
             // comment. Movement/turning are already gated off elsewhere
             // (the !isMakingRoom checks added alongside isCarryStarting/
             // isCarryDropping) so this is the only thing moving the player
-            // during this window; the "actively carrying" branch further
-            // below keeps the held object glued to the hands throughout,
-            // same as it already does while just standing still holding
-            // something.
+            // during this window. The drop/throw is already running by now;
+            // this just carries the body back underneath it.
             if (isMakingRoom) {
                 makeRoomElapsed += delta;
-                const t = Math.min(1, makeRoomElapsed / MAKE_ROOM_DURATION);
+                const t = Math.min(1, makeRoomElapsed / makeRoomDuration);
                 char.group.position.lerpVectors(makeRoomStartPos, makeRoomTargetPos, t);
                 if (t >= 1) {
                     isMakingRoom = false;
-                    const action = pendingCarryAction;
-                    pendingCarryAction = null;
-                    if (action === 'drop') performDrop(); else if (action === 'throw') performThrow();
+                    // Only ever set for a blocked throw; everything else has
+                    // already been running alongside the slide.
+                    if (pendingCarryAction === 'throw') { pendingCarryAction = null; performThrow(); }
                 }
             }
 
@@ -6331,6 +6908,16 @@ export function startGame(CharacterClass) {
                         }
                     }
                 }
+            } else if (window.isCarryDropping && !heldCarryable) {
+                // Belt-and-braces: this branch owns clearing isCarryDropping,
+                // and it can only do that while heldCarryable still exists. If
+                // anything else nulls the held object mid-drop the flag would
+                // stay set forever and the character would hold the drop
+                // (crouched) pose indefinitely, unable to walk it off. Rather
+                // than trust every other site not to do that, end the state
+                // here if the object has gone.
+                window.isCarryDropping = false;
+                char.stopUpperAction(0.2);
             } else if (window.isCarryDropping && heldCarryable) {
                 carryStartElapsed += delta;
                 // The "lowering" motion (arms visibly relaxing down from the
@@ -6358,9 +6945,7 @@ export function startGame(CharacterClass) {
                 // still covers the whole clip and reaches its true end pose,
                 // just in less real time. This duration is derived from that
                 // same speed so everything keeps finishing together.
-                const clipDur = char.originalClips['carry_start'] ? char.originalClips['carry_start'].duration : 0.667;
-                const speedMult = window.carryDropSpeedMult !== undefined ? window.carryDropSpeedMult : 2.2;
-                const duration = window.carryDropLowerDuration !== undefined ? window.carryDropLowerDuration : (clipDur / speedMult);
+                const duration = carryDropDuration();
                 const t = Math.max(0.0, Math.min(1.0, carryStartElapsed / duration));
 
                 // Tracks the live hand position (not a fixed snapshot from
@@ -6383,8 +6968,22 @@ export function startGame(CharacterClass) {
                 const factor = Math.max(0, 1 - Math.abs(heightDiff) / range);
                 const smoothFactor = factor * factor * (3 - 2 * factor);
 
+                // Push the object out in front of the body while it's still up
+                // around chest/head height, so it doesn't sweep through the
+                // character on the way down.
+                //
+                // The (1 - t) is what keeps the landing stable. smoothFactor
+                // depends only on the object's height relative to the head, so
+                // without it the offset is still ~0.6 at t=1 and the object
+                // finishes that far IN FRONT of dropTargetPos - not on the spot
+                // the placement search actually vetted as clear. Landing off
+                // that spot left the carryable physics loop to resolve the
+                // difference on the next frame, which is the sideways skid
+                // right after a drop. Invisible on flat ground (heightDiff
+                // exceeds `range` there, so smoothFactor is already 0) - it
+                // only showed up when dropping onto something raised.
                 const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion);
-                const offsetDistance = 0.8 * smoothFactor;
+                const offsetDistance = 0.8 * smoothFactor * (1 - t);
                 basePos.addScaledVector(fwd, offsetDistance);
 
                 heldCarryable.position.copy(basePos);
@@ -7231,7 +7830,22 @@ export function startGame(CharacterClass) {
             // the test ramps' own 40deg+ userData angle instead; the state
             // flag covers every slidable slope, not just test ramps).
             // Shallower, non-slidable ramps keep full IK as always.
-            if ((isOnSlopeSurface || isOnBumpTerrain) && !isClimbingSlope && !isLedgeGrabbing && !isClimbingUp && char.fbxModel) {
+            // Leg IK fades OUT while sliding. It used to stay on: sliding
+            // happens on a slope, so isOnSlopeSurface is true, and the player
+            // is usually not pushing anything, so the speed-based weight below
+            // sits at its maximum of 1.0 - full-strength ground planting right
+            // on top of the slide clip. The feet stayed pinned wherever the
+            // walk cycle had just left them instead of taking the slide's own
+            // pose, which is the odd-looking foot pose on entry.
+            //
+            // Faded over LEG_IK_FADE rather than switched off outright,
+            // because a hard cut is what would make the feet jump at the exact
+            // moment the slide starts. The other exclusions on this line are
+            // hard cuts, but those states begin from a full-body clip change
+            // that hides the transition; a slide starts mid-stride.
+            const LEG_IK_FADE = 0.12;
+            legIKBlend += ((isSliding ? 0 : 1) - legIKBlend) * Math.min(1, delta / LEG_IK_FADE);
+            if ((isOnSlopeSurface || isOnBumpTerrain) && !isClimbingSlope && !isLedgeGrabbing && !isClimbingUp && legIKBlend > 0.01 && char.fbxModel) {
                 // leftFootHit/rightFootHit and _leftFootIKTarget/
                 // _rightFootIKTarget were already computed once this same
                 // frame by the foot-boost block above (near wasGrounded) -
@@ -7247,7 +7861,7 @@ export function startGame(CharacterClass) {
                 // formula already gave) were tried and rejected in favor
                 // of just this - the first version that actually read
                 // well while climbing.
-                const legIKWeight = THREE.MathUtils.clamp(1.0 - effectiveMoveMag, 0.35, 1.0);
+                const legIKWeight = THREE.MathUtils.clamp(1.0 - effectiveMoveMag, 0.35, 1.0) * legIKBlend;
                 char.applyLegIK(leftValid ? _leftFootIKTarget : null, rightValid ? _rightFootIKTarget : null, legIKWeight);
             }
 
@@ -7293,18 +7907,56 @@ export function startGame(CharacterClass) {
 
         // Horizontal follow distance: normally just the plain sin(phi)-
         // scaled spherical formula, but blended down toward
-        // cameraMinCloseDistance once cameraPhi gets within
-        // cameraCloseStartAngle of either clamp limit (CAMERA_PHI_MIN/MAX)
-        // - see this block's own declaration comment. closeStartAngle=0
-        // reproduces the old unconditional formula exactly.
+        // cameraMinCloseDistance near the top and bottom of the tilt range
+        // - see this block's own declaration comment.
+        //
+        // The two ends are keyed differently on purpose. Going DOWN, the
+        // trigger is an absolute elevation above the horizon
+        // (cameraCloseStartElevation, default 45 deg), so the approach
+        // starts while the camera is still clearly above the player and
+        // finishes at the bottom clamp. Keying it off the clamp margin
+        // instead - what this used to do - meant nothing happened until the
+        // camera was already at eye level or below. Going UP, the old
+        // clamp-margin rule is kept as-is (cameraCloseStartAngle).
+        //
+        // closeT is 1 at full distance, 0 at cameraMinCloseDistance; the two
+        // ends take whichever is tighter.
         const rawHorizDist = cameraRadius * Math.sin(cameraPhi);
         const closeStartAngle = window.cameraCloseStartAngle !== undefined ? window.cameraCloseStartAngle : 0.7;
         const minCloseDist = window.cameraMinCloseDistance !== undefined ? window.cameraMinCloseDistance : 5.0;
-        const distFromPhiLimit = Math.min(cameraPhi - CAMERA_PHI_MIN, CAMERA_PHI_MAX - cameraPhi);
-        let horizDist = rawHorizDist;
-        if (closeStartAngle > 0 && distFromPhiLimit < closeStartAngle) {
-            const t = Math.max(0, distFromPhiLimit) / closeStartAngle;
-            horizDist = THREE.MathUtils.lerp(minCloseDist, rawHorizDist, t);
+        const closeStartElev = window.cameraCloseStartElevation !== undefined ? window.cameraCloseStartElevation : 45.0;
+        // phi measured from straight up, so the threshold elevation in phi
+        // terms is 90 - elevation.
+        const closeStartPhi = THREE.MathUtils.degToRad(90 - closeStartElev);
+        let horizDist;
+        if (cameraPhi > closeStartPhi) {
+            // BELOW the threshold. Ease from the distance the camera had AT
+            // the threshold down to minCloseDist at the bottom clamp.
+            //
+            // Referencing that fixed threshold distance - rather than the
+            // live sin(phi) one - is the part that matters. sin(phi) keeps
+            // GROWING all the way down to level, so blending against it made
+            // the camera drift further out through most of the descent and
+            // only rush in over the last few degrees. That is exactly the
+            // "it only starts approaching once it's parallel to the ground"
+            // complaint. Against a fixed reference the approach is monotonic:
+            // every degree down brings the camera in.
+            const span = Math.max(1e-4, CAMERA_PHI_MAX - closeStartPhi);
+            const t = THREE.MathUtils.clamp((CAMERA_PHI_MAX - cameraPhi) / span, 0, 1);
+            const refDist = cameraRadius * Math.sin(closeStartPhi);
+            horizDist = THREE.MathUtils.lerp(minCloseDist, refDist, t);
+        } else {
+            // ABOVE it: the plain formula, plus the original close-in near the
+            // top clamp (looking down from almost directly overhead). Its
+            // reach is capped so it can never extend past the threshold - the
+            // two rules meet there at full distance, so there is no step to
+            // see when crossing. 0 disables the top-end shrink.
+            const topMargin = Math.min(closeStartAngle, closeStartPhi - CAMERA_PHI_MIN);
+            horizDist = rawHorizDist;
+            if (topMargin > 0) {
+                const t = THREE.MathUtils.clamp((cameraPhi - CAMERA_PHI_MIN) / topMargin, 0, 1);
+                if (t < 1) horizDist = THREE.MathUtils.lerp(minCloseDist, rawHorizDist, t);
+            }
         }
 
         let targetCamX = camTarget.x + horizDist * Math.sin(cameraTheta);
@@ -7341,7 +7993,18 @@ export function startGame(CharacterClass) {
         // inspection (e.g. via Playwright) while chasing ledge-grab
         // reach reports. Cheap (plain property writes), fine to leave.
         window._dbgIsGrounded = isGrounded;
+        // Ground-scan readout: which surface the slope/slide logic decided it
+        // is standing on, and how steep it read. Chasing "the character
+        // stumbles / starts sliding at the seam between two adjacent boxes"
+        // is impossible without seeing the normal it actually picked.
+        window._dbgIsSliding = isSliding;
+        window._dbgSlopeDeg = +THREE.MathUtils.radToDeg(_dbgGroundNormalOut.angleTo(_upVec)).toFixed(1);
+        window._dbgGroundNormalXYZ = [+_dbgGroundNormalOut.x.toFixed(3), +_dbgGroundNormalOut.y.toFixed(3), +_dbgGroundNormalOut.z.toFixed(3)];
         window._dbgCameraPhi = cameraPhi;
+        // The follow-cam's horizontal distance after the close-in blend - the
+        // number the "Close-In Start Elevation" slider is actually tuning, so
+        // it's worth being able to read it off directly.
+        window._dbgCamHorizDist = horizDist;
         window._dbgYVelocity = yVelocity;
         window._dbgIsLedgeGrabbing = isLedgeGrabbing;
         // Hang hand-IK debug markers/lines only make sense while hanging -
