@@ -612,8 +612,18 @@ export function startGame(CharacterClass) {
     // alphaTest instead of transparent: cutout foliage sorts badly as
     // transparent (tufts flicker against each other depending on camera
     // angle), and grass edges don't need real blending.
+    //
+    // Live-tunable (Grass Alpha Cutoff slider) rather than a fixed constant -
+    // both PNGs have a soft, anti-aliased fade at the blade tips/base rather
+    // than a hard alpha edge, and how much of that fade to keep vs. discard
+    // is a look call, not something to nail down once and hardcode. Measured
+    // for reference: at 0.5 the shader discards the bottom ~18% of the image
+    // height as "not opaque enough" (reads as the whole tuft floating above
+    // the ground even though the geometry itself is flush); at 0.15 that
+    // margin is ~5%.
+    window.grassAlphaTest = 0.15;
     const grassMats = [grassTex2, grassTex3].map(map => new THREE.MeshToonMaterial({
-        map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: 0.5, transparent: false,
+        map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: window.grassAlphaTest, transparent: false,
     }));
     // Two crossed unit quads, pivot at the base so scaling grows them upward.
     const grassCrossGeo = (() => {
@@ -625,6 +635,10 @@ export function startGame(CharacterClass) {
     window.grassCount = 1200;
     window.grassSize = 0.9;
     window.grassArea = 70;
+    // Independent of grassSize (which is the width/depth of the card) - lets
+    // the tufts be stretched taller/shorter without also changing how wide
+    // they are, or vice versa.
+    window.grassHeight = 1.0;
     function clearGrass() {
         grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
         grassMeshes.length = 0;
@@ -640,6 +654,17 @@ export function startGame(CharacterClass) {
     const _grassPos = new THREE.Vector3();
     const _grassScale = new THREE.Vector3();
     function buildGrass() {
+        // The level is built synchronously in one go and buildGrass() runs at
+        // the tail end of that, before any frame has ever rendered. A mesh's
+        // matrixWorld is only recomputed on render (or an explicit call) -
+        // without this, freshly created/rotated pieces (the ramps in
+        // particular, which set position AND rotation.x) can still carry a
+        // stale or identity matrixWorld, so a raycast run this early tests
+        // them in the wrong place. Confirmed live: without this call, tufts
+        // landed on ramp panels that a raycast moments later (post-render)
+        // correctly rejected - same ray, same objects, only the timing
+        // differed.
+        scene.updateMatrixWorld(true);
         clearGrass();
         const toggle = document.getElementById('toggle-grass');
         if (toggle && !toggle.checked) return;
@@ -661,9 +686,16 @@ export function startGame(CharacterClass) {
             const hits = _grassRay.intersectObjects(blockers, true);
             if (hits.length > 0) continue;            // something built here
             const s = window.grassSize * (0.65 + Math.random() * 0.7);
-            _grassPos.set(x, 0, z);
+            const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
+            // Sunk very slightly below the ground plane rather than sitting
+            // exactly at y=0. Geometrically the base was already flush with
+            // the ground (verified: both at y=0), but toon shading has no
+            // contact shadow/AO at that seam, so a flush card can still read
+            // as floating - the classic look for flat cutout foliage.
+            // Embedding the base hides the seam regardless of the cause.
+            _grassPos.set(x, -0.04, z);
             _grassQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
-            _grassScale.set(s, s * (0.8 + Math.random() * 0.5), s);
+            _grassScale.set(s, h, s);
             perMat[placed % grassMats.length].push(
                 new THREE.Matrix4().compose(_grassPos, _grassQuat, _grassScale));
             placed++;
@@ -681,8 +713,48 @@ export function startGame(CharacterClass) {
             scene.add(inst);
             grassMeshes.push(inst);
         });
+        buildGrassWireframe();
     }
     window.rebuildGrass = buildGrass;
+
+    // ---- Grass wireframe helper (Editor Wireframe toggle) ----
+    // Grass tufts don't go through the level editor's own per-mesh wireframe
+    // path: they're InstancedMesh (one shared geometry, per-instance
+    // transforms - EdgesGeometry on the raw geometry wouldn't reflect where
+    // any individual tuft actually sits) and they're added straight to
+    // `scene`, not under editTarget, which is the only subtree
+    // LevelEditor.setWireframe() traverses. So this builds its own outline:
+    // the quad-cross edges of every placed instance, transformed by that
+    // instance's own matrix and merged into one LineSegments draw call.
+    // Bright red specifically so it reads clearly against the toon-shaded
+    // ground plane's own solid green (ground isn't under editTarget either,
+    // so it stays solid even in wireframe mode - a deliberate, useful
+    // reference surface to check tuft base height against).
+    let grassWireMesh = null;
+    const _gwA = new THREE.Vector3(), _gwB = new THREE.Vector3(), _gwC = new THREE.Vector3();
+    function buildGrassWireframe() {
+        if (grassWireMesh) { scene.remove(grassWireMesh); grassWireMesh.geometry.dispose(); grassWireMesh.material.dispose(); grassWireMesh = null; }
+        if (!grassMeshes.length) return;
+        const edgesLocal = new THREE.EdgesGeometry(grassCrossGeo, 1);
+        const localPos = edgesLocal.attributes.position;
+        const positions = [];
+        const M = new THREE.Matrix4();
+        grassMeshes.forEach(inst => {
+            for (let i = 0; i < inst.count; i++) {
+                inst.getMatrixAt(i, M);
+                for (let v = 0; v < localPos.count; v++) {
+                    _gwA.fromBufferAttribute(localPos, v).applyMatrix4(M);
+                    positions.push(_gwA.x, _gwA.y, _gwA.z);
+                }
+            }
+        });
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        grassWireMesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xff0033, depthTest: true }));
+        grassWireMesh.raycast = () => {};
+        grassWireMesh.visible = !!(levelEditor && levelEditor.wireframeEnabled);
+        scene.add(grassWireMesh);
+    }
 
     const cubeSize = 3.0;
     const platMat = new THREE.MeshToonMaterial({ color: 0x5555aa, gradientMap: threeTone });
@@ -2448,6 +2520,11 @@ export function startGame(CharacterClass) {
             // grabbed, instead of the player being able to reach it before
             // it's in collidables at all.
             window._cubesLoaded = true;
+            // The grass field was already scattered (synchronously, at level
+            // build time) before this prop existed to avoid - re-scatter now
+            // that it's actually in collidables. window.rebuildGrass is the
+            // same escape hatch the slider controls use.
+            if (window.rebuildGrass) window.rebuildGrass();
         });
     }
 
@@ -4111,6 +4188,12 @@ export function startGame(CharacterClass) {
         { id: 'grass-count-slider', vId: 'grass-count-val', func: v => window.grassCount = v, fix: 0 },
         { id: 'grass-size-slider', vId: 'grass-size-val', func: v => window.grassSize = v, fix: 2 },
         { id: 'grass-area-slider', vId: 'grass-area-val', func: v => window.grassArea = v, fix: 0 },
+        { id: 'grass-height-slider', vId: 'grass-height-val', func: v => window.grassHeight = v, fix: 2 },
+        // Alpha cutoff bypasses this table's normal path (which only records
+        // the value - a rebuild is wired separately below per-slider) since
+        // it doesn't need clearGrass()/re-placement at all, just a material
+        // property flip. Handled entirely by its own 'input' listener further
+        // down instead of a func here, for instant feedback while dragging.
         { id: 'camera-close-start-slider', vId: 'camera-close-start-val', func: v => window.cameraCloseStartAngle = v, fix: 2 },
         { id: 'camera-close-min-slider', vId: 'camera-close-min-val', func: v => window.cameraMinCloseDistance = v, fix: 1 },
         { id: 'collider-density-slider', vId: 'collider-density-val', func: v => char.updateColliderDensity(v), fix: 0 },
@@ -4180,12 +4263,24 @@ export function startGame(CharacterClass) {
     // Grass: re-scatter on 'change' (slider release / checkbox click) rather
     // than 'input'. Each rebuild raycasts once per tuft and rebuilds two
     // InstancedMeshes, which is far too heavy to run on every drag tick.
-    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider'].forEach(id => {
+    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider', 'grass-height-slider'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => buildGrass());
     });
     const grassToggleEl = document.getElementById('toggle-grass');
     if (grassToggleEl) grassToggleEl.addEventListener('change', () => buildGrass());
+    // Alpha cutoff: a straight material property, no ray-cast placement
+    // involved, so it updates on 'input' (live, while dragging) rather than
+    // waiting for 'change' like the others - the whole point of exposing
+    // this is to let the cutoff be dialed in by eye.
+    const grassAlphaEl = document.getElementById('grass-alpha-slider');
+    if (grassAlphaEl) grassAlphaEl.addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.grassAlphaTest = v;
+        grassMats.forEach(m => { m.alphaTest = v; m.needsUpdate = true; });
+        const disp = document.getElementById('grass-alpha-val');
+        if (disp) disp.innerText = v.toFixed(2);
+    });
 
     document.getElementById('toggle-step-labels').addEventListener('change', e => {
         stairNumberLabels.forEach(l => { l.visible = e.target.checked; });
@@ -4387,7 +4482,13 @@ export function startGame(CharacterClass) {
         document.getElementById('outline-thickness-val').textContent = v.toFixed(1);
     });
     const toggleEditorWireframeEl = document.getElementById('toggle-editor-wireframe');
-    if (toggleEditorWireframeEl) toggleEditorWireframeEl.addEventListener('change', e => levelEditor.setWireframe(e.target.checked));
+    if (toggleEditorWireframeEl) toggleEditorWireframeEl.addEventListener('change', e => {
+        levelEditor.setWireframe(e.target.checked);
+        // Grass isn't under editTarget (see buildGrassWireframe's own
+        // comment on why it needs a separate path), so the level editor's
+        // own setWireframe never touches it - drive it here instead.
+        if (grassWireMesh) grassWireMesh.visible = e.target.checked;
+    });
     const toggleEditorPlayerCameraEl = document.getElementById('toggle-editor-player-camera');
     if (toggleEditorPlayerCameraEl) {
         levelEditor.setCameraMode(toggleEditorPlayerCameraEl.checked ? 'player' : 'free');
