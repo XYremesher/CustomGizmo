@@ -621,7 +621,7 @@ export function startGame(CharacterClass) {
     // height as "not opaque enough" (reads as the whole tuft floating above
     // the ground even though the geometry itself is flush); at 0.15 that
     // margin is ~5%.
-    window.grassAlphaTest = 0.15;
+    window.grassAlphaTest = 0.42;
     const grassMats = [grassTex2, grassTex3].map(map => new THREE.MeshToonMaterial({
         map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: window.grassAlphaTest, transparent: false,
     }));
@@ -632,13 +632,17 @@ export function startGame(CharacterClass) {
         return BufferGeometryUtils.mergeGeometries([a, bGeo]);
     })();
     const grassMeshes = [];
-    window.grassCount = 1200;
-    window.grassSize = 0.9;
-    window.grassArea = 70;
+    window.grassCount = 1600;
+    window.grassSize = 0.8;
+    window.grassArea = 150;
     // Independent of grassSize (which is the width/depth of the card) - lets
     // the tufts be stretched taller/shorter without also changing how wide
     // they are, or vice versa.
-    window.grassHeight = 1.0;
+    window.grassHeight = 0.95;
+    // Fraction of each instance's OWN height to sink it below the ground -
+    // see the placement loop for why this has to scale with height rather
+    // than being a fixed world-unit offset.
+    window.grassBaseSink = 0.25;
     function clearGrass() {
         grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
         grassMeshes.length = 0;
@@ -687,13 +691,19 @@ export function startGame(CharacterClass) {
             if (hits.length > 0) continue;            // something built here
             const s = window.grassSize * (0.65 + Math.random() * 0.7);
             const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
-            // Sunk very slightly below the ground plane rather than sitting
-            // exactly at y=0. Geometrically the base was already flush with
-            // the ground (verified: both at y=0), but toon shading has no
-            // contact shadow/AO at that seam, so a flush card can still read
-            // as floating - the classic look for flat cutout foliage.
-            // Embedding the base hides the seam regardless of the cause.
-            _grassPos.set(x, -0.04, z);
+            // Sunk below the ground plane, PROPORTIONAL to this instance's
+            // own height rather than a fixed amount. The polygon's base is
+            // exactly at local y=0 and the UVs are a plain untouched 0..1
+            // map - confirmed by rendering with alphaTest near 0, which
+            // showed the blade content reaching the card's bottom edge with
+            // no dead margin. The actual gap is alphaTest itself: it's
+            // discarding a thin band of low-alpha (anti-aliased) pixels
+            // right at the blade base, and how tall that discarded band is
+            // IN WORLD UNITS scales with the instance's height - a fixed
+            // sink compensated a short tuft fine but was far too small once
+            // Grass Height could scale a tuft up to 3x. Sinking by a
+            // fraction of h instead keeps the fix correct at any height.
+            _grassPos.set(x, -h * window.grassBaseSink, z);
             _grassQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
             _grassScale.set(s, h, s);
             perMat[placed % grassMats.length].push(
@@ -4189,6 +4199,9 @@ export function startGame(CharacterClass) {
         { id: 'grass-size-slider', vId: 'grass-size-val', func: v => window.grassSize = v, fix: 2 },
         { id: 'grass-area-slider', vId: 'grass-area-val', func: v => window.grassArea = v, fix: 0 },
         { id: 'grass-height-slider', vId: 'grass-height-val', func: v => window.grassHeight = v, fix: 2 },
+        // Slider is a whole-number percent (0-30) for a more readable label
+        // than a 0.00-0.30 fraction; grassBaseSink itself stays a fraction.
+        { id: 'grass-sink-slider', vId: 'grass-sink-val', func: v => window.grassBaseSink = v / 100, fix: 0, raw: true },
         // Alpha cutoff bypasses this table's normal path (which only records
         // the value - a rebuild is wired separately below per-slider) since
         // it doesn't need clearGrass()/re-placement at all, just a material
@@ -4263,7 +4276,7 @@ export function startGame(CharacterClass) {
     // Grass: re-scatter on 'change' (slider release / checkbox click) rather
     // than 'input'. Each rebuild raycasts once per tuft and rebuilds two
     // InstancedMeshes, which is far too heavy to run on every drag tick.
-    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider', 'grass-height-slider'].forEach(id => {
+    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider', 'grass-height-slider', 'grass-sink-slider'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => buildGrass());
     });
