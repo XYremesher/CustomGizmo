@@ -556,8 +556,18 @@ export function startGame(CharacterClass) {
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
     dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 150;
-    dirLight.shadow.camera.left = -40; dirLight.shadow.camera.right = 40;
-    dirLight.shadow.camera.top = 40; dirLight.shadow.camera.bottom = -40;
+    // Half-extent of the shadow camera's box, kept as a named constant since
+    // buildGrass() below needs the exact same number - anything placed
+    // outside this box samples the shadow map past its own edge (clamped/
+    // undefined depth comparison), which reads as random dark speckling on
+    // perfectly lit ground. Not widened to cover the full grass field: the
+    // same 2048x2048 texel budget spread over a bigger box would blur the
+    // shadows that matter most (the player, the level geometry near it) -
+    // see buildGrass's own comment for the alternative taken instead.
+    const SHADOW_CAMERA_HALF_EXTENT = 40;
+    window._shadowCameraHalfExtent = SHADOW_CAMERA_HALF_EXTENT;
+    dirLight.shadow.camera.left = -SHADOW_CAMERA_HALF_EXTENT; dirLight.shadow.camera.right = SHADOW_CAMERA_HALF_EXTENT;
+    dirLight.shadow.camera.top = SHADOW_CAMERA_HALF_EXTENT; dirLight.shadow.camera.bottom = -SHADOW_CAMERA_HALF_EXTENT;
     dirLight.shadow.bias = -0.0001; dirLight.shadow.normalBias = 0.02;
     scene.add(dirLight); scene.add(dirLight.target);
 
@@ -621,20 +631,59 @@ export function startGame(CharacterClass) {
     // height as "not opaque enough" (reads as the whole tuft floating above
     // the ground even though the geometry itself is flush); at 0.15 that
     // margin is ~5%.
-    window.grassAlphaTest = 0.42;
-    const grassMats = [grassTex2, grassTex3].map(map => new THREE.MeshToonMaterial({
-        map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: window.grassAlphaTest, transparent: false,
-    }));
+    window.grassAlphaTest = 0.90;
+    const grassMats = [grassTex2, grassTex3].map(map => {
+        const mat = new THREE.MeshToonMaterial({
+            map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: window.grassAlphaTest, transparent: false,
+        });
+        // Cancels out DoubleSide's automatic backface normal flip. Standard
+        // three.js behaviour: a double-sided material negates the normal
+        // when gl_FrontFacing is false, so a surface always shades as if lit
+        // from its own visible side. For the crossed-quad cross this UNDOES
+        // the forced-up normal above rather than complementing it - from any
+        // camera angle you're looking at the FRONT of one card and the BACK
+        // of its perpendicular partner, so the same (0,1,0) normal flips to
+        // (0,-1,0) on that second card, and it renders as if lit from
+        // underneath - bright card next to a dark one, in the same tuft.
+        // Stripping the flip out of the compiled shader (rather than
+        // dropping DoubleSide, which would make the geometry invisible from
+        // outside its winding direction) makes every card use the literal
+        // vertex normal always, so lighting - and therefore shadow
+        // reception, still fully intact - is identical no matter which face
+        // or angle you're looking from.
+        mat.onBeforeCompile = (shader) => {
+            shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <normal_fragment_begin>',
+                'vec3 normal = normalize( vNormal );'
+            );
+        };
+        return mat;
+    });
     // Two crossed unit quads, pivot at the base so scaling grows them upward.
     const grassCrossGeo = (() => {
         const a = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
         const bGeo = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0).rotateY(Math.PI / 2);
-        return BufferGeometryUtils.mergeGeometries([a, bGeo]);
+        const merged = BufferGeometryUtils.mergeGeometries([a, bGeo]);
+        // Force every vertex's normal to straight up, overwriting the two
+        // quads' real (perpendicular) normals. Without this, MeshToonMaterial
+        // shades each quad against its OWN facing direction under the
+        // directional light - one card of the cross ends up near-fully-lit,
+        // the other near-fully-backlit, so a single tuft reads as two
+        // different brightnesses depending which card you're looking at,
+        // and that's per-tuft-orientation (random Y rotation), not
+        // consistent across the field. Sharing one normal makes both cards
+        // receive identical lighting regardless of which way they face -
+        // the standard trick for crossed-billboard foliage.
+        const n = merged.attributes.position.count;
+        const normals = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) normals[i * 3 + 1] = 1;
+        merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+        return merged;
     })();
     const grassMeshes = [];
-    window.grassCount = 1600;
-    window.grassSize = 0.8;
-    window.grassArea = 150;
+    window.grassCount = 2000;
+    window.grassSize = 1.4;
+    window.grassArea = 80;
     // Independent of grassSize (which is the width/depth of the card) - lets
     // the tufts be stretched taller/shorter without also changing how wide
     // they are, or vice versa.
@@ -647,12 +696,15 @@ export function startGame(CharacterClass) {
         grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
         grassMeshes.length = 0;
     }
-    // Scatters tufts on open ground only: a downward ray that hits anything
-    // other than `ground` means there is level geometry there, so skip it
-    // rather than have grass growing through a platform.
+    // Scatters tufts on open ground: a downward ray finds whatever's
+    // directly above a candidate spot, then checks that hit's own Box3 to
+    // tell "solid thing resting on the ground here" apart from "something's
+    // overhead but there's real clearance below it" - see the check itself,
+    // further down, for why a plain hit/no-hit test isn't enough.
     const _grassRay = new THREE.Raycaster();
     const _grassDown = new THREE.Vector3(0, -1, 0);
     const _grassFrom = new THREE.Vector3();
+    const _grassObstacleBox = new THREE.Box3();
     const _grassMat4 = new THREE.Matrix4();
     const _grassQuat = new THREE.Quaternion();
     const _grassPos = new THREE.Vector3();
@@ -676,7 +728,19 @@ export function startGame(CharacterClass) {
         if (!total) return;
         const half = window.grassArea;
         const blockers = collidables.filter(c => c !== ground);
-        const perMat = grassMats.map(() => []);
+        // Two buckets per texture: instances inside the shadow camera's own
+        // box get receiveShadow, instances outside it don't - see the
+        // SHADOW_CAMERA_HALF_EXTENT comment on dirLight for why. A small
+        // margin short of the true edge (not the full 40) because shadow
+        // sampling gets unreliable in the last few units near the frustum
+        // boundary too (PCF filter kernel reaches past the edge), not just
+        // strictly outside it.
+        const shadowSafe = (window._shadowCameraHalfExtent || 40) - 3;
+        const perMat = grassMats.map(() => ({ near: [], far: [] }));
+        // Tallest a tuft can come out at the CURRENT Size/Height settings
+        // (matches the s/h random ranges below: size up to *1.35, height up
+        // to *1.3), plus a margin - see its use just below.
+        const maxGrassClearance = window.grassSize * 1.35 * window.grassHeight * 1.3 + 0.3;
         // Fixed attempt budget so a level that is mostly platforms can't spin
         // here forever looking for open ground.
         let attempts = 0;
@@ -688,7 +752,26 @@ export function startGame(CharacterClass) {
             _grassFrom.set(x, 60, z);
             _grassRay.set(_grassFrom, _grassDown);
             const hits = _grassRay.intersectObjects(blockers, true);
-            if (hits.length > 0) continue;            // something built here
+            if (hits.length > 0) {
+                // Not an automatic reject anymore. The ray still has to start
+                // from a safely-high origin - some level pieces (the extra-
+                // tall first stair step, cubeSize*1.9) are themselves taller
+                // than a tuft, and starting the ray any lower would sometimes
+                // spawn it INSIDE that solid geometry, where a downward ray
+                // can't see the exit face and would falsely report "clear".
+                // What changes is what counts as blocking: the hit object's
+                // OWN bottom edge (its Box3), not just that something was hit
+                // at all. An overhang whose underside sits comfortably above
+                // maxGrassClearance leaves genuine open ground beneath it -
+                // exactly the "grows in shade under a bridge" case that a
+                // blanket "any hit rejects" was wrongly excluding everywhere.
+                // A block resting on the ground has min.y near 0, well under
+                // the clearance line, so it's still rejected exactly as
+                // before - this only opens up placement that was always
+                // physically valid to begin with.
+                window.getObstacleBox(hits[0].object, _grassObstacleBox);
+                if (_grassObstacleBox.min.y < maxGrassClearance) continue;
+            }
             const s = window.grassSize * (0.65 + Math.random() * 0.7);
             const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
             // Sunk below the ground plane, PROPORTIONAL to this instance's
@@ -706,22 +789,45 @@ export function startGame(CharacterClass) {
             _grassPos.set(x, -h * window.grassBaseSink, z);
             _grassQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
             _grassScale.set(s, h, s);
-            perMat[placed % grassMats.length].push(
+            const bucket = (Math.abs(x) < shadowSafe && Math.abs(z) < shadowSafe) ? 'near' : 'far';
+            perMat[placed % grassMats.length][bucket].push(
                 new THREE.Matrix4().compose(_grassPos, _grassQuat, _grassScale));
             placed++;
         }
-        perMat.forEach((mats, i) => {
-            if (!mats.length) return;
-            const inst = new THREE.InstancedMesh(grassCrossGeo, grassMats[i], mats.length);
-            mats.forEach((m, k) => inst.setMatrixAt(k, m));
-            inst.instanceMatrix.needsUpdate = true;
-            inst.castShadow = false;
-            inst.receiveShadow = false;
-            inst.raycast = () => {};                  // never answer a world probe
-            inst.frustumCulled = false;               // instances span the whole field
-            inst.userData.isGrass = true;
-            scene.add(inst);
-            grassMeshes.push(inst);
+        perMat.forEach((buckets, i) => {
+            ['near', 'far'].forEach(key => {
+                const mats = buckets[key];
+                if (!mats.length) return;
+                const inst = new THREE.InstancedMesh(grassCrossGeo, grassMats[i], mats.length);
+                mats.forEach((m, k) => inst.setMatrixAt(k, m));
+                inst.instanceMatrix.needsUpdate = true;
+                // Doesn't CAST shadows (1600+ crossed quads shadowing each
+                // other/the ground would be expensive for very little payoff,
+                // and self-shadowing thin cutout cards tends to look noisy).
+                //
+                // RECEIVES shadows only in the 'near' bucket - instances
+                // inside the shadow camera's own frustum (see
+                // SHADOW_CAMERA_HALF_EXTENT / shadowSafe above). Together
+                // with the forced-up normal on the geometry, this is what
+                // makes grass read as flat: normal-based directional shading
+                // is already uniform everywhere, so the shadow map is the
+                // only source of variation, exactly where an object - the
+                // player, a block - actually blocks the light. The 'far'
+                // bucket keeps receiveShadow off: outside the shadow camera's
+                // box, sampling the shadow map reads past its own edge
+                // (clamped/undefined depth), which showed up as random dark
+                // speckling on ground nothing was actually shadowing -
+                // confirmed by measuring a lit patch with zero occluders
+                // above it and still finding dozens of falsely-dark pixels,
+                // all outside this exact box.
+                inst.castShadow = false;
+                inst.receiveShadow = key === 'near';
+                inst.raycast = () => {};                  // never answer a world probe
+                inst.frustumCulled = false;               // instances span the whole field
+                inst.userData.isGrass = true;
+                scene.add(inst);
+                grassMeshes.push(inst);
+            });
         });
         buildGrassWireframe();
     }
