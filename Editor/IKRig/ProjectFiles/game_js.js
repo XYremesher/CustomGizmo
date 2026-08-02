@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
@@ -1554,6 +1555,7 @@ export function startGame(CharacterClass) {
     const onLevelGlbLoaded = (gltf) => {
         levelGlbScene = gltf.scene;
         if (pendingGlbLevelBuild) { pendingGlbLevelBuild = false; buildLevelFromGlb(); }
+        if (pendingWaterLevelBuild) { pendingWaterLevelBuild = false; buildWaterTestLevel(); }
     };
     levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
         levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
@@ -2313,6 +2315,550 @@ export function startGame(CharacterClass) {
     };
 
     let levelGlbWater = null;
+
+    // Water Test level (see WaterTestAssets/README.md): land/rocks are
+    // borrowed as-is from the tympanus/codrops "stylized water" tutorial
+    // repo (github.com/thaslle/stylized-water, MIT) rather than reusing
+    // Level 2's own Level.glb - that repo is also where the shader math
+    // below is ported from line-for-line (their CustomShaderMaterial +
+    // React Three Fiber setup translated to a plain THREE.ShaderMaterial,
+    // since this project has no build step to pull in that library).
+    // uTime is pushed from animate()'s clock.elapsedTime - NOT the raw
+    // Date.now()-based `time` var used elsewhere in this file (a ~1.7e9
+    // epoch value): feeding a number that large into per-fragment UV math
+    // blows past float32 precision at that magnitude, quantizing every
+    // fragment to the same noise lattice cell and rendering as a flat,
+    // pattern-less plane (this exact bug was hit and fixed while building
+    // this level - the source repo itself uses clock.getElapsedTime(),
+    // confirming small-time is the correct convention here).
+    let waterTerrainScene = null;
+    let waterRocksScene = null;
+    let pendingWaterLevelBuild = false;
+    let waterTestTerrainMaterial = null;
+    let waterTestRocksMaterial = null;
+    let pondWaterBody = null;
+    // Same defaults as the source repo's useStore.js.
+    // Amplitude is the one knob that decides how visible the water's rise
+    // and fall is - the source's own 0.1 is nearly imperceptible at this
+    // game's scale (it was tuned for a much closer camera), and since the
+    // bob is global the foam band tracks it exactly, so raising it moves
+    // the whole waterline in and out like a tide rather than desyncing
+    // anything. Raise/lower this single value to taste.
+    const WATER_TEST_LEVEL = 0.9, WATER_TEST_WAVE_SPEED = 1.2, WATER_TEST_WAVE_AMPLITUDE = 0.3, WATER_TEST_FOAM_DEPTH = 0.08;
+
+    // A "water body" bundles a stylized water plane material with the
+    // uniforms shoreline-foam objects near it should read - one WATER
+    // HEIGHT can't be a single scene-wide value once a level has more than
+    // one water surface (a main sea plus an elevated pond, say): each
+    // needs its own uWaterLevel, so each gets its own uniforms object
+    // instead of every foam-enabled material sharing one global. All
+    // bodies still get their uTime ticked together in animate().
+    const waterBodies = [];
+    function createWaterBody(opts) {
+        const uniforms = {
+            uTime: { value: 0 },
+            uWaterLevel: { value: opts.waterLevel },
+            uWaveSpeed: { value: opts.waveSpeed },
+            uWaveAmplitude: { value: opts.waveAmplitude },
+            uFoamDepth: { value: opts.foamDepth },
+            // The character's own body material gets applyShorelineFoam
+            // once and keeps it forever (materials aren't rebuilt per-level
+            // like terrain/rocks/props are) - this lets a level that isn't
+            // near this body's water gate it off, where the character's Y
+            // can just as easily cross uWaterLevel while walking around dry
+            // land, which would otherwise paint a nonsense white band.
+            uFoamEnabled: { value: opts.foamEnabled !== undefined ? opts.foamEnabled : 1 },
+        };
+        const waterMaterial = createStylizedWaterMaterial(
+            // 45 in the source; raised so the surface reads as fewer, larger
+            // blobs instead of a busy fine mesh of squiggles. Counter-
+            // intuitive direction: the shader uses `100.0 - uTextureSize` as
+            // the noise frequency, so a BIGGER number here means a LOWER
+            // frequency, i.e. bigger and sparser features.
+            opts.waveSpeed, opts.waveAmplitude, opts.textureSize ?? 68,
+            opts.colorNear ?? 0x00fccd, opts.colorFar ?? 0x1ceeff);
+        // Re-point the water surface's own uniform objects at the ones
+        // above so the two share state BY REFERENCE. Without this they are
+        // two independent sets: animate() only ticks `uniforms` (the foam
+        // side), leaving the water material's uTime frozen at 0 forever -
+        // sin(0) is 0, so the surface neither bobbed nor scrolled its noise
+        // while the foam animated perfectly. That mismatch is exactly the
+        // "foam moves but the water mesh is static" bug. Sharing them also
+        // makes it impossible for the surface and its foam to drift apart
+        // if speed/amplitude are ever retuned.
+        waterMaterial.uniforms.uTime = uniforms.uTime;
+        waterMaterial.uniforms.uWaveSpeed = uniforms.uWaveSpeed;
+        waterMaterial.uniforms.uWaveAmplitude = uniforms.uWaveAmplitude;
+        const body = { uniforms, waterMaterial };
+        waterBodies.push(body);
+        return body;
+    }
+    // Pairs a water PLANE MESH with the water body it should keep in sync -
+    // read fresh every frame in animate(), so dragging the mesh with the
+    // level editor's gizmo (or any future gameplay code that animates
+    // water.position.y, e.g. a rising-tide effect) moves the foam band
+    // immediately, with no manual "re-set uWaterLevel" step and no reload.
+    // Cleared at the top of buildLevel() (with collidables/carryables/etc)
+    // and re-populated by whichever level rebuilds after - a mesh that's
+    // recreated every rebuild (the Water Test level's sea/pond) would
+    // otherwise pile up stale entries pointing at removed objects.
+    const waterMeshSyncs = [];
+    function linkWaterMeshToBody(mesh, waterBody) {
+        waterMeshSyncs.push({ mesh, waterBody });
+    }
+    // ---- Shoreline foam: which water body applies is decided PER FRAGMENT ----
+    // Every water body's state is uploaded as parallel arrays and the
+    // fragment shader picks the one whose footprint the fragment actually
+    // sits in. Binding each material to one body at creation time (what
+    // this used to do) meant an object could never change allegiance: carry
+    // a rock from the sea into the elevated pond and it kept testing itself
+    // against the sea's height, so it simply stopped foaming. Only the
+    // player worked, because it alone had a JS "nearest body" search - which
+    // this replaces, since doing it per fragment covers the player, props,
+    // level geometry and anything the editor adds, with no bookkeeping.
+    const MAX_WATER_BODIES = 4;
+    const foamSharedUniforms = {
+        uFoamTime: { value: 0 },
+        uFoamCount: { value: 0 },
+        uFoamGlobalScale: { value: 1 },
+        uFoamLevel: { value: new Array(MAX_WATER_BODIES).fill(0) },
+        uFoamSpeed: { value: new Array(MAX_WATER_BODIES).fill(0) },
+        uFoamAmp: { value: new Array(MAX_WATER_BODIES).fill(0) },
+        uFoamBand: { value: new Array(MAX_WATER_BODIES).fill(0) },
+        uFoamOn: { value: new Array(MAX_WATER_BODIES).fill(0) },
+        uFoamMin: { value: Array.from({ length: MAX_WATER_BODIES }, () => new THREE.Vector2()) },
+        uFoamMax: { value: Array.from({ length: MAX_WATER_BODIES }, () => new THREE.Vector2()) },
+    };
+    // Live-tunable globals (see the Water sliders in the debug panel).
+    // foamDepthScale multiplies the band on EVERYTHING; charFoamScale is an
+    // extra multiplier for the player only, because the band is sized in
+    // world units and so reads far heavier on a ~1.7-unit character than on
+    // a 9-unit level wall.
+    window.foamDepthScale = 1.0;
+    window.charFoamScale = 0.3;
+    // Per-material thickness uniforms that should follow a window global
+    // live (currently just the player's, via charFoamScale).
+    const foamObjScaleUniforms = [];
+    window.__dbgFoam = foamSharedUniforms; // TEMP DEBUG
+    // Generic version of the terrain/rocks foam trick (see the two
+    // hand-written ShaderMaterials below) for ANY existing material -
+    // boxes, props, whatever the level editor adds - via onBeforeCompile,
+    // so the object keeps its own texture/color/lighting and just gets the
+    // white waterline band mixed into its final output. Cheap: no extra
+    // render pass, just a few ALU ops per fragment, and it already works
+    // for moving objects for free since it re-reads the object's current
+    // world Y against the animated water height every frame.
+    //
+    // opts.objScale is a per-material thickness multiplier (the player
+    // passes a smaller one). WHICH water body applies is no longer chosen
+    // here at all - see foamSharedUniforms.
+    function applyShorelineFoam(material, opts) {
+        if (!material || material.userData.hasShorelineFoam) return;
+        material.userData.hasShorelineFoam = true;
+        // Kept as a live uniform object rather than baked into the shader
+        // at compile time, so the debug-panel slider can retune it without
+        // a level rebuild (see foamObjScaleUniforms).
+        const objScaleUniform = { value: (opts && opts.objScale !== undefined) ? opts.objScale : 1.0 };
+        if (opts && opts.trackGlobal) foamObjScaleUniforms.push({ uniform: objScaleUniform, key: opts.trackGlobal });
+        // Chain rather than clobber: the character's own body material
+        // already carries an onBeforeCompile (the rim-light effect set up
+        // in ClimbGame.html) - overwriting it outright would silently kill
+        // rim lighting. Every handler here (rim, this one) uses the
+        // "replace <chunk> with <chunk>+ownCode" pattern, which re-inserts
+        // the same literal #include token as part of its own replacement -
+        // so calling the previous handler first and then still doing our
+        // own .replace() calls on the result keeps finding that token and
+        // stacks correctly regardless of how many handlers are chained.
+        const previousOnBeforeCompile = material.onBeforeCompile;
+        material.onBeforeCompile = (shader, renderer) => {
+            if (previousOnBeforeCompile) previousOnBeforeCompile(shader, renderer);
+            Object.assign(shader.uniforms, foamSharedUniforms);
+            shader.uniforms.uFoamObjScale = objScaleUniform;
+            shader.vertexShader = shader.vertexShader
+                .replace('#include <common>', '#include <common>\nvarying vec3 vFoamPositionW;\nvarying vec3 vFoamNormalW;')
+                // World normal, used below to keep the band a similar
+                // apparent thickness on any surface angle.
+                .replace('#include <defaultnormal_vertex>', '#include <defaultnormal_vertex>\nvFoamNormalW = normalize(mat3(modelMatrix) * objectNormal);')
+                // Anchored on <skinning_vertex> (which runs unconditionally
+                // in every material's template, skinned or not - it's a
+                // no-op under the hood when there's no skeleton) and reads
+                // `transformed`, NOT <begin_vertex>/`position`: for a
+                // skinned mesh (the player character), `position` at
+                // <begin_vertex> is still the bind-pose vertex - anchoring
+                // there would compute a world position that ignores the
+                // current animation pose entirely, so the foam band would
+                // sit wherever the character's T-pose feet happen to be,
+                // not its actual animated feet.
+                .replace('#include <skinning_vertex>', '#include <skinning_vertex>\nvFoamPositionW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+            shader.fragmentShader = shader.fragmentShader
+                .replace('#include <common>', `#include <common>
+                    varying vec3 vFoamPositionW;
+                    varying vec3 vFoamNormalW;
+                    uniform float uFoamTime, uFoamCount, uFoamGlobalScale, uFoamObjScale;
+                    uniform float uFoamLevel[${MAX_WATER_BODIES}];
+                    uniform float uFoamSpeed[${MAX_WATER_BODIES}];
+                    uniform float uFoamAmp[${MAX_WATER_BODIES}];
+                    uniform float uFoamBand[${MAX_WATER_BODIES}];
+                    uniform float uFoamOn[${MAX_WATER_BODIES}];
+                    uniform vec2 uFoamMin[${MAX_WATER_BODIES}];
+                    uniform vec2 uFoamMax[${MAX_WATER_BODIES}];`)
+                .replace('#include <dithering_fragment>', `
+                    // Pick the water body this fragment belongs to: the one
+                    // whose XZ footprint it is inside (or nearest to), ties
+                    // broken toward the SMALLER footprint so a pond sitting
+                    // on top of the sea's huge plane wins over it.
+                    float fFoamBestDist = 1e9;
+                    float fFoamBestArea = 1e9;
+                    float fFoamLevel = 0.0, fFoamSpeed = 0.0, fFoamAmp = 0.0, fFoamBand = 0.0, fFoamOn = 0.0;
+                    for (int i = 0; i < ${MAX_WATER_BODIES}; i++) {
+                        if (float(i) >= uFoamCount) continue;
+                        if (uFoamOn[i] < 0.5) continue;
+                        vec2 mn = uFoamMin[i];
+                        vec2 mx = uFoamMax[i];
+                        float dxx = max(max(mn.x - vFoamPositionW.x, vFoamPositionW.x - mx.x), 0.0);
+                        float dzz = max(max(mn.y - vFoamPositionW.z, vFoamPositionW.z - mx.y), 0.0);
+                        float dd = dxx * dxx + dzz * dzz;
+                        float aa = (mx.x - mn.x) * (mx.y - mn.y);
+                        if (dd < fFoamBestDist - 1e-4 || (abs(dd - fFoamBestDist) <= 1e-4 && aa < fFoamBestArea)) {
+                            fFoamBestDist = dd; fFoamBestArea = aa;
+                            fFoamLevel = uFoamLevel[i]; fFoamSpeed = uFoamSpeed[i];
+                            fFoamAmp = uFoamAmp[i]; fFoamBand = uFoamBand[i]; fFoamOn = 1.0;
+                        }
+                    }
+                    // A clean 0..1 band mask (NOT the terrain/rocks shaders'
+                    // ported formula, which relied on smoothstep with
+                    // edge0>edge1 - an "overshoot" trick that reads as white
+                    // for saturated colors like their sand orange but barely
+                    // shows on a dark base color). Needs to work for
+                    // whatever arbitrary color an editor-added object has,
+                    // so: a straightforward mix to pure white, no overshoot.
+                    float shorelineSineOffset = sin(uFoamTime * fFoamSpeed) * fFoamAmp;
+                    float shorelineWaterHeight = fFoamLevel + shorelineSineOffset;
+                    // The band is a VERTICAL extent, so how wide it looks
+                    // depends entirely on the surface angle: on the gently
+                    // sloped test island it spreads into a fat ring, but on
+                    // a vertical wall (Level 2 is all box-sided platforms,
+                    // as is most of this game) the very same number is a
+                    // hairline you cannot see. Dividing by the surface's
+                    // verticality keeps the apparent width roughly constant;
+                    // clamped so a perfectly vertical face widens by 4x
+                    // rather than infinitely.
+                    float shorelineFacing = max(abs(vFoamNormalW.y), 0.25);
+                    float shorelineDepth = fFoamBand * uFoamObjScale * uFoamGlobalScale / shorelineFacing;
+                    float shorelineAbove = smoothstep(shorelineWaterHeight - 0.01, shorelineWaterHeight + 0.01, vFoamPositionW.y);
+                    float shorelineAboveBand = smoothstep(shorelineWaterHeight + shorelineDepth - 0.01, shorelineWaterHeight + shorelineDepth + 0.01, vFoamPositionW.y);
+                    float shorelineMask = (shorelineAbove - shorelineAboveBand) * fFoamOn;
+                    gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(1.0), shorelineMask);
+                    #include <dithering_fragment>`);
+        };
+        // Distinguishes this material's compiled program from an otherwise-
+        // identical material without the injection above - onBeforeCompile
+        // closures aren't part of three.js's default cache key, so without
+        // this two materials could wrongly share one compiled program.
+        // Every material already inherits a default customProgramCacheKey
+        // from THREE.Material.prototype (it's never actually undefined) -
+        // call it bound to `material`, since the default implementation
+        // reads `this.onBeforeCompile` internally and loses that `this` if
+        // invoked as a bare function reference.
+        const previousCacheKey = material.customProgramCacheKey;
+        material.customProgramCacheKey = () => (previousCacheKey ? previousCacheKey.call(material) : '') + '|shorelineFoam';
+        material.needsUpdate = true;
+    }
+    // terrain.glb/rocks.glb come out of the source repo's Vite build
+    // Draco-compressed - a plain GLTFLoader errors on them without this.
+    const waterDracoLoader = new DRACOLoader();
+    waterDracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+    const waterAssetLoader = new GLTFLoader();
+    waterAssetLoader.setDRACOLoader(waterDracoLoader);
+    function tryBuildWaterTestLevel() {
+        if (pendingWaterLevelBuild && waterTerrainScene && waterRocksScene) {
+            pendingWaterLevelBuild = false;
+            buildWaterTestLevel();
+        }
+    }
+    waterAssetLoader.load('WaterTestAssets/terrain.glb',
+        (gltf) => { waterTerrainScene = gltf.scene; tryBuildWaterTestLevel(); },
+        undefined, (e) => console.error('terrain.glb load failed:', e));
+    waterAssetLoader.load('WaterTestAssets/rocks.glb',
+        (gltf) => { waterRocksScene = gltf.scene; tryBuildWaterTestLevel(); },
+        undefined, (e) => console.error('rocks.glb load failed:', e));
+
+    // Same simplex noise used by the water/foam shaders below - the
+    // Ashima/webgl-noise "snoise" 2D implementation, unchanged from the
+    // source repo's copy of it.
+    const SNOISE_GLSL = `
+        vec3 mod289(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
+        vec2 mod289(vec2 x){return x-floor(x*(1.0/289.0))*289.0;}
+        vec3 permute(vec3 x){return mod289(((x*34.0)+1.0)*x);}
+        float snoise(vec2 v){
+            const vec4 C = vec4(0.211324865405187, 0.366025403784439,
+                                -0.577350269189626, 0.024390243902439);
+            vec2 i  = floor(v + dot(v, C.yy));
+            vec2 x0 = v - i + dot(i, C.xx);
+            vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+            vec4 x12 = x0.xyxy + C.xxzz;
+            x12.xy -= i1;
+            i = mod289(i);
+            vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
+                    + i.x + vec3(0.0, i1.x, 1.0));
+            vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+            m = m*m; m = m*m;
+            vec3 x = 2.0 * fract(p * C.www) - 1.0;
+            vec3 h = abs(x) - 0.5;
+            vec3 ox = floor(x + 0.5);
+            vec3 a0 = x - ox;
+            m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
+            vec3 g;
+            g.x = a0.x * x0.x + h.x * x0.y;
+            g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+            return 130.0 * dot(m, g);
+        }
+    `;
+
+    // Direct port of src/components/Water/shaders/{vertex,fragment}.glsl
+    // from the source repo. Their version runs through CustomShaderMaterial
+    // on top of a lit MeshStandardMaterial (csm_FragColor starts as that
+    // material's own lit "near" color); we have no lighting pipeline here,
+    // so finalColor just starts as the flat uColorNear instead.
+    // The bob here is deliberately GLOBAL (one offset for every vertex, no
+    // position term) because it has to match the foam band's own formula
+    // in applyShorelineFoam EXACTLY - that one is
+    // `sin(uTime*uWaveSpeed)*uWaveAmplitude` with no position term either.
+    // A position-dependent traveling ripple was tried and reverted: it
+    // desynced the two (the plane's average height stayed put while the
+    // foam still rose and fell, so the surface read as static next to a
+    // moving waterline), and it forced heavy plane subdivision to render
+    // at all - which tanked performance badly, because these water planes
+    // live in `collidables`, which is raycast several times per frame
+    // (rayDown/rayFwd/xray) and up to ~12k times by buildGrass(). A global
+    // bob needs no subdivision whatsoever: 2 triangles animate perfectly.
+    function createStylizedWaterMaterial(waveSpeed, waveAmplitude, textureSize, colorNearHex, colorFarHex) {
+        return new THREE.ShaderMaterial({
+            transparent: true,
+            side: THREE.DoubleSide,
+            uniforms: {
+                uTime: { value: 0 },
+                uWaveSpeed: { value: waveSpeed },
+                uWaveAmplitude: { value: waveAmplitude },
+                uTextureSize: { value: textureSize },
+                uColorNear: { value: new THREE.Color(colorNearHex) },
+                uColorFar: { value: new THREE.Color(colorFarHex) },
+            },
+            vertexShader: `
+                varying vec2 vUv;
+                uniform float uTime;
+                uniform float uWaveSpeed;
+                uniform float uWaveAmplitude;
+                void main() {
+                    vUv = uv;
+                    vec3 pos = position;
+                    pos.z += sin(uTime * uWaveSpeed) * uWaveAmplitude;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                uniform float uTime;
+                uniform vec3 uColorNear;
+                uniform vec3 uColorFar;
+                uniform float uTextureSize;
+
+                ${SNOISE_GLSL}
+
+                void main() {
+                    vec3 finalColor = uColorNear;
+                    float textureSize = 100.0 - uTextureSize;
+
+                    float noiseBase = snoise(vUv * (textureSize * 2.8) + sin(uTime * 0.3));
+                    noiseBase = noiseBase * 0.5 + 0.5;
+                    vec3 colorBase = vec3(noiseBase);
+
+                    vec3 foam = smoothstep(0.08, 0.001, colorBase);
+                    foam = step(0.5, foam);
+
+                    float noiseWaves = snoise(vUv * textureSize + sin(uTime * -0.1));
+                    noiseWaves = noiseWaves * 0.5 + 0.5;
+                    vec3 colorWaves = vec3(noiseWaves);
+
+                    float threshold = 0.6 + 0.01 * sin(uTime * 2.0);
+                    vec3 waveEffect = 1.0 - (smoothstep(threshold + 0.03, threshold + 0.032, colorWaves) +
+                                            smoothstep(threshold, threshold - 0.01, colorWaves));
+                    waveEffect = step(0.5, waveEffect);
+
+                    vec3 combinedEffect = min(waveEffect + foam, 1.0);
+
+                    float vignette = length(vUv - 0.5) * 1.5;
+                    vec3 baseEffect = smoothstep(0.1, 0.3, vec3(vignette));
+                    vec3 baseColor = mix(finalColor, uColorFar, baseEffect);
+
+                    combinedEffect = min(waveEffect + foam, 1.0);
+                    combinedEffect = mix(combinedEffect, vec3(0.0), baseEffect);
+
+                    vec3 foamEffect = mix(foam, vec3(0.0), baseEffect);
+
+                    finalColor = (1.0 - combinedEffect) * baseColor + combinedEffect;
+
+                    vec3 alpha = mix(vec3(0.2), vec3(1.0), foamEffect);
+                    alpha = mix(alpha, vec3(1.0), vignette + 0.5);
+
+                    // Original assigns a vec3 alpha into vec4's scalar slot
+                    // (relies on lenient GLSL constructor truncation) -
+                    // alpha.r/g/b are always equal here (built from vec3(
+                    // scalar) throughout), so alpha.r is the same value,
+                    // written the strictly-valid way.
+                    gl_FragColor = vec4(finalColor, alpha.r);
+                }
+            `,
+        });
+    }
+    // The "current level's main water" body - what every existing call
+    // site (character, Level.glb terrain, the Water Test level's own
+    // terrain/props) points at unless a specific secondary water body
+    // (e.g. an elevated pond) is passed to applyShorelineFoam explicitly.
+    // Defined only now, not right after createWaterBody() above: it calls
+    // createStylizedWaterMaterial(), which has to already exist by then -
+    // this const's initializer runs immediately (unlike a function
+    // declaration, which is hoisted), so placing it any earlier hits a
+    // temporal-dead-zone ReferenceError on SNOISE_GLSL inside that function.
+    const defaultWaterBody = createWaterBody({
+        waterLevel: WATER_TEST_LEVEL, waveSpeed: WATER_TEST_WAVE_SPEED,
+        waveAmplitude: WATER_TEST_WAVE_AMPLITUDE, foamDepth: WATER_TEST_FOAM_DEPTH, foamEnabled: 0,
+    });
+
+    function buildWaterTestLevel() {
+        if (!waterTerrainScene || !waterRocksScene) { pendingWaterLevelBuild = true; return; }
+        while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
+        projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
+        carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
+        carryables.length = 0;
+        nextCarryNetId = 0;
+        debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
+        collidables.length = 0;
+        ground.visible = false;
+        star.visible = false;
+        // uWaterLevel itself is no longer set here - the water mesh below
+        // gets linkWaterMeshToBody()'d, so animate() drives it every frame
+        // from that mesh's own position.y instead (see waterMeshSyncs).
+        defaultWaterBody.uniforms.uFoamEnabled.value = 1;
+
+        const WATER_LEVEL = WATER_TEST_LEVEL;
+
+        // The player's own body material gets its private charWaterUniforms
+        // (see there for why - it wanders between the sea and the pond)
+        // instead of the default per-object binding - applyShorelineFoam is
+        // idempotent per-material, so this is a no-op on every rebuild
+        // after the first.
+        if (char.bodyMaterials) char.bodyMaterials.forEach(mat => applyShorelineFoam(mat, { objScale: window.charFoamScale, trackGlobal: 'charFoamScale' }));
+
+        // Same MeshToonMaterial + threeTone cell-shading every other prop in
+        // the game uses (not the bespoke height-tinted ShaderMaterial this
+        // used to be) - applyShorelineFoam gives it the waterline band the
+        // same way it does the demo box/player, which also means it's
+        // wired to defaultWaterBody.uniforms BY REFERENCE, so it live-syncs
+        // with the sea mesh's position exactly like they do (the bespoke
+        // version's own copied-at-creation uWaterLevel never did).
+        let terrainMesh = null;
+        waterTerrainScene.traverse(o => { if (o.isMesh && !terrainMesh) terrainMesh = o; });
+        if (terrainMesh) {
+            if (!waterTestTerrainMaterial) {
+                waterTestTerrainMaterial = new THREE.MeshToonMaterial({ color: 0xd9b26a, gradientMap: threeTone });
+                applyShorelineFoam(waterTestTerrainMaterial);
+            }
+            const terrain = new THREE.Mesh(terrainMesh.geometry, waterTestTerrainMaterial);
+            terrain.receiveShadow = true;
+            levelGroup.add(terrain);
+            collidables.push(terrain);
+        }
+
+        let rocksMesh = null;
+        waterRocksScene.traverse(o => { if (o.isMesh && !rocksMesh) rocksMesh = o; });
+        if (rocksMesh) {
+            if (!waterTestRocksMaterial) {
+                waterTestRocksMaterial = new THREE.MeshToonMaterial({ color: 0xb2baa0, gradientMap: threeTone });
+                applyShorelineFoam(waterTestRocksMaterial);
+            }
+            const rocks = new THREE.Mesh(rocksMesh.geometry, waterTestRocksMaterial);
+            rocks.position.set(8, 0.5, -5);
+            rocks.rotation.y = Math.PI * 0.5;
+            rocks.castShadow = true;
+            levelGroup.add(rocks);
+            collidables.push(rocks);
+        }
+
+        // Default (1x1 segment = 2 triangles) on purpose - see
+        // createStylizedWaterMaterial: the bob is global, so subdividing
+        // buys nothing visually and costs a lot, since this mesh goes into
+        // `collidables` and gets raycast constantly.
+        const water = new THREE.Mesh(new THREE.PlaneGeometry(256, 256), defaultWaterBody.waterMaterial);
+        water.rotation.x = -Math.PI / 2;
+        water.position.y = WATER_LEVEL;
+        levelGroup.add(water);
+        collidables.push(water);
+        // Drag this in the level editor and the foam on the terrain/rocks/
+        // demo box/player all follow immediately - see linkWaterMeshToBody.
+        linkWaterMeshToBody(water, defaultWaterBody);
+
+        // Proves applyShorelineFoam works on an arbitrary object's own
+        // material (kept as MeshStandardMaterial, not a bespoke shader like
+        // terrain/rocks above) - sitting flush on the shore so its bottom
+        // face crosses the animated waterline, same as any box the level
+        // editor's Add Object tool drops in this level (see
+        // levelEditor.onObjectAdded below).
+        // terrain.glb's own footprint is roughly [-15,15] in both X/Z (see
+        // project chat) - well clear of that, floating in open water, so
+        // it can't end up buried inside the terrain mound like an earlier
+        // placement did.
+        const demoBoxMat = new THREE.MeshStandardMaterial({ color: 0x2b4a6f });
+        applyShorelineFoam(demoBoxMat);
+        const demoBox = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.4, 1.4), demoBoxMat);
+        demoBox.position.set(18, WATER_LEVEL + 0.3, 0);
+        demoBox.castShadow = true;
+        demoBox.receiveShadow = true;
+        levelGroup.add(demoBox);
+        collidables.push(demoBox);
+        window.__dbgBox = demoBox; // TEMP DEBUG
+
+        // Proof that the multi-water-body architecture actually works:
+        // a second, independent water surface at a totally different
+        // height (2.5 vs the main sea's 0.9), with its own waterBody
+        // object - passing it as applyShorelineFoam's second argument
+        // means this rock's foam tracks THIS water's height, unaffected
+        // by defaultWaterBody being reset per-level above. Floating in
+        // open air rather than sitting on a proper basin/pedestal - this
+        // is only here to prove two different heights can foam at once,
+        // not to look good.
+        if (!pondWaterBody) pondWaterBody = createWaterBody({
+            waterLevel: 2.5, waveSpeed: 0.8, waveAmplitude: 0.12, foamDepth: 0.1,
+            textureSize: 55, colorNear: 0x3fd0ff, colorFar: 0x0d5c8f,
+        });
+        // Re-enable every rebuild, not just on first creation: buildLevel()
+        // turns foam off on ALL bodies before dispatching, and the `if
+        // (!pondWaterBody)` guard above means the createWaterBody default of
+        // 1 only ever applies the very first time this level is built. Going
+        // Water Test -> Level 2 -> Water Test therefore left the pond's foam
+        // switched off for good.
+        pondWaterBody.uniforms.uFoamEnabled.value = 1;
+        const pondWater = new THREE.Mesh(new THREE.PlaneGeometry(8, 8), pondWaterBody.waterMaterial);
+        pondWater.rotation.x = -Math.PI / 2;
+        pondWater.position.set(25, 2.5, 10);
+        levelGroup.add(pondWater);
+        collidables.push(pondWater);
+        linkWaterMeshToBody(pondWater, pondWaterBody);
+
+        const pondRockMat = new THREE.MeshStandardMaterial({ color: 0x6f6a5c });
+        applyShorelineFoam(pondRockMat);
+        const pondRock = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 12), pondRockMat);
+        pondRock.position.set(25, 2.6, 10);
+        pondRock.castShadow = true;
+        pondRock.receiveShadow = true;
+        levelGroup.add(pondRock);
+        collidables.push(pondRock);
+
+        char.group.position.set(0, WATER_LEVEL + 2, 0);
+        char.group.rotation.y = Math.PI;
+    }
+
     function buildLevelFromGlb() {
         // Loader may still be in flight the first time the dropdown picks
         // this level - flag it and let onLevelGlbLoaded re-call once ready.
@@ -2332,9 +2878,12 @@ export function startGame(CharacterClass) {
         // yet (recovery/respawn is a separate follow-up) - for now it's
         // just a plain solid floor so nothing falls through into the void.
         ground.visible = false;
+        // Same stylized water material as the Water Test level's main sea
+        // (defaultWaterBody) - one shared instance/uniform set, reused
+        // here instead of a second copy, so animate()'s existing uTime
+        // loop over waterBodies covers both.
         if (!levelGlbWater) {
-            levelGlbWater = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000),
-                new THREE.MeshToonMaterial({ color: 0x3377aa, gradientMap: threeTone }));
+            levelGlbWater = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), defaultWaterBody.waterMaterial);
             levelGlbWater.rotation.x = -Math.PI / 2;
             levelGlbWater.receiveShadow = true;
         }
@@ -2354,15 +2903,46 @@ export function startGame(CharacterClass) {
         // - with the level's, which needs its own separate one).
         const LEVEL_TO_PLAYER_SCALE = 0.65;
         levelGlbScene.scale.setScalar(LEVEL_TO_PLAYER_SCALE);
+        // Measured directly (see project chat): Level.glb's own lowest
+        // point sits at scaled y=-0.858, water at -0.975 - a 0.117 gap the
+        // geometry never dips into, so the foam band (0.08 deep, riding a
+        // ±0.1 wave) never reaches it and never shows. Nudging the whole
+        // level down (not the water up, so the "platform over open ocean"
+        // read stays the same) drops that lowest point to roughly -1.0 -
+        // just past the waterline, enough for the foam band to catch it.
+        levelGlbScene.position.y = -0.15;
         levelGlbWater.position.y = -1.5 * LEVEL_TO_PLAYER_SCALE;
         levelGroup.add(levelGlbWater);
         collidables.push(levelGlbWater);
+
+        // Same shoreline-foam trick as the Water Test level, pointed at
+        // this level's own water instead - defaultWaterBody.uniforms is
+        // shared by reference with every material applyShorelineFoam has
+        // touched with no explicit waterBody argument (terrain here, the
+        // Water Test level's own props). uWaterLevel itself isn't set here
+        // anymore - linkWaterMeshToBody below makes animate() read it
+        // straight off levelGlbWater.position.y every frame, so dragging
+        // that mesh in the editor moves the foam too. Anything bound to a
+        // different waterBody (the Water Test level's pond rock, or the
+        // player - see charWaterUniforms) is unaffected.
+        defaultWaterBody.uniforms.uFoamEnabled.value = 1;
+        linkWaterMeshToBody(levelGlbWater, defaultWaterBody);
+        if (char.bodyMaterials) char.bodyMaterials.forEach(mat => applyShorelineFoam(mat, { objScale: window.charFoamScale, trackGlobal: 'charFoamScale' }));
 
         let startNode = null;
         levelGlbScene.traverse(o => {
             if (o.isMesh) {
                 o.castShadow = true; o.receiveShadow = true;
                 collidables.push(o);
+                // Arrow wrapper, NOT a bare `.forEach(applyShorelineFoam)`:
+                // forEach passes (element, index, array), so the index
+                // landed in the waterBody parameter. `0..uniforms` is
+                // undefined, Object.assign ignores undefined sources
+                // silently, and the shader ended up declaring uWaterLevel/
+                // uFoamEnabled without any of them ever being bound - they
+                // read as 0, so the mask was always 0 and this geometry
+                // never showed foam at all.
+                (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => applyShorelineFoam(m));
             } else if (o.name && o.name.toLowerCase().startsWith('empty')) {
                 startNode = o;
             }
@@ -3138,18 +3718,32 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
-        // Only Level 2 (buildLevelFromGlb) hides this in favor of a water
-        // plane - reset here so switching back to any other level always
-        // gets the grass back regardless of which level was active before.
+        // Level 2 (buildLevelFromGlb) and the water test level both hide
+        // this in favor of a water plane - reset here so switching back to
+        // any other level always gets the grass back regardless of which
+        // level was active before.
         ground.visible = true;
         // Same idea as ground.visible above: the blank level recolours shared
         // scene state (ground material, sky, fog), so every other level has to
         // put it back rather than assuming it was never touched.
         if (currentLevel !== "local_blank") setPresentationGreyscale(false);
+        // EVERY body, not just defaultWaterBody: a body created by one level
+        // (the Water Test level's pond) outlives that level - it is a
+        // module-scope `let`, still in waterBodies, still holding its own
+        // uWaterLevel - so leaving its foam enabled made materials bound to
+        // it keep painting a band at the pond's height (2.5) in completely
+        // unrelated levels. That is exactly the "objects higher up get foam
+        // in Level 2" bug. Each level re-enables only the bodies it uses.
+        waterBodies.forEach(wb => { wb.uniforms.uFoamEnabled.value = 0; });
+        // Whichever level rebuilds next re-links its own water mesh(es) -
+        // stale entries here would otherwise point at Object3Ds this same
+        // levelGroup.remove() loop above just detached from the scene.
+        waterMeshSyncs.length = 0;
 
         if (currentLevel === "local_blank") buildBlankLevel();
         else if (currentLevel === "local_stairs") buildStairsLevel();
         else if (currentLevel === "local_glb") buildLevelFromGlb();
+        else if (currentLevel === "local_water") buildWaterTestLevel();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else {
             try {
@@ -3174,12 +3768,17 @@ export function startGame(CharacterClass) {
         // collidable the level registered - including the sacks above.
         // Anything that loads asynchronously afterwards (the Jar.fbx props)
         // can still land on a tuft; window.rebuildGrass() re-scatters.
-        buildGrass();
+        // The water level is almost entirely open water - the scatter has
+        // no notion of "is there actually ground here" (it only rejects
+        // spots where something blocks the ray too close to y=0), so
+        // tufts were landing right on/through the water plane. Skip it
+        // for this level rather than special-casing that assumption.
+        if (currentLevel === "local_water") clearGrass(); else buildGrass();
     }
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -4401,6 +5000,22 @@ export function startGame(CharacterClass) {
         if (disp) disp.innerText = v.toFixed(2);
     });
 
+    // Foam thickness, live on 'input' (no rebuild needed) - animate() copies
+    // both globals into the shader uniforms every frame, so dragging these
+    // updates the waterline immediately on every foamed object at once.
+    const foamScaleEl = document.getElementById('foam-scale-slider');
+    if (foamScaleEl) foamScaleEl.addEventListener('input', e => {
+        window.foamDepthScale = parseFloat(e.target.value);
+        const d = document.getElementById('foam-scale-val');
+        if (d) d.innerText = window.foamDepthScale.toFixed(2);
+    });
+    const foamCharEl = document.getElementById('foam-char-slider');
+    if (foamCharEl) foamCharEl.addEventListener('input', e => {
+        window.charFoamScale = parseFloat(e.target.value);
+        const d = document.getElementById('foam-char-val');
+        if (d) d.innerText = window.charFoamScale.toFixed(2);
+    });
+
     document.getElementById('toggle-step-labels').addEventListener('change', e => {
         stairNumberLabels.forEach(l => { l.visible = e.target.checked; });
     });
@@ -4906,6 +5521,20 @@ export function startGame(CharacterClass) {
             carryables.push(carry);
             addCarryableDebugHelper(carry);
         });
+        // Anything the editor drops into a level with water (Water Test,
+        // Level 2) gets the same waterline foam as the terrain/rocks/demo
+        // box, without the user having to wire it up per-object by hand -
+        // applyShorelineFoam is cheap and self-gates via uFoamEnabled, so
+        // it's fine to apply unconditionally rather than re-checking
+        // currentLevel here (a level added later with water wouldn't need
+        // this list touched again).
+        obj.traverse(n => {
+            if (n.isMesh && n.material) {
+                // Arrow wrapper for the same reason as buildLevelFromGlb's -
+                // a bare forEach reference passes the index as waterBody.
+                (Array.isArray(n.material) ? n.material : [n.material]).forEach(m => applyShorelineFoam(m));
+            }
+        });
     };
     // Build once the outliner is first opened (editTarget can hold hundreds
     // of built-level nodes - no point paying for the rows until it's shown).
@@ -5245,6 +5874,50 @@ export function startGame(CharacterClass) {
         requestAnimationFrame(animate);
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
+        // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
+        // epoch seconds, ~1.7e9): feeding that huge number straight into a
+        // shader's vec2 UV math blows past float32's precision at that
+        // magnitude (ULP > 10 there), quantizing every fragment's noise
+        // input to the same lattice cell - the whole plane comes out flat.
+        // waterTestTerrainMaterial/waterTestRocksMaterial are now plain
+        // MeshToonMaterial (applyShorelineFoam'd like everything else, see
+        // buildWaterTestLevel) - no .uniforms of their own to tick here
+        // anymore, they read defaultWaterBody's by reference instead.
+        // Every water body's own uTime (defaultWaterBody's, the Water Test
+        // level's pond, and any future one) - each carries its own
+        // uWaterLevel etc, but they all still animate off the same clock.
+        waterBodies.forEach(wb => { wb.uniforms.uTime.value = clock.elapsedTime; });
+        // Live position -> uWaterLevel sync (see linkWaterMeshToBody) - runs
+        // before the editor-mode early return below, so dragging a water
+        // mesh with the gizmo moves its foam immediately, no reload.
+        waterMeshSyncs.forEach(({ mesh, waterBody }) => { waterBody.uniforms.uWaterLevel.value = mesh.position.y; });
+        // Upload every water body's state as flat arrays; the fragment
+        // shader does the "which body am I in?" test itself (see
+        // foamSharedUniforms). Footprints come from the live mesh, so
+        // dragging or resizing a water plane in the editor is picked up
+        // immediately, and an object carried from the sea into the pond
+        // starts obeying the pond the moment it crosses the boundary.
+        const foamCount = Math.min(waterMeshSyncs.length, MAX_WATER_BODIES);
+        foamSharedUniforms.uFoamCount.value = foamCount;
+        foamSharedUniforms.uFoamTime.value = clock.elapsedTime;
+        foamSharedUniforms.uFoamGlobalScale.value = window.foamDepthScale;
+        foamObjScaleUniforms.forEach(e => { e.uniform.value = window[e.key]; });
+        for (let i = 0; i < foamCount; i++) {
+            const { mesh, waterBody } = waterMeshSyncs[i];
+            const g = mesh.geometry;
+            if (!g.boundingBox) g.computeBoundingBox();
+            // Plane geometry is authored in XY then rotated flat, so its
+            // local X/Y half-extents are the world X/Z ones.
+            const halfX = (g.boundingBox.max.x - g.boundingBox.min.x) * 0.5 * mesh.scale.x;
+            const halfZ = (g.boundingBox.max.y - g.boundingBox.min.y) * 0.5 * mesh.scale.y;
+            foamSharedUniforms.uFoamMin.value[i].set(mesh.position.x - halfX, mesh.position.z - halfZ);
+            foamSharedUniforms.uFoamMax.value[i].set(mesh.position.x + halfX, mesh.position.z + halfZ);
+            foamSharedUniforms.uFoamLevel.value[i] = mesh.position.y;
+            foamSharedUniforms.uFoamSpeed.value[i] = waterBody.uniforms.uWaveSpeed.value;
+            foamSharedUniforms.uFoamAmp.value[i] = waterBody.uniforms.uWaveAmplitude.value;
+            foamSharedUniforms.uFoamBand.value[i] = waterBody.uniforms.uFoamDepth.value;
+            foamSharedUniforms.uFoamOn.value[i] = waterBody.uniforms.uFoamEnabled.value;
+        }
 
         // Editor mode short-circuits the entire rest of this function - it's
         // one big ~2900-line closure, not decomposed into per-system update
