@@ -2434,12 +2434,28 @@ export function startGame(CharacterClass) {
     // extra multiplier for the player only, because the band is sized in
     // world units and so reads far heavier on a ~1.7-unit character than on
     // a 9-unit level wall.
-    window.foamDepthScale = 1.0;
-    window.charFoamScale = 0.3;
+    window.foamDepthScale = 0.3;
+    window.charFoamScale = 1.0;
     // Per-material thickness uniforms that should follow a window global
     // live (currently just the player's, via charFoamScale).
     const foamObjScaleUniforms = [];
-    window.__dbgFoam = foamSharedUniforms; // TEMP DEBUG
+    // Same idea for the water SURFACE's own pattern layer (see
+    // createStylizedWaterMaterial) - Scale multiplies its frequency
+    // (bigger = bigger/sparser features), Opacity is how strongly it
+    // blends into color/alpha. Copied into every water body's material
+    // every frame in animate(), so these sliders retune every water
+    // surface in the level at once, live.
+    //
+    // There used to be a second "blob" pattern layer underneath these
+    // lines (Pattern Size/Opacity/Speed uniforms) - removed outright, not
+    // just defaulted off, since the user settled on opacity 0 for it and
+    // asked for it gone entirely rather than kept as a dead/no-op knob.
+    window.waterLinesScale = 0.50;
+    window.waterLinesOpacity = 0.36;
+    // Internal noise-scroll speed and thickness for the line layer - see
+    // the uniforms of the same name for what they do.
+    window.waterLinesSpeed = 0.25;
+    window.waterLinesThickness = 0.10;
     // Generic version of the terrain/rocks foam trick (see the two
     // hand-written ShaderMaterials below) for ANY existing material -
     // boxes, props, whatever the level editor adds - via onBeforeCompile,
@@ -2643,6 +2659,23 @@ export function startGame(CharacterClass) {
                 uTextureSize: { value: textureSize },
                 uColorNear: { value: new THREE.Color(colorNearHex) },
                 uColorFar: { value: new THREE.Color(colorFarHex) },
+                // Live-tunable from the debug panel (see the Water sliders
+                // and the sync loop in animate()) - Scale is a multiplier
+                // ON TOP of this body's own uTextureSize base frequency,
+                // Opacity is how strongly this layer blends into the final
+                // color/alpha.
+                uLinesScale: { value: 1.0 },
+                uLinesOpacity: { value: 0.6 },
+                // Internal noise-scroll speed for the line layer (not
+                // uWaveSpeed - that's the surface's own vertical bob, a
+                // separate thing).
+                uLinesSpeed: { value: 1.0 },
+                // Widens the line layer's kept threshold band - bigger =
+                // thicker lines. Past 1.0 it also starts punching gaps into
+                // the line (see uLinesScale's fragment code) rather than
+                // just getting fatter, since a real foam line breaks up
+                // when it gets too thick instead of staying solid.
+                uLinesThickness: { value: 1.0 },
             },
             vertexShader: `
                 varying vec2 vUv;
@@ -2662,51 +2695,105 @@ export function startGame(CharacterClass) {
                 uniform vec3 uColorNear;
                 uniform vec3 uColorFar;
                 uniform float uTextureSize;
+                uniform float uLinesScale;
+                uniform float uLinesOpacity;
+                uniform float uLinesSpeed;
+                uniform float uLinesThickness;
 
                 ${SNOISE_GLSL}
 
-                void main() {
-                    vec3 finalColor = uColorNear;
-                    float textureSize = 100.0 - uTextureSize;
-
-                    float noiseBase = snoise(vUv * (textureSize * 2.8) + sin(uTime * 0.3));
+                // One "squiggly line network" sample, from the ported
+                // tutorial shader. Called TWICE in main() with a different
+                // uv/freq/phase each time and screen-blended together -
+                // trying to fake a tangled look by perturbing a SINGLE
+                // pass's phase (an earlier attempt, since discarded) only
+                // ever reads as that one pattern sliding around faster,
+                // because at any instant it's still just one line network.
+                // Two independent networks actually crossing each other is
+                // what makes it read as interwoven.
+                float lineNetwork(vec2 uv, float freq, float thickness, float threshold, float phaseA, float phaseB, float breakPhase) {
+                    float noiseBase = snoise(uv * (freq * 2.8) + phaseA);
                     noiseBase = noiseBase * 0.5 + 0.5;
-                    vec3 colorBase = vec3(noiseBase);
+                    float lineFoam = step(0.5, smoothstep(0.08, 0.001, noiseBase));
 
-                    vec3 foam = smoothstep(0.08, 0.001, colorBase);
-                    foam = step(0.5, foam);
-
-                    float noiseWaves = snoise(vUv * textureSize + sin(uTime * -0.1));
+                    float noiseWaves = snoise(uv * freq + phaseB);
                     noiseWaves = noiseWaves * 0.5 + 0.5;
-                    vec3 colorWaves = vec3(noiseWaves);
+                    // thickness widens the kept band around threshold,
+                    // replacing the source's fixed hairline width (a
+                    // symmetric smoothstep band instead of that formula's
+                    // hardcoded asymmetric offsets).
+                    float halfBand = 0.006 + 0.05 * thickness;
+                    float lo = threshold - halfBand;
+                    float hi = threshold + halfBand;
+                    float waveEffect = smoothstep(lo - 0.006, lo, noiseWaves) - smoothstep(hi, hi + 0.006, noiseWaves);
+                    waveEffect = clamp(waveEffect, 0.0, 1.0);
 
-                    float threshold = 0.6 + 0.01 * sin(uTime * 2.0);
-                    vec3 waveEffect = 1.0 - (smoothstep(threshold + 0.03, threshold + 0.032, colorWaves) +
-                                            smoothstep(threshold, threshold - 0.01, colorWaves));
-                    waveEffect = step(0.5, waveEffect);
+                    // Past thickness 1.0, punch gaps into the line instead
+                    // of just getting fatter: a second, offset noise sample
+                    // decides what survives, and the survival bar only
+                    // rises once thickness pushes past 1.0, so
+                    // default/thin lines stay solid and unaffected. Below
+                    // that threshold step()'s cutoff is -1.0, which noise in
+                    // [-1,1] always clears - the whole sample would be
+                    // computed just to multiply by 1.0, so it's skipped
+                    // outright.
+                    if (thickness > 1.0) {
+                        float breakNoise = snoise(uv * freq * 1.7 + breakPhase);
+                        float breakCutoff = mix(-1.0, 0.5, clamp(thickness - 1.0, 0.0, 1.0));
+                        waveEffect *= step(breakCutoff, breakNoise);
+                    }
 
-                    vec3 combinedEffect = min(waveEffect + foam, 1.0);
+                    return min(waveEffect + lineFoam, 1.0);
+                }
 
-                    float vignette = length(vUv - 0.5) * 1.5;
-                    vec3 baseEffect = smoothstep(0.1, 0.3, vec3(vignette));
-                    vec3 baseColor = mix(finalColor, uColorFar, baseEffect);
+                void main() {
+                    float baseFreq = 100.0 - uTextureSize;
+                    // Both passes' internal noise animation runs off this,
+                    // not raw uTime directly - see uLinesSpeed above.
+                    float noiseTime = uTime * uLinesSpeed;
+                    float linesFreq = baseFreq * uLinesScale;
+                    // Shared gentle "breathing" of the kept threshold band,
+                    // same for both passes.
+                    float linesThreshold = 0.6 + 0.01 * sin(noiseTime * 2.0);
 
-                    combinedEffect = min(waveEffect + foam, 1.0);
-                    combinedEffect = mix(combinedEffect, vec3(0.0), baseEffect);
+                    // Pass A: the original network, unrotated.
+                    float linesPatternA = lineNetwork(
+                        vUv, linesFreq, uLinesThickness, linesThreshold,
+                        sin(noiseTime * 0.3), sin(noiseTime * -0.1), -noiseTime * 0.15);
 
-                    vec3 foamEffect = mix(foam, vec3(0.0), baseEffect);
+                    // Pass B: a second, independent network - rotated (an
+                    // arbitrary fixed angle, not a multiple of 90 degrees,
+                    // so its lines aren't just parallel to pass A's) and at
+                    // a different frequency/phase, so it actually crosses
+                    // pass A instead of retracing it.
+                    float rotAngle = 1.1;
+                    mat2 rotB = mat2(cos(rotAngle), -sin(rotAngle), sin(rotAngle), cos(rotAngle));
+                    vec2 uvB = rotB * vUv;
+                    float linesPatternB = lineNetwork(
+                        uvB, linesFreq * 1.4, uLinesThickness, linesThreshold,
+                        sin(noiseTime * -0.22) + 4.2, sin(noiseTime * 0.17) + 7.7, noiseTime * 0.12 + 2.3);
 
-                    finalColor = (1.0 - combinedEffect) * baseColor + combinedEffect;
+                    // Screen-blend (not max/add-clamp) so wherever the two
+                    // networks cross reads as brighter/more solid instead
+                    // of just clipping - this is the actual "iç içe girme"
+                    // (interweaving) look, not achievable from one pass.
+                    float linesPattern = linesPatternA + linesPatternB - linesPatternA * linesPatternB;
 
-                    vec3 alpha = mix(vec3(0.2), vec3(1.0), foamEffect);
-                    alpha = mix(alpha, vec3(1.0), vignette + 0.5);
+                    float distFromCenter = length(vUv - 0.5);
+                    vec3 baseColor = mix(uColorNear, uColorFar, smoothstep(0.0, 0.7, distFromCenter));
+                    vec3 color = mix(baseColor, vec3(1.0), linesPattern * uLinesOpacity);
 
-                    // Original assigns a vec3 alpha into vec4's scalar slot
-                    // (relies on lenient GLSL constructor truncation) -
-                    // alpha.r/g/b are always equal here (built from vec3(
-                    // scalar) throughout), so alpha.r is the same value,
-                    // written the strictly-valid way.
-                    gl_FragColor = vec4(finalColor, alpha.r);
+                    // "Shallow" (near) reads more see-through, "deep" (far)
+                    // more solid - same distFromCenter already driving the
+                    // near/far color mix above, so the two stay in sync.
+                    // The line layer lighting up also nudges alpha up a
+                    // bit, since foam/wave crests read as more solid in
+                    // real water too. material.transparent is already on.
+                    float depthAlpha = mix(0.45, 0.88, smoothstep(0.0, 0.7, distFromCenter));
+                    float patternLift = linesPattern * uLinesOpacity;
+                    float alpha = mix(depthAlpha, min(depthAlpha + 0.25, 1.0), patternLift);
+
+                    gl_FragColor = vec4(color, alpha);
                 }
             `,
         });
@@ -2817,7 +2904,6 @@ export function startGame(CharacterClass) {
         demoBox.receiveShadow = true;
         levelGroup.add(demoBox);
         collidables.push(demoBox);
-        window.__dbgBox = demoBox; // TEMP DEBUG
 
         // Proof that the multi-water-body architecture actually works:
         // a second, independent water surface at a totally different
@@ -5015,6 +5101,23 @@ export function startGame(CharacterClass) {
         const d = document.getElementById('foam-char-val');
         if (d) d.innerText = window.charFoamScale.toFixed(2);
     });
+    // Water surface pattern controls (see createStylizedWaterMaterial) -
+    // same live-on-'input' pattern as the foam sliders above, synced into
+    // every water body's material each frame in animate().
+    [
+        ['water-lines-scale-slider', 'water-lines-scale-val', 'waterLinesScale'],
+        ['water-lines-opacity-slider', 'water-lines-opacity-val', 'waterLinesOpacity'],
+        ['water-lines-speed-slider', 'water-lines-speed-val', 'waterLinesSpeed'],
+        ['water-lines-thickness-slider', 'water-lines-thickness-val', 'waterLinesThickness'],
+    ].forEach(([sliderId, valId, key]) => {
+        const el = document.getElementById(sliderId);
+        if (!el) return;
+        el.addEventListener('input', e => {
+            window[key] = parseFloat(e.target.value);
+            const d = document.getElementById(valId);
+            if (d) d.innerText = window[key].toFixed(2);
+        });
+    });
 
     document.getElementById('toggle-step-labels').addEventListener('change', e => {
         stairNumberLabels.forEach(l => { l.visible = e.target.checked; });
@@ -5886,7 +5989,17 @@ export function startGame(CharacterClass) {
         // Every water body's own uTime (defaultWaterBody's, the Water Test
         // level's pond, and any future one) - each carries its own
         // uWaterLevel etc, but they all still animate off the same clock.
-        waterBodies.forEach(wb => { wb.uniforms.uTime.value = clock.elapsedTime; });
+        waterBodies.forEach(wb => {
+            wb.uniforms.uTime.value = clock.elapsedTime;
+            // These aren't part of the shared foam `uniforms` object (only
+            // the water SURFACE material has them), so they need their own
+            // copy from the debug-panel globals every frame.
+            const wu = wb.waterMaterial.uniforms;
+            wu.uLinesScale.value = window.waterLinesScale;
+            wu.uLinesOpacity.value = window.waterLinesOpacity;
+            wu.uLinesSpeed.value = window.waterLinesSpeed;
+            wu.uLinesThickness.value = window.waterLinesThickness;
+        });
         // Live position -> uWaterLevel sync (see linkWaterMeshToBody) - runs
         // before the editor-mode early return below, so dragging a water
         // mesh with the gizmo moves its foam immediately, no reload.
