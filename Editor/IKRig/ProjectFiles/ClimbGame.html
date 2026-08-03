@@ -139,9 +139,14 @@
         
         /* Moved to where the camera-rotate joystick (#base-right) used to
            sit, now that it's hidden by default (see window.
-           cameraJoystickEnabled in game_js.js) - same bottom/right anchor
-           as .joystick-base so Jump occupies that now-empty screen slot. */
-        #jump-btn { position: absolute; bottom: 30px; right: 30px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
+           cameraJoystickEnabled in game_js.js). Centered on that circle's
+           own center, NOT its edge anchor: .joystick-base is bottom:30/
+           right:30 at 120x120 (center = 30 + 60 = 90px from each edge), so
+           this 70x70 button needs bottom/right = 90 - 35 = 55px to share
+           that same center - matching the edge anchor instead (30px) would
+           leave it visibly offset toward the corner, which is exactly what
+           it did before this fix. */
+        #jump-btn { position: absolute; bottom: 55px; right: 55px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
         /* Hidden by default for now - not part of the core control set yet. */
         #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
         #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
