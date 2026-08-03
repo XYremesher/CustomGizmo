@@ -9,7 +9,11 @@ import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { LevelEditor, CUT_PROP_GROUPS } from './level_editor.js';
+// LevelEditor is loaded lazily (see ensureLevelEditorLoaded below), NOT
+// imported statically here - a top-level import is fetched/parsed before
+// any game code runs at all, so every player paid that cost even though
+// only the level author (never someone playing on a portal) ever opens
+// the editor.
 
 export function startGame(CharacterClass) {
     window.isCarryingObj = false;
@@ -587,14 +591,33 @@ export function startGame(CharacterClass) {
     scene.add(levelGroup);
 
     // In-game level editor (select/move/rotate/scale/add-shape) - see
-    // level_editor.js and CLAUDE.md for scope. Built eagerly (not lazily on
-    // first activation) so toggling it on is instant, same reasoning as
-    // the pixelation composer above; it's fully inert while
-    // window.editorModeActive is false (see animate()'s own gate below and
-    // LevelEditor's pointerdown guard).
+    // level_editor.js and CLAUDE.md for scope. Loaded LAZILY: level_editor.js
+    // (plus Gizmo.js/shape_generator.js/shape_gizmo.js it pulls in) is only
+    // fetched/constructed the first time the editor toggle is actually
+    // checked, via ensureLevelEditorLoaded() below - a real player on a
+    // portal never opens the editor, so this keeps that whole module graph
+    // out of their load time entirely. Was built eagerly before; every
+    // `levelEditor.` reference below this point either lives inside a
+    // listener that only fires once the editor panel is visible (which
+    // can't happen before the toggle's own handler has awaited the load),
+    // or is explicitly guarded (see the resize handler, and the grass
+    // wireframe check above).
     window.editorModeActive = false;
-    const levelEditor = new LevelEditor(scene, renderer, levelGroup, collidables);
-    window.levelEditor = levelEditor;
+    let levelEditor = null;
+    window.levelEditor = null;
+    let CUT_PROP_GROUPS = null;
+    let levelEditorLoadPromise = null;
+    function ensureLevelEditorLoaded() {
+        if (levelEditorLoadPromise) return levelEditorLoadPromise;
+        levelEditorLoadPromise = import('./level_editor.js').then(mod => {
+            levelEditor = new mod.LevelEditor(scene, renderer, levelGroup, collidables);
+            window.levelEditor = levelEditor;
+            CUT_PROP_GROUPS = mod.CUT_PROP_GROUPS;
+            setupEditorUI();
+            return levelEditor;
+        });
+        return levelEditorLoadPromise;
+    }
 
     const texLoader = new THREE.TextureLoader();
     const groundTex = texLoader.load('https://media.istockphoto.com/id/865924416/de/vektor/cartoon-rasen.jpg?s=612x612&w=0&k=20&c=RPfx_iiW2SZsn_MinDtdgzJyeCKDbONn8Gn-8CSdg0s=');
@@ -3327,11 +3350,12 @@ export function startGame(CharacterClass) {
         // it, solidly steep, and near the ~75.6deg wall cutoff (still
         // barely a slideable slope, not a wall) - plus one filled in
         // between each original pair. Moved closer to spawn (was
-        // ROW_START_X=-25) and packed tighter (was ROW_SPACING=9, a 3-unit
-        // gap on each side of every 6-unit-wide ramp - now half that gap,
-        // 1.5 units) so walking the whole row for testing is quicker.
+        // ROW_START_X=-25). ROW_SPACING equals each ramp's own width (6)
+        // so consecutive ramps sit flush edge-to-edge - no gap to fall
+        // through while walking sideways across the row (was 7.5, a
+        // 1.5-unit slot between every pair).
         const ROW_ANGLES = [25, 33, 40, 44, 48, 56, 65, 69, 72];
-        const ROW_SPACING = 7.5, ROW_START_X = -15, ROW_Z = -10;
+        const ROW_SPACING = 6, ROW_START_X = -15, ROW_Z = -10;
         ROW_ANGLES.forEach((deg, i) => buildSlopeTestRamp(ROW_START_X - i * ROW_SPACING, ROW_Z, deg));
         const ROW_END_X = ROW_START_X - (ROW_ANGLES.length - 1) * ROW_SPACING;
 
@@ -3396,8 +3420,8 @@ export function startGame(CharacterClass) {
         // into a climb/mantle situation. The other block in this rig
         // (1.25x, formerly at -cubeSize) is now stair_0 itself. -x, not
         // +x: the hemisphere sits at (10, 0, -10) with radius 6, reaching
-        // out to x=4 - +x put this block (and the marker below) partway
-        // inside its dome, invisible/clipped through solid geometry. -x is
+        // out to x=4 - +x put this block partway inside its dome,
+        // invisible/clipped through solid geometry. -x is
         // clear all the way out past the ramp row (closest one starts at
         // x=-15, well past this rig's own x=-7.8 marker).
         const jumpTestH = cubeSize * 1.5;
@@ -3405,24 +3429,6 @@ export function startGame(CharacterClass) {
         jumpTestBlock.position.set(-cubeSize * 2, jumpTestH / 2, -10);
         jumpTestBlock.castShadow = true; jumpTestBlock.receiveShadow = true;
         levelGroup.add(jumpTestBlock); collidables.push(jumpTestBlock);
-        // Reference marker for the SAME test: a thin, non-collidable plate
-        // hovering at exactly the height the player's own head reaches at
-        // the peak of a standing jump from flat ground (y=0), so it can be
-        // held up against the two blocks above by eye. Derived, not
-        // guessed: apex height gain above the jump's start = v0^2/(2*g)
-        // with this game's actual jump/gravity constants (yVelocity=10 at
-        // takeoff in handleJump(), gravity=30/s^2 in the main integrator)
-        // = 100/60 = 1.667; head-top sits ~2.267 above char.group's own
-        // origin (measured live via the fbxModel's world-space bounding
-        // box - group's origin tracks the feet, not a fixed rig constant,
-        // so this was measured rather than assumed) - 0 + 1.667 + 2.267 =
-        // 3.93.
-        const JUMP_APEX_HEAD_Y = 3.93;
-        const jumpApexMarker = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.06, 2.5),
-            new THREE.MeshBasicMaterial({ color: 0xff00ff, transparent: true, opacity: 0.6 }));
-        jumpApexMarker.position.set(-cubeSize * 2.6, JUMP_APEX_HEAD_Y, -10);
-        levelGroup.add(jumpApexMarker);
-
         // Elevated walkway from the top of the stairs (last one lands at
         // (0, 16.5, -25) per the loop above) over to the ramp row, so
         // approaching a ramp by walking/falling onto its high end can be
@@ -3527,14 +3533,6 @@ export function startGame(CharacterClass) {
         // box regardless of this mesh's own (rounded-corner) geometry -
         // worth being able to see that they're not quite the same shape.
         addWireframeBoxDebugHelper(mBox.position, cubeSize, cubeSize, cubeSize);
-
-        // Sharp (non-rounded) cube next to the pushable one, for testing
-        // ledge-grab corner behavior on true 90-degree edges.
-        const sharpBoxGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
-        const sharpBox = new THREE.Mesh(sharpBoxGeo, movableBoxMat);
-        sharpBox.position.set(-10, cubeSize / 2, 6);
-        sharpBox.castShadow = true; sharpBox.receiveShadow = true;
-        levelGroup.add(sharpBox); collidables.push(sharpBox);
 
         const checkerData = new Uint8Array([255,255,255,255, 0,0,0,255, 0,0,0,255, 255,255,255,255]);
         const checkerTex = new THREE.DataTexture(checkerData, 2, 2);
@@ -4936,6 +4934,14 @@ export function startGame(CharacterClass) {
     // is what threw the camera around. The same went for pointerup: lifting
     // the joystick finger ended a look drag that a different finger was
     // still performing. null = no look drag in progress.
+    // Multiplies the raw per-pixel drag-to-rotate rate below (see the
+    // 'pointermove' handler's cameraTheta/cameraPhi math) - a friend
+    // testing the game needed 3-4 separate drags to reach the angle they
+    // wanted, since a direct 1:1(ish) pixel mapping is bounded by how far
+    // a thumb can physically travel across the screen before it has to
+    // lift and re-grip. Live-tunable (see the debug panel slider) so this
+    // can be dialed in without a reload; default 2 doubles the old rate.
+    window.dragRotateSensitivity = 2.0;
     let lookPointerId = null, lX, lY;
     window.addEventListener('pointerdown', e => {
         if (lookPointerId !== null) return;   // one look finger at a time
@@ -4943,7 +4949,7 @@ export function startGame(CharacterClass) {
         if (e.clientX > window.innerWidth - 200 && e.clientY > window.innerHeight - 200) return;
         if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { lookPointerId = e.pointerId; lX=e.clientX; lY=e.clientY; }
     });
-    window.addEventListener('pointermove', e => { if (e.pointerId === lookPointerId) { cameraTheta -= (e.clientX-lX)*0.005; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*0.005)); lX=e.clientX; lY=e.clientY; } });
+    window.addEventListener('pointermove', e => { if (e.pointerId === lookPointerId) { const s = 0.005 * window.dragRotateSensitivity; cameraTheta -= (e.clientX-lX)*s; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*s)); lX=e.clientX; lY=e.clientY; } });
     const endLookDrag = e => { if (e.pointerId === lookPointerId) lookPointerId = null; };
     window.addEventListener('pointerup', endLookDrag);
     window.addEventListener('pointercancel', endLookDrag);
@@ -4983,6 +4989,7 @@ export function startGame(CharacterClass) {
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
         { id: 'camera-distance-slider', vId: 'camera-distance-val', func: v => { window.cameraDistance = v; cameraRadius = v; }, fix: 1 },
         { id: 'camera-close-elev-slider', vId: 'camera-close-elev-val', func: v => window.cameraCloseStartElevation = v, fix: 0 },
+        { id: 'drag-rotate-sensitivity-slider', vId: 'drag-rotate-sensitivity-val', func: v => window.dragRotateSensitivity = v, fix: 1 },
         // Grass rebuilds the whole instanced field, so these re-scatter on
         // release rather than on every input tick - see the 'change' wiring
         // below for that; the func here only records the value.
@@ -5162,11 +5169,37 @@ export function startGame(CharacterClass) {
         if (editorControlsCb) editorControlsCb.checked = visible;
     }
     if (editorControlsCb) editorControlsCb.addEventListener('change', e => setGameControlsVisible(e.target.checked));
-    document.getElementById('toggle-editor-mode').addEventListener('change', e => {
-        window.editorModeActive = e.target.checked;
-        if (editorPanelEl) editorPanelEl.style.display = e.target.checked ? 'block' : 'none';
-        if (editorToggleBtnEl) editorToggleBtnEl.classList.toggle('editor-active', e.target.checked);
-        if (e.target.checked) {
+    // On-screen Shift: only meaningful while the Select tool is active (the
+    // transform modes never branch on the additive modifier), so it appears
+    // and disappears with that mode - and un-latches on the way out, so it
+    // can't silently still be held next time Select is picked. Declared out
+    // here (not inside setupEditorUI below) because the toggle-editor-mode
+    // handler right below calls it directly - guarded since it can run
+    // before the lazy editor has ever been loaded (editorModeActive is
+    // false then anyway, so there's nothing to show).
+    const editorShiftBtn = document.getElementById('editor-shift-btn');
+    function updateEditorShiftBtn() {
+        if (!editorShiftBtn) return;
+        const show = !!levelEditor && window.editorModeActive && levelEditor.mode === 'select';
+        editorShiftBtn.style.display = show ? 'block' : 'none';
+        if (!show && levelEditor && levelEditor.additiveModifier) {
+            levelEditor.setAdditiveModifier(false);
+            editorShiftBtn.classList.remove('active');
+        }
+    }
+    // Async: the first time this is checked, awaits the lazy LevelEditor
+    // import/construction (see ensureLevelEditorLoaded) before touching it -
+    // every other `levelEditor.` reference in setupEditorUI only runs from
+    // listeners on elements inside #level-editor-panel, which stays
+    // display:none (so unclickable) until this handler's own activate()
+    // call below, which can't happen until the await resolves.
+    document.getElementById('toggle-editor-mode').addEventListener('change', async e => {
+        const checked = e.target.checked;
+        if (checked) await ensureLevelEditorLoaded();
+        window.editorModeActive = checked;
+        if (editorPanelEl) editorPanelEl.style.display = checked ? 'block' : 'none';
+        if (editorToggleBtnEl) editorToggleBtnEl.classList.toggle('editor-active', checked);
+        if (checked) {
             levelEditor.activate();
             // Clear the joysticks/buttons out from under your hands while
             // editing - unchecked by default on entry, per request.
@@ -5186,6 +5219,10 @@ export function startGame(CharacterClass) {
         }
         updateEditorShiftBtn();
     });
+    // Everything below that touches `levelEditor` (toolbar, panels,
+    // outliner, prefabs) is wired up exactly once, lazily, right after the
+    // editor finishes loading (see ensureLevelEditorLoaded's call to this).
+    function setupEditorUI() {
     // Dockable panel: collapse/expand just the body, leaving the header
     // (and its toggle) always visible - same idea as the debug panel's own
     // #dock-btn, so the panel can be tucked out of the way without exiting
@@ -5203,20 +5240,6 @@ export function startGame(CharacterClass) {
     const SELECT_ICON_MULTI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>';
     const SELECT_ICON_SINGLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"></path></svg>';
     const editorModeBtns = document.querySelectorAll('.editor-mode-btn');
-    // On-screen Shift: only meaningful while the Select tool is active (the
-    // transform modes never branch on the additive modifier), so it appears
-    // and disappears with that mode - and un-latches on the way out, so it
-    // can't silently still be held next time Select is picked.
-    const editorShiftBtn = document.getElementById('editor-shift-btn');
-    function updateEditorShiftBtn() {
-        if (!editorShiftBtn) return;
-        const show = window.editorModeActive && levelEditor.mode === 'select';
-        editorShiftBtn.style.display = show ? 'block' : 'none';
-        if (!show && levelEditor.additiveModifier) {
-            levelEditor.setAdditiveModifier(false);
-            editorShiftBtn.classList.remove('active');
-        }
-    }
     if (editorShiftBtn) editorShiftBtn.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         editorShiftBtn.classList.toggle('active', levelEditor.toggleAdditiveModifier());
@@ -5730,6 +5753,7 @@ export function startGame(CharacterClass) {
         setTimeout(() => { input.focus(); input.select(); input.addEventListener('blur', () => commit(true)); }, 0);
     }
     renderPrefabPanel();
+    } // end setupEditorUI()
 
     window.toonOutlineEnabled = false;
     window.toonOutlineThickness = 0.02;
@@ -9326,8 +9350,12 @@ if (leftArrow) {
         camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
         composer.setSize(window.innerWidth, window.innerHeight);
         updateOrthoFrustum();
-        levelEditor.camera.aspect = window.innerWidth/window.innerHeight; levelEditor.camera.updateProjectionMatrix();
-        levelEditor.setSize(window.innerWidth, window.innerHeight);
+        // Guarded: resize can happen before the editor has ever been
+        // opened, since it's now loaded lazily (see ensureLevelEditorLoaded).
+        if (levelEditor) {
+            levelEditor.camera.aspect = window.innerWidth/window.innerHeight; levelEditor.camera.updateProjectionMatrix();
+            levelEditor.setSize(window.innerWidth, window.innerHeight);
+        }
     }
     window.addEventListener('resize', handleViewportResize);
     if (window.visualViewport) window.visualViewport.addEventListener('resize', handleViewportResize);
