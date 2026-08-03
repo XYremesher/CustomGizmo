@@ -4523,6 +4523,16 @@ export function startGame(CharacterClass) {
         });
     }
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
+    // Camera-rotate joystick (right stick): kept fully working in code, but
+    // hidden by default now that screen-drag rotation (dragRotateSensitivity
+    // above) is the primary way to turn the camera and a second, redundant
+    // control for the same thing was judged unnecessary clutter. Flip this
+    // to true (e.g. from devtools) to bring it back if drag-only doesn't
+    // hold up in real testing - setupJoystick above still wires it either
+    // way, this only controls whether it's shown/reachable on screen.
+    window.cameraJoystickEnabled = false;
+    const baseRightEl = document.getElementById('base-right');
+    if (baseRightEl) baseRightEl.style.display = window.cameraJoystickEnabled ? 'flex' : 'none';
 
     let stamina = 100, isGrounded = false, isLedgeGrabbing = false, isClimbingUp = false, ledgeTarget = new THREE.Vector3(), jumpMomentum = new THREE.Vector3();
     // Set true the instant a ledge grab commits (position also hard-snaps
@@ -4941,7 +4951,7 @@ export function startGame(CharacterClass) {
     // a thumb can physically travel across the screen before it has to
     // lift and re-grip. Live-tunable (see the debug panel slider) so this
     // can be dialed in without a reload; default 2 doubles the old rate.
-    window.dragRotateSensitivity = 2.0;
+    window.dragRotateSensitivity = 3.0;
     let lookPointerId = null, lX, lY;
     window.addEventListener('pointerdown', e => {
         if (lookPointerId !== null) return;   // one look finger at a time
