@@ -608,7 +608,7 @@ export function startGame(CharacterClass) {
     }
 
     const texLoader = new THREE.TextureLoader();
-    const groundTex = texLoader.load('https://media.istockphoto.com/id/865924416/de/vektor/cartoon-rasen.jpg?s=612x612&w=0&k=20&c=RPfx_iiW2SZsn_MinDtdgzJyeCKDbONn8Gn-8CSdg0s=');
+    const groundTex = texLoader.load('ground.jpg');
     groundTex.wrapS = THREE.RepeatWrapping; groundTex.wrapT = THREE.RepeatWrapping;
     groundTex.repeat.set(150, 150);
 
@@ -1621,7 +1621,15 @@ export function startGame(CharacterClass) {
             if (!o.isMesh) return;
             const srcMats = Array.isArray(o.material) ? o.material : [o.material];
             const newMats = srcMats.map(m => {
-                const name = (m && m.name) || '';
+                // Strips Blender's auto-dedup ".001"/".002" suffix (every
+                // re-export that leaves an old same-named material block
+                // lying around gets one) so this still recognizes "leave",
+                // "leave.001", "leave.002", etc. as the same material -
+                // an exact-string match here previously silently fell
+                // through to opaque/no-cutout the moment a re-export
+                // picked up a suffix, which is what made the leaf
+                // background render as solid black instead of cutting out.
+                const name = ((m && m.name) || '').replace(/\.\d+$/, '');
                 let alphaTest = 0;
                 if (name === 'leave') alphaTest = window.grassAlphaTest;
                 else if (name === 'TreeLeaveBunch') alphaTest = 0.85;
