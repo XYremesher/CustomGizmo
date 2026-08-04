@@ -845,6 +845,119 @@ export function startGame(CharacterClass) {
     }
     window.rebuildGrass = buildGrass;
 
+    // ---- Scattered flowers ----
+    // Real flower props (Flower.glb / Flower2.glb - each a single alpha-cut
+    // textured plane, not a crossed pair like the grass tufts) sprinkled
+    // much more sparingly across the same field, replacing the flowers that
+    // used to be painted directly into the ground texture image (removed
+    // once these took over that job). Same InstancedMesh-per-asset,
+    // raycast-for-open-ground scatter technique as buildGrass() above, just
+    // with real geometry/texture pulled from the loaded GLB instead of a
+    // generated quad-cross.
+    let flowerTemplates = [null, null];
+    let pendingFlowerBuild = false;
+    function extractFlowerTemplate(gltfScene) {
+        let mesh = null;
+        gltfScene.traverse(o => { if (o.isMesh && !mesh) mesh = o; });
+        if (!mesh) return null;
+        // Bakes the source node's own export scale (~0.097 - these were
+        // authored at roughly real-world flower size in Blender) directly
+        // into the geometry, so instance matrices below only have to carry
+        // the random per-instance size variation, exactly like grassCrossGeo
+        // is already a ready-to-scale unit shape.
+        const geometry = mesh.geometry.clone();
+        geometry.scale(mesh.scale.x, mesh.scale.y, mesh.scale.z);
+        const srcMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+        const material = new THREE.MeshToonMaterial({
+            map: srcMat && srcMat.map ? srcMat.map : null,
+            gradientMap: threeTone,
+            side: THREE.DoubleSide,
+            alphaTest: window.grassAlphaTest,
+            transparent: false,
+        });
+        return { geometry, material };
+    }
+    const flowerLoader = new GLTFLoader();
+    function onFlowerLoaded(idx, gltf) {
+        flowerTemplates[idx] = extractFlowerTemplate(gltf.scene);
+        if (flowerTemplates[0] && flowerTemplates[1] && pendingFlowerBuild) { pendingFlowerBuild = false; buildFlowers(); }
+    }
+    flowerLoader.load('Flower.glb', (g) => onFlowerLoaded(0, g), undefined, () => {
+        flowerLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Flower.glb',
+            (g) => onFlowerLoaded(0, g), undefined, (e) => console.error('Flower.glb load failed:', e));
+    });
+    flowerLoader.load('Flower2.glb', (g) => onFlowerLoaded(1, g), undefined, () => {
+        flowerLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Flower2.glb',
+            (g) => onFlowerLoaded(1, g), undefined, (e) => console.error('Flower2.glb load failed:', e));
+    });
+
+    const flowerMeshes = [];
+    // Much lower than grassCount - "sprinkled occasionally", not a full
+    // field like the grass tufts.
+    window.flowerCount = 120;
+    window.flowerSize = 1.0;
+    function clearFlowers() {
+        flowerMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
+        flowerMeshes.length = 0;
+    }
+    const _flowerRay = new THREE.Raycaster();
+    const _flowerFrom = new THREE.Vector3();
+    const _flowerObstacleBox = new THREE.Box3();
+    const _flowerPos = new THREE.Vector3();
+    const _flowerQuat = new THREE.Quaternion();
+    const _flowerScale = new THREE.Vector3();
+    function buildFlowers() {
+        scene.updateMatrixWorld(true);
+        clearFlowers();
+        // Not ready yet (async GLB load) - buildLevel()'s own grass rebuild
+        // runs synchronously well before these typically finish loading, so
+        // this defers to onFlowerLoaded() above to retry once both are in.
+        if (!flowerTemplates[0] || !flowerTemplates[1]) { pendingFlowerBuild = true; return; }
+        const toggle = document.getElementById('toggle-grass');
+        if (toggle && !toggle.checked) return;
+        const total = Math.max(0, Math.round(window.flowerCount));
+        if (!total) return;
+        const half = window.grassArea;
+        const blockers = collidables.filter(c => c !== ground);
+        const maxFlowerClearance = window.flowerSize * 1.3 + 0.3;
+        const perTemplate = [[], []];
+        let attempts = 0;
+        const maxAttempts = total * 6;
+        let placed = 0;
+        while (placed < total && attempts++ < maxAttempts) {
+            const x = (Math.random() * 2 - 1) * half;
+            const z = (Math.random() * 2 - 1) * half;
+            _flowerFrom.set(x, 60, z);
+            _flowerRay.set(_flowerFrom, _grassDown);
+            const hits = _flowerRay.intersectObjects(blockers, true);
+            if (hits.length > 0) {
+                window.getObstacleBox(hits[0].object, _flowerObstacleBox);
+                if (_flowerObstacleBox.min.y < maxFlowerClearance) continue;
+            }
+            const s = window.flowerSize * (0.8 + Math.random() * 0.5);
+            _flowerPos.set(x, 0, z);
+            _flowerQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
+            _flowerScale.set(s, s, s);
+            perTemplate[placed % 2].push(new THREE.Matrix4().compose(_flowerPos, _flowerQuat, _flowerScale));
+            placed++;
+        }
+        perTemplate.forEach((mats, i) => {
+            if (!mats.length) return;
+            const tmpl = flowerTemplates[i];
+            const inst = new THREE.InstancedMesh(tmpl.geometry, tmpl.material, mats.length);
+            mats.forEach((m, k) => inst.setMatrixAt(k, m));
+            inst.instanceMatrix.needsUpdate = true;
+            inst.castShadow = false;
+            inst.receiveShadow = false;
+            inst.raycast = () => {};
+            inst.frustumCulled = false;
+            inst.userData.isFlower = true;
+            scene.add(inst);
+            flowerMeshes.push(inst);
+        });
+    }
+    window.rebuildFlowers = buildFlowers;
+
     // ---- Grass wireframe helper (Editor Wireframe toggle) ----
     // Grass tufts don't go through the level editor's own per-mesh wireframe
     // path: they're InstancedMesh (one shared geometry, per-instance
@@ -4125,6 +4238,7 @@ export function startGame(CharacterClass) {
             // that it's actually in collidables. window.rebuildGrass is the
             // same escape hatch the slider controls use.
             if (window.rebuildGrass) window.rebuildGrass();
+            if (window.rebuildFlowers) window.rebuildFlowers();
         });
     }
 
@@ -4668,7 +4782,7 @@ export function startGame(CharacterClass) {
         // spots where something blocks the ray too close to y=0), so
         // tufts were landing right on/through the water plane. Skip it
         // for this level rather than special-casing that assumption.
-        if (currentLevel === "local_water") clearGrass(); else buildGrass();
+        if (currentLevel === "local_water") { clearGrass(); clearFlowers(); } else { buildGrass(); buildFlowers(); }
     }
 
     async function populateLevelsAndLoad() {
