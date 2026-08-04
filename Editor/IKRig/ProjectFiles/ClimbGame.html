@@ -16,7 +16,12 @@
         body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
         #gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
         
-        #ui { position: absolute; top: 25px; left: 0; color: white; font-family: monospace; background: rgba(0,0,0,0.85); padding: 12px; border-radius: 0 8px 8px 0; width: 240px; z-index: 50; transition: transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1); border: 1px solid rgba(255, 255, 255, 0.1); border-left: none; transform: translateX(0); }
+        /* Above the dialogue box (200) and its full-screen tap catcher (199)
+           on purpose: the panel has to stay reachable DURING a conversation,
+           otherwise the dialogue sliders below can't be tuned while the thing
+           they affect is on screen. #dock-btn lives inside this element, so
+           it rides along and stays clickable too. */
+        #ui { position: absolute; top: 25px; left: 0; color: white; font-family: monospace; background: rgba(0,0,0,0.85); padding: 12px; border-radius: 0 8px 8px 0; width: 240px; z-index: 300; transition: transform 0.3s cubic-bezier(0.1, 0.9, 0.2, 1); border: 1px solid rgba(255, 255, 255, 0.1); border-left: none; transform: translateX(0); }
         #ui.collapsed { transform: translateX(-100%); }
         .ui-controls { margin-top: 10px; background: rgba(255,255,255,0.05); padding: 4px; border-radius: 6px; max-height: 75vh; overflow-y: auto; }
         
@@ -279,8 +284,29 @@
          startVillageDialogue/updateVillageDialogueTypewriter in
          game_js.js). Tap/hold while still typing speeds up the reveal
          instead of advancing. -->
-    <div id="dialogue-box" style="display:none; position:absolute; left:50%; bottom:40px; transform:translateX(-50%); width:88%; max-width:640px; min-height:70px; background:rgba(12,12,18,0.92); border:2px solid rgba(255,255,255,0.25); border-radius:10px; padding:18px 22px; color:#fff; font-family:sans-serif; font-size:17px; line-height:1.5; z-index:200; touch-action:none; cursor:pointer; box-sizing:border-box;">
-        <span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span>
+    <!-- Full-screen tap catcher: the dialogue advances on a tap ANYWHERE,
+         not just on the box itself. Sits just under the box's own z-index
+         and only exists while a dialogue is running, so it can't swallow
+         gameplay input the rest of the time. -->
+    <div id="dialogue-tap-catcher" style="display:none; position:absolute; inset:0; z-index:199; touch-action:none; cursor:pointer;"></div>
+    <!-- Anchored from the BOTTOM (see #dialogue-box's `bottom`, driven by the
+         "Dialogue Y" slider): the panel grows upward as text wraps, so its
+         lower edge never shifts under your thumb mid-conversation.
+         The icon/text row is a flex row rather than an inline image, which is
+         what gives the hanging indent - wrapped lines resume under the START
+         OF THE TEXT instead of running back under the icon. -->
+    <div id="dialogue-box" style="display:none; position:absolute; left:50%; bottom:70%; transform:translateX(-50%); width:88%; max-width:640px; min-height:70px; background:rgba(12,12,18,0.92); border:2px solid rgba(255,255,255,0.25); border-radius:10px; padding:18px 22px; color:#fff; font-family:sans-serif; font-size:17px; line-height:1.5; z-index:200; touch-action:none; cursor:pointer; box-sizing:border-box;">
+        <div style="display:flex; align-items:flex-start; gap:0.7em;">
+            <img id="dialogue-icon" style="display:none; height:40px; width:auto; flex:0 0 auto; filter: drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff) drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff);">
+            <div style="flex:1 1 auto; min-width:0;"><span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span></div>
+        </div>
+        <!-- Downward-pointing tail, same shape/idea as the in-world "Hey!"
+             speech bubble's own tail (createSpeechBubbleSprite) so this
+             screen-space panel reads as pointing at the NPC too. Two nested
+             triangles (border-colored, then fill-colored 2px smaller) fake
+             the bubble's stroke, since CSS triangles can't have a real border. -->
+        <div style="position:absolute; left:50%; bottom:-16px; transform:translateX(-50%); width:0; height:0; border-left:16px solid transparent; border-right:16px solid transparent; border-top:18px solid rgba(255,255,255,0.25); pointer-events:none;"></div>
+        <div style="position:absolute; left:50%; bottom:-12px; transform:translateX(-50%); width:0; height:0; border-left:13px solid transparent; border-right:13px solid transparent; border-top:15px solid rgba(12,12,18,0.92); pointer-events:none;"></div>
     </div>
     <style>
         @keyframes dialogue-continue-bounce {
@@ -305,16 +331,20 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.5 20c0-4 3.5-6.5 7.5-6.5s7.5 2.5 7.5 6.5"></path></svg>
     </button>
 
-    <!-- Player compendium/viewer - a minimal, single-entry port of
-         DungeonGame.html's Viewer (that script shows a whole bestiary via
-         category tabs + prev/next; this only ever shows the Player, so
-         all of that navigation chrome is left out on purpose). Own
-         renderer/scene/camera - see Viewer.init() in game_js.js. -->
+    <!-- Player/Items compendium/viewer - a minimal port of
+         DungeonGame.html's Viewer (that script's own prev/next paging is
+         left out - each category only ever holds one entry so far). Own
+         renderer/scene/camera - see Viewer.init()/setViewerCategory() in
+         game_js.js. -->
     <div id="player-viewer-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background:#1a252c;">
         <div id="viewer-container" style="width:100%; height:100%;"></div>
         <button id="close-viewer-btn" style="position:absolute; top:14px; right:14px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.3); background:rgba(0,0,0,0.5); color:white; font-size:16px; cursor:pointer;">×</button>
         <div style="position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:280px; background:rgba(28,28,30,0.95); border:1px solid #3a3a3c; border-bottom:none; border-radius:12px 12px 0 0; padding:12px 15px; text-align:center; color:#eee; font-family:sans-serif; box-sizing:border-box;">
-            <div style="font-size:11px; font-weight:800; color:#3b82f6; text-transform:uppercase; letter-spacing:2px; margin-bottom:4px;">Player</div>
+            <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
+                <button class="viewer-cat-btn active" data-cat="player" style="background:#2563eb; color:#fff; border:none; padding:5px 14px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Player</button>
+                <button class="viewer-cat-btn" data-cat="items" style="background:transparent; color:#aaa; border:none; padding:5px 14px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Items</button>
+            </div>
+            <div id="viewer-label" style="font-size:11px; font-weight:800; color:#3b82f6; text-transform:uppercase; letter-spacing:2px; margin-bottom:4px;">Player</div>
             <div style="font-size:13px; color:#d1d1d6;">Drag to rotate.</div>
         </div>
     </div>
@@ -589,6 +619,20 @@
                     <label><input type="checkbox" id="toggle-build-btn"> Show Build (B) Button</label><br>
                     <label><input type="checkbox" id="toggle-punch-btn"> Show Punch Button</label><br>
                     <label><input type="checkbox" id="toggle-drag-deadzone"> Show Drag Dead-Zone (matte overlay)</label><br>
+                    <label>Icon Size: <span id="icon-size-val">40</span>px</label><br>
+                    <input type="range" id="icon-size-slider" min="12" max="96" step="1" value="40" style="width: 100%;"><br>
+                    <!-- Distance of the dialogue panel's BOTTOM edge up from
+                         the bottom of the screen, so the panel grows upward
+                         and its lower edge stays put as lines wrap. -->
+                    <label>Dialogue Y: <span id="dialogue-y-val">70</span>%</label><br>
+                    <input type="range" id="dialogue-y-slider" min="0" max="85" step="1" value="70" style="width: 100%;"><br>
+                    <!-- Scales the whole dialogue camera offset uniformly, so
+                         it changes only how close the shot is, never the
+                         angle it looks from. -->
+                    <label>Dialogue Cam Zoom: <span id="dialogue-cam-zoom-val">0.35</span></label><br>
+                    <input type="range" id="dialogue-cam-zoom-slider" min="0.2" max="1.5" step="0.05" value="0.35" style="width: 100%;"><br>
+                    <label>Dialogue Cam Ease: <span id="dialogue-cam-ease-val">2.0</span></label><br>
+                    <input type="range" id="dialogue-cam-ease-slider" min="0.5" max="10" step="0.1" value="2.0" style="width: 100%;"><br>
                 </div>
             </div>
 

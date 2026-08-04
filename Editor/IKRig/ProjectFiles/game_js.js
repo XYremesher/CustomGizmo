@@ -3108,13 +3108,19 @@ export function startGame(CharacterClass) {
     let villageTypewriterProgress = 0;
     let villageTypewriterDone = false;
     let villageDialogueFastForward = false;
+    // icon: null, or a key into a {key: dataUrlGetter} map (see
+    // dialogueIconUrlFor) - only the compass line has one right now.
     const VILLAGE_DIALOGUE_LINES = [
-        'Dinle beni.',
-        'Çırağım, dün ormana gitti ama hala dönmedi.',
-        'Pusulasını da yanına almamış.',
-        'Eğer onu bulabilirsen, köye geri getirebilir misin?',
-        'Lütfen, lütfen onu geri getir.',
+        { text: 'Listen to me.', icon: null },
+        { text: 'My apprentice went into the forest yesterday and still hasn\'t returned.', icon: null },
+        { text: 'He didn\'t even take his compass with him.', icon: 'compass' },
+        { text: 'If you can find him, could you bring him back to the village?', icon: null },
+        { text: 'Please, please bring him back.', icon: null },
     ];
+    function dialogueIconUrlFor(key) {
+        if (key === 'compass') return window.compassIconDataUrl || null;
+        return null;
+    }
     const VILLAGE_TYPEWRITER_CPS = 28; // base characters/second
     const VILLAGE_TYPEWRITER_FAST_MULT = 3; // while tap/hold-forwarding
     const VILLAGE_NPC_TALK_RADIUS = 2.5;
@@ -3128,8 +3134,8 @@ export function startGame(CharacterClass) {
         const canvas = document.createElement('canvas');
         canvas.width = 256; canvas.height = 128;
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'rgba(255,255,255,0.95)';
-        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillStyle = 'rgba(15,15,20,0.92)';
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 4;
         const r = 20, w = 236, h = 84, x = 10, y = 10;
         ctx.beginPath();
@@ -3146,7 +3152,7 @@ export function startGame(CharacterClass) {
         ctx.lineTo(canvas.width / 2 + 14, y + h);
         ctx.closePath();
         ctx.fill(); ctx.stroke();
-        ctx.fillStyle = '#222';
+        ctx.fillStyle = '#fff';
         ctx.font = 'bold 40px sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(text, canvas.width / 2, y + h / 2);
@@ -3170,7 +3176,7 @@ export function startGame(CharacterClass) {
         if (iconUrl) {
             const img = document.createElement('img');
             img.src = iconUrl;
-            img.style.cssText = 'width:28px; height:28px; flex:0 0 auto;';
+            img.style.cssText = `height:${(window.iconSize || 40)}px; width:auto; flex:0 0 auto;`;
             el.appendChild(img);
         }
         const label = document.createElement('span');
@@ -3194,7 +3200,7 @@ export function startGame(CharacterClass) {
     // Lazy-loaded (mirrors ensureLevelEditorLoaded's own reasoning): most
     // players never open this, so the extra FBX fetch + renderer/scene
     // setup only happens the first time the button is actually clicked.
-    const Viewer = { scene: null, camera: null, renderer: null, controls: null, active: false, playerModel: null, loaded: false, mixer: null, clock: new THREE.Clock() };
+    const Viewer = { scene: null, camera: null, renderer: null, controls: null, active: false, playerModel: null, loaded: false, mixer: null, clock: new THREE.Clock(), category: 'player' };
     function ensureViewerLoaded() {
         if (Viewer.loaded) return;
         Viewer.loaded = true;
@@ -3278,6 +3284,169 @@ export function startGame(CharacterClass) {
     const closeViewerBtnEl = document.getElementById('close-viewer-btn');
     if (closeViewerBtnEl) closeViewerBtnEl.addEventListener('click', (e) => { e.stopPropagation(); closeViewer(); });
 
+    // ---- Items (Viewer's second tab) ----
+    // CompassObject.glb, loaded once and shared between two uses: shown
+    // live in the Viewer's "Items" tab, and rendered to a small icon used
+    // inline in the NPC dialogue line that mentions it ("Pusulasını da
+    // yanına almamış."). Auto-framed from its own bounding box (unlike
+    // the player/StickMan camera positions above, which are hand-tuned
+    // guesses) since this model's native scale isn't already known the
+    // way the player rig's is.
+    let compassObjectModel = null;
+    let compassObjectLoading = false;
+    const compassObjectReadyCallbacks = [];
+    function loadCompassObject(onReady) {
+        if (compassObjectModel) { onReady(compassObjectModel); return; }
+        compassObjectReadyCallbacks.push(onReady);
+        if (compassObjectLoading) return;
+        compassObjectLoading = true;
+        new GLTFLoader().load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/CompassObject.glb', (gltf) => {
+            compassObjectModel = gltf.scene;
+            // Same treatment as the in-world Compass.glb needle model
+            // (compassGltfLoader above): 'CompassContainer' becomes a
+            // fixed dark toon shell (with its normals flipped - it comes
+            // in facing the wrong way here too), everything else becomes
+            // flat/unlit with ITS OWN original color preserved and drawn
+            // depth-ignoring so it isn't hidden inside the container's
+            // opaque volume. The one part Compass.glb doesn't have -
+            // 'CompasFrame' (sic - that's the actual name baked into this
+            // file, not a typo on this end), the outer metal ball/ring -
+            // gets a toon material too (still cell-shaded, still matte,
+            // per request) but keeps ITS OWN color read from the source
+            // file instead of a hardcoded one.
+            const toonColorFrom = (mat, fallback) => {
+                const c = Array.isArray(mat) ? (mat[0] && mat[0].color) : (mat && mat.color);
+                return c ? c.clone() : new THREE.Color(fallback);
+            };
+            const flatUnlitFrom = (mat) => {
+                const nm = new THREE.MeshBasicMaterial({
+                    color: mat && mat.color ? mat.color.clone() : 0xffffff,
+                    transparent: !!(mat && mat.transparent),
+                    opacity: mat && mat.opacity !== undefined ? mat.opacity : 1,
+                });
+                nm.depthTest = false; nm.depthWrite = false;
+                return nm;
+            };
+            compassObjectModel.traverse(c => {
+                if (!c.isMesh) return;
+                c.castShadow = true; c.receiveShadow = true;
+                if (c.name === 'CompassContainer') {
+                    if (c.geometry.attributes.normal) {
+                        const normalAttr = c.geometry.attributes.normal;
+                        for (let i = 0; i < normalAttr.count; i++) normalAttr.setXYZ(i, -normalAttr.getX(i), -normalAttr.getY(i), -normalAttr.getZ(i));
+                        normalAttr.needsUpdate = true;
+                    }
+                    c.material = new THREE.MeshToonMaterial({ color: 0x1c2a4a, gradientMap: threeTone });
+                    c.renderOrder = 0;
+                } else if (c.name === 'CompasFrame') {
+                    c.material = new THREE.MeshToonMaterial({ color: toonColorFrom(c.material, 0x888888), gradientMap: threeTone });
+                } else {
+                    c.material = Array.isArray(c.material) ? c.material.map(flatUnlitFrom) : flatUnlitFrom(c.material);
+                    c.renderOrder = 1;
+                }
+            });
+            generateIconFromObject(compassObjectModel, url => { window.compassIconDataUrl = url; });
+            compassObjectReadyCallbacks.forEach(cb => cb(compassObjectModel));
+            compassObjectReadyCallbacks.length = 0;
+        });
+    }
+    // Generic version of generatePlayerIcon above - auto-frames the
+    // camera from the object's own Box3 instead of a hand-picked position,
+    // since (unlike the player rig) this is meant to work for whatever
+    // item gets added next without re-tuning a camera position by eye
+    // each time. Temporarily reparents into a throwaway scene for the
+    // render, then puts it back where it was (or leaves it detached if it
+    // had no parent yet) - doesn't require Viewer.scene to exist, so this
+    // can run before the Viewer has ever been opened.
+    function generateIconFromObject(object, onDone) {
+        const box = new THREE.Box3().setFromObject(object);
+        const size = new THREE.Vector3(); box.getSize(size);
+        const center = new THREE.Vector3(); box.getCenter(center);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const iconScene = new THREE.Scene();
+        iconScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.8));
+        const l = new THREE.DirectionalLight(0xffffff, 1.2); l.position.set(2, 4, 2); iconScene.add(l);
+        const prevParent = object.parent;
+        iconScene.add(object);
+        const iconCamera = new THREE.PerspectiveCamera(40, 1, 0.01, Math.max(10, maxDim * 20));
+        iconCamera.position.set(center.x + maxDim * 1.2, center.y + maxDim, center.z + maxDim * 1.8);
+        iconCamera.lookAt(center);
+        const RENDER_PX = 256; // bigger than the displayed size so the crop below still lands on a sharp image
+        const iconRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        iconRenderer.setSize(RENDER_PX, RENDER_PX);
+        iconRenderer.setClearColor(0x000000, 0);
+        iconRenderer.render(iconScene, iconCamera);
+        // Crop to the object's actual opaque pixels. The camera above frames
+        // the object generously (and the object need not be square), so the
+        // raw render always carries transparent padding on at least one axis -
+        // which shows up as dead space above/below the icon wherever it's
+        // placed inline next to text. Cropping to the alpha bounding box
+        // makes the PNG's own edges the object's edges, so "no margin" holds
+        // for any object without per-object camera tuning.
+        const cropCanvas = document.createElement('canvas');
+        cropCanvas.width = RENDER_PX; cropCanvas.height = RENDER_PX;
+        const cropCtx = cropCanvas.getContext('2d');
+        cropCtx.drawImage(iconRenderer.domElement, 0, 0);
+        const pixels = cropCtx.getImageData(0, 0, RENDER_PX, RENDER_PX).data;
+        let minX = RENDER_PX, minY = RENDER_PX, maxX = -1, maxY = -1;
+        for (let y = 0; y < RENDER_PX; y++) {
+            for (let x = 0; x < RENDER_PX; x++) {
+                if (pixels[(y * RENDER_PX + x) * 4 + 3] > 8) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        let dataUrl;
+        if (maxX >= minX && maxY >= minY) {
+            const cw = maxX - minX + 1, ch = maxY - minY + 1;
+            const outCanvas = document.createElement('canvas');
+            outCanvas.width = cw; outCanvas.height = ch;
+            outCanvas.getContext('2d').drawImage(cropCanvas, minX, minY, cw, ch, 0, 0, cw, ch);
+            dataUrl = outCanvas.toDataURL('image/png');
+        } else {
+            dataUrl = iconRenderer.domElement.toDataURL('image/png'); // fully transparent render - nothing to crop to
+        }
+        onDone(dataUrl);
+        iconRenderer.dispose();
+        if (prevParent) prevParent.add(object); else iconScene.remove(object);
+    }
+    const viewerLabelEl = document.getElementById('viewer-label');
+    function setViewerCategory(cat) {
+        Viewer.category = cat;
+        document.querySelectorAll('.viewer-cat-btn').forEach(b => {
+            const active = b.dataset.cat === cat;
+            b.classList.toggle('active', active);
+            b.style.background = active ? '#2563eb' : 'transparent';
+            b.style.color = active ? '#fff' : '#aaa';
+        });
+        if (cat === 'player') {
+            if (Viewer.playerModel) Viewer.playerModel.visible = true;
+            if (compassObjectModel) compassObjectModel.visible = false;
+            if (viewerLabelEl) viewerLabelEl.textContent = 'Player';
+            Viewer.camera.position.set(2.5, 2.0, 5.0);
+            Viewer.controls.target.set(0, 0.9, 0);
+        } else {
+            if (Viewer.playerModel) Viewer.playerModel.visible = false;
+            if (viewerLabelEl) viewerLabelEl.textContent = 'Compass';
+            loadCompassObject(obj => {
+                if (Viewer.category !== 'items') return; // tab may have been switched away while this was loading
+                if (obj.parent !== Viewer.scene) Viewer.scene.add(obj);
+                obj.visible = true;
+                const box = new THREE.Box3().setFromObject(obj);
+                const size = new THREE.Vector3(); box.getSize(size);
+                const center = new THREE.Vector3(); box.getCenter(center);
+                const maxDim = Math.max(size.x, size.y, size.z) || 1;
+                Viewer.camera.position.set(center.x + maxDim * 1.5, center.y + maxDim * 1.2, center.z + maxDim * 2.2);
+                Viewer.controls.target.copy(center);
+            });
+        }
+        Viewer.controls.update();
+    }
+    document.querySelectorAll('.viewer-cat-btn').forEach(b => b.addEventListener('click', () => setViewerCategory(b.dataset.cat)));
+
     function buildVillageLevel() {
         if (!villageScene) { pendingVillageLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
@@ -3289,12 +3458,24 @@ export function startGame(CharacterClass) {
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0;
 
+        // Kicked off now (fire-and-forget) rather than only on first
+        // Viewer-open, so window.compassIconDataUrl is normally already
+        // there by the time the player's dialogue reaches the line that
+        // wants it - see updateDialogueIconForCurrentLine's graceful
+        // fallback (hides the icon slot) for the rare case it isn't yet.
+        loadCompassObject(() => {});
+
         // Unlike Level 2/Water Test, this whitebox's own floor blocks sit
-        // well above y=0 in most places - the generic grass ground plane
-        // (left visible, buildLevel()'s own default) shows through the
-        // gaps around/under them instead of clashing, and gives the level
-        // a green world to stand in rather than the stark empty backdrop
-        // it had while this was hidden.
+        // well above y=0 in most places and don't form a continuous
+        // floor - the generic grass ground plane (left visible, see
+        // buildLevel()'s own default) shows through the gaps around/under
+        // them instead of clashing, AND has to be pushed back into
+        // `collidables` here (the line above just wiped it) so it's
+        // actually solid ground wherever the whitebox itself has no floor
+        // prop - without this, the NPC's own ground-snap raycast below
+        // (and the player, walking off the edge of any explicit block)
+        // found nothing there and fell back to a floating guess.
+        collidables.push(ground);
 
         villageScene.traverse(o => {
             if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; collidables.push(o); }
@@ -3344,7 +3525,7 @@ export function startGame(CharacterClass) {
         villageNpcAvatar.group.rotation.y = Math.atan2(npcToPlayer.x, npcToPlayer.z);
 
         villageNpcBubble = createSpeechBubbleSprite('Hey!');
-        villageNpcBubble.position.set(0, 2.4, 0);
+        villageNpcBubble.position.set(0, 3.1, 0);
         villageNpcAvatar.group.add(villageNpcBubble);
         villageQuestGiven = false;
         villageDialogueActive = false;
@@ -3395,8 +3576,29 @@ export function startGame(CharacterClass) {
     // of the normal follow-cam, and steps through VILLAGE_DIALOGUE_LINES
     // one at a time with an old-game-style typewriter reveal.
     const dialogueBoxEl2 = document.getElementById('dialogue-box');
+    const dialogueTapCatcherEl = document.getElementById('dialogue-tap-catcher');
     const dialogueTextEl = document.getElementById('dialogue-text');
     const dialogueContinueEl = document.getElementById('dialogue-continue');
+    const dialogueIconEl = document.getElementById('dialogue-icon');
+    // Shows/hides the icon for whichever line is current - called on both
+    // start and every advance. Silently no-ops (hides) if that line wants
+    // an icon that isn't ready yet (e.g. CompassObject.glb still loading) -
+    // see loadCompassObject, kicked off proactively in buildVillageLevel
+    // so it's normally ready well before the player reaches this line.
+    function updateDialogueIconForCurrentLine() {
+        if (!dialogueIconEl) return;
+        const iconKey = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex].icon;
+        const url = iconKey ? dialogueIconUrlFor(iconKey) : null;
+        if (url) {
+            dialogueIconEl.src = url;
+            // Height only - the icon PNG is cropped to its own opaque
+            // bounds (generateIconFromObject), so it carries the object's
+            // real aspect ratio and forcing it square would squash it.
+            dialogueIconEl.style.height = (window.iconSize || 40) + 'px';
+            dialogueIconEl.style.width = 'auto';
+            dialogueIconEl.style.display = 'inline-block';
+        } else { dialogueIconEl.style.display = 'none'; }
+    }
     function startVillageDialogue() {
         villageDialogueActive = true;
         window.dialogueInputLocked = true;
@@ -3407,31 +3609,69 @@ export function startGame(CharacterClass) {
         if (villageNpcBubble) villageNpcBubble.visible = false;
         if (dialogueTextEl) dialogueTextEl.textContent = '';
         if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
+        updateDialogueIconForCurrentLine();
         if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'block';
+        if (dialogueTapCatcherEl) dialogueTapCatcherEl.style.display = 'block';
         // Clears the joysticks/buttons out from under your hands during
         // the conversation - same helper the editor toggle already uses.
         setGameControlsVisible(false);
 
-        // Snap player + NPC to face each other, and compute the two-shot
-        // camera framing once up front (not recomputed every frame) - it's
-        // then just eased toward smoothly below, the same way the normal
-        // follow-cam already lerps every frame.
+        // The player is deliberately NOT re-aimed here. Snapping them to
+        // face the NPC was tried and rejected: you already walk up to the
+        // NPC facing them, so the snap only ever fires when the approach
+        // angle differed slightly - and then it reads as the character
+        // spinning on the spot for no reason the player can see. Freezing
+        // whatever facing they walked in with is both stiller and closer to
+        // what actually happens. Only the NPC turns (they're the one being
+        // addressed, and they're far enough away for it to read as natural).
         const toNpc = new THREE.Vector3().subVectors(villageNpcAvatar.group.position, char.group.position);
         toNpc.y = 0;
-        const dist = Math.max(0.5, toNpc.length());
         toNpc.normalize();
-        char.group.rotation.y = Math.atan2(toNpc.x, toNpc.z);
         villageNpcAvatar.group.rotation.y = Math.atan2(-toNpc.x, -toNpc.z);
-        const mid = new THREE.Vector3().addVectors(char.group.position, villageNpcAvatar.group.position).multiplyScalar(0.5);
-        const perp = new THREE.Vector3(-toNpc.z, 0, toNpc.x);
-        window._dialogueCamTarget = mid.clone().add(new THREE.Vector3(0, 1.3, 0));
-        window._dialogueCamPos = mid.clone().add(perp.multiplyScalar(Math.max(2.2, dist * 0.9))).add(new THREE.Vector3(0, 1.6, 0));
+        // Held for the whole conversation (re-applied every frame in the
+        // dialogue camera block in animate) - capturing it once isn't
+        // enough, since several later systems write to char.group.quaternion
+        // and would otherwise drift the character while they "stand still".
+        window._dialogueFacingQuat = char.group.quaternion.clone();
+        const side = new THREE.Vector3(-toNpc.z, 0, toNpc.x); // player's right
+        // Borrows the normal follow-cam's own distance/height (cameraRadius/
+        // cameraPhi) rather than hand-tuned constants. The offsets below are
+        // deliberately MOSTLY-BEHIND (0.8) with only a modest sideways step
+        // (0.6): a side offset larger than the behind offset puts the camera
+        // beside the player instead of behind them, which shows the player in
+        // profile and reads as "the player is turned the wrong way" even
+        // when they are, in fact, squarely facing the NPC.
+        // window.dialogueCamZoom scales all three components together, so it
+        // can only change how CLOSE the shot is, never the angle it looks
+        // from. Wrapped in a re-runnable function so the panel slider can
+        // recompute the framing live, mid-conversation.
+        window._recomputeDialogueCam = () => {
+            if (!villageNpcAvatar) return;
+            const zoom = window.dialogueCamZoom || 0.35;
+            const horiz = cameraRadius * Math.sin(cameraPhi) * zoom;
+            const height = (cameraRadius * Math.cos(cameraPhi) + 1.5) * zoom;
+            window._dialogueCamPos = char.group.position.clone()
+                .addScaledVector(toNpc, -horiz * 0.8)
+                .addScaledVector(side, horiz * 0.6)
+                .add(new THREE.Vector3(0, height, 0));
+            window._dialogueCamTarget = new THREE.Vector3()
+                .lerpVectors(char.group.position, villageNpcAvatar.group.position, 0.5)
+                .add(new THREE.Vector3(0, 1.5, 0));
+        };
+        window._recomputeDialogueCam();
+        // Deliberately NOT snapped into place - the camera eases across from
+        // wherever the gameplay follow-cam was (see the dialogue block in
+        // animate, which lerps both the position AND the look-at point at
+        // window.dialogueCamEase). Starting the look-at pan from null makes
+        // that block seed it from the live follow-cam target on its first
+        // frame, so the pan begins exactly where the player was looking.
+        window._dialogueCamLookNow = null;
     }
     function updateVillageDialogueTypewriter(delta) {
         if (villageTypewriterDone) return;
         const rate = VILLAGE_TYPEWRITER_CPS * (villageDialogueFastForward ? VILLAGE_TYPEWRITER_FAST_MULT : 1);
         villageTypewriterProgress += rate * delta;
-        const line = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex];
+        const line = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex].text;
         const shown = Math.min(line.length, Math.floor(villageTypewriterProgress));
         if (dialogueTextEl) dialogueTextEl.textContent = line.slice(0, shown);
         if (shown >= line.length) {
@@ -3448,15 +3688,50 @@ export function startGame(CharacterClass) {
             villageTypewriterDone = false;
             if (dialogueTextEl) dialogueTextEl.textContent = '';
             if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
+            updateDialogueIconForCurrentLine();
         }
     }
     function endVillageDialogue() {
         villageDialogueActive = false;
         window.dialogueInputLocked = false;
         if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'none';
+        if (dialogueTapCatcherEl) dialogueTapCatcherEl.style.display = 'none';
         setGameControlsVisible(true);
+        // Without this, the normal follow-cam resumes from cameraTheta/Phi -
+        // whatever they were BEFORE dialogue started, since dialogue drove
+        // camera.position directly and never touched them. That reads as the
+        // camera whipping to a different angle the instant the conversation
+        // ends. Resyncing them from where the camera actually is right now
+        // (see resyncCameraFollowFromCurrentPosition's own comment - same
+        // fix, same reason, for editor-mode exit) means gameplay picks up
+        // from the exact angle the dialogue camera ended at.
+        //
+        // cameraRadius AND cameraPhi are deliberately restored right after.
+        // Neither was ever touched during dialogue (the dialogue camera
+        // drives camera.position directly, ignoring the orbit vars
+        // entirely), so both are still whatever the player's normal
+        // gameplay view was before the conversation started - but resync
+        // would overwrite both with the DIALOGUE camera's own numbers
+        // (much closer, and a shallower pitch from the low OTS height).
+        // That shallow pitch is a second, sneakier way to stay "zoomed in":
+        // it lands close to the near-horizontal end of the orbit range,
+        // which a separate, pre-existing system (the closeStartElevation
+        // logic further down) deliberately pulls the camera in close for -
+        // so restoring radius alone still read as stuck-zoomed. Only
+        // cameraTheta (which way the camera faces horizontally) is kept
+        // from the resync; that's the actual "same angle" continuity that
+        // was asked for. Restoring the rest lets the existing follow-cam
+        // lerp smoothly ease back out to the player's real zoom/pitch.
+        const preDialogueCameraRadius = cameraRadius;
+        const preDialogueCameraPhi = cameraPhi;
+        resyncCameraFollowFromCurrentPosition();
+        cameraRadius = preDialogueCameraRadius;
+        cameraPhi = preDialogueCameraPhi;
         window._dialogueCamPos = null;
         window._dialogueCamTarget = null;
+        window._dialogueCamLookNow = null;
+        window._dialogueFacingQuat = null;
+        window._recomputeDialogueCam = null;
         if (!villageQuestGiven) {
             villageQuestGiven = true;
             // window.playerIconDataUrl only exists once the Viewer has been
@@ -3466,18 +3741,23 @@ export function startGame(CharacterClass) {
             if (window.villageForestEntrance) window.compassTarget = window.villageForestEntrance;
         }
     }
-    if (dialogueBoxEl2) {
-        dialogueBoxEl2.addEventListener('pointerdown', (e) => {
-            e.preventDefault();
-            if (!villageDialogueActive) return;
-            if (villageTypewriterDone) advanceVillageDialogueLine();
-            else villageDialogueFastForward = true;
-        });
-        const stopFastForward = () => { villageDialogueFastForward = false; };
-        dialogueBoxEl2.addEventListener('pointerup', stopFastForward);
-        dialogueBoxEl2.addEventListener('pointercancel', stopFastForward);
-        dialogueBoxEl2.addEventListener('pointerleave', stopFastForward);
-    }
+    // Same handlers on the box AND on the full-screen catcher behind it, so
+    // a tap anywhere on the screen advances/fast-forwards - the box itself
+    // is a small target, especially on a phone.
+    const stopFastForward = () => { villageDialogueFastForward = false; };
+    const onDialogueTapDown = (e) => {
+        e.preventDefault();
+        if (!villageDialogueActive) return;
+        if (villageTypewriterDone) advanceVillageDialogueLine();
+        else villageDialogueFastForward = true;
+    };
+    [dialogueBoxEl2, dialogueTapCatcherEl].forEach(el => {
+        if (!el) return;
+        el.addEventListener('pointerdown', onDialogueTapDown);
+        el.addEventListener('pointerup', stopFastForward);
+        el.addEventListener('pointercancel', stopFastForward);
+        el.addEventListener('pointerleave', stopFastForward);
+    });
 
     function addCarryableDebugHelper(c) {
         let helperGeo;
@@ -4227,6 +4507,8 @@ export function startGame(CharacterClass) {
         window.compassTarget = null;
         const dialogueBoxEl = document.getElementById('dialogue-box');
         if (dialogueBoxEl) dialogueBoxEl.style.display = 'none';
+        const dialogueCatcherEl = document.getElementById('dialogue-tap-catcher');
+        if (dialogueCatcherEl) dialogueCatcherEl.style.display = 'none';
 
         if (currentLevel === "local_blank") buildBlankLevel();
         else if (currentLevel === "local_stairs") buildStairsLevel();
@@ -5597,6 +5879,48 @@ export function startGame(CharacterClass) {
         const display = e.target.checked ? 'block' : 'none';
         const l = document.getElementById('drag-deadzone-left'); if (l) l.style.display = display;
         const r = document.getElementById('drag-deadzone-right'); if (r) r.style.display = display;
+    });
+    // Shared size for every small UI icon (toast icon, dialogue icon) -
+    // read live by addNotificationToast/updateDialogueIconForCurrentLine
+    // rather than baked into their CSS, so this one slider covers both.
+    window.iconSize = 40;
+    const iconSizeSliderEl = document.getElementById('icon-size-slider');
+    if (iconSizeSliderEl) iconSizeSliderEl.addEventListener('input', e => {
+        window.iconSize = parseFloat(e.target.value);
+        const v = document.getElementById('icon-size-val'); if (v) v.textContent = window.iconSize;
+        // Live-update whichever icon is on screen right now, if any.
+        const dIcon = document.getElementById('dialogue-icon');
+        if (dIcon && dIcon.style.display !== 'none') { dIcon.style.height = window.iconSize + 'px'; dIcon.style.width = 'auto'; }
+    });
+    // Dialogue panel vertical placement, as a % up from the bottom of the
+    // screen. Applied to `bottom` (not `top`) so the panel grows upward and
+    // its lower edge stays anchored as lines wrap to different heights.
+    window.dialogueY = 70;
+    const dialogueYSliderEl = document.getElementById('dialogue-y-slider');
+    if (dialogueYSliderEl) dialogueYSliderEl.addEventListener('input', e => {
+        window.dialogueY = parseFloat(e.target.value);
+        const v = document.getElementById('dialogue-y-val'); if (v) v.textContent = window.dialogueY;
+        const box = document.getElementById('dialogue-box');
+        if (box) box.style.bottom = window.dialogueY + '%';
+    });
+    // Uniform scale on the dialogue camera's offset - see startVillageDialogue.
+    // Changing it moves the camera closer/further along the SAME line, so the
+    // angle of the shot is unaffected. Re-applied live below so dragging this
+    // during a conversation updates the framing you're looking at.
+    window.dialogueCamZoom = 0.35;
+    const dialogueZoomSliderEl = document.getElementById('dialogue-cam-zoom-slider');
+    if (dialogueZoomSliderEl) dialogueZoomSliderEl.addEventListener('input', e => {
+        window.dialogueCamZoom = parseFloat(e.target.value);
+        const v = document.getElementById('dialogue-cam-zoom-val'); if (v) v.textContent = window.dialogueCamZoom.toFixed(2);
+        if (window._recomputeDialogueCam) window._recomputeDialogueCam();
+    });
+    // How fast the camera eases from the gameplay follow-cam into the dialogue
+    // shot (and how fast it pans its look-at across). Lower = slower glide.
+    window.dialogueCamEase = 2.0;
+    const dialogueEaseSliderEl = document.getElementById('dialogue-cam-ease-slider');
+    if (dialogueEaseSliderEl) dialogueEaseSliderEl.addEventListener('input', e => {
+        window.dialogueCamEase = parseFloat(e.target.value);
+        const v = document.getElementById('dialogue-cam-ease-val'); if (v) v.textContent = window.dialogueCamEase.toFixed(1);
     });
 
     // Reverse of the follow-cam formula a few hundred lines down
@@ -8909,7 +9233,16 @@ export function startGame(CharacterClass) {
                 // backwards/forwards in whichever direction the hit
                 // actually pushed, WITHOUT turning to face travel
                 // direction the way normal movement does.
-                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+                // Also skipped during dialogue: startVillageDialogue snaps
+                // the character to face the NPC, but the trigger frame's
+                // rawX/rawY were already read BEFORE the input lock went up
+                // (they're computed far earlier in this same frame), so
+                // moveMag is still non-zero here - and curX/curY only decay
+                // toward 0 over several more frames. Without this guard,
+                // this slerp turns the character straight back to their
+                // walk-in direction for as long as that decay lasts, which
+                // is exactly the "player isn't facing the NPC" bug.
+                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && !window.dialogueInputLocked) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
             }
 
             // Walking downhill (stairs, a shallow ramp, the hemisphere,
@@ -9616,12 +9949,25 @@ export function startGame(CharacterClass) {
         let targetCamZ = camTarget.z + horizDist * Math.cos(cameraTheta);
 
         // Village dialogue overrides the normal follow-cam with a fixed
-        // two-shot framing (computed once in startVillageDialogue) instead
-        // of the usual orbit math - eased in with the same lerp rate so it
-        // doesn't just snap there.
+        // two-shot framing (computed in startVillageDialogue) instead of the
+        // usual orbit math, easing across from wherever the gameplay camera
+        // was rather than cutting.
         if (window._dialogueCamPos) {
-            camera.position.lerp(window._dialogueCamPos, 8 * delta);
-            camera.lookAt(window._dialogueCamTarget);
+            // Last write wins: this runs after every movement/slide/carry
+            // system that touches char.group.quaternion, so re-stamping the
+            // frozen rotation here is what actually guarantees the character
+            // stands still for the whole conversation.
+            if (window._dialogueFacingQuat) char.group.quaternion.copy(window._dialogueFacingQuat);
+            const ease = (window.dialogueCamEase || 2.0) * delta;
+            // The look-at point is panned too, not just the position - a
+            // position-only lerp keeps the camera aimed at the final target
+            // from frame one, which whips the view around before the camera
+            // has actually travelled anywhere. Seeded from the live follow-cam
+            // target so the pan starts exactly where the player was looking.
+            if (!window._dialogueCamLookNow) window._dialogueCamLookNow = new THREE.Vector3(camTarget.x, camTarget.y, camTarget.z);
+            window._dialogueCamLookNow.lerp(window._dialogueCamTarget, ease);
+            camera.position.lerp(window._dialogueCamPos, ease);
+            camera.lookAt(window._dialogueCamLookNow);
         } else {
             camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
             camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
