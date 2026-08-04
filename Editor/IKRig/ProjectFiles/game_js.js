@@ -1607,28 +1607,32 @@ export function startGame(CharacterClass) {
         villageTreeModel = gltf.scene;
         // Re-materials once here on the shared template (every per-instance
         // clone() in buildVillageLevel references these same material
-        // objects, not a copy) to match the grass field's own look: a
-        // MeshToonMaterial using the source texture as `map` and the
-        // shared threeTone gradientMap, rather than the imported PBR
-        // material GLTFLoader creates by default. Leaf bunches additionally
-        // get alphaTest cutout (transparent:false) instead of their
-        // exported alphaMode:BLEND - same reasoning as grass's own alphaTest
-        // comment above: cutout foliage doesn't sort/flicker like blended
-        // transparency does.
+        // objects, not a copy) - all as MeshToonMaterial using the source
+        // texture as `map` and the shared threeTone gradientMap, but with
+        // per-material alpha handling driven by the exported material NAME
+        // (there are 3, each used across all 4 leaf-bunch meshes' 2
+        // primitives plus the trunk - not one name per mesh/node):
+        //   "TreeBody"        - trunk, opaque, no alpha discard.
+        //   "leave"           - matches the grass field's own alphaTest
+        //                       (window.grassAlphaTest) exactly, per author.
+        //   "TreeLeaveBunch"  - a harder cutout than grass, NOT meant to
+        //                       match it (explicit author instruction).
         villageTreeModel.traverse(o => {
             if (!o.isMesh) return;
-            let isLeaf = false;
-            for (let p = o; p; p = p.parent) {
-                if (p.name && p.name.startsWith('TreeLeaveBunch')) { isLeaf = true; break; }
-            }
             const srcMats = Array.isArray(o.material) ? o.material : [o.material];
-            const newMats = srcMats.map(m => new THREE.MeshToonMaterial({
-                map: m && m.map ? m.map : null,
-                gradientMap: threeTone,
-                side: THREE.DoubleSide,
-                alphaTest: isLeaf ? 0.5 : 0,
-                transparent: false,
-            }));
+            const newMats = srcMats.map(m => {
+                const name = (m && m.name) || '';
+                let alphaTest = 0;
+                if (name === 'leave') alphaTest = window.grassAlphaTest;
+                else if (name === 'TreeLeaveBunch') alphaTest = 0.85;
+                return new THREE.MeshToonMaterial({
+                    map: m && m.map ? m.map : null,
+                    gradientMap: threeTone,
+                    side: THREE.DoubleSide,
+                    alphaTest,
+                    transparent: false,
+                });
+            });
             o.material = Array.isArray(o.material) ? newMats : newMats[0];
         });
         if (pendingVillageLevelBuild && villageScene) { pendingVillageLevelBuild = false; buildVillageLevel(); }
@@ -3553,12 +3557,17 @@ export function startGame(CharacterClass) {
             group.getWorldPosition(pos);
             group.getWorldQuaternion(quat);
             const rotY = new THREE.Euler().setFromQuaternion(quat, 'YXZ').y;
-            // Ground height: the group node's own origin is NOT at the
-            // trunk base (the whitebox "Cyl 6" cylinder sits offset within
-            // the group's local space, roughly centered on it) - the
-            // proxy's actual world-space bounding box min.y is the real
-            // ground contact point, which is what the new tree needs to
-            // sit at (using pos.y directly left every tree floating).
+
+            // Ground height: the whitebox placeholder's own real-world
+            // bounding-box min.y is exactly the height the level author
+            // already visually tuned this tree to sit at. A downward
+            // raycast (tried first, same technique the NPC placement below
+            // uses) turned out unreliable here - the village's own floor
+            // mesh has gaps it doesn't cover, so the ray shoots past
+            // everything down to the generic flat fallback ground plane at
+            // y=0, far below where these trees actually belong (confirmed
+            // via an on-screen debug dump: groundY was landing at 0.00
+            // against a proxy position around 4.5-4.7).
             const proxyBox = new THREE.Box3().setFromObject(group);
             const groundY = proxyBox.min.y;
 
@@ -3576,12 +3585,16 @@ export function startGame(CharacterClass) {
 
             const tree = villageTreeModel.clone(true);
             tree.rotation.y = rotY;
-            tree.updateMatrixWorld(true);
-            // Grounds the clone's own bounding-box base at groundY rather
-            // than trusting Tree.glb's export pivot to already sit at its
-            // own base.
-            const box = new THREE.Box3().setFromObject(tree);
-            tree.position.set(pos.x, groundY - box.min.y, pos.z);
+            // No bounding-box base offset here (an earlier attempt
+            // subtracted box.min.y to "ground" the model's own lowest
+            // point) - Tree.glb's own scene-root origin already sits
+            // essentially at its base (its local bounding-box minimum is
+            // only about -1.3 units below origin, read as the roots
+            // dipping slightly below the trunk's nominal base, which looks
+            // normal rather than "floating"). Subtracting that offset on
+            // top of groundY was adding an unwanted extra lift, which is
+            // what was actually causing the floating look.
+            tree.position.set(pos.x, groundY, pos.z);
             tree.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; collidables.push(c); } });
             levelGroup.add(tree);
         });
