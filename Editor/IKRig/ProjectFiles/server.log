@@ -1,0 +1,4 @@
+::1 - - [04/Aug/2026 13:13:48] "GET /game_js.js HTTP/1.1" 200 -
+::1 - - [04/Aug/2026 13:13:49] code 404, message File not found
+::1 - - [04/Aug/2026 13:13:49] "GET /favicon.ico HTTP/1.1" 404 -
+::1 - - [04/Aug/2026 13:14:48] "GET /sw.js HTTP/1.1" 304 -

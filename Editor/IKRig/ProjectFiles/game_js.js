@@ -894,7 +894,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_stairs";
+    let currentLevel = "local_village";
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -3458,6 +3458,12 @@ export function startGame(CharacterClass) {
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0;
 
+        // The loading overlay (see animate()) waits on window._cubesLoaded,
+        // which is normally only set by buildStairsLevel()'s loadCubesProp()
+        // call - this level has no such prop, so without this the overlay
+        // never hides and the game looks stuck at "Loading..." forever.
+        window._cubesLoaded = true;
+
         // Kicked off now (fire-and-forget) rather than only on first
         // Viewer-open, so window.compassIconDataUrl is normally already
         // there by the time the player's dialogue reaches the line that
@@ -4564,7 +4570,7 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_stairs'; currentLevel = select.value;
+        select.value = 'local_village'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
