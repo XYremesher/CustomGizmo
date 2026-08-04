@@ -151,17 +151,30 @@
         #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
         #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
         #hold-btn:active { background: rgba(50, 150, 255, 0.9); }
+        /* Debug-only visualization of the look-drag pointerdown handler's
+           corner exclusion zones (see the "UI" panel category's "Show Drag
+           Dead-Zone" checkbox) - a circle of radius 200 CENTERED ON the
+           exact screen corner (must match DRAG_DEADZONE_RADIUS in
+           game_js.js), so only on-screen for a quarter-circle bulging in
+           from each corner. To center a circle on a corner: the div is
+           2*radius square (400px) with the corner sitting at its middle,
+           so it's shifted outward by one full radius (-200px) on both the
+           horizontal and vertical side that point off-screen. */
+        .drag-deadzone { position: fixed; bottom: -200px; width: 400px; height: 400px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); pointer-events: none; z-index: 9; display: none; }
+        #drag-deadzone-left { left: -200px; }
+        #drag-deadzone-right { right: -200px; }
         #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
         
         #drop-btn { position: absolute; bottom: 145px; right: 195px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
         #throw-btn { position: absolute; bottom: 100px; right: 155px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
         #reset-cam-btn { position: absolute; bottom: 180px; left: 45px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 100, 255, 0.15); }
-        #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
+        /* Hidden by default (see window.punchButtonEnabled in game_js.js,
+           and the "UI" panel's "Show Punch Button" checkbox) - not part of
+           the default control set until the teaching levels actually
+           introduce the mechanic. */
+        #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
-
-        #compass-arrow { position: absolute; top: 14px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
-        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); pointer-events: none; z-index: 9; }
 
         .ledge-hint-container { position: absolute; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.2s; border-radius: 50%; overflow: hidden; }
         .ledge-hint-line { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; background: rgba(255, 0, 0, 0.2); transform: translateX(-50%); }
@@ -255,6 +268,27 @@
     <canvas id="gameCanvas"></canvas>
     <div id="fps-counter">FPS: --</div>
 
+    <!-- Notification toasts (quest received, etc.) - ported/simplified
+         from DungeonGame.html's sageToasts. addNotificationToast() in
+         game_js.js prepends here and auto-fades each one after a few
+         seconds. -->
+    <div id="notif-toasts" style="position:absolute; top:16px; right:16px; z-index:150; display:flex; flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none; max-width:260px;"></div>
+
+    <!-- Village NPC dialogue box - old-game-style typewriter text, tap to
+         advance once the ▼ "continue" marker shows (see
+         startVillageDialogue/updateVillageDialogueTypewriter in
+         game_js.js). Tap/hold while still typing speeds up the reveal
+         instead of advancing. -->
+    <div id="dialogue-box" style="display:none; position:absolute; left:50%; bottom:40px; transform:translateX(-50%); width:88%; max-width:640px; min-height:70px; background:rgba(12,12,18,0.92); border:2px solid rgba(255,255,255,0.25); border-radius:10px; padding:18px 22px; color:#fff; font-family:sans-serif; font-size:17px; line-height:1.5; z-index:200; touch-action:none; cursor:pointer; box-sizing:border-box;">
+        <span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span>
+    </div>
+    <style>
+        @keyframes dialogue-continue-bounce {
+            0%, 100% { transform: translateY(0); opacity: 1; }
+            50% { transform: translateY(4px); opacity: 0.5; }
+        }
+    </style>
+
     <div id="stamina-container"><div id="stamina-bar"></div></div>
     <button id="hud-connect-btn">
         <img id="hud-connect-icon" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Multiplayer/ConnectIcon.png" alt="Connect">
@@ -267,6 +301,23 @@
     <button id="fullscreen-btn" title="Level Editor">
         <svg id="fullscreen-icon" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
     </button>
+    <button id="viewer-btn" title="Compendium" style="position:absolute; top:95px; right:10px; width:34px; height:34px; padding:0; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3); border-radius:4px; cursor:pointer; z-index:100; display:flex; align-items:center; justify-content:center;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.5 20c0-4 3.5-6.5 7.5-6.5s7.5 2.5 7.5 6.5"></path></svg>
+    </button>
+
+    <!-- Player compendium/viewer - a minimal, single-entry port of
+         DungeonGame.html's Viewer (that script shows a whole bestiary via
+         category tabs + prev/next; this only ever shows the Player, so
+         all of that navigation chrome is left out on purpose). Own
+         renderer/scene/camera - see Viewer.init() in game_js.js. -->
+    <div id="player-viewer-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background:#1a252c;">
+        <div id="viewer-container" style="width:100%; height:100%;"></div>
+        <button id="close-viewer-btn" style="position:absolute; top:14px; right:14px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.3); background:rgba(0,0,0,0.5); color:white; font-size:16px; cursor:pointer;">×</button>
+        <div style="position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:280px; background:rgba(28,28,30,0.95); border:1px solid #3a3a3c; border-bottom:none; border-radius:12px 12px 0 0; padding:12px 15px; text-align:center; color:#eee; font-family:sans-serif; box-sizing:border-box;">
+            <div style="font-size:11px; font-weight:800; color:#3b82f6; text-transform:uppercase; letter-spacing:2px; margin-bottom:4px;">Player</div>
+            <div style="font-size:13px; color:#d1d1d6;">Drag to rotate.</div>
+        </div>
+    </div>
 
     <!-- Standalone Level Editor toolbar - separate from the collapsible
          #ui debug panel entirely (that panel isn't practically reachable
@@ -527,6 +578,21 @@
             </div>
 
             <div class="category">
+                <div class="category-header">UI</div>
+                <div class="category-content">
+                    <!-- Elements hidden from the default control set (see
+                         ClimbGame.html #base-right/#build-btn and their
+                         wiring in game_js.js) - both off by default here
+                         too, matching how the game actually ships; these
+                         just make them reachable again for testing. -->
+                    <label><input type="checkbox" id="toggle-camera-joystick"> Show Camera Joystick</label><br>
+                    <label><input type="checkbox" id="toggle-build-btn"> Show Build (B) Button</label><br>
+                    <label><input type="checkbox" id="toggle-punch-btn"> Show Punch Button</label><br>
+                    <label><input type="checkbox" id="toggle-drag-deadzone"> Show Drag Dead-Zone (matte overlay)</label><br>
+                </div>
+            </div>
+
+            <div class="category">
                 <div class="category-header">Level Editor</div>
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-editor-mode"> Enable Editor Mode</label><br>
@@ -556,8 +622,7 @@
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
-                    <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label><br>
-                    <label><input type="checkbox" id="toggle-compass-2d"> Compass (2D arrow)</label>
+                    <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label>
                 </div>
             </div>
 
@@ -670,8 +735,6 @@
             <button id="btn-close-json">Close</button>
         </div>
     </div>
-    <div id="compass-backdrop"></div>
-    <img id="compass-arrow" src="https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/CompassArrow.png" alt="">
     <div id="jump-btn">JUMP</div>
     <div id="build-btn">B</div>
     <div id="hold-btn">HOLD</div>
@@ -708,6 +771,8 @@
     <div id="base-right" class="joystick-base">
         <div id="stick-right" class="joystick-stick"></div>
     </div>
+    <div id="drag-deadzone-left" class="drag-deadzone"></div>
+    <div id="drag-deadzone-right" class="drag-deadzone"></div>
 
     <script type="importmap">
     {
@@ -1496,6 +1561,7 @@
 
         const punchBtn = document.getElementById('punch-btn');
         punchBtn.addEventListener('pointerdown', (e) => {
+            if (window.dialogueInputLocked) return;
             if (!window.combat || window.combat.char.isRagdoll || window.combat.char.isStandingUp) return;
             e.preventDefault();
             isChargingPunch = false;

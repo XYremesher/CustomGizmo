@@ -9,6 +9,7 @@ import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // LevelEditor is loaded lazily (see ensureLevelEditorLoaded below), NOT
 // imported statically here - a top-level import is fetched/parsed before
 // any game code runs at all, so every player paid that cost even though
@@ -429,12 +430,10 @@ export function startGame(CharacterClass) {
     // lookAt() every frame to point at the level's exit (the star). Full 3D
     // rotation, not a flat screen icon - it tilts up/down and spins left/
     // right together, on whatever combined axis actually points at the
-    // target. Toggled independently from the flat 2D arrow below
-    // (window.compass3DEnabled/compass2DEnabled, see the panel checkboxes)
-    // - 3D on, 2D off by default (matches the checkboxes' own default
-    // checked state in the HTML).
+    // target. (There used to be a flat 2D screen-space arrow alongside
+    // this, projected from the same needle - removed outright per request,
+    // not just defaulted off.)
     window.compass3DEnabled = true;
-    window.compass2DEnabled = false;
     // Positioned in world space every frame (see the main loop) rather
     // than parented to the camera: still uses the camera's full local
     // offset (so it stays roughly centered in view exactly like before,
@@ -510,17 +509,6 @@ export function startGame(CharacterClass) {
     // visually sinking into the ground on a steep downward camera pitch.
     const COMPASS_MIN_FLOOR_CLEARANCE = 1.2;
     const _compassOffset = new THREE.Vector3();
-
-    // 2D arrow, kept in sync with the 3D needle above instead of computed
-    // independently: projects the needle's own tip (its "front") and its
-    // own center (its "back") to screen pixels, and points the flat icon
-    // along that on-screen delta. Both points stay near the camera
-    // regardless of which way the needle is currently facing (only its
-    // *rotation*, inherited from its own lookAt(), carries the "which way"
-    // information) so this never nears the divide-by-near-zero-w blowup a
-    // directly-projected far-away/behind target hits.
-    const _compassFront = new THREE.Vector3();
-    const _compassBack = new THREE.Vector3();
 
     // Orthographic camera test, toggled from the settings panel - all the
     // existing follow/orbit/raycast/billboard logic below keeps driving the
@@ -1583,6 +1571,26 @@ export function startGame(CharacterClass) {
     levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
         levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
             onLevelGlbLoaded, undefined, (e) => console.error('Level.glb load failed:', e));
+    });
+
+    // Village level (buildVillageLevel) - same "single authored whitebox
+    // model" pattern as Level.glb above. Original source lives at
+    // Levels/Proxy/Village.glb (outside this folder, so the dev server
+    // can't reach it directly) - copied into VillageModel/ alongside this
+    // file, the same way LevelModel/Level.glb is a local copy kept next to
+    // the FBX clips. No Draco compression on this one (checked the raw
+    // glb JSON chunk - only KHR_materials_specular/unlit), so a plain
+    // GLTFLoader is enough, no DRACOLoader needed.
+    let villageScene = null;
+    let pendingVillageLevelBuild = false;
+    const villageLoader = new GLTFLoader();
+    const onVillageLoaded = (gltf) => {
+        villageScene = gltf.scene;
+        if (pendingVillageLevelBuild) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+    };
+    villageLoader.load('VillageModel/Village.glb', onVillageLoaded, undefined, () => {
+        villageLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Village.glb',
+            onVillageLoaded, undefined, (e) => console.error('Village.glb load failed:', e));
     });
 
     function spawnTestKeyAndLock() {
@@ -3088,6 +3096,389 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // ---- Village level: NPC, speech bubble, first quest ----
+    // villageNpcAvatar is a RemoteAvatar (same idle-animated player-model
+    // clone class used for aiBot/companion) rather than a bespoke mesh -
+    // "just like the enemy or companion" per request.
+    let villageNpcAvatar = null;
+    let villageNpcBubble = null;
+    let villageQuestGiven = false;
+    let villageDialogueActive = false;
+    let villageDialogueLineIndex = 0;
+    let villageTypewriterProgress = 0;
+    let villageTypewriterDone = false;
+    let villageDialogueFastForward = false;
+    const VILLAGE_DIALOGUE_LINES = [
+        'Dinle beni.',
+        'Çırağım, dün ormana gitti ama hala dönmedi.',
+        'Pusulasını da yanına almamış.',
+        'Eğer onu bulabilirsen, köye geri getirebilir misin?',
+        'Lütfen, lütfen onu geri getir.',
+    ];
+    const VILLAGE_TYPEWRITER_CPS = 28; // base characters/second
+    const VILLAGE_TYPEWRITER_FAST_MULT = 3; // while tap/hold-forwarding
+    const VILLAGE_NPC_TALK_RADIUS = 2.5;
+
+    // Small canvas speech-bubble sprite (rounded rect + tail), always
+    // facing the camera like makeTextSprite's labels - raycast disabled
+    // for the same reason those are: without it, this bubble (a child of
+    // the NPC, which IS a collidable) could be the closest hit instead of
+    // the NPC's actual body when a ray sweeps past its height.
+    function createSpeechBubbleSprite(text) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 256; canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+        ctx.lineWidth = 4;
+        const r = 20, w = 236, h = 84, x = 10, y = 10;
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2 - 14, y + h);
+        ctx.lineTo(canvas.width / 2, y + h + 20);
+        ctx.lineTo(canvas.width / 2 + 14, y + h);
+        ctx.closePath();
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = '#222';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(text, canvas.width / 2, y + h / 2);
+        const texture = new THREE.CanvasTexture(canvas);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
+        sprite.scale.set(2.0, 1.0, 1);
+        sprite.raycast = () => {};
+        return sprite;
+    }
+
+    // Simplified port of DungeonGame.html's sageToasts/addSageToast -
+    // prepends a toast into #notif-toasts (top-right) and auto-fades it
+    // after a few seconds. No manual-dismiss/history panel like that
+    // script's version had - just enough to surface "quest received"
+    // style events without a popup blocking play.
+    function addNotificationToast(text, iconUrl) {
+        const container = document.getElementById('notif-toasts');
+        if (!container) return;
+        const el = document.createElement('div');
+        el.style.cssText = 'background:rgba(20,20,20,0.88); color:#ffffe0; border-right:3px solid #8e44ad; border-radius:6px; padding:8px 12px; font-size:13px; font-family:monospace; box-shadow:0 4px 10px rgba(0,0,0,0.5); opacity:1; transition:opacity 0.6s; text-align:right; display:flex; align-items:center; gap:8px;';
+        if (iconUrl) {
+            const img = document.createElement('img');
+            img.src = iconUrl;
+            img.style.cssText = 'width:28px; height:28px; flex:0 0 auto;';
+            el.appendChild(img);
+        }
+        const label = document.createElement('span');
+        label.textContent = text;
+        el.appendChild(label);
+        container.prepend(el);
+        while (container.children.length > 5) container.removeChild(container.lastChild);
+        setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 700); }, 5000);
+    }
+
+    // ---- Player compendium / Viewer ----
+    // Minimal single-entry port of DungeonGame.html's Viewer - that script
+    // shows a whole bestiary via category tabs + prev/next; this only ever
+    // shows the Player, so all of that navigation chrome is left out.
+    // Own scene/camera/renderer/OrbitControls, loading a completely
+    // separate, fresh copy of the player's own model (StickMan.fbx) rather
+    // than cloning the live character - the live one is a currently-
+    // animating rig, and a plain Object3D.clone() doesn't correctly
+    // rebind SkinnedMesh bones, so a second independent load sidesteps
+    // that entirely for what's just a static rotate-and-look display.
+    // Lazy-loaded (mirrors ensureLevelEditorLoaded's own reasoning): most
+    // players never open this, so the extra FBX fetch + renderer/scene
+    // setup only happens the first time the button is actually clicked.
+    const Viewer = { scene: null, camera: null, renderer: null, controls: null, active: false, playerModel: null, loaded: false, mixer: null, clock: new THREE.Clock() };
+    function ensureViewerLoaded() {
+        if (Viewer.loaded) return;
+        Viewer.loaded = true;
+        Viewer.scene = new THREE.Scene();
+        Viewer.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        Viewer.camera.position.set(2.5, 2.0, 5.0);
+        // alpha:true + zero clear color, no scene.background - lets the
+        // modal's own dark CSS background show through, and (just as
+        // usefully) keeps generatePlayerIcon's render below transparent
+        // without having to toggle scene.background on and off around it.
+        Viewer.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        Viewer.renderer.setClearColor(0x000000, 0);
+        Viewer.renderer.setSize(window.innerWidth, window.innerHeight);
+        Viewer.renderer.shadowMap.enabled = true;
+        document.getElementById('viewer-container').appendChild(Viewer.renderer.domElement);
+        Viewer.controls = new OrbitControls(Viewer.camera, Viewer.renderer.domElement);
+        Viewer.controls.enableDamping = true;
+        Viewer.controls.target.set(0, 0.9, 0);
+        Viewer.scene.add(new THREE.HemisphereLight(0xddeeff, 0x202020, 1.2));
+        const viewerLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        viewerLight.position.set(2, 4, 2);
+        Viewer.scene.add(viewerLight);
+        const viewerFloor = new THREE.Mesh(new THREE.CircleGeometry(2, 32), new THREE.ShadowMaterial({ opacity: 0.3 }));
+        viewerFloor.rotation.x = -Math.PI / 2;
+        Viewer.scene.add(viewerFloor);
+
+        const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+        new FBXLoader().load(baseUrl + 'StickMan.fbx', (object) => {
+            object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
+            object.traverse(child => {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
+                    child.castShadow = true; child.receiveShadow = true;
+                }
+            });
+            Viewer.scene.add(object);
+            Viewer.playerModel = object;
+            generatePlayerIcon();
+            // Idle, not the raw T-pose - same Idle.fbx clip the real
+            // character/companion/aiBot all use, just this model's own
+            // independent mixer (ticked in Viewer.render below, called
+            // from animate()'s Viewer.active branch).
+            new FBXLoader().load(baseUrl + 'Idle.fbx', (animObj) => {
+                if (!animObj.animations.length) return;
+                Viewer.mixer = new THREE.AnimationMixer(object);
+                Viewer.mixer.clipAction(animObj.animations[0]).play();
+            });
+        });
+    }
+    // Same idea as DungeonGame.html's generateIcons(): render the model to
+    // a small offscreen canvas from a flattering angle, once, and keep the
+    // resulting data URL around for anywhere a small player icon is
+    // useful (right now: the quest toast). Renders Viewer.scene directly
+    // (the same one the modal itself displays) through a separate small
+    // renderer/camera, rather than cloning the model into a throwaway
+    // scene - sidesteps any SkinnedMesh clone/rebind concerns entirely
+    // since nothing is actually cloned.
+    function generatePlayerIcon() {
+        if (!Viewer.scene) return;
+        const iconRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        iconRenderer.setSize(96, 96);
+        iconRenderer.setClearColor(0x000000, 0);
+        const iconCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
+        iconCamera.position.set(2.2, 1.8, 4.2);
+        iconCamera.lookAt(0, 0.9, 0);
+        iconRenderer.render(Viewer.scene, iconCamera);
+        window.playerIconDataUrl = iconRenderer.domElement.toDataURL('image/png');
+        iconRenderer.dispose();
+    }
+    function openViewer() {
+        ensureViewerLoaded();
+        Viewer.active = true;
+        document.getElementById('player-viewer-modal').style.display = 'block';
+    }
+    function closeViewer() {
+        Viewer.active = false;
+        document.getElementById('player-viewer-modal').style.display = 'none';
+    }
+    const viewerBtnEl = document.getElementById('viewer-btn');
+    if (viewerBtnEl) viewerBtnEl.addEventListener('click', openViewer);
+    const closeViewerBtnEl = document.getElementById('close-viewer-btn');
+    if (closeViewerBtnEl) closeViewerBtnEl.addEventListener('click', (e) => { e.stopPropagation(); closeViewer(); });
+
+    function buildVillageLevel() {
+        if (!villageScene) { pendingVillageLevelBuild = true; return; }
+        while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
+        projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
+        carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
+        carryables.length = 0;
+        nextCarryNetId = 0;
+        debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
+        collidables.length = 0;
+
+        // Unlike Level 2/Water Test, this whitebox's own floor blocks sit
+        // well above y=0 in most places - the generic grass ground plane
+        // (left visible, buildLevel()'s own default) shows through the
+        // gaps around/under them instead of clashing, and gives the level
+        // a green world to stand in rather than the stark empty backdrop
+        // it had while this was hidden.
+
+        villageScene.traverse(o => {
+            if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; collidables.push(o); }
+        });
+        levelGroup.add(villageScene);
+        villageScene.updateMatrixWorld(true);
+
+        // Spawn: this whitebox has no dedicated "Empty" spawn marker yet
+        // (see buildLevelFromGlb's startNode convention above) - it's a
+        // first-pass proxy per the author's own note, so a fixed point
+        // just above the first path block stands in for now.
+        char.group.position.set(0, 4.5, -6);
+        char.group.rotation.y = Math.PI;
+        // window.compassTarget is already reset to null by buildLevel()'s
+        // shared per-level reset above - re-armed once the quest is given.
+
+        // NPC - a RemoteAvatar (idle-animated player-model clone), same
+        // class aiBot/companion use, not a bespoke placeholder mesh. Not
+        // pushed into `collidables` either, matching that same precedent
+        // (aiBot/companion are purely visual - the player walks through
+        // them, no physical blocking).
+        villageNpcAvatar = new RemoteAvatar(scene, threeTone, 'village-npc-quest-giver');
+        // Somewhere between spawn and the village's own central "Torus_5"
+        // prop (t=0.3 - close enough to spawn for a quick first walk-up,
+        // but clearly placed toward the torus, not right on top of spawn).
+        // RemoteAvatar has no gravity/ground-snap of its own (unlike the
+        // player), so a flat guessed Y left it floating - a real downward
+        // raycast against the just-populated `collidables` finds the
+        // actual ground height at that XZ instead.
+        let villageTorusNode = null;
+        villageScene.traverse(o => { if (o.name === 'Torus_5') villageTorusNode = o; });
+        const npcSpawnRef = new THREE.Vector3(0, 4.5, -6);
+        let npcX = 2.5, npcZ = -14;
+        if (villageTorusNode) {
+            const torusPos = new THREE.Vector3();
+            villageTorusNode.getWorldPosition(torusPos);
+            npcX = THREE.MathUtils.lerp(npcSpawnRef.x, torusPos.x, 0.3);
+            npcZ = THREE.MathUtils.lerp(npcSpawnRef.z, torusPos.z, 0.3);
+        }
+        const npcGroundRay = new THREE.Raycaster(new THREE.Vector3(npcX, 200, npcZ), new THREE.Vector3(0, -1, 0));
+        const npcGroundHits = npcGroundRay.intersectObjects(collidables, false);
+        const npcGroundY = npcGroundHits.length > 0 ? npcGroundHits[0].point.y : npcSpawnRef.y;
+        villageNpcAvatar.group.position.set(npcX, npcGroundY, npcZ);
+        // Faces the player's spawn point by default (not just during
+        // dialogue, which re-aims it anyway once triggered).
+        const npcToPlayer = new THREE.Vector3(npcSpawnRef.x - npcX, 0, npcSpawnRef.z - npcZ);
+        villageNpcAvatar.group.rotation.y = Math.atan2(npcToPlayer.x, npcToPlayer.z);
+
+        villageNpcBubble = createSpeechBubbleSprite('Hey!');
+        villageNpcBubble.position.set(0, 2.4, 0);
+        villageNpcAvatar.group.add(villageNpcBubble);
+        villageQuestGiven = false;
+        villageDialogueActive = false;
+
+        // Forest entrance = midpoint between the two named tree-cluster
+        // entities the modeler placed in the whitebox ("Entity 2" and
+        // "treeGroup 15" - both literal groups of trees flanking the
+        // approach, per the file's own naming). Computed from their real
+        // loaded world positions rather than hardcoded, so this stays
+        // correct if the model is reworked later.
+        // GLTFLoader sanitizes node names on load (spaces -> underscores,
+        // and de-dupes any repeated raw name with a numeric suffix) - the
+        // source file's "Entity 2"/"treeGroup 15" come through as
+        // "Entity_2"/"treeGroup_15" (confirmed by traversing the actually-
+        // loaded scene, not just reading the raw glb's JSON chunk).
+        let treeGroupA = null, treeGroupB = null;
+        villageScene.traverse(o => {
+            if (o.name === 'Entity_2') treeGroupA = o;
+            else if (o.name && o.name.startsWith('treeGroup')) treeGroupB = o;
+        });
+        if (treeGroupA && treeGroupB) {
+            const posA = new THREE.Vector3(), posB = new THREE.Vector3();
+            treeGroupA.getWorldPosition(posA);
+            treeGroupB.getWorldPosition(posB);
+            window.villageForestEntrance = new THREE.Vector3((posA.x + posB.x) / 2, 0, (posA.z + posB.z) / 2);
+            // Visible marker at the entrance itself (not just the
+            // compass) - a soft glowing pillar plus a text label, so
+            // arriving there reads as "this is the spot" on its own.
+            const markerMat = new THREE.MeshBasicMaterial({ color: 0xffcc55, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+            const marker = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 6, 16, 1, true), markerMat);
+            marker.position.copy(window.villageForestEntrance);
+            marker.position.y += 3;
+            levelGroup.add(marker);
+            const label = makeTextSprite('Orman Girişi', 2.2);
+            label.position.copy(window.villageForestEntrance);
+            label.position.y += 6.5;
+            levelGroup.add(label);
+        } else {
+            window.villageForestEntrance = null;
+        }
+    }
+
+    // ---- Village NPC dialogue ----
+    // Starts once the player gets close enough (see the proximity check in
+    // animate()) - locks movement/jump/punch input (window.dialogueInputLocked,
+    // checked at the few real input sources: rawX/rawY, handleJump, the
+    // punch button), swings the camera to a fixed two-shot framing instead
+    // of the normal follow-cam, and steps through VILLAGE_DIALOGUE_LINES
+    // one at a time with an old-game-style typewriter reveal.
+    const dialogueBoxEl2 = document.getElementById('dialogue-box');
+    const dialogueTextEl = document.getElementById('dialogue-text');
+    const dialogueContinueEl = document.getElementById('dialogue-continue');
+    function startVillageDialogue() {
+        villageDialogueActive = true;
+        window.dialogueInputLocked = true;
+        villageDialogueLineIndex = 0;
+        villageTypewriterProgress = 0;
+        villageTypewriterDone = false;
+        villageDialogueFastForward = false;
+        if (villageNpcBubble) villageNpcBubble.visible = false;
+        if (dialogueTextEl) dialogueTextEl.textContent = '';
+        if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
+        if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'block';
+        // Clears the joysticks/buttons out from under your hands during
+        // the conversation - same helper the editor toggle already uses.
+        setGameControlsVisible(false);
+
+        // Snap player + NPC to face each other, and compute the two-shot
+        // camera framing once up front (not recomputed every frame) - it's
+        // then just eased toward smoothly below, the same way the normal
+        // follow-cam already lerps every frame.
+        const toNpc = new THREE.Vector3().subVectors(villageNpcAvatar.group.position, char.group.position);
+        toNpc.y = 0;
+        const dist = Math.max(0.5, toNpc.length());
+        toNpc.normalize();
+        char.group.rotation.y = Math.atan2(toNpc.x, toNpc.z);
+        villageNpcAvatar.group.rotation.y = Math.atan2(-toNpc.x, -toNpc.z);
+        const mid = new THREE.Vector3().addVectors(char.group.position, villageNpcAvatar.group.position).multiplyScalar(0.5);
+        const perp = new THREE.Vector3(-toNpc.z, 0, toNpc.x);
+        window._dialogueCamTarget = mid.clone().add(new THREE.Vector3(0, 1.3, 0));
+        window._dialogueCamPos = mid.clone().add(perp.multiplyScalar(Math.max(2.2, dist * 0.9))).add(new THREE.Vector3(0, 1.6, 0));
+    }
+    function updateVillageDialogueTypewriter(delta) {
+        if (villageTypewriterDone) return;
+        const rate = VILLAGE_TYPEWRITER_CPS * (villageDialogueFastForward ? VILLAGE_TYPEWRITER_FAST_MULT : 1);
+        villageTypewriterProgress += rate * delta;
+        const line = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex];
+        const shown = Math.min(line.length, Math.floor(villageTypewriterProgress));
+        if (dialogueTextEl) dialogueTextEl.textContent = line.slice(0, shown);
+        if (shown >= line.length) {
+            villageTypewriterDone = true;
+            if (dialogueContinueEl) dialogueContinueEl.style.display = 'inline-block';
+        }
+    }
+    function advanceVillageDialogueLine() {
+        villageDialogueLineIndex++;
+        if (villageDialogueLineIndex >= VILLAGE_DIALOGUE_LINES.length) {
+            endVillageDialogue();
+        } else {
+            villageTypewriterProgress = 0;
+            villageTypewriterDone = false;
+            if (dialogueTextEl) dialogueTextEl.textContent = '';
+            if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
+        }
+    }
+    function endVillageDialogue() {
+        villageDialogueActive = false;
+        window.dialogueInputLocked = false;
+        if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'none';
+        setGameControlsVisible(true);
+        window._dialogueCamPos = null;
+        window._dialogueCamTarget = null;
+        if (!villageQuestGiven) {
+            villageQuestGiven = true;
+            // window.playerIconDataUrl only exists once the Viewer has been
+            // opened at least once (lazy-loaded) - undefined is fine here,
+            // the toast just shows text-only until then.
+            addNotificationToast('New Quest: The Lost Apprentice', window.playerIconDataUrl);
+            if (window.villageForestEntrance) window.compassTarget = window.villageForestEntrance;
+        }
+    }
+    if (dialogueBoxEl2) {
+        dialogueBoxEl2.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            if (!villageDialogueActive) return;
+            if (villageTypewriterDone) advanceVillageDialogueLine();
+            else villageDialogueFastForward = true;
+        });
+        const stopFastForward = () => { villageDialogueFastForward = false; };
+        dialogueBoxEl2.addEventListener('pointerup', stopFastForward);
+        dialogueBoxEl2.addEventListener('pointercancel', stopFastForward);
+        dialogueBoxEl2.addEventListener('pointerleave', stopFastForward);
+    }
+
     function addCarryableDebugHelper(c) {
         let helperGeo;
         if (c.mesh.geometry && c.mesh.geometry.type === 'SphereGeometry') helperGeo = new THREE.SphereGeometry(0.5, 8, 8);
@@ -3823,12 +4214,26 @@ export function startGame(CharacterClass) {
         // stale entries here would otherwise point at Object3Ds this same
         // levelGroup.remove() loop above just detached from the scene.
         waterMeshSyncs.length = 0;
+        // Same idea for the village level's NPC/quest/dialogue state -
+        // without disposing it, switching away still left villageNpcAvatar
+        // (and its group, added directly to `scene` by RemoteAvatar's own
+        // constructor - NOT levelGroup, so the levelGroup.remove() loop
+        // above never touches it) alive and visible in totally unrelated
+        // levels, and the proximity check kept comparing against its last
+        // position forever.
+        if (villageNpcAvatar) { villageNpcAvatar.dispose(); villageNpcAvatar = null; }
+        villageDialogueActive = false;
+        window.dialogueInputLocked = false;
+        window.compassTarget = null;
+        const dialogueBoxEl = document.getElementById('dialogue-box');
+        if (dialogueBoxEl) dialogueBoxEl.style.display = 'none';
 
         if (currentLevel === "local_blank") buildBlankLevel();
         else if (currentLevel === "local_stairs") buildStairsLevel();
         else if (currentLevel === "local_glb") buildLevelFromGlb();
         else if (currentLevel === "local_water") buildWaterTestLevel();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
+        else if (currentLevel === "local_village") buildVillageLevel();
         else {
             try {
                 if (currentLevel.endsWith('.js')) {
@@ -3862,7 +4267,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -3990,8 +4395,12 @@ export function startGame(CharacterClass) {
     const carryBtn = document.getElementById('carry-btn');
     const dropBtn = document.getElementById('drop-btn');
     const throwBtn = document.getElementById('throw-btn');
-    const compassArrowEl = document.getElementById('compass-arrow');
-    const compassBackdropEl = document.getElementById('compass-backdrop');
+    // Punch's own click/charge handling lives in ClimbGame.html (tied to
+    // the Character class), but its on-screen visibility is driven from
+    // here since that's where isLedgeGrabbing/isCarryingObj are already
+    // read every frame for the hold/carry buttons - see the per-frame
+    // update below.
+    const punchBtnEl = document.getElementById('punch-btn');
 
     const pickupStartPos = new THREE.Vector3();
     const pickupStartRot = new THREE.Quaternion();
@@ -4828,6 +5237,7 @@ export function startGame(CharacterClass) {
 
 
     function handleJump() {
+        if (window.dialogueInputLocked) return;
         if (char.isRagdoll || char.isStandingUp || isSlipping || isClimbingUp) return;
         if (isHoldingMovable) {
             isHoldingMovable = false; heldBox = null; holdBtn.innerText = 'HOLD';
@@ -4955,8 +5365,15 @@ export function startGame(CharacterClass) {
     let lookPointerId = null, lX, lY;
     window.addEventListener('pointerdown', e => {
         if (lookPointerId !== null) return;   // one look finger at a time
-        if (e.clientX < 200 && e.clientY > window.innerHeight - 200) return;
-        if (e.clientX > window.innerWidth - 200 && e.clientY > window.innerHeight - 200) return;
+        // Circular (not square) exclusion around each bottom corner - same
+        // 200px reach along both edges as the old square check, just
+        // rounded off along the diagonal instead of blocking a full corner
+        // rectangle. Radius must match DRAG_DEADZONE_RADIUS in ClimbGame.html
+        // (the "Show Drag Dead-Zone" debug overlay) exactly, or the overlay
+        // would show a boundary that isn't the real one.
+        const DRAG_DEADZONE_RADIUS = 200;
+        if (Math.hypot(e.clientX, e.clientY - window.innerHeight) < DRAG_DEADZONE_RADIUS) return;
+        if (Math.hypot(e.clientX - window.innerWidth, e.clientY - window.innerHeight) < DRAG_DEADZONE_RADIUS) return;
         if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { lookPointerId = e.pointerId; lX=e.clientX; lY=e.clientY; }
     });
     window.addEventListener('pointermove', e => { if (e.pointerId === lookPointerId) { const s = 0.005 * window.dragRotateSensitivity; cameraTheta -= (e.clientX-lX)*s; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*s)); lX=e.clientX; lY=e.clientY; } });
@@ -5141,6 +5558,45 @@ export function startGame(CharacterClass) {
     });
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
+    });
+    // ---- UI panel: re-enable elements hidden from the default control set ----
+    // Both start unchecked/off, matching how the game actually ships - these
+    // exist purely so the elements can be brought back for testing without
+    // digging into code (see the "UI" debug panel category in ClimbGame.html).
+    const toggleCameraJoystickEl = document.getElementById('toggle-camera-joystick');
+    if (toggleCameraJoystickEl) toggleCameraJoystickEl.addEventListener('change', e => {
+        window.cameraJoystickEnabled = e.target.checked;
+        const el = document.getElementById('base-right');
+        if (el) el.style.display = e.target.checked ? 'flex' : 'none';
+    });
+    window.buildButtonEnabled = false;
+    const toggleBuildBtnEl = document.getElementById('toggle-build-btn');
+    if (toggleBuildBtnEl) toggleBuildBtnEl.addEventListener('change', e => {
+        window.buildButtonEnabled = e.target.checked;
+        const el = document.getElementById('build-btn');
+        if (el) el.style.display = e.target.checked ? 'flex' : 'none';
+    });
+    // Punch's own visibility is recomputed every frame (see punchBtnEl's
+    // per-frame update, gated on carry/ledge state) rather than set once
+    // here - this checkbox just flips the master on/off flag that gate
+    // also checks, it doesn't touch style directly (the per-frame update
+    // would immediately overwrite a direct set here anyway).
+    window.punchButtonEnabled = false;
+    const togglePunchBtnEl = document.getElementById('toggle-punch-btn');
+    if (togglePunchBtnEl) togglePunchBtnEl.addEventListener('change', e => { window.punchButtonEnabled = e.target.checked; });
+    // Visualizes the two screen corners the look-drag pointerdown handler
+    // (see lookPointerId above) deliberately ignores, so a thumb reaching
+    // for the joystick/action buttons can't accidentally start rotating the
+    // camera instead - purely a debug overlay (pointer-events: none, doesn't
+    // change the actual dead-zone logic) so it can be seen during UX testing
+    // without guessing the numbers.
+    window.showDragDeadZone = false;
+    const toggleDragDeadZoneEl = document.getElementById('toggle-drag-deadzone');
+    if (toggleDragDeadZoneEl) toggleDragDeadZoneEl.addEventListener('change', e => {
+        window.showDragDeadZone = e.target.checked;
+        const display = e.target.checked ? 'block' : 'none';
+        const l = document.getElementById('drag-deadzone-left'); if (l) l.style.display = display;
+        const r = document.getElementById('drag-deadzone-right'); if (r) r.style.display = display;
     });
 
     // Reverse of the follow-cam formula a few hundred lines down
@@ -5882,9 +6338,6 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-compass-3d').addEventListener('change', e => {
         window.compass3DEnabled = e.target.checked;
     });
-    document.getElementById('toggle-compass-2d').addEventListener('change', e => {
-        window.compass2DEnabled = e.target.checked;
-    });
 
     document.getElementById('key-scale-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -6009,6 +6462,17 @@ export function startGame(CharacterClass) {
 
     function animate() {
         requestAnimationFrame(animate);
+        // Viewer modal owns its own scene/camera/renderer entirely - while
+        // open, render only that and skip the whole game update below
+        // (same "one or the other, not both" exclusivity as editor mode's
+        // own early return further down, just checked first since Viewer
+        // can be opened regardless of editor state).
+        if (Viewer.active) {
+            Viewer.controls.update();
+            if (Viewer.mixer) Viewer.mixer.update(Viewer.clock.getDelta());
+            Viewer.renderer.render(Viewer.scene, Viewer.camera);
+            return;
+        }
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
         // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
@@ -6990,8 +7454,12 @@ export function startGame(CharacterClass) {
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
         dirLight.target.position.copy(lightTrack);
 
-        const rawX = Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0));
-        const rawY = Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0));
+        // window.dialogueInputLocked (see the village NPC dialogue) forces
+        // both raw axes to 0 regardless of source - one gate here covers
+        // joystick AND keyboard at once, since this is the single point
+        // both funnel through before becoming actual movement.
+        const rawX = window.dialogueInputLocked ? 0 : (Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0)));
+        const rawY = window.dialogueInputLocked ? 0 : (Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0)));
         const rawMag = Math.min(Math.sqrt(rawX*rawX + rawY*rawY), 1.0);
         // Keyboard input is inherently binary (a key is either down or not -
         // W alone gives exactly moveMag 1.0, always landing in the 'run'
@@ -8005,6 +8473,30 @@ export function startGame(CharacterClass) {
                 holdBtn.style.display = isHoldingMovable ? 'flex' : 'none';
                 carryBtn.style.display = 'none';
             }
+            // Punch doesn't make sense with your hands full (carrying, or
+            // mid carry-start/drop transition) or while hanging on a ledge -
+            // hide the button entirely rather than just letting a press
+            // silently do nothing. Also gated on window.punchButtonEnabled
+            // (default false - see the "UI" panel's "Show Punch Button"
+            // checkbox), since it's not part of the default control set
+            // until a teaching level actually introduces the mechanic.
+            if (punchBtnEl) punchBtnEl.style.display = (window.punchButtonEnabled && !isLedgeGrabbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping) ? 'flex' : 'none';
+
+            // Village NPC proximity trigger - only relevant while that
+            // level's NPC actually exists (villageNpcAvatar is null on
+            // every other level). Approaching STARTS the dialogue (see
+            // startVillageDialogue) rather than giving the quest directly -
+            // villageQuestGiven only latches true once the dialogue
+            // actually finishes (see endVillageDialogue), so walking away
+            // and back mid-conversation can't retrigger it, and finishing
+            // it once is enough to never show it again.
+            if (villageNpcAvatar && !villageQuestGiven && !villageDialogueActive) {
+                const ndx = char.group.position.x - villageNpcAvatar.group.position.x;
+                const ndz = char.group.position.z - villageNpcAvatar.group.position.z;
+                if (ndx * ndx + ndz * ndz < VILLAGE_NPC_TALK_RADIUS * VILLAGE_NPC_TALK_RADIUS) startVillageDialogue();
+            }
+            if (villageNpcAvatar) villageNpcAvatar.update(delta);
+            if (villageDialogueActive) updateVillageDialogueTypewriter(delta);
 
             const leftHandPos = new THREE.Vector3();
             const rightHandPos = new THREE.Vector3();
@@ -9123,8 +9615,17 @@ export function startGame(CharacterClass) {
         let targetCamY = Math.max(floorY + 0.5, camTarget.y + cameraRadius * Math.cos(cameraPhi) + 1.5);
         let targetCamZ = camTarget.z + horizDist * Math.cos(cameraTheta);
 
-        camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
-        camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
+        // Village dialogue overrides the normal follow-cam with a fixed
+        // two-shot framing (computed once in startVillageDialogue) instead
+        // of the usual orbit math - eased in with the same lerp rate so it
+        // doesn't just snap there.
+        if (window._dialogueCamPos) {
+            camera.position.lerp(window._dialogueCamPos, 8 * delta);
+            camera.lookAt(window._dialogueCamTarget);
+        } else {
+            camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
+            camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
+        }
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
 
@@ -9274,31 +9775,13 @@ export function startGame(CharacterClass) {
         _compassOffset.copy(COMPASS_LOCAL_OFFSET).applyQuaternion(camera.quaternion);
         compassMesh.position.copy(camera.position).add(_compassOffset);
         compassMesh.position.y = Math.max(compassMesh.position.y, floorY + COMPASS_MIN_FLOOR_CLEARANCE);
-        compassMesh.lookAt(star.position);
+        // window.compassTarget overrides the default "point at the
+        // finish" behavior - set once a quest gives the player somewhere
+        // specific to go (see buildVillageLevel's forest-entrance quest),
+        // cleared (null) by any level that doesn't use it, so this always
+        // falls back to the original star-pointing behavior everywhere else.
+        compassMesh.lookAt(window.compassTarget || star.position);
         compassMesh.updateMatrixWorld();
-
-        // 2D arrow, derived from the (always-updated, even if its own
-        // visibility is off) 3D cone's own tip vs its own center - see
-        // _compassFront/_compassBack's construction comment for why this
-        // avoids the near-90-degree projection blowup a directly-projected
-        // far-away/behind target hits.
-        if (compassArrowEl) {
-            compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
-            if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
-            if (window.compass2DEnabled) {
-                _compassFront.set(0, 0, 0.25).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                _compassBack.set(0, 0, 0).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                const frontX = (_compassFront.x * 0.5 + 0.5) * window.innerWidth;
-                const frontY = (-_compassFront.y * 0.5 + 0.5) * window.innerHeight;
-                const backX = (_compassBack.x * 0.5 + 0.5) * window.innerWidth;
-                const backY = (-_compassBack.y * 0.5 + 0.5) * window.innerHeight;
-                const dx = frontX - backX, dy = frontY - backY;
-                if (dx !== 0 || dy !== 0) {
-                    const screenAngle = Math.atan2(dx, -dy);
-                    compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
-                }
-            }
-        }
 
         // X-ray: if a wall sits between the camera and the player (camera
         // orbits at a fixed radius with no collision of its own, so this can
@@ -9365,6 +9848,12 @@ if (leftArrow) {
         if (levelEditor) {
             levelEditor.camera.aspect = window.innerWidth/window.innerHeight; levelEditor.camera.updateProjectionMatrix();
             levelEditor.setSize(window.innerWidth, window.innerHeight);
+        }
+        // Same lazy-load guard as levelEditor above - Viewer.camera only
+        // exists once the compendium button has been opened at least once.
+        if (Viewer.camera) {
+            Viewer.camera.aspect = window.innerWidth/window.innerHeight; Viewer.camera.updateProjectionMatrix();
+            Viewer.renderer.setSize(window.innerWidth, window.innerHeight);
         }
     }
     window.addEventListener('resize', handleViewportResize);
