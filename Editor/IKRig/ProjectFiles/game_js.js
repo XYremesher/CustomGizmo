@@ -1582,15 +1582,60 @@ export function startGame(CharacterClass) {
     // glb JSON chunk - only KHR_materials_specular/unlit), so a plain
     // GLTFLoader is enough, no DRACOLoader needed.
     let villageScene = null;
+    let villageTreeModel = null;
     let pendingVillageLevelBuild = false;
     const villageLoader = new GLTFLoader();
     const onVillageLoaded = (gltf) => {
         villageScene = gltf.scene;
-        if (pendingVillageLevelBuild) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        if (pendingVillageLevelBuild && villageTreeModel) { pendingVillageLevelBuild = false; buildVillageLevel(); }
     };
     villageLoader.load('VillageModel/Village.glb', onVillageLoaded, undefined, () => {
         villageLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Village.glb',
             onVillageLoaded, undefined, (e) => console.error('Village.glb load failed:', e));
+    });
+
+    // Real tree prop (VillageModel/Tree.glb, copied from the top-level
+    // IKRig/Tree.glb) that replaces the whitebox trunk+foliage-sphere
+    // placeholder trees baked into Village.glb - loaded once here (not per
+    // rebuild) and cloned onto each placeholder's spot in buildVillageLevel.
+    // Same proactive-load/pending-rebuild pattern as villageScene above,
+    // except buildVillageLevel now waits on BOTH before it will actually
+    // build (see the gate at its top) so the level never renders with the
+    // whitebox trees still in place waiting for this to catch up.
+    const villageTreeLoader = new GLTFLoader();
+    const onVillageTreeLoaded = (gltf) => {
+        villageTreeModel = gltf.scene;
+        // Re-materials once here on the shared template (every per-instance
+        // clone() in buildVillageLevel references these same material
+        // objects, not a copy) to match the grass field's own look: a
+        // MeshToonMaterial using the source texture as `map` and the
+        // shared threeTone gradientMap, rather than the imported PBR
+        // material GLTFLoader creates by default. Leaf bunches additionally
+        // get alphaTest cutout (transparent:false) instead of their
+        // exported alphaMode:BLEND - same reasoning as grass's own alphaTest
+        // comment above: cutout foliage doesn't sort/flicker like blended
+        // transparency does.
+        villageTreeModel.traverse(o => {
+            if (!o.isMesh) return;
+            let isLeaf = false;
+            for (let p = o; p; p = p.parent) {
+                if (p.name && p.name.startsWith('TreeLeaveBunch')) { isLeaf = true; break; }
+            }
+            const srcMats = Array.isArray(o.material) ? o.material : [o.material];
+            const newMats = srcMats.map(m => new THREE.MeshToonMaterial({
+                map: m && m.map ? m.map : null,
+                gradientMap: threeTone,
+                side: THREE.DoubleSide,
+                alphaTest: isLeaf ? 0.5 : 0,
+                transparent: false,
+            }));
+            o.material = Array.isArray(o.material) ? newMats : newMats[0];
+        });
+        if (pendingVillageLevelBuild && villageScene) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+    };
+    villageTreeLoader.load('VillageModel/Tree.glb', onVillageTreeLoaded, undefined, () => {
+        villageTreeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Tree.glb',
+            onVillageTreeLoaded, undefined, (e) => console.error('Tree.glb load failed:', e));
     });
 
     function spawnTestKeyAndLock() {
@@ -3448,7 +3493,7 @@ export function startGame(CharacterClass) {
     document.querySelectorAll('.viewer-cat-btn').forEach(b => b.addEventListener('click', () => setViewerCategory(b.dataset.cat)));
 
     function buildVillageLevel() {
-        if (!villageScene) { pendingVillageLevelBuild = true; return; }
+        if (!villageScene || !villageTreeModel) { pendingVillageLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
@@ -3488,6 +3533,58 @@ export function startGame(CharacterClass) {
         });
         levelGroup.add(villageScene);
         villageScene.updateMatrixWorld(true);
+
+        // Whitebox trees (a trunk "Cyl_6" cylinder + 4 "Sphere_7" foliage
+        // blobs, grouped under nodes named "tree_8"/"tree_12"/etc - or
+        // "Entity_1" for one of them, so detected by that child shape
+        // rather than by name) are placeholder geometry from the original
+        // whitebox pass - swapped here for real Tree.glb clones at the
+        // same ground position/facing the modeler already placed them at.
+        const treeProxyGroups = [];
+        villageScene.traverse(o => {
+            if (!o.children || o.children.length < 2) return;
+            const hasTrunk = o.children.some(c => c.name && c.name.startsWith('Cyl_6'));
+            const foliageCount = o.children.filter(c => c.name && c.name.startsWith('Sphere_7')).length;
+            if (hasTrunk && foliageCount >= 3) treeProxyGroups.push(o);
+        });
+        treeProxyGroups.forEach(group => {
+            const pos = new THREE.Vector3();
+            const quat = new THREE.Quaternion();
+            group.getWorldPosition(pos);
+            group.getWorldQuaternion(quat);
+            const rotY = new THREE.Euler().setFromQuaternion(quat, 'YXZ').y;
+            // Ground height: the group node's own origin is NOT at the
+            // trunk base (the whitebox "Cyl 6" cylinder sits offset within
+            // the group's local space, roughly centered on it) - the
+            // proxy's actual world-space bounding box min.y is the real
+            // ground contact point, which is what the new tree needs to
+            // sit at (using pos.y directly left every tree floating).
+            const proxyBox = new THREE.Box3().setFromObject(group);
+            const groundY = proxyBox.min.y;
+
+            // Pulls this proxy's own meshes out of collidables (already
+            // pushed by the traverse above) before detaching it, so no
+            // invisible leftover collision volume is left where the
+            // placeholder used to be.
+            group.traverse(c => {
+                if (c.isMesh) {
+                    const idx = collidables.indexOf(c);
+                    if (idx !== -1) collidables.splice(idx, 1);
+                }
+            });
+            if (group.parent) group.parent.remove(group);
+
+            const tree = villageTreeModel.clone(true);
+            tree.rotation.y = rotY;
+            tree.updateMatrixWorld(true);
+            // Grounds the clone's own bounding-box base at groundY rather
+            // than trusting Tree.glb's export pivot to already sit at its
+            // own base.
+            const box = new THREE.Box3().setFromObject(tree);
+            tree.position.set(pos.x, groundY - box.min.y, pos.z);
+            tree.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; collidables.push(c); } });
+            levelGroup.add(tree);
+        });
 
         // Spawn: this whitebox has no dedicated "Empty" spawn marker yet
         // (see buildLevelFromGlb's startNode convention above) - it's a
