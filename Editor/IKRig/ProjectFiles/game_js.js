@@ -5180,6 +5180,10 @@ export function startGame(CharacterClass) {
 
     async function buildLevel() {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        // Player-placed blocks live in levelGroup, so the wipe above already
+        // took them out of the scene - drop the dither list with them or it
+        // keeps raycasting against detached meshes forever.
+        ditherOccluders.length = 0;
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
@@ -5299,6 +5303,97 @@ export function startGame(CharacterClass) {
         if (currentLevel === 'local_blank') setPresentationGreyscale(true);
     });
 
+    // ---- Screen-door dithering for camera occluders ----
+    // Anything standing between the camera and the player dissolves into a
+    // stipple pattern instead of hiding them. Chosen over real transparency
+    // deliberately: a discard needs no blending, no back-to-front sorting and
+    // no second render pass, so an occluder costs the same as it always did
+    // apart from a few ALU ops - the only real GPU consequence is that a
+    // discarding material loses early-Z, which is irrelevant for the handful
+    // of blocks that are ever occluding at once.
+    //
+    // Ordered 4x4 Bayer rather than a noise hash: the pattern is stable
+    // frame to frame, so a fading block reads as a clean stipple instead of
+    // crawling static. Computed arithmetically (b2 = mod(2x + 3y, 4), then
+    // the standard 4*b2(hi) + b2(lo) decomposition) because indexing a const
+    // array with a non-constant index is not allowed in GLSL ES 1.00, which
+    // is what three.js still emits.
+    const DITHER_GLSL = `
+        float _ditherB2(float x, float y){ return mod(2.0*x + 3.0*y, 4.0); }
+        float _ditherBayer4(vec2 p){
+            float x = mod(p.x, 4.0), y = mod(p.y, 4.0);
+            float hi = _ditherB2(floor(x*0.5), floor(y*0.5));
+            float lo = _ditherB2(mod(x, 2.0), mod(y, 2.0));
+            return (4.0*hi + lo) / 16.0;
+        }`;
+    // How much of a fully-dithered occluder is discarded. Not 1.0 - leaving
+    // a quarter of the pixels keeps the block's shape and edges readable, so
+    // you can still judge what you are standing on/next to while seeing
+    // through it.
+    window.ditherStrength = 0.78;
+    // Seconds to fade in/out. Snapping straight to full dither pops
+    // distractingly as the camera swings past a block edge.
+    window.ditherFadeSpeed = 8.0;
+    // Turns a material into one that can dissolve. Returns the uniform so the
+    // per-frame code can drive it; the material keeps its own reference too.
+    function makeDitherable(material) {
+        if (material.userData.ditherUniform) return material.userData.ditherUniform;
+        const uniform = { value: 0 };
+        material.userData.ditherUniform = uniform;
+        const prevOnBeforeCompile = material.onBeforeCompile;
+        material.onBeforeCompile = (shader, renderer) => {
+            if (prevOnBeforeCompile) prevOnBeforeCompile(shader, renderer);
+            shader.uniforms.uDitherAmount = uniform;
+            shader.fragmentShader = shader.fragmentShader
+                .replace('void main() {', `uniform float uDitherAmount;\n${DITHER_GLSL}\nvoid main() {`)
+                // First statement in main, before any lighting work is done
+                // for a fragment that is about to be thrown away.
+                .replace('#include <clipping_planes_fragment>',
+                    `if (uDitherAmount > 0.001 && _ditherBayer4(gl_FragCoord.xy) < uDitherAmount) discard;\n\t#include <clipping_planes_fragment>`);
+        };
+        // onBeforeCompile closures are not part of three.js's program cache
+        // key, so without this a dithering material could be handed the
+        // compiled program of an otherwise-identical non-dithering one.
+        const prevKey = material.customProgramCacheKey;
+        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|dither';
+        material.needsUpdate = true;
+        return uniform;
+    }
+
+    // Blocks the player has placed, tracked so the occlusion test below only
+    // has to look at them rather than every collidable in the level.
+    const ditherOccluders = [];
+    const _ditherRay = new THREE.Raycaster();
+    const _ditherDir = new THREE.Vector3();
+    const _ditherTargetPoint = new THREE.Vector3();
+    function updateDitherOccluders(cam, playerPoint, delta) {
+        if (!ditherOccluders.length) return;
+        for (let i = 0; i < ditherOccluders.length; i++) ditherOccluders[i].userData._ditherWanted = false;
+        // Three probes up the player's body, not one at its centre: a single
+        // ray slips past a block edge while the body is still visibly behind
+        // it, which made the block flicker back to solid over the player's
+        // head or feet.
+        for (let s = 0; s < 3; s++) {
+            _ditherTargetPoint.copy(playerPoint);
+            _ditherTargetPoint.y += (s - 1) * 0.7;
+            _ditherDir.copy(_ditherTargetPoint).sub(cam.position);
+            const dist = _ditherDir.length();
+            if (dist < 0.01) continue;
+            _ditherRay.set(cam.position, _ditherDir.normalize());
+            _ditherRay.far = dist - 0.3;
+            const hits = _ditherRay.intersectObjects(ditherOccluders, false);
+            for (let h = 0; h < hits.length; h++) hits[h].object.userData._ditherWanted = true;
+        }
+        const step = window.ditherFadeSpeed * delta;
+        for (let i = 0; i < ditherOccluders.length; i++) {
+            const obj = ditherOccluders[i];
+            const u = obj.material && obj.material.userData.ditherUniform;
+            if (!u) continue;
+            const target = obj.userData._ditherWanted ? window.ditherStrength : 0;
+            u.value += THREE.MathUtils.clamp(target - u.value, -step, step);
+        }
+    }
+
     const buildPreview = new THREE.Mesh(boxGeoTemplate, new THREE.MeshStandardMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 }));
     buildPreview.visible = false; scene.add(buildPreview);
     const gridHelper = new THREE.GridHelper(cubeSize*6, 6, 0xffffff, 0x888888);
@@ -5314,6 +5409,10 @@ export function startGame(CharacterClass) {
     function placeCube(position) {
         const newCube = new THREE.Mesh(boxGeoTemplate, platMat.clone());
         newCube.position.copy(position); newCube.castShadow = true; newCube.receiveShadow = true;
+        // placeCube already clones platMat per block, so each one owns its
+        // material and can dissolve independently - no extra clone needed.
+        makeDitherable(newCube.material);
+        ditherOccluders.push(newCube);
         levelGroup.add(newCube); collidables.push(newCube);
         return newCube;
     }
@@ -10865,6 +10964,13 @@ export function startGame(CharacterClass) {
         // orbits at a fixed radius with no collision of its own, so this can
         // happen any time it swings behind geometry), show the always-on-top
         // faint gray xray body instead of just losing the player behind it.
+        // Player-placed blocks in the way dissolve instead of hiding the
+        // player - see makeDitherable. Runs before the ghost test below (and
+        // unconditionally) both so that test sees this frame's fade values,
+        // and because a block that has stopped occluding still needs its fade
+        // driven back down to solid.
+        updateDitherOccluders(camera, trackingPoint, delta);
+
         const toPlayer = _tempVec3.copy(trackingPoint).sub(camera.position);
         const distToPlayer = toPlayer.length();
         let playerOccluded = false;
@@ -10872,7 +10978,16 @@ export function startGame(CharacterClass) {
             xrayRaycaster.set(camera.position, toPlayer.normalize());
             xrayRaycaster.far = distToPlayer - 0.3;
             const occluders = xrayRaycaster.intersectObjects(collidables);
-            playerOccluded = occluders.length > 0;
+            for (let i = 0; i < occluders.length; i++) {
+                const m = occluders[i].object.material;
+                const u = m && !Array.isArray(m) && m.userData ? m.userData.ditherUniform : null;
+                // An occluder that is already dissolving is showing the
+                // player through itself, so stacking the ghost on top of it
+                // just muddies both. Only something still solid earns one.
+                if (u && u.value > 0.3) continue;
+                playerOccluded = true;
+                break;
+            }
         }
         char.setXrayVisible(playerOccluded);
 
