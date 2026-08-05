@@ -5542,6 +5542,15 @@ export function startGame(CharacterClass) {
     // half-width, so the sampled volume is about the size of the thing being
     // kept visible.
     window.ditherProbeRadius = 0.20;
+    // How long a probe hit keeps a block armed after the rays stop finding it.
+    // Insurance rather than the fix - the box test below is what actually
+    // stopped stacked blocks toggling - but a grazing hit can still land on
+    // one frame and miss the next, and bridging a couple of frames costs
+    // nothing perceptible while a single dropped frame would otherwise start
+    // a visible fade back to solid.
+    window.ditherHoldTime = 0.15;
+    const _ditherBox = new THREE.Box3();
+    const _ditherBoxHit = new THREE.Vector3();
     // Faded amount for the trees, which can only move as one group: all ~193
     // of them share one InstancedMesh per source mesh, so there is no
     // per-tree material to raise or lower.
@@ -5572,7 +5581,11 @@ export function startGame(CharacterClass) {
         // axes PERPENDICULAR to the view direction, sweeping a rough cylinder
         // the width of the body. One ray kept slipping past edges while the
         // body was still visibly behind them.
-        for (let i = 0; i < ditherOccluders.length; i++) ditherOccluders[i].userData._ditherWanted = false;
+        // Decayed rather than cleared, so a hit lingers for ditherHoldTime.
+        for (let i = 0; i < ditherOccluders.length; i++) {
+            const ud = ditherOccluders[i].userData;
+            ud._ditherHold = Math.max(0, (ud._ditherHold || 0) - delta);
+        }
         let treeWanted = false;
         _ditherDir.copy(playerPoint).sub(cam.position);
         if (_ditherDir.lengthSq() > 1e-6) {
@@ -5594,8 +5607,37 @@ export function startGame(CharacterClass) {
             if (dist < 0.01) continue;
             _ditherRay.set(cam.position, dir.normalize());
             _ditherRay.far = dist - 0.3;
-            const hits = _ditherRay.intersectObjects(ditherOccluders, false);
-            for (let h = 0; h < hits.length; h++) hits[h].object.userData._ditherWanted = true;
+            // Ray-vs-BOX, not the mesh raycast this used to do, and that is
+            // the actual fix for stacked blocks flickering.
+            //
+            // Mesh.raycast passes material.side into the triangle test as a
+            // backface-culling flag, and these blocks are FrontSide. A ray
+            // descending from the camera through a tower enters the TOP block
+            // through its outside top face - a clean, unambiguous hit - but
+            // can only enter each block below through the seam it shares with
+            // the one above, where two coplanar faces sit at exactly the same
+            // depth. Whether that counted as an entry came down to floating
+            // point, so the lower blocks toggled on and off frame to frame
+            // while the top one never did. That asymmetry was the tell.
+            //
+            // A box has no faces to cull and no coplanar seam to resolve: the
+            // slab test just asks whether the segment passes through the
+            // volume. These blocks are axis-aligned cubes, so their AABB is
+            // their exact shape - this is not an approximation, it is the
+            // same query asked in a form that cannot be ambiguous. It is also
+            // cheaper than walking 12 triangles.
+            for (let i = 0; i < ditherOccluders.length; i++) {
+                const obj = ditherOccluders[i];
+                getObstacleBox(obj, _ditherBox);
+                // Camera inside the block counts as covering: intersectBox
+                // would hand back the far exit point, which can sit past the
+                // segment end and read as a miss.
+                if (_ditherBox.containsPoint(cam.position)) { obj.userData._ditherHold = window.ditherHoldTime; continue; }
+                if (_ditherRay.ray.intersectBox(_ditherBox, _ditherBoxHit) === null) continue;
+                if (cam.position.distanceToSquared(_ditherBoxHit) <= _ditherRay.far * _ditherRay.far) {
+                    obj.userData._ditherHold = window.ditherHoldTime;
+                }
+            }
             // Canopy spheres: closest point on the camera-to-player segment,
             // compared against the radius. Squared distances throughout, so
             // there is no square root anywhere in the loop. Stops at the first
@@ -5616,6 +5658,47 @@ export function startGame(CharacterClass) {
             }
         }
 
+        // Diagnostic for the stacked-block flicker, off unless
+        // window._ditherProbeDebug is set from the console. Counts how often
+        // each block's ARMED state flips per second. That single number
+        // settles what no amount of reading the code could: a high count
+        // means the probe itself is unstable and the flicker is this
+        // function's fault; a count of zero while flicker is visible on
+        // screen means the probe is rock solid and the artifact is in
+        // rendering (z-fighting between the coplanar faces two stacked cubes
+        // share, or the screen-space dither pattern crawling), which would
+        // need a completely different fix.
+        if (window._ditherProbeDebug && ditherOccluders.length) {
+            const now = performance.now();
+            if (!window._ditherDbgT0) window._ditherDbgT0 = now;
+            for (let i = 0; i < ditherOccluders.length; i++) {
+                const ud = ditherOccluders[i].userData;
+                const armed = ud._ditherHold > 0;
+                if (ud._ditherDbgPrev !== armed) { ud._ditherDbgFlips = (ud._ditherDbgFlips || 0) + 1; ud._ditherDbgPrev = armed; }
+            }
+            if (now - window._ditherDbgT0 >= 1000) {
+                for (let i = 0; i < ditherOccluders.length; i++) {
+                    const ud = ditherOccluders[i].userData;
+                    ud._ditherDbgRate = ud._ditherDbgFlips || 0;
+                    ud._ditherDbgFlips = 0;
+                }
+                window._ditherDbgT0 = now;
+            }
+            let el = document.getElementById('dither-probe-debug');
+            if (!el) {
+                el = document.createElement('div'); el.id = 'dither-probe-debug';
+                el.style.cssText = 'position:fixed;top:0;left:0;background:rgba(0,0,0,.85);color:#0f0;font:13px monospace;padding:8px;z-index:99999;white-space:pre;';
+                document.body.appendChild(el);
+            }
+            const rows = ['flips/sec per block (move the camera and watch)'];
+            for (let i = 0; i < ditherOccluders.length; i++) {
+                const o = ditherOccluders[i], ud = o.userData;
+                const u = o.material && o.material.userData.ditherUniform;
+                rows.push(`block${i} y=${o.position.y.toFixed(1).padStart(5)}  armed=${ud._ditherHold > 0 ? 'Y' : 'n'}  flips/s=${String(ud._ditherDbgRate || 0).padStart(3)}  amount=${(u ? u.value : 0).toFixed(2)}`);
+            }
+            el.textContent = rows.join('\n');
+        }
+
         const step = window.ditherFadeSpeed * delta;
         const treeTarget = (window.ditherHoleEnabled && treeWanted) ? window.ditherStrength : 0;
         _ditherTreeAmount += THREE.MathUtils.clamp(treeTarget - _ditherTreeAmount, -step, step);
@@ -5627,7 +5710,7 @@ export function startGame(CharacterClass) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
             if (!u) continue;
-            const blockTarget = obj.userData._ditherWanted ? window.ditherStrength : 0;
+            const blockTarget = obj.userData._ditherHold > 0 ? window.ditherStrength : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
     }
@@ -8853,10 +8936,33 @@ export function startGame(CharacterClass) {
             pushOutVector.y = 0; char.group.position.add(pushOutVector.multiplyScalar(0.5));
         }
 
-        dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
-        dirLight.target.position.copy(lightTrack);
-        farShadowLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
-        farShadowLight.target.position.copy(lightTrack);
+        // Both shadow lights follow the player, and their X/Z is SNAPPED to
+        // whole shadow-map texels rather than tracking continuously. Without
+        // that snap the texel grid slides across the world by a fraction of a
+        // texel every frame the player moves, so which texel a given surface
+        // point lands in keeps changing and shadow edges crawl - the classic
+        // "shadow swimming" shimmer. It reads as flicker on stacked blocks
+        // and, tellingly, never on the topmost one, whose top face has
+        // nothing above it to cast onto it in the first place.
+        //
+        // Snapping X/Z alone is enough because both lights point straight
+        // down (position is target + 40 on Y), so the shadow camera's own
+        // axes are the world X/Z axes. Y is left continuous: for an
+        // orthographic camera looking down, moving along its view direction
+        // does not change which world point maps to which texel.
+        //
+        // Each light needs its OWN step - texel size is its frustum width
+        // over its map resolution, and the two differ by more than 2x.
+        const dirTexel = (SHADOW_CAMERA_HALF_EXTENT * 2) / dirLight.shadow.mapSize.width;
+        const farTexel = (FAR_SHADOW_HALF_EXTENT * 2) / farShadowLight.shadow.mapSize.width;
+        const dirSnapX = Math.round(lightTrack.x / dirTexel) * dirTexel;
+        const dirSnapZ = Math.round(lightTrack.z / dirTexel) * dirTexel;
+        const farSnapX = Math.round(lightTrack.x / farTexel) * farTexel;
+        const farSnapZ = Math.round(lightTrack.z / farTexel) * farTexel;
+        dirLight.position.set(dirSnapX, lightTrack.y + 40, dirSnapZ);
+        dirLight.target.position.set(dirSnapX, lightTrack.y, dirSnapZ);
+        farShadowLight.position.set(farSnapX, lightTrack.y + 40, farSnapZ);
+        farShadowLight.target.position.set(farSnapX, lightTrack.y, farSnapZ);
 
         // window.dialogueInputLocked (see the village NPC dialogue) forces
         // both raw axes to 0 regardless of source - one gate here covers
