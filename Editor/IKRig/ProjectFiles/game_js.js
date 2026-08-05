@@ -1946,6 +1946,22 @@ export function startGame(CharacterClass) {
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         return mats.some(m => m && m.userData && m.userData.isCosmeticLeaf);
     }
+    // Only the four upper canopy chunks reach the shadow maps. The trunk and
+    // the fringe are excluded by their materials' own noShadow flag; the
+    // BaseTreeLeaveBunch mass is excluded here by NAME, because it shares its
+    // material with the chunks that do cast and so cannot be told apart any
+    // other way - the same reason isTreeVisualOnly has to check the name.
+    //
+    // Measured before removing it: the Base was 336 of the 720 shadow-casting
+    // triangles per tree, 46.7%, and alpha-cut ones at that (the expensive
+    // kind, since alpha test defeats early-Z in the shadow pass too). Its
+    // silhouette also largely coincides with the chunks sitting on top of it,
+    // so what it contributed was mostly redundant.
+    function treeCastsShadow(mesh) {
+        if (isTreeVisualOnly(mesh)) return false;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        return !mats.some(m => m && m.userData && m.userData.noShadow);
+    }
 
     // ---- Forest level ----
     // Procedural, ported from the Unity generators the author supplied
@@ -4009,7 +4025,11 @@ export function startGame(CharacterClass) {
             // Same split as the village trees: the cosmetic "leave" fringe
             // (isCosmeticLeaf) stays out of the shadow maps, the canopy
             // chunks and trunk cast normally.
-            inst.castShadow = !(src.material && src.material.userData && src.material.userData.noShadow);
+            // src.visualOnly covers both parts that must not cast (the fringe
+            // and the Base mass); noShadow covers the trunk. See
+            // treeCastsShadow, which is the same rule for the village's
+            // non-instanced trees.
+            inst.castShadow = !src.visualOnly && !(src.material && src.material.userData && src.material.userData.noShadow);
             inst.receiveShadow = true;
             // Nothing instanced answers a world probe here - not even the
             // trunk - because collision goes through the invisible per-tree
@@ -4251,13 +4271,12 @@ export function startGame(CharacterClass) {
                 // four upper canopy chunks - the surfaces meant to be walked
                 // and climbed on.
                 const visualOnly = isTreeVisualOnly(c);
-                // Shadow casting is a separate call and does NOT line up with
-                // the collision one: BaseTreeLeaveBunch casts but never
-                // collides, the trunk collides but no longer casts (it sits
-                // permanently inside its own canopy's shadow), and the fringe
-                // does neither. See the noShadow flag for the reasoning.
+                // Still a separate call from the collision one even though the
+                // two now happen to exclude the same parts - the trunk
+                // collides but does not cast, so the rules are not
+                // interchangeable. See treeCastsShadow.
                 const mats = Array.isArray(c.material) ? c.material : [c.material];
-                c.castShadow = !mats.some(m => m && m.userData && m.userData.noShadow);
+                c.castShadow = treeCastsShadow(c);
                 c.receiveShadow = true;
                 if (visualOnly) {
                     const cosmetic = mats.some(m => m && m.userData && m.userData.isCosmeticLeaf);
