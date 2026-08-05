@@ -1754,6 +1754,20 @@ export function startGame(CharacterClass) {
     let villageScene = null;
     let treeModel = null;
     let pendingVillageLevelBuild = false;
+    // Materials held permanently "dithering", relying entirely on the shader's
+    // own screen-circle + depth test to decide where anything is actually
+    // discarded (see makeDitherable, far below - declared up here only so the
+    // async Tree.glb callback can never touch it before its initialiser runs).
+    // This is how the trees work, and it is not a shortcut but the only
+    // option: all ~193 forest trees share one InstancedMesh per source mesh,
+    // so there is no per-tree material to raise or lower, and any
+    // raycast-driven value would dissolve every tree the moment one of them
+    // occluded. Holding the amount at full is still correct, because the
+    // shader only discards fragments inside the hole AND in front of the
+    // player - precisely "this tree is between the camera and the player,
+    // right where you are looking". A tree behind or beside you never loses a
+    // pixel.
+    const ditherAlwaysOnMats = [];
     const villageLoader = new GLTFLoader();
     const onVillageLoaded = (gltf) => {
         villageScene = gltf.scene;
@@ -1894,6 +1908,18 @@ export function startGame(CharacterClass) {
                 return mat;
             });
             o.material = Array.isArray(o.material) ? newMats : newMats[0];
+        });
+        // Registered AFTER the loop above, so makeDitherable wraps the
+        // normal-flip onBeforeCompile those leaf materials just got rather
+        // than being overwritten by it.
+        treeModel.traverse(o => {
+            if (!o.isMesh) return;
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            mats.forEach(m => {
+                if (!m || ditherAlwaysOnMats.includes(m)) return;
+                makeDitherable(m);
+                ditherAlwaysOnMats.push(m);
+            });
         });
         if (pendingVillageLevelBuild && villageScene) { pendingVillageLevelBuild = false; buildVillageLevel(); }
         // The forest level is built entirely out of this one model, so it has
@@ -4048,6 +4074,10 @@ export function startGame(CharacterClass) {
                 // Real raycast collision, but exempt from the bounding-box
                 // clearance test - see softObstacle in isVerticalSpaceClear.
                 col.userData.softObstacle = true;
+                // The only per-tree object that exists (visuals are
+                // instanced), so this is what the dither probes and the x-ray
+                // ghost test read to mean "a tree is in the way".
+                col.userData.isTreeCollider = true;
                 col.updateMatrixWorld(true);
                 levelGroup.add(col);
                 collidables.push(col);
@@ -4191,6 +4221,7 @@ export function startGame(CharacterClass) {
                 // bounding box is nothing like its actual shape, so it must
                 // not veto standing spots. See isVerticalSpaceClear.
                 c.userData.softObstacle = true;
+                c.userData.isTreeCollider = true;
                 collidables.push(c);
             });
             levelGroup.add(tree);
@@ -5334,6 +5365,33 @@ export function startGame(CharacterClass) {
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     window.ditherFadeSpeed = 8.0;
+    // Radius of the see-through hole, in FRAMEBUFFER pixels (gl_FragCoord is
+    // in framebuffer space, so this is compared against a drawing-buffer size,
+    // not CSS pixels - they differ by devicePixelRatio on a phone).
+    window.ditherHoleRadius = 190;
+    // Where the fade from clear to solid happens, as a fraction of the radius.
+    // A hard cutoff draws an obvious circle outline on the block.
+    window.ditherHoleFeather = 0.45;
+    // Hole on: only a soft circle around the player dissolves. Hole off: a
+    // detected occluder dissolves whole, which is the cruder original
+    // behaviour and mostly here to compare against. On by default - a block
+    // vanishing entirely makes it hard to read what you are standing on, and
+    // the hole is also what lets this work on instanced trees at all (see
+    // ditherAlwaysOnMats).
+    window.ditherHoleEnabled = true;
+    // Shared by every dithering material - one object each, assigned into all
+    // their shaders, so the per-frame update writes them once.
+    const _ditherScreenUniform = { value: new THREE.Vector2(0, 0) };
+    const _ditherDepthUniform = { value: 0 };
+    const _ditherRadiusUniform = { value: window.ditherHoleRadius };
+    const _ditherFeatherUniform = { value: window.ditherHoleFeather };
+    const _ditherHoleOnUniform = { value: 1 };
+    // Depth band (world units in front of the player) the dissolve ramps
+    // across, so objects spanning the player's depth thin out instead of being
+    // sliced. Larger = softer, but starts eating things well in front of the
+    // player too.
+    window.ditherDepthFade = 2.2;
+    const _ditherDepthFadeUniform = { value: window.ditherDepthFade };
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
     function makeDitherable(material) {
@@ -5344,12 +5402,48 @@ export function startGame(CharacterClass) {
         material.onBeforeCompile = (shader, renderer) => {
             if (prevOnBeforeCompile) prevOnBeforeCompile(shader, renderer);
             shader.uniforms.uDitherAmount = uniform;
+            shader.uniforms.uDitherScreen = _ditherScreenUniform;
+            shader.uniforms.uDitherPlayerDepth = _ditherDepthUniform;
+            shader.uniforms.uDitherRadius = _ditherRadiusUniform;
+            shader.uniforms.uDitherFeather = _ditherFeatherUniform;
+            shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
+            shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
             shader.fragmentShader = shader.fragmentShader
-                .replace('void main() {', `uniform float uDitherAmount;\n${DITHER_GLSL}\nvoid main() {`)
+                .replace('void main() {',
+                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\n${DITHER_GLSL}\nvoid main() {`)
                 // First statement in main, before any lighting work is done
                 // for a fragment that is about to be thrown away.
+                //
+                // The dissolve is confined to a soft-edged circle around the
+                // player's own position on screen rather than eating the whole
+                // object. Two reasons: a block vanishing entirely is
+                // disorienting when you are trying to judge what you are
+                // standing on, and a hole only needs to be as big as the thing
+                // it is revealing. It also makes the occluder test forgiving -
+                // the circle covers the player even when a probe ray slips
+                // past an edge, which is most of what a real spherecast would
+                // have bought.
+                //
+                // vViewPosition.z is this fragment's distance in front of the
+                // camera (three.js sets vViewPosition = -mvPosition.xyz for
+                // lit materials). Only geometry actually IN FRONT of the
+                // player dissolves, so the far side of the same block, and
+                // anything behind the player, stays solid.
                 .replace('#include <clipping_planes_fragment>',
-                    `if (uDitherAmount > 0.001 && _ditherBayer4(gl_FragCoord.xy) < uDitherAmount) discard;\n\t#include <clipping_planes_fragment>`);
+                    `if (uDitherAmount > 0.001 && vViewPosition.z < uDitherPlayerDepth - 0.35) {
+        float _dr = length(gl_FragCoord.xy - uDitherScreen) / max(uDitherRadius, 1.0);
+        float _dHole = 1.0 - smoothstep(1.0 - uDitherFeather, 1.0, _dr);
+        float _dEdge = mix(1.0, _dHole, uDitherHoleOn);
+        // Depth is faded, not cut. A hard "is this nearer than the player"
+        // test slices any object that spans that plane - a tree trunk running
+        // from in front of the player to behind them lost its near half in one
+        // step and read as a sawn-off stump. Ramping the amount across a depth
+        // band instead lets the trunk thin out along its length.
+        float _dDepth = 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
+        float _dCut = uDitherAmount * _dEdge * _dDepth;
+        if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
+    }
+    #include <clipping_planes_fragment>`);
         };
         // onBeforeCompile closures are not part of three.js's program cache
         // key, so without this a dithering material could be handed the
@@ -5366,25 +5460,94 @@ export function startGame(CharacterClass) {
     const _ditherRay = new THREE.Raycaster();
     const _ditherDir = new THREE.Vector3();
     const _ditherTargetPoint = new THREE.Vector3();
+    const _ditherRight = new THREE.Vector3();
+    const _ditherUp = new THREE.Vector3();
+    const _ditherScreenVec = new THREE.Vector3();
+    const _ditherProbeDir = new THREE.Vector3();
+    const _ditherDrawSize = new THREE.Vector2();
+    // Radius of the probe bundle in world units - roughly the player's own
+    // half-width, so the sampled volume is about the size of the thing being
+    // kept visible.
+    window.ditherProbeRadius = 0.55;
+    // Current faded amount for the tree materials as a group.
+    let _ditherTreeAmount = 0;
     function updateDitherOccluders(cam, playerPoint, delta) {
-        if (!ditherOccluders.length) return;
+        // Screen-space uniforms feed the shader hole and are needed whether or
+        // not anything is currently occluding, so they are written first.
+        _ditherScreenVec.copy(playerPoint).project(cam);
+        renderer.getDrawingBufferSize(_ditherDrawSize);
+        _ditherScreenUniform.value.set(
+            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x,
+            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y);
+        // Matches vViewPosition.z in the shader: distance in front of the
+        // camera, not straight-line distance to it.
+        _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
+        _ditherRadiusUniform.value = window.ditherHoleRadius;
+        _ditherFeatherUniform.value = window.ditherHoleFeather;
+        _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
+        _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
+
+        // A bundle of parallel-ish probes standing in for the spherecast
+        // three.js does not have: the centre of the player plus four offsets
+        // on the axes PERPENDICULAR to the view direction, which sweeps a
+        // rough cylinder the width of the body instead of an infinitely thin
+        // line. A single ray kept slipping past block edges while the body
+        // was still visibly behind them.
+        //
+        // EVERYTHING dithering is gated on these probes, trees included.
+        // Letting the shader's circle+depth test decide on its own looked
+        // right in the common case but fired when nothing was hidden at all:
+        // stand beside a block and the part of it nearer the camera than the
+        // player still satisfies "inside the circle AND in front of the
+        // player", so a wedge of it dissolved for no reason. Depth alone
+        // cannot tell "in front of the player" from "actually covering the
+        // player" - only a probe that reaches the player can.
         for (let i = 0; i < ditherOccluders.length; i++) ditherOccluders[i].userData._ditherWanted = false;
-        // Three probes up the player's body, not one at its centre: a single
-        // ray slips past a block edge while the body is still visibly behind
-        // it, which made the block flicker back to solid over the player's
-        // head or feet.
-        for (let s = 0; s < 3; s++) {
-            _ditherTargetPoint.copy(playerPoint);
-            _ditherTargetPoint.y += (s - 1) * 0.7;
-            _ditherDir.copy(_ditherTargetPoint).sub(cam.position);
-            const dist = _ditherDir.length();
-            if (dist < 0.01) continue;
-            _ditherRay.set(cam.position, _ditherDir.normalize());
-            _ditherRay.far = dist - 0.3;
-            const hits = _ditherRay.intersectObjects(ditherOccluders, false);
-            for (let h = 0; h < hits.length; h++) hits[h].object.userData._ditherWanted = true;
+        let treeWanted = false;
+        _ditherDir.copy(playerPoint).sub(cam.position);
+        if (_ditherDir.lengthSq() > 1e-6) {
+            _ditherDir.normalize();
+            _ditherRight.crossVectors(_ditherDir, _upVec);
+            if (_ditherRight.lengthSq() < 1e-6) _ditherRight.set(1, 0, 0); // looking straight down
+            _ditherRight.normalize();
+            _ditherUp.crossVectors(_ditherRight, _ditherDir).normalize();
         }
+        const r = window.ditherProbeRadius;
+        for (let s = 0; s < 5; s++) {
+            _ditherTargetPoint.copy(playerPoint);
+            if (s === 1) _ditherTargetPoint.addScaledVector(_ditherRight, r);
+            else if (s === 2) _ditherTargetPoint.addScaledVector(_ditherRight, -r);
+            else if (s === 3) _ditherTargetPoint.addScaledVector(_ditherUp, r);
+            else if (s === 4) _ditherTargetPoint.addScaledVector(_ditherUp, -r);
+            const dir = _ditherProbeDir.copy(_ditherTargetPoint).sub(cam.position);
+            const dist = dir.length();
+            if (dist < 0.01) continue;
+            _ditherRay.set(cam.position, dir.normalize());
+            _ditherRay.far = dist - 0.3;
+            // Probed against collidables rather than a private list so tree
+            // collision meshes are included: those are the only per-tree
+            // objects that exist (the visuals are instanced), so they are
+            // what has to answer "is a tree in the way" on the forest's
+            // behalf. The short far limit lets Mesh.raycast reject almost
+            // every tree on its bounding sphere before touching a triangle.
+            const hits = _ditherRay.intersectObjects(collidables, false);
+            for (let h = 0; h < hits.length; h++) {
+                const o = hits[h].object;
+                if (o.userData.isTreeCollider) treeWanted = true;
+                else if (o.material && o.material.userData && o.material.userData.ditherUniform) o.userData._ditherWanted = true;
+            }
+        }
+
         const step = window.ditherFadeSpeed * delta;
+        // Trees move as one group - see ditherAlwaysOnMats for why there is no
+        // per-tree control to have. Held at 0 when the hole is off, since
+        // without it the shader would dissolve the whole forest at once.
+        const treeTarget = (window.ditherHoleEnabled && treeWanted) ? window.ditherStrength : 0;
+        _ditherTreeAmount += THREE.MathUtils.clamp(treeTarget - _ditherTreeAmount, -step, step);
+        for (let i = 0; i < ditherAlwaysOnMats.length; i++) {
+            const m = ditherAlwaysOnMats[i];
+            if (m.userData.ditherUniform) m.userData.ditherUniform.value = _ditherTreeAmount;
+        }
         for (let i = 0; i < ditherOccluders.length; i++) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
@@ -6524,6 +6687,15 @@ export function startGame(CharacterClass) {
         // than a 0.00-0.30 fraction; grassBaseSink itself stays a fraction.
         { id: 'grass-sink-slider', vId: 'grass-sink-val', func: v => window.grassBaseSink = v / 100, fix: 0, raw: true },
         { id: 'flower-size-slider', vId: 'flower-size-val', func: v => window.flowerSize = v, fix: 2 },
+        // Dither: all read straight off window.* by the per-frame uniform
+        // update, so recording the value here is all that is needed - no
+        // rebuild, no material touch.
+        { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
+        { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
+        { id: 'dither-hole-feather-slider', vId: 'dither-hole-feather-val', func: v => window.ditherHoleFeather = v, fix: 2 },
+        { id: 'dither-depth-fade-slider', vId: 'dither-depth-fade-val', func: v => window.ditherDepthFade = v, fix: 1 },
+        { id: 'dither-fade-speed-slider', vId: 'dither-fade-speed-val', func: v => window.ditherFadeSpeed = v, fix: 1 },
+        { id: 'dither-probe-radius-slider', vId: 'dither-probe-radius-val', func: v => window.ditherProbeRadius = v, fix: 2 },
         // Alpha cutoff bypasses this table's normal path (which only records
         // the value - a rebuild is wired separately below per-slider) since
         // it doesn't need clearGrass()/re-placement at all, just a material
@@ -6586,6 +6758,8 @@ export function startGame(CharacterClass) {
         // that array, so it can't live in it).
         if (window.sacks) window.sacks.forEach(s => { if (s.hitboxHelper) s.hitboxHelper.visible = checked; });
     });
+    const ditherHoleToggleEl = document.getElementById('toggle-dither-hole');
+    if (ditherHoleToggleEl) ditherHoleToggleEl.addEventListener('change', e => { window.ditherHoleEnabled = e.target.checked; });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
     document.getElementById('toggle-angle-labels').addEventListener('change', e => {
         const checked = e.target.checked;
@@ -10979,12 +11153,19 @@ export function startGame(CharacterClass) {
             xrayRaycaster.far = distToPlayer - 0.3;
             const occluders = xrayRaycaster.intersectObjects(collidables);
             for (let i = 0; i < occluders.length; i++) {
-                const m = occluders[i].object.material;
-                const u = m && !Array.isArray(m) && m.userData ? m.userData.ditherUniform : null;
+                const obj = occluders[i].object;
                 // An occluder that is already dissolving is showing the
                 // player through itself, so stacking the ghost on top of it
-                // just muddies both. Only something still solid earns one.
-                if (u && u.value > 0.3) continue;
+                // just muddies both - that washed-out doubled look. Only
+                // something still solid earns one. Trees are checked through
+                // the group-wide tree amount, since their collider carries no
+                // material of its own to read.
+                if (obj.userData.isTreeCollider) { if (_ditherTreeAmount > 0.3) continue; }
+                else {
+                    const m = obj.material;
+                    const u = m && !Array.isArray(m) && m.userData ? m.userData.ditherUniform : null;
+                    if (u && u.value > 0.3) continue;
+                }
                 playerOccluded = true;
                 break;
             }

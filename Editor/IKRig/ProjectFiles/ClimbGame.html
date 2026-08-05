@@ -502,6 +502,25 @@
             </div>
 
             <div class="category">
+                <div class="category-header">Camera Dither</div>
+                <div class="category-content">
+                    <label><input type="checkbox" id="toggle-dither-hole" checked> Hole around player</label><br>
+                    <label>Dither Strength: <span id="dither-strength-val">0.78</span></label><br>
+                    <input type="range" id="dither-strength-slider" min="0.0" max="1.0" step="0.01" value="0.78" style="width: 100%;"><br>
+                    <label>Hole Radius (px): <span id="dither-hole-radius-val">190</span></label><br>
+                    <input type="range" id="dither-hole-radius-slider" min="40" max="600" step="5" value="190" style="width: 100%;"><br>
+                    <label>Hole Feather: <span id="dither-hole-feather-val">0.45</span></label><br>
+                    <input type="range" id="dither-hole-feather-slider" min="0.0" max="1.0" step="0.01" value="0.45" style="width: 100%;"><br>
+                    <label>Depth Fade (world units): <span id="dither-depth-fade-val">2.2</span></label><br>
+                    <input type="range" id="dither-depth-fade-slider" min="0.4" max="10.0" step="0.1" value="2.2" style="width: 100%;"><br>
+                    <label>Fade Speed: <span id="dither-fade-speed-val">8.0</span></label><br>
+                    <input type="range" id="dither-fade-speed-slider" min="0.5" max="30.0" step="0.5" value="8.0" style="width: 100%;"><br>
+                    <label>Probe Radius: <span id="dither-probe-radius-val">0.55</span></label><br>
+                    <input type="range" id="dither-probe-radius-slider" min="0.0" max="2.0" step="0.05" value="0.55" style="width: 100%;"><br>
+                </div>
+            </div>
+
+            <div class="category">
                 <div class="category-header">Physics & Core</div>
                 <div class="category-content">
                     <label>Jump Force: <span id="force-val">0.6</span>x</label><br>
