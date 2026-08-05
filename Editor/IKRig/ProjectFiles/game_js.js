@@ -2586,6 +2586,17 @@ export function startGame(CharacterClass) {
         for (let k = 0; k < collidables.length; k++) {
             const obj = collidables[k];
             if (obj === ground || obj === excludeObj || obj === excludeObj2) continue;
+            // Objects flagged softObstacle sit this test out. It compares
+            // against an AXIS-ALIGNED BOUNDING BOX, which is fine for the
+            // blocks it was written for (a box IS their shape) but wildly
+            // wrong for something sparse: a tree's box wraps its whole
+            // canopy spread, so every spot under the leaves counted as
+            // solid and the player could not stand on a build block placed
+            // anywhere near a tree - without ever touching it. They still
+            // collide for real; only this box approximation skips them, so
+            // standing inside a tree's canopy is allowed, which is what a
+            // tree should behave like anyway.
+            if (obj.userData && obj.userData.softObstacle) continue;
             getObstacleBox(obj, _hangObstacleBox);
             if (_hangBox.intersectsBox(_hangObstacleBox)) {
                 if (label) console.log(`[ledge-debug] ${label} BLOCKED by`, obj.name || obj.uuid, 'checkBox', _hangBox.min.toArray(), _hangBox.max.toArray(), 'obstacleBox', _hangObstacleBox.min.toArray(), _hangObstacleBox.max.toArray(), 'excluded were', excludeObj && (excludeObj.name || excludeObj.uuid), excludeObj2 && (excludeObj2.name || excludeObj2.uuid));
@@ -4034,6 +4045,9 @@ export function startGame(CharacterClass) {
                 col.scale.setScalar(p.scale);
                 col.castShadow = false;
                 col.receiveShadow = false;
+                // Real raycast collision, but exempt from the bounding-box
+                // clearance test - see softObstacle in isVerticalSpaceClear.
+                col.userData.softObstacle = true;
                 col.updateMatrixWorld(true);
                 levelGroup.add(col);
                 collidables.push(col);
@@ -4173,6 +4187,10 @@ export function startGame(CharacterClass) {
                     c.raycast = () => {};
                     return;
                 }
+                // Same exemption the forest colliders get - a canopy chunk's
+                // bounding box is nothing like its actual shape, so it must
+                // not veto standing spots. See isVerticalSpaceClear.
+                c.userData.softObstacle = true;
                 collidables.push(c);
             });
             levelGroup.add(tree);
