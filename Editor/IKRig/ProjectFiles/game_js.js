@@ -543,8 +543,33 @@ export function startGame(CharacterClass) {
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
 
+    // ---- Light budget ----
+    // Only the two shadow-casting directionals can ever be occluded, so
+    // ambient + fillLight set a hard FLOOR on how dark anything in shadow can
+    // get. That floor used to be 1.6 of a 2.6 total (0.6 ambient + 1.0
+    // unshadowed fill) - 62% brightness retained inside a full shadow. On
+    // ordinary geometry the surface's own orientation still darkens it so a
+    // shadow reads anyway, but grass tufts and the leaf cards deliberately
+    // carry a flat, forced normal (see grassCrossGeo and the leaf
+    // onBeforeCompile) precisely so orientation does NOT shade them - which
+    // left the shadow map as their only source of darkening, and 62% of it
+    // surviving meant a shadowed tuft looked barely different from a lit one:
+    // exactly the "these surfaces look like they never received a shadow"
+    // report. Rebalanced to a floor of 1.05 of the same 2.6 total (40%), by
+    // moving most of fillLight's weight into farShadowLight, which covers the
+    // same directions but can actually be occluded.
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    // Intensity split with farShadowLight below (0.4 + 0.6 = the original
+    // 1.0) rather than left at a full 1.0 - a fragment OUTSIDE this light's
+    // own tight shadow box has no shadow data for it and always reads as
+    // fully lit BY THIS LIGHT regardless of real occlusion, so whatever
+    // intensity dirLight keeps becomes a hard floor under how dark a FAR
+    // shadow (only covered by farShadowLight) can ever get. Lower dirLight,
+    // higher farShadowLight = a darker, more convincing far shadow; full
+    // blackout directly under the player is unaffected either way since
+    // there both lights are properly shadowed and sum to 0 regardless of
+    // how the 1.0 is divided between them.
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.25);
     dirLight.position.set(0.1, 40, 0.1);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
@@ -567,11 +592,39 @@ export function startGame(CharacterClass) {
     // Second, angled "fill" light - no shadow map (the expensive part of a
     // light, not the lighting math itself), so it's cheap to have a second
     // directional source giving depth/rim definition from the side instead
-    // of everything being lit from directly overhead.
-    const fillLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    // of everything being lit from directly overhead. Kept well below its
+    // original 1.0 because it can never be occluded: see the light-budget
+    // note above for why an unshadowable light of that weight stopped
+    // flat-normal surfaces (grass, leaf cards) from reading as shadowed at
+    // all. Still enough to keep the side definition it exists for.
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
     fillLight.position.set(-25, 15, -20);
     fillLight.castShadow = false;
     scene.add(fillLight); scene.add(fillLight.target);
+
+    // Third directional source, same direction/tracking as dirLight (see
+    // the lightTrack update in the main loop, which now moves this one too)
+    // but with a much wider shadow frustum - dirLight's own box is
+    // deliberately tight (SHADOW_CAMERA_HALF_EXTENT=40) to keep its
+    // 2048x2048 map's texel density high near the player, which means
+    // anything outside that box gets no shadow at all. This light fills
+    // that gap. Carries the MAJORITY of the total 1.0 directional budget
+    // (see dirLight's own comment above) specifically so a far shadow -
+    // only this light properly occludes it, dirLight leaks through
+    // unshadowed there - bottoms out close to true dark instead of a pale
+    // half-shadow. Also full 2048 res (not a cheaper 1024) since it now
+    // carries most of the near-player shadow weight too, not just the far
+    // field - a coarser map here would soften close-up shadow edges that
+    // used to be crisp from dirLight alone.
+    const farShadowLight = new THREE.DirectionalLight(0xffffff, 1.30);
+    farShadowLight.castShadow = true;
+    farShadowLight.shadow.mapSize.width = 4096; farShadowLight.shadow.mapSize.height = 4096;
+    farShadowLight.shadow.camera.near = 0.5; farShadowLight.shadow.camera.far = 500;
+    const FAR_SHADOW_HALF_EXTENT = 200;
+    farShadowLight.shadow.camera.left = -FAR_SHADOW_HALF_EXTENT; farShadowLight.shadow.camera.right = FAR_SHADOW_HALF_EXTENT;
+    farShadowLight.shadow.camera.top = FAR_SHADOW_HALF_EXTENT; farShadowLight.shadow.camera.bottom = -FAR_SHADOW_HALF_EXTENT;
+    farShadowLight.shadow.bias = -0.0003; farShadowLight.shadow.normalBias = 0.08;
+    scene.add(farShadowLight); scene.add(farShadowLight.target);
 
     const collidables = [];
     window.collidables = collidables;
@@ -817,23 +870,19 @@ export function startGame(CharacterClass) {
                 // other/the ground would be expensive for very little payoff,
                 // and self-shadowing thin cutout cards tends to look noisy).
                 //
-                // RECEIVES shadows only in the 'near' bucket - instances
-                // inside the shadow camera's own frustum (see
-                // SHADOW_CAMERA_HALF_EXTENT / shadowSafe above). Together
-                // with the forced-up normal on the geometry, this is what
-                // makes grass read as flat: normal-based directional shading
-                // is already uniform everywhere, so the shadow map is the
-                // only source of variation, exactly where an object - the
-                // player, a block - actually blocks the light. The 'far'
-                // bucket keeps receiveShadow off: outside the shadow camera's
-                // box, sampling the shadow map reads past its own edge
-                // (clamped/undefined depth), which showed up as random dark
-                // speckling on ground nothing was actually shadowing -
-                // confirmed by measuring a lit patch with zero occluders
-                // above it and still finding dozens of falsely-dark pixels,
-                // all outside this exact box.
+                // RECEIVES shadows in both buckets. Originally 'near'-only:
+                // outside dirLight's own tight box, sampling ITS shadow map
+                // reads past its own edge (clamped/undefined depth), which
+                // showed up as random dark speckling on ground nothing was
+                // actually shadowing. That's still true of dirLight alone,
+                // but farShadowLight's own box (FAR_SHADOW_HALF_EXTENT=200)
+                // now covers the entire possible grass field (grassArea
+                // tops out at 150), so 'far'-bucket tufts have a valid
+                // shadow map to sample too - leaving them at false after
+                // farShadowLight was added just meant distant grass could
+                // never show a shadow at all, light or dark.
                 inst.castShadow = false;
-                inst.receiveShadow = key === 'near';
+                inst.receiveShadow = true;
                 inst.raycast = () => {};                  // never answer a world probe
                 inst.frustumCulled = false;               // instances span the whole field
                 inst.userData.isGrass = true;
@@ -856,6 +905,13 @@ export function startGame(CharacterClass) {
     // generated quad-cross.
     let flowerTemplates = [null, null];
     let pendingFlowerBuild = false;
+    // Independent of grassAlphaTest (was borrowing it at first, but the
+    // flower texture's alpha fade profile isn't the same as the grass
+    // tufts' - grass's tuned 0.90 cutoff was clipping way too much of the
+    // flower card away). Live-tunable via the Flower Alpha Cutoff slider,
+    // same "dial it in by eye" reasoning as grass's own slider.
+    window.flowerAlphaTest = 0.55;
+    const flowerMats = [];
     function extractFlowerTemplate(gltfScene) {
         let mesh = null;
         gltfScene.traverse(o => { if (o.isMesh && !mesh) mesh = o; });
@@ -872,9 +928,10 @@ export function startGame(CharacterClass) {
             map: srcMat && srcMat.map ? srcMat.map : null,
             gradientMap: threeTone,
             side: THREE.DoubleSide,
-            alphaTest: window.grassAlphaTest,
+            alphaTest: window.flowerAlphaTest,
             transparent: false,
         });
+        flowerMats.push(material);
         return { geometry, material };
     }
     const flowerLoader = new GLTFLoader();
@@ -1007,7 +1064,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_village";
+    let currentLevel = "local_forest";
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -1695,12 +1752,39 @@ export function startGame(CharacterClass) {
     // glb JSON chunk - only KHR_materials_specular/unlit), so a plain
     // GLTFLoader is enough, no DRACOLoader needed.
     let villageScene = null;
-    let villageTreeModel = null;
+    let treeModel = null;
     let pendingVillageLevelBuild = false;
     const villageLoader = new GLTFLoader();
     const onVillageLoaded = (gltf) => {
         villageScene = gltf.scene;
-        if (pendingVillageLevelBuild && villageTreeModel) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        // Repairs NaN transforms before anything can read a bounding box off
+        // this scene. Village.glb has a lock assembly baked into the whitebox,
+        // and its "Star" node is exported with an all-zero 3x3 matrix (scale
+        // 0 - that star is meant to start hidden). GLTFLoader feeds a node
+        // matrix through Object3D.applyMatrix4, which decomposes it, and
+        // Matrix4.decompose divides the rotation basis by the scale: 1/0 is
+        // Infinity, 0 * Infinity is NaN, so the node lands with a NaN
+        // quaternion. That poisons its matrixWorld and therefore any
+        // Box3.setFromObject of it OR OF ITS PARENT (setFromObject expands
+        // over children), so LockStarContainer's obstacle box came out NaN.
+        // A NaN Box3 makes intersectsBox return TRUE against everything -
+        // every early-out comparison is false when NaN is involved - so that
+        // single node reported a collision at every point in the level. That
+        // is what made ledge-grabbing impossible anywhere in Village: the
+        // hang-clearance check (isVerticalSpaceClear) always hit this one
+        // phantom obstacle first and bailed out. Scale is deliberately left
+        // at 0 - the star is supposed to be invisible - only the unusable
+        // rotation is reset.
+        villageScene.traverse(o => {
+            const q = o.quaternion, p = o.position, s = o.scale;
+            if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || !Number.isFinite(q.z) || !Number.isFinite(q.w)) {
+                console.warn(`Village.glb: "${o.name || '(unnamed)'}" arrived with a NaN rotation (zero-scale node matrix) - reset to identity.`);
+                q.set(0, 0, 0, 1);
+            }
+            if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) p.set(0, 0, 0);
+            if (!Number.isFinite(s.x) || !Number.isFinite(s.y) || !Number.isFinite(s.z)) s.set(1, 1, 1);
+        });
+        if (pendingVillageLevelBuild && treeModel) { pendingVillageLevelBuild = false; buildVillageLevel(); }
     };
     villageLoader.load('VillageModel/Village.glb', onVillageLoaded, undefined, () => {
         villageLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Village.glb',
@@ -1717,7 +1801,7 @@ export function startGame(CharacterClass) {
     // whitebox trees still in place waiting for this to catch up.
     const villageTreeLoader = new GLTFLoader();
     const onVillageTreeLoaded = (gltf) => {
-        villageTreeModel = gltf.scene;
+        treeModel = gltf.scene;
         // Re-materials once here on the shared template (every per-instance
         // clone() in buildVillageLevel references these same material
         // objects, not a copy) - all as MeshToonMaterial using the source
@@ -1730,7 +1814,7 @@ export function startGame(CharacterClass) {
         //                       (window.grassAlphaTest) exactly, per author.
         //   "TreeLeaveBunch"  - a harder cutout than grass, NOT meant to
         //                       match it (explicit author instruction).
-        villageTreeModel.traverse(o => {
+        treeModel.traverse(o => {
             if (!o.isMesh) return;
             const srcMats = Array.isArray(o.material) ? o.material : [o.material];
             const newMats = srcMats.map(m => {
@@ -1744,24 +1828,171 @@ export function startGame(CharacterClass) {
                 // background render as solid black instead of cutting out.
                 const name = ((m && m.name) || '').replace(/\.\d+$/, '');
                 let alphaTest = 0;
-                if (name === 'leave') alphaTest = window.grassAlphaTest;
-                else if (name === 'TreeLeaveBunch') alphaTest = 0.85;
-                return new THREE.MeshToonMaterial({
+                let isLeaf = false, isCosmeticLeaf = false;
+                // The model is 9 meshes: a trunk, 4 solid canopy chunks
+                // ("TreeLeaveBunch"), and 4 decorative fringe meshes
+                // ("leave") parented one-to-one under those chunks. Every
+                // node is NAMED "TreeLeaveBunch.*" regardless of which it
+                // is, so the material name is the only thing that tells the
+                // two apart - hence keying off it here rather than off
+                // o.name. The fringe is cosmetic only: it neither casts
+                // shadows (its scattered alpha-cut edges throw a speckled,
+                // noisy shadow instead of a readable silhouette) nor takes
+                // part in collision (see the collidables filter in
+                // buildVillageLevel). The chunk underneath it does both, so
+                // the tree still blocks and shadows exactly as before.
+                // isLeaf covers both and only drives the normal-flip shader
+                // fix below, which they equally need.
+                if (name === 'leave') { alphaTest = window.grassAlphaTest; isLeaf = true; isCosmeticLeaf = true; }
+                else if (name === 'TreeLeaveBunch') { alphaTest = 0.85; isLeaf = true; }
+                const mat = new THREE.MeshToonMaterial({
                     map: m && m.map ? m.map : null,
                     gradientMap: threeTone,
                     side: THREE.DoubleSide,
                     alphaTest,
                     transparent: false,
                 });
+                if (isCosmeticLeaf) {
+                    // Read back per-mesh by the level builders to drop both
+                    // shadow casting and collision on exactly the meshes
+                    // using this material. Safe as a per-MESH decision even
+                    // though it is made per MATERIAL: in this model each
+                    // fringe mesh is its own node with this one material, so
+                    // castShadow (per-Object3D, not per-material) and
+                    // collidables membership can both be set independently
+                    // of the chunk it hangs off.
+                    mat.userData.isCosmeticLeaf = true;
+                }
+                // Which parts skip the shadow maps. Separate from the
+                // collision decision (isTreeVisualOnly) because the two do
+                // not line up: BaseTreeLeaveBunch casts but never collides,
+                // while the trunk collides but no longer casts. The trunk is
+                // excluded on an art call - it stands under its own canopy,
+                // permanently inside that shadow, so its own contribution is
+                // not visible. Worth knowing it is a small win: the trunk is
+                // 48 of the 720 shadow-casting tris per tree (6.7%), and the
+                // only opaque one, i.e. the cheapest per pixel. The alpha-cut
+                // canopy is the real shadow cost.
+                if (name === 'leave' || name === 'TreeBody') mat.userData.noShadow = true;
+                if (isLeaf) {
+                    mat.userData.isLeaf = true;
+                    // Same normal-flip cancel as grassMats' own onBeforeCompile
+                    // above - without it, this real leaf-cluster mesh's actual
+                    // per-vertex normals get DoubleSide's automatic backface
+                    // flip, so whichever side of a curved leaf blob faces away
+                    // from the camera goes darker than its neighbor under
+                    // otherwise uniform lighting - reads as half the canopy
+                    // patchy/two-toned rather than reflecting anything real
+                    // about the geometry or the light.
+                    mat.onBeforeCompile = (shader) => {
+                        shader.fragmentShader = shader.fragmentShader.replace(
+                            '#include <normal_fragment_begin>',
+                            'vec3 normal = normalize( vNormal );'
+                        );
+                    };
+                }
+                return mat;
             });
             o.material = Array.isArray(o.material) ? newMats : newMats[0];
         });
         if (pendingVillageLevelBuild && villageScene) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        // The forest level is built entirely out of this one model, so it has
+        // nothing else to wait on - retry as soon as it lands.
+        if (pendingForestLevelBuild) { pendingForestLevelBuild = false; buildForestLevel(); }
     };
     villageTreeLoader.load('VillageModel/Tree.glb', onVillageTreeLoaded, undefined, () => {
         villageTreeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Tree.glb',
             onVillageTreeLoaded, undefined, (e) => console.error('Tree.glb load failed:', e));
     });
+
+    // Single place both level builders ask "should this part of the tree take
+    // part in collision at all?", because the two exclusions are told apart by
+    // DIFFERENT things and getting either one wrong is invisible until
+    // something walks into it:
+    //   - the "leave" fringe has its own material, flagged at load time;
+    //   - "BaseTreeLeaveBunch" (the big lower canopy mass) shares the SAME
+    //     material as the walkable upper chunks, so nothing but its node name
+    //     distinguishes it.
+    // What is left collidable is the trunk plus the four upper canopy chunks -
+    // the surfaces actually meant to be walked/climbed on.
+    function isTreeVisualOnly(mesh) {
+        if (mesh.name && mesh.name.startsWith('BaseTreeLeaveBunch')) return true;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        return mats.some(m => m && m.userData && m.userData.isCosmeticLeaf);
+    }
+
+    // ---- Forest level ----
+    // Procedural, ported from the Unity generators the author supplied
+    // (TreeGenerator / GrassGenerator / WayObjectGenerator): walk a grid over
+    // the play area, sample Perlin noise per cell, plant a tree where the
+    // noise clears a threshold, jitter and scale it from that same noise, and
+    // reject anything landing too close to an already-placed tree. Cells that
+    // fail the threshold are what the Unity side filled with "way" prefabs -
+    // here they simply stay open, and the existing grass/flower scatter
+    // (buildGrass/buildFlowers, which already reject spots blocked near the
+    // ground) fills them, matching GrassGenerator's own tree-avoidance step
+    // without a second implementation of it.
+    let pendingForestLevelBuild = false;
+    // Mathf.PerlinNoise stand-in - classic 2D Perlin with a seeded
+    // permutation table, so `seed` reshuffles the whole field the way the
+    // Unity version's seed offset does. Values land in 0..1 like Unity's,
+    // NOT the -1..1 a raw gradient-noise implementation returns, so the
+    // thresholds carried over from those scripts mean the same thing here.
+    const _perlinPerm = new Uint8Array(512);
+    function seedPerlin(seed) {
+        const p = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) p[i] = i;
+        // Deterministic shuffle from a plain LCG - Math.random() would make
+        // the same seed produce a different forest on every rebuild.
+        let s = (seed | 0) || 1;
+        for (let i = 255; i > 0; i--) {
+            s = (s * 1664525 + 1013904223) | 0;
+            const j = (s >>> 8) % (i + 1);
+            const t = p[i]; p[i] = p[j]; p[j] = t;
+        }
+        for (let i = 0; i < 512; i++) _perlinPerm[i] = p[i & 255];
+    }
+    function perlinFade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    function perlinGrad(hash, x, y) {
+        // 8 gradient directions, picked by the low 3 bits of the hash.
+        switch (hash & 7) {
+            case 0: return x + y;
+            case 1: return x - y;
+            case 2: return -x + y;
+            case 3: return -x - y;
+            case 4: return x;
+            case 5: return -x;
+            case 6: return y;
+            default: return -y;
+        }
+    }
+    function perlin2(x, y) {
+        const xi = Math.floor(x) & 255, yi = Math.floor(y) & 255;
+        const xf = x - Math.floor(x), yf = y - Math.floor(y);
+        const u = perlinFade(xf), v = perlinFade(yf);
+        const aa = _perlinPerm[_perlinPerm[xi] + yi];
+        const ab = _perlinPerm[_perlinPerm[xi] + yi + 1];
+        const ba = _perlinPerm[_perlinPerm[xi + 1] + yi];
+        const bb = _perlinPerm[_perlinPerm[xi + 1] + yi + 1];
+        const x1 = THREE.MathUtils.lerp(perlinGrad(aa, xf, yf), perlinGrad(ba, xf - 1, yf), u);
+        const x2 = THREE.MathUtils.lerp(perlinGrad(ab, xf, yf - 1), perlinGrad(bb, xf - 1, yf - 1), u);
+        // Gradient noise spans roughly -1..1; remap to Unity's 0..1 range.
+        return THREE.MathUtils.clamp((THREE.MathUtils.lerp(x1, x2, v) + 1) * 0.5, 0, 1);
+    }
+
+    // Same names/defaults as the Unity components' inspector fields, so the
+    // numbers the author already tuned there transfer directly.
+    window.forestAreaSize = 120;
+    window.forestGridSize = 60;
+    window.forestNoiseScale = 18;
+    window.forestTreeThreshold = 0.55;
+    window.forestMinScale = 0.8;
+    window.forestMaxScale = 1.6;
+    window.forestBaseMinDistance = 4.0;
+    window.forestSeed = 1337;
+    // Radius around spawn kept clear of trees, so the level never opens with
+    // the camera buried inside a canopy.
+    window.forestClearingRadius = 9;
 
     function spawnTestKeyAndLock() {
         // The free-standing key that used to sit out in the open here (no
@@ -2305,13 +2536,43 @@ export function startGame(CharacterClass) {
             targetBox3.setFromCenterAndSize(obj.position, _carrySizeVec);
             return targetBox3;
         }
-        if (obj.userData && obj.userData.cachedBox3) {
+        // `instanceof`, not a plain truthiness check: a level authored in the
+        // shape editor and exported as glTF carries its own `cachedBox3` in
+        // each node's `extras`, and GLTFLoader copies `extras` wholesale into
+        // `userData` - so a freshly loaded level (Village.glb: 63 of its 74
+        // mesh nodes) arrives with this field ALREADY set to a plain JSON
+        // object left over from the editor's scene. Box3.copy() reads .min.x
+        // etc., which those plain objects do have, so it silently succeeded
+        // and handed back the editor's stale world box instead of this
+        // object's real one - measured up to ~24 units off (Village's
+        // "Box 10" caches X[-5.7,-3.7] while it actually sits at
+        // X[18.6,20.6]). Every box-based test downstream - ledge hang/stand
+        // clearance, grass and flower placement, carry drop spots - was
+        // therefore checking phantom volumes and missing real ones. Only a
+        // Box3 this function itself built is trusted as a cache; anything
+        // else is recomputed from the object's actual loaded transform.
+        if (obj.userData && obj.userData.cachedBox3 instanceof THREE.Box3) {
             targetBox3.copy(obj.userData.cachedBox3);
             return targetBox3;
         }
         if (!obj.userData) obj.userData = {};
-        obj.userData.cachedBox3 = new THREE.Box3().setFromObject(obj);
-        targetBox3.copy(obj.userData.cachedBox3);
+        const fresh = new THREE.Box3().setFromObject(obj);
+        // A non-finite box is worse than no box at all: Box3.intersectsBox
+        // early-outs on a chain of comparisons that are ALL false when NaN is
+        // involved, so it falls through and reports a hit against every box
+        // it is ever tested with - one poisoned object then reads as a solid
+        // obstacle filling the entire level (see the NaN-transform repair in
+        // onVillageLoaded for the case that actually shipped). Failing to an
+        // empty box instead makes a broken object collide with nothing, which
+        // degrades one prop rather than silently disabling ledge grabbing,
+        // grass placement and carry drops everywhere.
+        if (!Number.isFinite(fresh.min.x) || !Number.isFinite(fresh.min.y) || !Number.isFinite(fresh.min.z) ||
+            !Number.isFinite(fresh.max.x) || !Number.isFinite(fresh.max.y) || !Number.isFinite(fresh.max.z)) {
+            console.warn('getObstacleBox: non-finite bounds for', obj.name || obj.uuid, '- treating as empty (collides with nothing).');
+            fresh.makeEmpty();
+        }
+        obj.userData.cachedBox3 = fresh;
+        targetBox3.copy(fresh);
         return targetBox3;
     }
     window.getObstacleBox = getObstacleBox;
@@ -3617,8 +3878,176 @@ export function startGame(CharacterClass) {
     }
     document.querySelectorAll('.viewer-cat-btn').forEach(b => b.addEventListener('click', () => setViewerCategory(b.dataset.cat)));
 
+    function buildForestLevel() {
+        if (!treeModel) { pendingForestLevelBuild = true; return; }
+        while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
+        projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
+        carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
+        carryables.length = 0;
+        nextCarryNetId = 0;
+        debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
+        collidables.length = 0;
+        // Same reason buildVillageLevel sets this - nothing here loads the
+        // Cubes.glb prop that normally flips it, so the loading overlay would
+        // otherwise never hide.
+        window._cubesLoaded = true;
+        ground.visible = true;
+        collidables.push(ground);
+        star.visible = false;
+
+        // ---- Pass 1: decide where trees go (no geometry built yet) ----
+        seedPerlin(window.forestSeed);
+        const area = window.forestAreaSize, grid = Math.max(2, Math.round(window.forestGridSize));
+        const step = area / grid, half = area * 0.5;
+        const noiseScale = window.forestNoiseScale;
+        const placements = [];
+        for (let xi = 0; xi < grid; xi++) {
+            for (let zi = 0; zi < grid; zi++) {
+                const x = -half + xi * step;
+                const z = -half + zi * step;
+                const spawnNoise = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
+                if (spawnNoise < window.forestTreeThreshold) continue;
+                // Jitter within the cell, from a second noise lookup with the
+                // axes swapped - same trick the Unity generator uses to break
+                // up the grid without needing a separate RNG.
+                const offX = (perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale) - 0.5) * step;
+                const offZ = (perlin2((z + window.forestSeed) / noiseScale, (x + window.forestSeed) / noiseScale) - 0.5) * step;
+                const px = x + offX, pz = z + offZ;
+                // Keep the spawn pocket open.
+                if (Math.hypot(px, pz) < window.forestClearingRadius) continue;
+                const scale = THREE.MathUtils.lerp(window.forestMinScale, window.forestMaxScale, spawnNoise);
+                // Overlap rejection, scaled by both trees' sizes so big trees
+                // claim more room than saplings (straight from TreeGenerator).
+                let tooClose = false;
+                for (let k = 0; k < placements.length; k++) {
+                    const o = placements[k];
+                    const minDist = window.forestBaseMinDistance * ((scale + o.scale) * 0.5);
+                    if (Math.hypot(px - o.x, pz - o.z) < minDist) { tooClose = true; break; }
+                }
+                if (tooClose) continue;
+                placements.push({ x: px, z: pz, scale, rotY: spawnNoise * Math.PI * 2 });
+            }
+        }
+
+        // ---- Pass 2: one InstancedMesh per source mesh, not one clone per tree ----
+        // Tree.glb is 9 meshes (4 leaf nodes x 2 primitives, plus the trunk),
+        // so cloning it per tree costs 9 draw calls each - and every one of
+        // those is drawn a further two times, once into each shadow-casting
+        // light's map. That is what made a mere 13 cloned trees cost ~40fps in
+        // the village. Instancing collapses the whole forest to those same 9
+        // draw calls no matter how many trees there are, because every tree
+        // shares one geometry and differs only by its per-instance matrix.
+        treeModel.updateMatrixWorld(true);
+        const _srcInv = new THREE.Matrix4().copy(treeModel.matrixWorld).invert();
+        const sources = [];
+        treeModel.traverse(o => {
+            if (!o.isMesh) return;
+            // The mesh's transform RELATIVE to the model root - baked into
+            // each instance matrix below, since an InstancedMesh has no
+            // parent chain of its own to inherit it from.
+            const rel = new THREE.Matrix4().multiplyMatrices(_srcInv, o.matrixWorld);
+            const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+            sources.push({ geometry: o.geometry, material: mat, rel, visualOnly: isTreeVisualOnly(o) });
+        });
+
+        const _treeMat = new THREE.Matrix4();
+        const _instMat = new THREE.Matrix4();
+        const _q = new THREE.Quaternion();
+        const _pos = new THREE.Vector3();
+        const _scl = new THREE.Vector3();
+        sources.forEach(src => {
+            const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
+            placements.forEach((p, i) => {
+                _q.setFromAxisAngle(_upVec, p.rotY);
+                _pos.set(p.x, 0, p.z);
+                _scl.setScalar(p.scale);
+                _treeMat.compose(_pos, _q, _scl);
+                _instMat.multiplyMatrices(_treeMat, src.rel);
+                inst.setMatrixAt(i, _instMat);
+            });
+            inst.instanceMatrix.needsUpdate = true;
+            // Same split as the village trees: the cosmetic "leave" fringe
+            // (isCosmeticLeaf) stays out of the shadow maps, the canopy
+            // chunks and trunk cast normally.
+            inst.castShadow = !(src.material && src.material.userData && src.material.userData.noShadow);
+            inst.receiveShadow = true;
+            // Nothing instanced answers a world probe here - not even the
+            // trunk - because collision goes through the invisible per-tree
+            // boxes below instead. That is forced by instancing, not a
+            // preference: all ~193 trees share ONE InstancedMesh per source
+            // mesh, so the box-based checks (getObstacleBox and everything
+            // built on it) would measure a single bounding volume spanning
+            // the entire forest and treat the whole level as solid. Real
+            // per-mesh collision would mean going back to one clone per
+            // tree, which is exactly the ~9-draw-calls-per-tree cost
+            // instancing exists to avoid.
+            inst.raycast = () => {};
+            inst.frustumCulled = false;
+            levelGroup.add(inst);
+        });
+
+        // ---- Pass 3: real, walkable collision geometry per tree ----
+        // Back to the model's actual triangles rather than the box proxies
+        // this briefly used: a box wrapping a rounded blob puts its solid
+        // surface well outside the visible shell, so you stand on thin air at
+        // the corners and hit flat walls where the art curves - it did not
+        // read as a comfortable walk or climb. The real surface does.
+        //
+        // What is affordable changed with the model. The canopy chunks were
+        // halved (168 -> 84 tris each, upper hemisphere only) and the heavy
+        // lower mass was split out as its own BaseTreeLeaveBunch node, which
+        // is visual-only - so the collision set is now the trunk plus four
+        // 84-tri chunks (~384 tris) instead of the 720 that measured 47fps.
+        // isTreeVisualOnly is what draws that line; see it for why the two
+        // exclusions need different tests.
+        //
+        // Merging matters for cost: adding the parts as separate collidables
+        // would put ~965 objects in the array that every raycast and
+        // obstacle-box test walks, where merged it stays at one per tree.
+        // Position-only attributes, all non-indexed: mergeGeometries refuses
+        // a mix of indexed and non-indexed inputs or differing attribute
+        // sets, and collision needs nothing else - Mesh.raycast derives the
+        // hit face normal from the triangle's own vertices, not from a
+        // normal attribute.
+        const collisionParts = [];
+        sources.forEach(src => {
+            if (src.visualOnly) return;
+            const flat = src.geometry.index ? src.geometry.toNonIndexed() : src.geometry.clone();
+            const part = new THREE.BufferGeometry();
+            part.setAttribute('position', flat.getAttribute('position').clone());
+            part.applyMatrix4(src.rel);
+            collisionParts.push(part);
+            flat.dispose();
+        });
+        const treeCollisionGeo = collisionParts.length ? BufferGeometryUtils.mergeGeometries(collisionParts, false) : null;
+        collisionParts.forEach(g => g.dispose());
+        // Invisible via the MATERIAL, deliberately not via object.visible -
+        // three.js skips a material-hidden mesh at render time but still
+        // raycasts it, which is exactly what an invisible collider needs.
+        const colliderMat = new THREE.MeshBasicMaterial({ visible: false });
+        if (treeCollisionGeo) {
+            placements.forEach(p => {
+                const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
+                col.position.set(p.x, 0, p.z);
+                col.rotation.y = p.rotY;
+                col.scale.setScalar(p.scale);
+                col.castShadow = false;
+                col.receiveShadow = false;
+                col.updateMatrixWorld(true);
+                levelGroup.add(col);
+                collidables.push(col);
+            });
+        }
+
+        char.group.position.set(0, 2.0, 0);
+        char.group.rotation.y = 0;
+        window.compassTarget = null;
+        console.log(`Forest: ${placements.length} trees, ${sources.length} draw calls (instanced), collision ${treeCollisionGeo ? treeCollisionGeo.getAttribute('position').count / 3 : 0} tris/tree.`);
+    }
+
     function buildVillageLevel() {
-        if (!villageScene || !villageTreeModel) { pendingVillageLevelBuild = true; return; }
+        if (!villageScene || !treeModel) { pendingVillageLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
@@ -3704,7 +4133,7 @@ export function startGame(CharacterClass) {
             });
             if (group.parent) group.parent.remove(group);
 
-            const tree = villageTreeModel.clone(true);
+            const tree = treeModel.clone(true);
             tree.rotation.y = rotY;
             // No bounding-box base offset here (an earlier attempt
             // subtracted box.min.y to "ground" the model's own lowest
@@ -3716,7 +4145,36 @@ export function startGame(CharacterClass) {
             // top of groundY was adding an unwanted extra lift, which is
             // what was actually causing the floating look.
             tree.position.set(pos.x, groundY, pos.z);
-            tree.traverse(c => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; collidables.push(c); } });
+            tree.traverse(c => {
+                if (!c.isMesh) return;
+                // Visual-only parts (the "leave" fringe and the
+                // BaseTreeLeaveBunch lower mass - see isTreeVisualOnly) are
+                // kept OUT of collidables entirely. collidables is what
+                // every raycast in the game probes (ground scan, foot IK,
+                // wall checks, ledge hang clearance, grass/flower
+                // placement), so leaving decoration in there means thousands
+                // of triangles answering rays that should only ever see the
+                // solid tree. What stays collidable is the trunk and the
+                // four upper canopy chunks - the surfaces meant to be walked
+                // and climbed on.
+                const visualOnly = isTreeVisualOnly(c);
+                // Shadow casting is a separate call and does NOT line up with
+                // the collision one: BaseTreeLeaveBunch casts but never
+                // collides, the trunk collides but no longer casts (it sits
+                // permanently inside its own canopy's shadow), and the fringe
+                // does neither. See the noShadow flag for the reasoning.
+                const mats = Array.isArray(c.material) ? c.material : [c.material];
+                c.castShadow = !mats.some(m => m && m.userData && m.userData.noShadow);
+                c.receiveShadow = true;
+                if (visualOnly) {
+                    // Belt and braces alongside the collidables skip: a
+                    // raycast aimed straight at the scene graph (rather than
+                    // at the collidables array) would otherwise still hit it.
+                    c.raycast = () => {};
+                    return;
+                }
+                collidables.push(c);
+            });
             levelGroup.add(tree);
         });
 
@@ -4754,6 +5212,7 @@ export function startGame(CharacterClass) {
         else if (currentLevel === "local_water") buildWaterTestLevel();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else if (currentLevel === "local_village") buildVillageLevel();
+        else if (currentLevel === "local_forest") buildForestLevel();
         else {
             try {
                 if (currentLevel.endsWith('.js')) {
@@ -4787,7 +5246,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -4802,7 +5261,7 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_village'; currentLevel = select.value;
+        select.value = 'local_forest'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
@@ -5947,6 +6406,7 @@ export function startGame(CharacterClass) {
         // Slider is a whole-number percent (0-30) for a more readable label
         // than a 0.00-0.30 fraction; grassBaseSink itself stays a fraction.
         { id: 'grass-sink-slider', vId: 'grass-sink-val', func: v => window.grassBaseSink = v / 100, fix: 0, raw: true },
+        { id: 'flower-size-slider', vId: 'flower-size-val', func: v => window.flowerSize = v, fix: 2 },
         // Alpha cutoff bypasses this table's normal path (which only records
         // the value - a rebuild is wired separately below per-slider) since
         // it doesn't need clearGrass()/re-placement at all, just a material
@@ -6021,12 +6481,18 @@ export function startGame(CharacterClass) {
     // Grass: re-scatter on 'change' (slider release / checkbox click) rather
     // than 'input'. Each rebuild raycasts once per tuft and rebuilds two
     // InstancedMeshes, which is far too heavy to run on every drag tick.
-    ['grass-count-slider', 'grass-size-slider', 'grass-area-slider', 'grass-height-slider', 'grass-sink-slider'].forEach(id => {
+    ['grass-count-slider', 'grass-size-slider', 'grass-height-slider', 'grass-sink-slider'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', () => buildGrass());
     });
+    // grass-area-slider affects both fields (buildFlowers() reads the same
+    // window.grassArea as its own scatter radius), so it rebuilds both.
+    const grassAreaEl = document.getElementById('grass-area-slider');
+    if (grassAreaEl) grassAreaEl.addEventListener('change', () => { buildGrass(); buildFlowers(); });
+    const flowerSizeEl = document.getElementById('flower-size-slider');
+    if (flowerSizeEl) flowerSizeEl.addEventListener('change', () => buildFlowers());
     const grassToggleEl = document.getElementById('toggle-grass');
-    if (grassToggleEl) grassToggleEl.addEventListener('change', () => buildGrass());
+    if (grassToggleEl) grassToggleEl.addEventListener('change', () => { buildGrass(); buildFlowers(); });
     // Alpha cutoff: a straight material property, no ray-cast placement
     // involved, so it updates on 'input' (live, while dragging) rather than
     // waiting for 'change' like the others - the whole point of exposing
@@ -6037,6 +6503,14 @@ export function startGame(CharacterClass) {
         window.grassAlphaTest = v;
         grassMats.forEach(m => { m.alphaTest = v; m.needsUpdate = true; });
         const disp = document.getElementById('grass-alpha-val');
+        if (disp) disp.innerText = v.toFixed(2);
+    });
+    const flowerAlphaEl = document.getElementById('flower-alpha-slider');
+    if (flowerAlphaEl) flowerAlphaEl.addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.flowerAlphaTest = v;
+        flowerMats.forEach(m => { m.alphaTest = v; m.needsUpdate = true; });
+        const disp = document.getElementById('flower-alpha-val');
         if (disp) disp.innerText = v.toFixed(2);
     });
 
@@ -8015,6 +8489,8 @@ export function startGame(CharacterClass) {
 
         dirLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
         dirLight.target.position.copy(lightTrack);
+        farShadowLight.position.set(lightTrack.x, lightTrack.y + 40, lightTrack.z);
+        farShadowLight.target.position.copy(lightTrack);
 
         // window.dialogueInputLocked (see the village NPC dialogue) forces
         // both raw axes to 0 regardless of source - one gate here covers
