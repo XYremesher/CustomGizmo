@@ -4086,40 +4086,50 @@ export function startGame(CharacterClass) {
             });
         }
 
-        // ---- Pass 3b: probe-only proxy for BaseTreeLeaveBunch ----
-        // The lower canopy mass is deliberately not collidable, so the dither
-        // probes - which read collidables - could not see it. That meant the
-        // one part most likely to be covering the player was also the one part
-        // that never triggered the dissolve on its own: it only came on when a
-        // trunk or an upper chunk happened to be in the way too. This mesh
-        // exists purely to answer those probes. It is NOT in collidables, so
-        // it still blocks nothing and the player still walks through it.
-        const occlusionParts = [];
+        // ---- Pass 3b: analytic canopy spheres for the dither probe ----
+        // BaseTreeLeaveBunch is intentionally non-collidable, so the dither
+        // probes - which raycast collidables - cannot see it, leaving the part
+        // most likely to be covering the player unable to trigger the dissolve
+        // on its own. Two mesh-based fixes were tried and both cost too much:
+        // real geometry per tree measured 88fps against 128, and even a box
+        // proxy still meant 193 extra Object3Ds being raycast and culled.
+        //
+        // No mesh at all here. A canopy is close enough to a ball that a
+        // segment-to-sphere distance test answers "is a tree between the
+        // camera and the player" directly - about ten floating point
+        // operations per tree, against a Mesh.raycast that inverts a matrix
+        // and walks bounding sphere, bounding box and triangles. It also
+        // sidesteps the backface problem for free: with the camera INSIDE the
+        // canopy the nearest point on the segment is the camera itself, so
+        // the test still reports a hit, where a FrontSide mesh reported
+        // nothing at all.
+        //
+        // Radius comes from the horizontal spread rather than the box
+        // diagonal - a circumscribing sphere would reach well past the leaves
+        // and start dissolving trees that are merely near the player.
+        const canopyBox = new THREE.Box3();
+        let haveCanopy = false;
         sources.forEach(src => {
-            // Everything except the fine fringe, i.e. exactly what a viewer
-            // sees as the tree's solid mass.
             if (!src.visualOnly || src.cosmetic) return;
-            const flat = src.geometry.index ? src.geometry.toNonIndexed() : src.geometry.clone();
-            const part = new THREE.BufferGeometry();
-            part.setAttribute('position', flat.getAttribute('position').clone());
-            part.applyMatrix4(src.rel);
-            occlusionParts.push(part);
-            flat.dispose();
+            const placed = src.geometry.clone().applyMatrix4(src.rel);
+            placed.computeBoundingBox();
+            if (haveCanopy) canopyBox.union(placed.boundingBox); else { canopyBox.copy(placed.boundingBox); haveCanopy = true; }
+            placed.dispose();
         });
-        const treeOcclusionGeo = occlusionParts.length ? BufferGeometryUtils.mergeGeometries(occlusionParts, false) : null;
-        occlusionParts.forEach(g => g.dispose());
-        if (treeOcclusionGeo) {
+        if (haveCanopy) {
+            const cSize = new THREE.Vector3(); canopyBox.getSize(cSize);
+            const cCenter = new THREE.Vector3(); canopyBox.getCenter(cCenter);
+            const localR = 0.5 * Math.max(cSize.x, cSize.z);
             placements.forEach(p => {
-                const probe = new THREE.Mesh(treeOcclusionGeo, colliderMat);
-                probe.position.set(p.x, 0, p.z);
-                probe.rotation.y = p.rotY;
-                probe.scale.setScalar(p.scale);
-                probe.castShadow = false;
-                probe.receiveShadow = false;
-                probe.userData.isTreeCollider = true;
-                probe.updateMatrixWorld(true);
-                levelGroup.add(probe);
-                ditherProbeTargets.push(probe);
+                // Tree transforms are position + Y rotation + uniform scale,
+                // and a sphere is rotation invariant, so the Y rotation can
+                // simply be ignored when placing the centre.
+                ditherProbeSpheres.push({
+                    x: p.x + cCenter.x * p.scale,
+                    y: cCenter.y * p.scale,
+                    z: p.z + cCenter.z * p.scale,
+                    r: localR * p.scale,
+                });
             });
         }
 
@@ -4258,13 +4268,16 @@ export function startGame(CharacterClass) {
                         // would otherwise still hit it.
                         c.raycast = () => {};
                     } else {
-                        // BaseTreeLeaveBunch: still no collision, but the
-                        // dither probes have to be able to see it or the very
-                        // part most likely to be hiding the player never
-                        // triggers the dissolve. Probe list only - it is never
-                        // pushed into collidables.
-                        c.userData.isTreeCollider = true;
-                        ditherProbeTargets.push(c);
+                        // BaseTreeLeaveBunch: still no collision and no
+                        // raycast, but the dither probe has to know it is
+                        // there or the part most likely to be hiding the
+                        // player never triggers the dissolve. Registered as a
+                        // plain sphere, same as the forest canopies.
+                        c.raycast = () => {};
+                        const bb = new THREE.Box3().setFromObject(c);
+                        const bc = bb.getCenter(new THREE.Vector3());
+                        const bs = bb.getSize(new THREE.Vector3());
+                        ditherProbeSpheres.push({ x: bc.x, y: bc.y, z: bc.z, r: 0.5 * Math.max(bs.x, bs.z) });
                     }
                     return;
                 }
@@ -5262,11 +5275,13 @@ export function startGame(CharacterClass) {
 
     async function buildLevel() {
         while(levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
-        // Player-placed blocks live in levelGroup, so the wipe above already
-        // took them out of the scene - drop the dither list with them or it
-        // keeps raycasting against detached meshes forever.
+        // Both lists hold per-level objects that levelGroup's wipe above just
+        // detached. Deliberately NOT ditherAlwaysOnMats: the tree materials in
+        // there are registered once by the Tree.glb loader and never again, so
+        // clearing that list would silently kill tree dithering from the first
+        // rebuild onward.
         ditherOccluders.length = 0;
-        ditherProbeTargets.length = 0;
+        ditherProbeSpheres.length = 0;
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
@@ -5413,17 +5428,17 @@ export function startGame(CharacterClass) {
     // a quarter of the pixels keeps the block's shape and edges readable, so
     // you can still judge what you are standing on/next to while seeing
     // through it.
-    window.ditherStrength = 0.78;
+    window.ditherStrength = 0.90;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
-    window.ditherFadeSpeed = 8.0;
+    window.ditherFadeSpeed = 2.0;
     // Radius of the see-through hole, in FRAMEBUFFER pixels (gl_FragCoord is
     // in framebuffer space, so this is compared against a drawing-buffer size,
     // not CSS pixels - they differ by devicePixelRatio on a phone).
-    window.ditherHoleRadius = 190;
+    window.ditherHoleRadius = 200;
     // Where the fade from clear to solid happens, as a fraction of the radius.
     // A hard cutoff draws an obvious circle outline on the block.
-    window.ditherHoleFeather = 0.45;
+    window.ditherHoleFeather = 0.50;
     // Hole on: only a soft circle around the player dissolves. Hole off: a
     // detected occluder dissolves whole, which is the cruder original
     // behaviour and mostly here to compare against. On by default - a block
@@ -5442,7 +5457,7 @@ export function startGame(CharacterClass) {
     // across, so objects spanning the player's depth thin out instead of being
     // sliced. Larger = softer, but starts eating things well in front of the
     // player too.
-    window.ditherDepthFade = 2.2;
+    window.ditherDepthFade = 4.5;
     const _ditherDepthFadeUniform = { value: window.ditherDepthFade };
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
@@ -5506,31 +5521,32 @@ export function startGame(CharacterClass) {
         return uniform;
     }
 
-    // Blocks the player has placed, tracked so the occlusion test below only
-    // has to look at them rather than every collidable in the level.
+    // Player-placed blocks, probed individually so only the ones genuinely
+    // covering the player dissolve.
     const ditherOccluders = [];
-    // Extra probe-only targets: geometry that visually hides the player but is
-    // intentionally absent from collidables, so the probes would otherwise
-    // never see it (BaseTreeLeaveBunch). Raycast against for the dither test
-    // and nothing else - never for collision.
-    const ditherProbeTargets = [];
+    // Stand-ins for geometry that hides the player but is deliberately absent
+    // from collidables - the BaseTreeLeaveBunch canopy mass. Plain
+    // {x,y,z,r} spheres tested with arithmetic, NOT scene objects: see the
+    // canopy-sphere pass in buildForestLevel for why a mesh proxy was too
+    // expensive at 193 trees.
+    const ditherProbeSpheres = [];
     const _ditherRay = new THREE.Raycaster();
     const _ditherDir = new THREE.Vector3();
-    const _ditherTargetPoint = new THREE.Vector3();
     const _ditherRight = new THREE.Vector3();
     const _ditherUp = new THREE.Vector3();
-    const _ditherScreenVec = new THREE.Vector3();
     const _ditherProbeDir = new THREE.Vector3();
+    const _ditherTargetPoint = new THREE.Vector3();
+    const _ditherScreenVec = new THREE.Vector3();
     const _ditherDrawSize = new THREE.Vector2();
     // Radius of the probe bundle in world units - roughly the player's own
     // half-width, so the sampled volume is about the size of the thing being
     // kept visible.
-    window.ditherProbeRadius = 0.55;
-    // Current faded amount for the tree materials as a group.
+    window.ditherProbeRadius = 0.20;
+    // Faded amount for the trees, which can only move as one group: all ~193
+    // of them share one InstancedMesh per source mesh, so there is no
+    // per-tree material to raise or lower.
     let _ditherTreeAmount = 0;
     function updateDitherOccluders(cam, playerPoint, delta) {
-        // Screen-space uniforms feed the shader hole and are needed whether or
-        // not anything is currently occluding, so they are written first.
         _ditherScreenVec.copy(playerPoint).project(cam);
         renderer.getDrawingBufferSize(_ditherDrawSize);
         _ditherScreenUniform.value.set(
@@ -5544,21 +5560,18 @@ export function startGame(CharacterClass) {
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
 
-        // A bundle of parallel-ish probes standing in for the spherecast
-        // three.js does not have: the centre of the player plus four offsets
-        // on the axes PERPENDICULAR to the view direction, which sweeps a
-        // rough cylinder the width of the body instead of an infinitely thin
-        // line. A single ray kept slipping past block edges while the body
-        // was still visibly behind them.
+        // Everything is gated on these probes. Letting the shader decide
+        // alone - "in front of the player and inside the hole" - reads as the
+        // occlusion test but is not one: stand BESIDE a wall and the part of
+        // it nearer the camera than you still satisfies both conditions, so it
+        // dissolved with nothing hidden behind it. Only a ray that actually
+        // reaches the player can tell "in front of" from "covering".
         //
-        // EVERYTHING dithering is gated on these probes, trees included.
-        // Letting the shader's circle+depth test decide on its own looked
-        // right in the common case but fired when nothing was hidden at all:
-        // stand beside a block and the part of it nearer the camera than the
-        // player still satisfies "inside the circle AND in front of the
-        // player", so a wedge of it dissolved for no reason. Depth alone
-        // cannot tell "in front of the player" from "actually covering the
-        // player" - only a probe that reaches the player can.
+        // A bundle rather than a single ray, standing in for the spherecast
+        // three.js does not have: the player centre plus four offsets on the
+        // axes PERPENDICULAR to the view direction, sweeping a rough cylinder
+        // the width of the body. One ray kept slipping past edges while the
+        // body was still visibly behind them.
         for (let i = 0; i < ditherOccluders.length; i++) ditherOccluders[i].userData._ditherWanted = false;
         let treeWanted = false;
         _ditherDir.copy(playerPoint).sub(cam.position);
@@ -5570,39 +5583,40 @@ export function startGame(CharacterClass) {
             _ditherUp.crossVectors(_ditherRight, _ditherDir).normalize();
         }
         const r = window.ditherProbeRadius;
-        for (let s = 0; s < 5; s++) {
+        for (let sIdx = 0; sIdx < 5; sIdx++) {
             _ditherTargetPoint.copy(playerPoint);
-            if (s === 1) _ditherTargetPoint.addScaledVector(_ditherRight, r);
-            else if (s === 2) _ditherTargetPoint.addScaledVector(_ditherRight, -r);
-            else if (s === 3) _ditherTargetPoint.addScaledVector(_ditherUp, r);
-            else if (s === 4) _ditherTargetPoint.addScaledVector(_ditherUp, -r);
+            if (sIdx === 1) _ditherTargetPoint.addScaledVector(_ditherRight, r);
+            else if (sIdx === 2) _ditherTargetPoint.addScaledVector(_ditherRight, -r);
+            else if (sIdx === 3) _ditherTargetPoint.addScaledVector(_ditherUp, r);
+            else if (sIdx === 4) _ditherTargetPoint.addScaledVector(_ditherUp, -r);
             const dir = _ditherProbeDir.copy(_ditherTargetPoint).sub(cam.position);
             const dist = dir.length();
             if (dist < 0.01) continue;
             _ditherRay.set(cam.position, dir.normalize());
             _ditherRay.far = dist - 0.3;
-            // Probed against collidables rather than a private list so tree
-            // collision meshes are included: those are the only per-tree
-            // objects that exist (the visuals are instanced), so they are
-            // what has to answer "is a tree in the way" on the forest's
-            // behalf. The short far limit lets Mesh.raycast reject almost
-            // every tree on its bounding sphere before touching a triangle.
-            const hits = _ditherRay.intersectObjects(collidables, false);
-            for (let h = 0; h < hits.length; h++) {
-                const o = hits[h].object;
-                if (o.userData.isTreeCollider) treeWanted = true;
-                else if (o.material && o.material.userData && o.material.userData.ditherUniform) o.userData._ditherWanted = true;
+            const hits = _ditherRay.intersectObjects(ditherOccluders, false);
+            for (let h = 0; h < hits.length; h++) hits[h].object.userData._ditherWanted = true;
+            // Canopy spheres: closest point on the camera-to-player segment,
+            // compared against the radius. Squared distances throughout, so
+            // there is no square root anywhere in the loop. Stops at the first
+            // hit since every sphere can only set the same one flag.
+            if (!treeWanted) {
+                for (let c = 0; c < ditherProbeSpheres.length; c++) {
+                    const sp = ditherProbeSpheres[c];
+                    const ox = sp.x - cam.position.x, oy = sp.y - cam.position.y, oz = sp.z - cam.position.z;
+                    // Projection of the sphere centre onto the ray, clamped to
+                    // the segment. Clamping at 0 is what makes a camera
+                    // already inside the canopy report a hit rather than
+                    // sliding past it.
+                    let t = ox * dir.x + oy * dir.y + oz * dir.z;
+                    if (t < 0) t = 0; else if (t > _ditherRay.far) t = _ditherRay.far;
+                    const dx = ox - dir.x * t, dy = oy - dir.y * t, dz = oz - dir.z * t;
+                    if (dx * dx + dy * dy + dz * dz <= sp.r * sp.r) { treeWanted = true; break; }
+                }
             }
-            // Second pass over the non-collidable canopy proxies. Skipped
-            // entirely once a tree has already been found, since they can only
-            // ever set the same flag.
-            if (!treeWanted && ditherProbeTargets.length && _ditherRay.intersectObjects(ditherProbeTargets, false).length) treeWanted = true;
         }
 
         const step = window.ditherFadeSpeed * delta;
-        // Trees move as one group - see ditherAlwaysOnMats for why there is no
-        // per-tree control to have. Held at 0 when the hole is off, since
-        // without it the shader would dissolve the whole forest at once.
         const treeTarget = (window.ditherHoleEnabled && treeWanted) ? window.ditherStrength : 0;
         _ditherTreeAmount += THREE.MathUtils.clamp(treeTarget - _ditherTreeAmount, -step, step);
         for (let i = 0; i < ditherAlwaysOnMats.length; i++) {
@@ -5613,8 +5627,8 @@ export function startGame(CharacterClass) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
             if (!u) continue;
-            const target = obj.userData._ditherWanted ? window.ditherStrength : 0;
-            u.value += THREE.MathUtils.clamp(target - u.value, -step, step);
+            const blockTarget = obj.userData._ditherWanted ? window.ditherStrength : 0;
+            u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
     }
 
@@ -11218,9 +11232,9 @@ export function startGame(CharacterClass) {
                 // An occluder that is already dissolving is showing the
                 // player through itself, so stacking the ghost on top of it
                 // just muddies both - that washed-out doubled look. Only
-                // something still solid earns one. Trees are checked through
-                // the group-wide tree amount, since their collider carries no
-                // material of its own to read.
+                // something still solid earns one. Trees are recognised by
+                // their collider flag, since that mesh carries no material of
+                // its own to read the dither state from.
                 if (obj.userData.isTreeCollider) { if (_ditherTreeAmount > 0.3) continue; }
                 else {
                     const m = obj.material;
