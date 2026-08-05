@@ -93,3 +93,7 @@
 ::1 - - [05/Aug/2026 06:05:34] "GET /game_js.js HTTP/1.1" 200 -
 ::1 - - [05/Aug/2026 06:05:34] "GET /VillageModel/Tree.glb HTTP/1.1" 304 -
 ::1 - - [05/Aug/2026 06:07:00] "GET /sw.js HTTP/1.1" 304 -
+::1 - - [05/Aug/2026 06:23:03] "GET /ClimbGame.html HTTP/1.1" 304 -
+::1 - - [05/Aug/2026 06:23:03] "GET /game_js.js HTTP/1.1" 200 -
+::1 - - [05/Aug/2026 06:23:04] "GET /VillageModel/Tree.glb HTTP/1.1" 304 -
+::1 - - [05/Aug/2026 06:24:04] "GET /sw.js HTTP/1.1" 304 -

@@ -3985,7 +3985,9 @@ export function startGame(CharacterClass) {
             // parent chain of its own to inherit it from.
             const rel = new THREE.Matrix4().multiplyMatrices(_srcInv, o.matrixWorld);
             const mat = Array.isArray(o.material) ? o.material[0] : o.material;
-            sources.push({ geometry: o.geometry, material: mat, rel, visualOnly: isTreeVisualOnly(o) });
+            const cosmetic = (Array.isArray(o.material) ? o.material : [o.material])
+                .some(m => m && m.userData && m.userData.isCosmeticLeaf);
+            sources.push({ geometry: o.geometry, material: mat, rel, visualOnly: isTreeVisualOnly(o), cosmetic });
         });
 
         const _treeMat = new THREE.Matrix4();
@@ -4081,6 +4083,43 @@ export function startGame(CharacterClass) {
                 col.updateMatrixWorld(true);
                 levelGroup.add(col);
                 collidables.push(col);
+            });
+        }
+
+        // ---- Pass 3b: probe-only proxy for BaseTreeLeaveBunch ----
+        // The lower canopy mass is deliberately not collidable, so the dither
+        // probes - which read collidables - could not see it. That meant the
+        // one part most likely to be covering the player was also the one part
+        // that never triggered the dissolve on its own: it only came on when a
+        // trunk or an upper chunk happened to be in the way too. This mesh
+        // exists purely to answer those probes. It is NOT in collidables, so
+        // it still blocks nothing and the player still walks through it.
+        const occlusionParts = [];
+        sources.forEach(src => {
+            // Everything except the fine fringe, i.e. exactly what a viewer
+            // sees as the tree's solid mass.
+            if (!src.visualOnly || src.cosmetic) return;
+            const flat = src.geometry.index ? src.geometry.toNonIndexed() : src.geometry.clone();
+            const part = new THREE.BufferGeometry();
+            part.setAttribute('position', flat.getAttribute('position').clone());
+            part.applyMatrix4(src.rel);
+            occlusionParts.push(part);
+            flat.dispose();
+        });
+        const treeOcclusionGeo = occlusionParts.length ? BufferGeometryUtils.mergeGeometries(occlusionParts, false) : null;
+        occlusionParts.forEach(g => g.dispose());
+        if (treeOcclusionGeo) {
+            placements.forEach(p => {
+                const probe = new THREE.Mesh(treeOcclusionGeo, colliderMat);
+                probe.position.set(p.x, 0, p.z);
+                probe.rotation.y = p.rotY;
+                probe.scale.setScalar(p.scale);
+                probe.castShadow = false;
+                probe.receiveShadow = false;
+                probe.userData.isTreeCollider = true;
+                probe.updateMatrixWorld(true);
+                levelGroup.add(probe);
+                ditherProbeTargets.push(probe);
             });
         }
 
@@ -4211,10 +4250,22 @@ export function startGame(CharacterClass) {
                 c.castShadow = !mats.some(m => m && m.userData && m.userData.noShadow);
                 c.receiveShadow = true;
                 if (visualOnly) {
-                    // Belt and braces alongside the collidables skip: a
-                    // raycast aimed straight at the scene graph (rather than
-                    // at the collidables array) would otherwise still hit it.
-                    c.raycast = () => {};
+                    const cosmetic = mats.some(m => m && m.userData && m.userData.isCosmeticLeaf);
+                    if (cosmetic) {
+                        // The fringe answers nothing at all - belt and braces
+                        // alongside the collidables skip, since a raycast
+                        // aimed at the scene graph rather than at collidables
+                        // would otherwise still hit it.
+                        c.raycast = () => {};
+                    } else {
+                        // BaseTreeLeaveBunch: still no collision, but the
+                        // dither probes have to be able to see it or the very
+                        // part most likely to be hiding the player never
+                        // triggers the dissolve. Probe list only - it is never
+                        // pushed into collidables.
+                        c.userData.isTreeCollider = true;
+                        ditherProbeTargets.push(c);
+                    }
                     return;
                 }
                 // Same exemption the forest colliders get - a canopy chunk's
@@ -5215,6 +5266,7 @@ export function startGame(CharacterClass) {
         // took them out of the scene - drop the dither list with them or it
         // keeps raycasting against detached meshes forever.
         ditherOccluders.length = 0;
+        ditherProbeTargets.length = 0;
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
@@ -5457,6 +5509,11 @@ export function startGame(CharacterClass) {
     // Blocks the player has placed, tracked so the occlusion test below only
     // has to look at them rather than every collidable in the level.
     const ditherOccluders = [];
+    // Extra probe-only targets: geometry that visually hides the player but is
+    // intentionally absent from collidables, so the probes would otherwise
+    // never see it (BaseTreeLeaveBunch). Raycast against for the dither test
+    // and nothing else - never for collision.
+    const ditherProbeTargets = [];
     const _ditherRay = new THREE.Raycaster();
     const _ditherDir = new THREE.Vector3();
     const _ditherTargetPoint = new THREE.Vector3();
@@ -5536,6 +5593,10 @@ export function startGame(CharacterClass) {
                 if (o.userData.isTreeCollider) treeWanted = true;
                 else if (o.material && o.material.userData && o.material.userData.ditherUniform) o.userData._ditherWanted = true;
             }
+            // Second pass over the non-collidable canopy proxies. Skipped
+            // entirely once a tree has already been found, since they can only
+            // ever set the same flag.
+            if (!treeWanted && ditherProbeTargets.length && _ditherRay.intersectObjects(ditherProbeTargets, false).length) treeWanted = true;
         }
 
         const step = window.ditherFadeSpeed * delta;
