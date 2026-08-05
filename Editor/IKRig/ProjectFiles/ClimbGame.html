@@ -502,6 +502,17 @@
             </div>
 
             <div class="category">
+                <div class="category-header">Shadows</div>
+                <div class="category-content">
+                    <label>Shadow Range: <span id="shadow-range-val">80</span></label><br>
+                    <input type="range" id="shadow-range-slider" min="20" max="250" step="5" value="80" style="width: 100%;"><br>
+                    <label style="opacity:.75;font-size:11px;">Radius around the player that has shadows at all. Smaller =
+                    sharper, better self-shadowing (head on shoulders, contact with the ground). Larger = shadows further
+                    out but blurrier, and past roughly 150 too coarse to resolve the character onto itself.</label><br>
+                </div>
+            </div>
+
+            <div class="category">
                 <div class="category-header">Camera Dither</div>
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-dither-hole" checked> Hole around player</label><br>

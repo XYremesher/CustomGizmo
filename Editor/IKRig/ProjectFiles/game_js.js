@@ -544,87 +544,73 @@ export function startGame(CharacterClass) {
     composer.addPass(new OutputPass());
 
     // ---- Light budget ----
-    // Only the two shadow-casting directionals can ever be occluded, so
-    // ambient + fillLight set a hard FLOOR on how dark anything in shadow can
-    // get. That floor used to be 1.6 of a 2.6 total (0.6 ambient + 1.0
-    // unshadowed fill) - 62% brightness retained inside a full shadow. On
-    // ordinary geometry the surface's own orientation still darkens it so a
-    // shadow reads anyway, but grass tufts and the leaf cards deliberately
-    // carry a flat, forced normal (see grassCrossGeo and the leaf
-    // onBeforeCompile) precisely so orientation does NOT shade them - which
-    // left the shadow map as their only source of darkening, and 62% of it
-    // surviving meant a shadowed tuft looked barely different from a lit one:
-    // exactly the "these surfaces look like they never received a shadow"
-    // report. Rebalanced to a floor of 1.05 of the same 2.6 total (40%), by
-    // moving most of fillLight's weight into farShadowLight, which covers the
-    // same directions but can actually be occluded.
+    // ONE shadow-casting directional, not two. There used to be a tight,
+    // sharp "near" light plus a wide, coarse "far" one, and that split was
+    // the direct cause of two separate complaints:
+    //
+    //   - A visible SEAM. The two boxes cover different areas with no
+    //     blending between them, so shadow depth changed in a step exactly
+    //     where the near box ended. That is what a real cascaded shadow map
+    //     solves by blending cascades; three.js has no built-in blend, so
+    //     the seam was not tunable away.
+    //   - NO SELF-SHADOWING. Only the fine near map could resolve the head
+    //     onto the shoulders or a contact patch on the ground, but anything
+    //     outside its box reads as fully lit BY IT regardless of occlusion,
+    //     so its intensity was a hard floor under how dark a distant shadow
+    //     could get. Splitting the budget to fix distant shadows starved
+    //     the near light down to ~10% and its detail stopped being visible.
+    //
+    // A single light removes the seam by construction and gets the whole
+    // budget, so its detail actually shows. The box is sized so the texel
+    // density MATCHES the old near light (0.039 world units) while covering
+    // twice the radius, because the map is 4096 rather than 2048 - 160/4096
+    // is the same as 80/2048. It is also one shadow pass instead of two.
+    //
+    // What is genuinely given up: beyond shadowRange from the player there
+    // is no shadow at all, where the old far light reached 200 units. That
+    // edge is a cliff rather than a seam, and it sits twice as far out.
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    // Intensity split with farShadowLight below (0.4 + 0.6 = the original
-    // 1.0) rather than left at a full 1.0 - a fragment OUTSIDE this light's
-    // own tight shadow box has no shadow data for it and always reads as
-    // fully lit BY THIS LIGHT regardless of real occlusion, so whatever
-    // intensity dirLight keeps becomes a hard floor under how dark a FAR
-    // shadow (only covered by farShadowLight) can ever get. Lower dirLight,
-    // higher farShadowLight = a darker, more convincing far shadow; full
-    // blackout directly under the player is unaffected either way since
-    // there both lights are properly shadowed and sum to 0 regardless of
-    // how the 1.0 is divided between them.
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.25);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.55);
     dirLight.position.set(0.1, 40, 0.1);
     dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
-    dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 150;
-    // Half-extent of the shadow camera's box, kept as a named constant since
-    // buildGrass() below needs the exact same number - anything placed
-    // outside this box samples the shadow map past its own edge (clamped/
-    // undefined depth comparison), which reads as random dark speckling on
-    // perfectly lit ground. Not widened to cover the full grass field: the
-    // same 2048x2048 texel budget spread over a bigger box would blur the
-    // shadows that matter most (the player, the level geometry near it) -
-    // see buildGrass's own comment for the alternative taken instead.
-    const SHADOW_CAMERA_HALF_EXTENT = 40;
-    window._shadowCameraHalfExtent = SHADOW_CAMERA_HALF_EXTENT;
-    dirLight.shadow.camera.left = -SHADOW_CAMERA_HALF_EXTENT; dirLight.shadow.camera.right = SHADOW_CAMERA_HALF_EXTENT;
-    dirLight.shadow.camera.top = SHADOW_CAMERA_HALF_EXTENT; dirLight.shadow.camera.bottom = -SHADOW_CAMERA_HALF_EXTENT;
-    dirLight.shadow.bias = -0.0001; dirLight.shadow.normalBias = 0.02;
+    dirLight.shadow.mapSize.width = 4096; dirLight.shadow.mapSize.height = 4096;
+    dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 200;
+    // Live-tunable: the one meaningful knob now that there is a single
+    // light. Smaller = sharper shadows and better self-shadowing over a
+    // smaller area; larger = shadows further out but blurrier, and
+    // eventually too coarse to resolve the character onto itself.
+    window.shadowRange = 80;
+    window._shadowCameraHalfExtent = window.shadowRange;
+    function applyShadowRange() {
+        const r = window.shadowRange;
+        window._shadowCameraHalfExtent = r;
+        dirLight.shadow.camera.left = -r; dirLight.shadow.camera.right = r;
+        dirLight.shadow.camera.top = r; dirLight.shadow.camera.bottom = -r;
+        dirLight.shadow.camera.updateProjectionMatrix();
+        // Bias has to scale with texel size or it stops matching: too little
+        // and surfaces self-shadow into acne, too much and shadows detach
+        // from their casters (the head losing contact with the ground).
+        // These are the values that worked at the old 0.039 density,
+        // expressed as a ratio of it.
+        const texel = (r * 2) / dirLight.shadow.mapSize.width;
+        dirLight.shadow.normalBias = 0.02 * (texel / 0.039);
+        dirLight.shadow.bias = -0.0001 * (texel / 0.039);
+    }
+    applyShadowRange();
     scene.add(dirLight); scene.add(dirLight.target);
 
-    // Second, angled "fill" light - no shadow map (the expensive part of a
-    // light, not the lighting math itself), so it's cheap to have a second
+    // Angled "fill" light - no shadow map (the expensive part of a light,
+    // not the lighting math itself), so it is cheap to have a second
     // directional source giving depth/rim definition from the side instead
     // of everything being lit from directly overhead. Kept well below its
-    // original 1.0 because it can never be occluded: see the light-budget
-    // note above for why an unshadowable light of that weight stopped
-    // flat-normal surfaces (grass, leaf cards) from reading as shadowed at
-    // all. Still enough to keep the side definition it exists for.
+    // original 1.0 because it can never be occluded, and an unshadowable
+    // light of that weight stopped flat-normal surfaces (grass, leaf cards)
+    // from reading as shadowed at all: with ambient it sets the floor on how
+    // dark anything in shadow can get, currently 1.05 of a 2.60 total (40%).
     const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
     fillLight.position.set(-25, 15, -20);
     fillLight.castShadow = false;
     scene.add(fillLight); scene.add(fillLight.target);
-
-    // Third directional source, same direction/tracking as dirLight (see
-    // the lightTrack update in the main loop, which now moves this one too)
-    // but with a much wider shadow frustum - dirLight's own box is
-    // deliberately tight (SHADOW_CAMERA_HALF_EXTENT=40) to keep its
-    // 2048x2048 map's texel density high near the player, which means
-    // anything outside that box gets no shadow at all. This light fills
-    // that gap. Carries the MAJORITY of the total 1.0 directional budget
-    // (see dirLight's own comment above) specifically so a far shadow -
-    // only this light properly occludes it, dirLight leaks through
-    // unshadowed there - bottoms out close to true dark instead of a pale
-    // half-shadow. Also full 2048 res (not a cheaper 1024) since it now
-    // carries most of the near-player shadow weight too, not just the far
-    // field - a coarser map here would soften close-up shadow edges that
-    // used to be crisp from dirLight alone.
-    const farShadowLight = new THREE.DirectionalLight(0xffffff, 1.30);
-    farShadowLight.castShadow = true;
-    farShadowLight.shadow.mapSize.width = 4096; farShadowLight.shadow.mapSize.height = 4096;
-    farShadowLight.shadow.camera.near = 0.5; farShadowLight.shadow.camera.far = 500;
-    const FAR_SHADOW_HALF_EXTENT = 200;
-    farShadowLight.shadow.camera.left = -FAR_SHADOW_HALF_EXTENT; farShadowLight.shadow.camera.right = FAR_SHADOW_HALF_EXTENT;
-    farShadowLight.shadow.camera.top = FAR_SHADOW_HALF_EXTENT; farShadowLight.shadow.camera.bottom = -FAR_SHADOW_HALF_EXTENT;
-    farShadowLight.shadow.bias = -0.0003; farShadowLight.shadow.normalBias = 0.08;
-    scene.add(farShadowLight); scene.add(farShadowLight.target);
 
     const collidables = [];
     window.collidables = collidables;
@@ -794,13 +780,12 @@ export function startGame(CharacterClass) {
         const half = window.grassArea;
         const blockers = collidables.filter(c => c !== ground);
         // Two buckets per texture: instances inside the shadow camera's own
-        // box get receiveShadow, instances outside it don't - see the
-        // SHADOW_CAMERA_HALF_EXTENT comment on dirLight for why. A small
-        // margin short of the true edge (not the full 40) because shadow
-        // sampling gets unreliable in the last few units near the frustum
-        // boundary too (PCF filter kernel reaches past the edge), not just
-        // strictly outside it.
-        const shadowSafe = (window._shadowCameraHalfExtent || 40) - 3;
+        // box get receiveShadow, instances outside it don't - see
+        // window.shadowRange on dirLight for why. A small margin short of the
+        // true edge because shadow sampling gets unreliable in the last few
+        // units near the frustum boundary too (the PCF filter kernel reaches
+        // past the edge), not just strictly outside it.
+        const shadowSafe = (window._shadowCameraHalfExtent || 80) - 3;
         const perMat = grassMats.map(() => ({ near: [], far: [] }));
         // Tallest a tuft can come out at the CURRENT Size/Height settings
         // (matches the s/h random ranges below: size up to *1.35, height up
@@ -870,17 +855,16 @@ export function startGame(CharacterClass) {
                 // other/the ground would be expensive for very little payoff,
                 // and self-shadowing thin cutout cards tends to look noisy).
                 //
-                // RECEIVES shadows in both buckets. Originally 'near'-only:
-                // outside dirLight's own tight box, sampling ITS shadow map
-                // reads past its own edge (clamped/undefined depth), which
-                // showed up as random dark speckling on ground nothing was
-                // actually shadowing. That's still true of dirLight alone,
-                // but farShadowLight's own box (FAR_SHADOW_HALF_EXTENT=200)
-                // now covers the entire possible grass field (grassArea
-                // tops out at 150), so 'far'-bucket tufts have a valid
-                // shadow map to sample too - leaving them at false after
-                // farShadowLight was added just meant distant grass could
-                // never show a shadow at all, light or dark.
+                // RECEIVES shadows in both buckets. Originally 'near'-only,
+                // because tufts outside the shadow camera's box sampled its
+                // map past the edge and showed random dark speckling on
+                // ground nothing was actually shadowing. Kept on for both now
+                // that there is a single light: three.js's getShadow does its
+                // own in-frustum test and simply returns "lit" outside the
+                // box, so the failure mode is a missing shadow rather than a
+                // wrong one. Only the boundary itself is delicate, where the
+                // PCF kernel can still reach past the edge - that is what the
+                // shadowSafe margin above is for.
                 inst.castShadow = false;
                 inst.receiveShadow = true;
                 inst.raycast = () => {};                  // never answer a world probe
@@ -1859,6 +1843,15 @@ export function startGame(CharacterClass) {
                 // fix below, which they equally need.
                 if (name === 'leave') { alphaTest = window.grassAlphaTest; isLeaf = true; isCosmeticLeaf = true; }
                 else if (name === 'TreeLeaveBunch') { alphaTest = 0.85; isLeaf = true; }
+                // DoubleSide, and FrontSide was tried and measured worse on
+                // both counts it was supposed to help. The idea was sound -
+                // these are closed-ish volumes, so culling backfaces should
+                // have halved the leaf fragments in the fill-rate-bound
+                // canopy - but three.js maps a FrontSide material to
+                // shadowSide BackSide, which renders the far surface into the
+                // shadow map, and that lost the canopy's ground shadows
+                // entirely. It also came out SLOWER: 121fps against 134.
+                // Reverted rather than chased.
                 const mat = new THREE.MeshToonMaterial({
                     map: m && m.map ? m.map : null,
                     gradientMap: threeTone,
@@ -6867,6 +6860,9 @@ export function startGame(CharacterClass) {
         // Dither: all read straight off window.* by the per-frame uniform
         // update, so recording the value here is all that is needed - no
         // rebuild, no material touch.
+        // Re-scatters grass as well: its 'near'/'far' shadow-receiving split
+        // is keyed to this same extent (see shadowSafe in buildGrass).
+        { id: 'shadow-range-slider', vId: 'shadow-range-val', func: v => { window.shadowRange = v; applyShadowRange(); }, fix: 0, raw: true },
         { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
         { id: 'dither-hole-feather-slider', vId: 'dither-hole-feather-val', func: v => window.ditherHoleFeather = v, fix: 2 },
@@ -8970,18 +8966,11 @@ export function startGame(CharacterClass) {
         // orthographic camera looking down, moving along its view direction
         // does not change which world point maps to which texel.
         //
-        // Each light needs its OWN step - texel size is its frustum width
-        // over its map resolution, and the two differ by more than 2x.
-        const dirTexel = (SHADOW_CAMERA_HALF_EXTENT * 2) / dirLight.shadow.mapSize.width;
-        const farTexel = (FAR_SHADOW_HALF_EXTENT * 2) / farShadowLight.shadow.mapSize.width;
+        const dirTexel = (window.shadowRange * 2) / dirLight.shadow.mapSize.width;
         const dirSnapX = Math.round(lightTrack.x / dirTexel) * dirTexel;
         const dirSnapZ = Math.round(lightTrack.z / dirTexel) * dirTexel;
-        const farSnapX = Math.round(lightTrack.x / farTexel) * farTexel;
-        const farSnapZ = Math.round(lightTrack.z / farTexel) * farTexel;
         dirLight.position.set(dirSnapX, lightTrack.y + 40, dirSnapZ);
         dirLight.target.position.set(dirSnapX, lightTrack.y, dirSnapZ);
-        farShadowLight.position.set(farSnapX, lightTrack.y + 40, farSnapZ);
-        farShadowLight.target.position.set(farSnapX, lightTrack.y, farSnapZ);
 
         // window.dialogueInputLocked (see the village NPC dialogue) forces
         // both raw axes to 0 regardless of source - one gate here covers
