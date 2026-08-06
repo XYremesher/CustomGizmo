@@ -579,7 +579,7 @@ export function startGame(CharacterClass) {
     // light. Smaller = sharper shadows and better self-shadowing over a
     // smaller area; larger = shadows further out but blurrier, and
     // eventually too coarse to resolve the character onto itself.
-    window.shadowRange = 80;
+    window.shadowRange = 120;
     window._shadowCameraHalfExtent = window.shadowRange;
     function applyShadowRange() {
         const r = window.shadowRange;
@@ -1048,7 +1048,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_forest";
+    let currentLevel = "local_stairs";
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -1081,14 +1081,62 @@ export function startGame(CharacterClass) {
                                     // same recorded climb instead of being stuck below
     const _compTrail = [];          // {t,x,y,z,qx,qy,qz,qw,state}
     let _compTrailT = 0;
-    let _compMode = 'follow';       // 'follow' | 'replay'
+    let _compMode = 'follow';       // 'follow' | 'replay' | 'leap'
     let _replayStartT = 0, _replayT = 0;
     const _compFaceEuler = new THREE.Euler();
     const _compFaceQuat = new THREE.Quaternion();
+    const _compBehindDir = new THREE.Vector3();
     const _compGroundOrigin = new THREE.Vector3();
     const _compGroundList = [];
     const _compVisPos = new THREE.Vector3();   // player's VISUAL (fbxModel) world pos
-    window.companionEnabled = false;   // off by default - added from the panel ('Companion' → Add Companion)
+    // Ledge/gap leap - the companion's ordinary follow movement is a plain
+    // walk plus a vertical glide toward whatever ground is straight below
+    // it (see the FOLLOW section's dy handling), which only works for
+    // ramps/steps where solid footing is close by directly underneath.
+    // Approaching a genuine drop-off it just walked off the edge and glided
+    // straight down at whatever xz it happened to be at when the ground
+    // vanished from under it - fine for a short drop onto ground still
+    // beneath it, but never actually covers a horizontal gap, so it either
+    // fell short of the far side or froze at the edge waiting for ground
+    // that was never going to appear directly below. See the edge-detect
+    // block in FOLLOW for how a leap gets triggered.
+    const _compLeapStart = new THREE.Vector3();
+    const _compLeapEnd = new THREE.Vector3();
+    const _compLeapFaceQuat = new THREE.Quaternion();
+    let _compLeapT = 0, _compLeapDur = 0.35;
+    const COMP_LEAP_EDGE_FWD = 0.6;     // how far ahead to probe for "is there ground where I'm about to step"
+    const COMP_LEAP_EDGE_DROP = 1.3;    // bigger than this counts as an edge, not a step/ramp (those keep gliding)
+    const COMP_LEAP_MAX_DIST = 6.0;     // furthest the landing scan looks for solid footing
+    const COMP_LEAP_LANDING_BAND = 3.0; // landing must be within this much of launch height
+    const COMP_LEAP_SPEED = 6.0;        // horizontal m/s while airborne - sets the leap's duration
+    const COMP_LEAP_ARC_HEIGHT = 1.4;   // visual arc peak above the straight launch->landing line
+    // Climb-up: the same leap, aimed at the TOP of a rise too tall to step
+    // onto, rather than across a gap. This is what lets the companion get
+    // itself out of somewhere the player has never been - the breadcrumb
+    // replay can only climb walls the player already climbed (it needs a
+    // recorded crumb at the companion's own height), so a fall into an
+    // unvisited spot leaves it with no recorded route at all and only its
+    // own ability to haul itself up.
+    // 3.4, not 3.0: a single level block IS exactly cubeSize (3.0) tall, so
+    // a flush "one block up" measures right at the limit and floating point
+    // decides whether it counts - the most common climb in the game must
+    // not be the marginal case.
+    const COMP_CLIMB_MAX = 3.4;         // tallest rise it can pull itself onto
+    const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
+    const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
+    const COMP_CLIMB_LIFT = 0.25;       // extra rise mid-climb so the feet clear the lip - deliberately small
+    const COMP_CLIMB_RATE = 4.5;        // climb units/sec; a full 3-unit block takes ~0.67s, reads as a haul rather than a jump
+    let _compLeapIsClimb = false;       // climb (mantle up a wall) vs gap leap - different flight paths, see LEAP mode
+    // Locomotion clip picker state - low-pass filtered speed plus hysteresis
+    // between the run/walk/idle thresholds. Feeding the raw per-frame speed
+    // straight into a single threshold made the clip flicker between
+    // idle/walk/run every frame whenever the companion's actual speed
+    // happened to sit right at 0.4 or 3.5 (very common: it's usually
+    // accelerating into or decelerating out of its follow spot, not moving
+    // at a constant speed) - see companionLocoState.
+    let _compSpeedSmooth = 0;
+    let _compLocoState = 'idle';
+    window.companionEnabled = true;   // on by default - toggle stays available from the panel ('Companion' → Add Companion)
     const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     const aiBotState = {
@@ -1417,11 +1465,49 @@ export function startGame(CharacterClass) {
         if (statusEl) statusEl.textContent = 'not spawned';
     }
 
+    // Same debug path-line pair aiBot's own createAiBotPathLines/
+    // updateAiBotPathVisual draw (goal = where it's headed, step = the
+    // direction it actually chose this frame after steering) - a separate
+    // copy with its own colors so both can be shown at once without
+    // confusing which line belongs to which. Shares the AI bot's own
+    // ai-bot-path-toggle rather than getting a new checkbox: it's the same
+    // "show me what the steering is doing" tool, just pointed at the
+    // companion, useful for exactly the same reason (diagnosing why it
+    // flickers/stutters going around an obstacle).
+    let companionGoalLine = null, companionStepLine = null;
+    function createCompanionPathLines() {
+        const goalGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        companionGoalLine = new THREE.Line(goalGeo, new THREE.LineBasicMaterial({ color: 0xff66cc }));
+        companionGoalLine.frustumCulled = false;
+        scene.add(companionGoalLine);
+
+        const stepGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        companionStepLine = new THREE.Line(stepGeo, new THREE.LineBasicMaterial({ color: 0x66ffcc }));
+        companionStepLine.frustumCulled = false;
+        scene.add(companionStepLine);
+    }
+    function updateCompanionPathVisual(botPos, goalPos, stepPos) {
+        if (!companionGoalLine || !companionStepLine) return;
+        companionGoalLine.visible = window.aiBotPathVisible;
+        companionStepLine.visible = window.aiBotPathVisible;
+        if (!window.aiBotPathVisible) return;
+        const goalY = botPos.y + 0.1;
+        companionGoalLine.geometry.setFromPoints([
+            new THREE.Vector3(botPos.x, goalY, botPos.z),
+            new THREE.Vector3(goalPos.x, goalY, goalPos.z)
+        ]);
+        companionStepLine.geometry.setFromPoints([
+            new THREE.Vector3(botPos.x, goalY, botPos.z),
+            new THREE.Vector3(stepPos.x, goalY, stepPos.z)
+        ]);
+    }
+
     function spawnCompanion() {
         if (companion) return;
         companion = new RemoteAvatar(scene, threeTone, 'companion');
         window.companion = companion;
         companion.group.position.copy(char.group.position);
+        createCompanionPathLines();
     }
 
     // Highest solid surface under (x,z) (falls back to fallbackY on a miss).
@@ -1431,6 +1517,179 @@ export function startGame(CharacterClass) {
         rayDown.set(_compGroundOrigin, _downVec);
         const hits = rayDown.intersectObjects(_compGroundList, true);
         return hits.length ? hits[0].point.y : fallbackY;
+    }
+
+    // Starts a climb-up leap onto whatever is blocking a step to
+    // (destX, destZ), if there is something there and it's within reach.
+    // Returns true if a leap was started, in which case the caller must
+    // return immediately and let LEAP mode drive.
+    //
+    // Shared by both movement paths, because either can walk face-first
+    // into a wall and neither can do anything about it on its own: the
+    // breadcrumb replay only climbs walls the PLAYER already climbed (it
+    // needs a recorded crumb at the companion's own height), so a fall into
+    // somewhere unvisited leaves no recorded route, and the plain follow
+    // walk has no upward move beyond a single step.
+    function tryCompanionClimbUp(c, destX, destZ, dirX, dirZ) {
+        // companionGroundY reports the topmost surface at an xz, so this is
+        // the height of the thing in the way.
+        const topY = companionGroundY(destX, destZ, c.y);
+        const rise = topY - c.y;
+        if (rise <= COMP_STEP_UP || rise > COMP_CLIMB_MAX) return false;
+        // Aim past the lip, or it lands balanced exactly on the edge and the
+        // next frame's ground probe can miss the block entirely.
+        const climbX = destX + dirX * COMP_CLIMB_INSET;
+        const climbZ = destZ + dirZ * COMP_CLIMB_INSET;
+        const climbTopY = companionGroundY(climbX, climbZ, topY);
+        // Same surface, not a second even taller step just past it - this is
+        // one hop, not a staircase.
+        if (Math.abs(climbTopY - topY) >= 0.6) return false;
+        _compLeapStart.copy(c);
+        _compLeapEnd.set(climbX, climbTopY, climbZ);
+        // Paced by the RISE, not the total distance - a climb should take
+        // longer the taller it is, and the horizontal part of it is
+        // incidental. Using the gap leap's own distance/speed made a tall
+        // climb finish just as fast as a short hop, which is a big part of
+        // why it read as an implausibly powerful jump.
+        _compLeapDur = Math.max(0.45, rise / COMP_CLIMB_RATE);
+        _compLeapT = 0;
+        _compLeapIsClimb = true;
+        _compFaceEuler.set(0, Math.atan2(dirX, dirZ), 0);
+        _compLeapFaceQuat.setFromEuler(_compFaceEuler);
+        _compMode = 'leap';
+        return true;
+    }
+
+    // Picks the companion's idle/walk/run clip from its actual closing
+    // speed toward wherever it's headed this frame (follow spot or replay
+    // takeoff point) - smoothed first, then run through hysteresis, instead
+    // of a bare "speed > threshold" comparison. Two separate fixes for the
+    // same symptom (the clip stuttering between idle/walk/run):
+    //   - the low-pass filter removes the frame-to-frame speed noise that's
+    //     inherent to closing a shrinking gap (the companion is essentially
+    //     always accelerating or decelerating, rarely at a flat speed), so
+    //     the value reaching the thresholds is stable rather than jittery;
+    //   - hysteresis (a lower exit threshold than the enter threshold)
+    //     means a speed that settles right at the boundary can't flicker
+    //     the clip back and forth every frame - it has to cross the gap
+    //     between enter and exit, not just cross one line, to switch again.
+    const COMP_RUN_ENTER = 3.5, COMP_RUN_EXIT = 2.8;
+    const COMP_WALK_ENTER = 0.4, COMP_WALK_EXIT = 0.15;
+    function companionLocoState(rawSpeed, delta) {
+        const smoothT = Math.min(1, delta * 10);
+        _compSpeedSmooth += (rawSpeed - _compSpeedSmooth) * smoothT;
+        if (_compLocoState === 'run') {
+            if (_compSpeedSmooth < COMP_RUN_EXIT) _compLocoState = _compSpeedSmooth > COMP_WALK_EXIT ? 'walk' : 'idle';
+        } else if (_compLocoState === 'walk') {
+            if (_compSpeedSmooth > COMP_RUN_ENTER) _compLocoState = 'run';
+            else if (_compSpeedSmooth < COMP_WALK_EXIT) _compLocoState = 'idle';
+        } else {
+            if (_compSpeedSmooth > COMP_RUN_ENTER) _compLocoState = 'run';
+            else if (_compSpeedSmooth > COMP_WALK_ENTER) _compLocoState = 'walk';
+        }
+        return _compLocoState;
+    }
+
+    // Steers the companion around solid obstacles on its way to destTarget,
+    // the same technique moveAiBotToward already uses for the AI bot (try
+    // the direct line first, then increasingly wide angles, testing a
+    // 3-ray bundle - center plus two sideways offsets - so a clear
+    // centerline that still grazes an obstacle's edge doesn't count as
+    // clear). Kept as its own copy rather than sharing moveAiBotToward
+    // directly - that function is wound tightly around aiBotState (its own
+    // avoid-side persistence, its own setNetworkState calls) and threading
+    // the companion through it would mean more special-casing than just
+    // repeating the steering loop here.
+    //
+    // Before this, the companion's FOLLOW/pre-replay movement had no
+    // horizontal obstacle check at all - only the vertical ground-follow
+    // below existed, and that only handles standing ON TOP of something
+    // (or falling below it). A box taller than that vertical step's own
+    // 0.9 cap never triggered the step-up, so the companion just walked
+    // straight into the box's side and stayed there, horizontally embedded
+    // in it, since nothing ever stopped nx/nz from landing inside its
+    // footprint.
+    //
+    // Returns a unit direction to move along this frame, or null if truly
+    // stuck (see COMP_STEER_HOLD below) - callers should just hold position
+    // for the frame rather than clip through in that case.
+    //
+    // The direct line to destTarget is tried FIRST and, if clear, returned
+    // RAW - not smoothed, not held. That matters: callers cap their step by
+    // Math.min(remainingDistance, speed*delta), which only lands exactly ON
+    // the target (and therefore actually stops there) if the direction used
+    // is the true direction to that target. Smoothing was tried for this
+    // common case too and broke exactly that: destTarget is recomputed
+    // fresh every frame (the follow spot moves as the player does, even
+    // idle micro-adjustments shift it slightly), so a direction lagging
+    // behind it via a lerp perpetually overshot, corrected, overshot again
+    // - the companion never actually stopped, it endlessly circled its own
+    // target, and since its facing is separately locked to "face the
+    // player" while its movement circled around some other point, that
+    // circling read as constant aimless wandering/strafing.
+    //
+    // Only once the direct line is genuinely blocked does the widened-angle
+    // search kick in, and only THAT result gets smoothed + given a brief
+    // hold - the case it actually targets (see the comments below).
+    let _compAvoidSide = 0;
+    const _compSteerDirSmooth = new THREE.Vector3();
+    let _compSteerDirValid = false;
+    let _compSteerBlockedFor = 0;
+    const COMP_STEER_HOLD = 0.12;
+    // Tests a 3-ray bundle (centerline plus two sideways offsets, so a
+    // clear centerline that still grazes an obstacle's edge doesn't count
+    // as clear) along `dir` from `rayOrigin`.
+    function companionRayClear(rayOrigin, dir) {
+        _aiAvoidPerp.set(-dir.z, 0, dir.x);
+        for (const sideMul of [0, 1, -1]) {
+            _aiAvoidSideOrigin.copy(rayOrigin);
+            if (sideMul !== 0) _aiAvoidSideOrigin.addScaledVector(_aiAvoidPerp, sideMul * AI_AVOID_RADIUS);
+            rayFwd.set(_aiAvoidSideOrigin, dir);
+            const hits = rayFwd.intersectObjects(collidables);
+            if (hits.length > 0 && hits[0].distance <= AI_AVOID_LOOKAHEAD) return false;
+        }
+        return true;
+    }
+    function companionSteerDir(pos, destTarget, delta) {
+        const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
+        if (toTarget.lengthSq() < 1e-6) { _compSteerDirValid = false; return null; }
+        toTarget.normalize();
+        const rayOrigin = _tempVec2.copy(pos).setY(pos.y + 0.5);
+
+        if (companionRayClear(rayOrigin, toTarget)) {
+            _compAvoidSide = 0;
+            _compSteerDirValid = false;
+            _compSteerBlockedFor = 0;
+            return toTarget.clone();
+        }
+
+        // Blocked straight on - widen the angle. This IS the case the
+        // smoothing/hold below is for: going around a large obstacle, the
+        // winning angle can jump between e.g. +25deg and +100deg frame to
+        // frame (both "the same side" per _compAvoidSide, but a
+        // discontinuous direction change each time), and right at a corner
+        // the ray bundle can graze the edge on one frame and clear the next
+        // as position shifts by a hair - a momentary "nothing found" that
+        // isn't actually a dead end.
+        const angleOrder = _compAvoidSide < 0 ? AI_AVOID_ANGLES_LEFT_FIRST : AI_AVOID_ANGLES_RIGHT_FIRST;
+        let found = null;
+        for (const angleDeg of angleOrder) {
+            if (angleDeg === 0) continue; // already tried above
+            const candidate = _tempQuat.setFromAxisAngle(_upVec, angleDeg * Math.PI / 180);
+            _tempVec3.copy(toTarget).applyQuaternion(candidate);
+            if (companionRayClear(rayOrigin, _tempVec3)) { found = _tempVec3.clone(); _compAvoidSide = Math.sign(angleDeg); break; }
+        }
+        if (found) {
+            _compSteerBlockedFor = 0;
+            if (!_compSteerDirValid) { _compSteerDirSmooth.copy(found); _compSteerDirValid = true; }
+            else _compSteerDirSmooth.lerp(found, Math.min(1, delta * 8)).normalize();
+            return _compSteerDirSmooth.clone();
+        }
+        _compSteerBlockedFor += delta;
+        if (_compSteerDirValid && _compSteerBlockedFor < COMP_STEER_HOLD) return _compSteerDirSmooth.clone();
+        _compAvoidSide = 0;
+        _compSteerDirValid = false;
+        return null;
     }
 
     function updateCompanion(delta) {
@@ -1463,6 +1722,48 @@ export function startGame(CharacterClass) {
 
         const gy = companionGroundY(c.x, c.z, c.y);
         const playerElevated = isGrounded && !isLedgeGrabbing && !isClimbingUp && (p.y - gy) > 1.0;
+
+        // ---- LEAP (crossing a ledge/gap, or climbing onto one) ----
+        if (_compMode === 'leap') {
+            _compLeapT += delta;
+            const t = Math.min(1, _compLeapT / _compLeapDur);
+            let lx, ly, lz;
+            if (_compLeapIsClimb) {
+                // A climb has to go UP first and only then move in, the way a
+                // mantle does. Interpolating x/z/y together (what the gap
+                // leap does, and what this used to do too) draws a straight
+                // diagonal from the base of the wall to the top of it - a
+                // line that lies INSIDE the wall for most of its length, so
+                // the companion visibly passed through the block. Separating
+                // the two phases keeps the path outside the geometry without
+                // needing to collide-check it.
+                const yT = Math.min(1, t / 0.55);            // at full height by 55% in
+                const xzRaw = Math.max(0, (t - 0.4) / 0.6);  // only starts moving in at 40%
+                const xzT = xzRaw * xzRaw * (3 - 2 * xzRaw); // smoothstep, so the step-in isn't abrupt
+                lx = THREE.MathUtils.lerp(_compLeapStart.x, _compLeapEnd.x, xzT);
+                lz = THREE.MathUtils.lerp(_compLeapStart.z, _compLeapEnd.z, xzT);
+                // Small lift only - just enough for the feet to clear the
+                // lip. The old shared 1.4 arc height on top of an already
+                // 3-unit rise is what made this look like it was jumping far
+                // higher than the player ever can.
+                ly = THREE.MathUtils.lerp(_compLeapStart.y, _compLeapEnd.y, yT) + COMP_CLIMB_LIFT * Math.sin(Math.PI * t);
+            } else {
+                lx = THREE.MathUtils.lerp(_compLeapStart.x, _compLeapEnd.x, t);
+                lz = THREE.MathUtils.lerp(_compLeapStart.z, _compLeapEnd.z, t);
+                // Parabolic bump on top of the straight launch->landing height
+                // lerp, peaking at t=0.5 - 4*t*(1-t) is 0 at t=0/1 and 1 at t=0.5.
+                ly = THREE.MathUtils.lerp(_compLeapStart.y, _compLeapEnd.y, t) + COMP_LEAP_ARC_HEIGHT * 4 * t * (1 - t);
+            }
+            // jump_start is a short one-shot push-off, fall loops through the
+            // airborne middle, land is a one-shot touchdown right at the end -
+            // same three clips a real jump already uses elsewhere.
+            const leapState = _compLeapT < 0.18 ? 'jump_start' : (t < 1 ? 'fall' : 'land');
+            companion.group.position.set(lx, ly, lz);
+            companion.setNetworkState([lx, ly, lz], [_compLeapFaceQuat.x, _compLeapFaceQuat.y, _compLeapFaceQuat.z, _compLeapFaceQuat.w], leapState, false);
+            companion.update(delta);
+            if (t >= 1) _compMode = 'follow';
+            return;
+        }
 
         // ---- CLIMB (breadcrumb replay) ----
         if (_compMode === 'replay') {
@@ -1508,39 +1809,198 @@ export function startGame(CharacterClass) {
                 const tk = _compTrail[bi];
                 const dTk = Math.hypot(tk.x - c.x, tk.z - c.z);
                 if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; return; }
-                // Walk to the takeoff spot.
+                // Walk straight at the takeoff spot - deliberately no
+                // obstacle steering here. tk sits right at the base of the
+                // wall the player is about to be replayed climbing, so a
+                // clear line-of-sight check against that same wall reads it
+                // as "blocked" and the widened-angle search can't find a
+                // clear angle either (the wall fills the whole forward arc
+                // right at its own base) - the companion never got within
+                // the 0.55 trigger radius and the follow-climb just stopped
+                // happening. The recorded crumb is trusted as reachable
+                // on its own: the player themselves stood there.
+                const dirTkX = (tk.x - c.x) / dTk, dirTkZ = (tk.z - c.z) / dTk;
                 const s = Math.min(dTk, 7.5 * delta);
-                const nx = c.x + (tk.x - c.x) / dTk * s, nz = c.z + (tk.z - c.z) / dTk * s;
+                const nx = c.x + dirTkX * s, nz = c.z + dirTkZ * s;
                 const gyH = companionGroundY(nx, nz, c.y);
-                let ny = c.y; const dyy = gyH - c.y;
-                if (dyy < -0.05) ny += Math.max(dyy, -16 * delta); else if (dyy > 0.05 && dyy < 0.9) ny += Math.min(dyy, 6 * delta);
-                _compFaceEuler.set(0, Math.atan2(tk.x - c.x, tk.z - c.z), 0);
-                _compFaceQuat.setFromEuler(_compFaceEuler);
-                const mv = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
-                companion.group.position.set(nx, ny, nz);
-                companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], mv > 3.5 ? 'run' : (mv > 0.4 ? 'walk' : 'idle'), false);
-                companion.update(delta);
-                return;
+                const dyy = gyH - c.y;
+                // The crumb being reachable BY THE PLAYER doesn't make the
+                // straight line to it walkable - the nearest crumb at this
+                // height can easily be somewhere the player reached by a
+                // completely different route, with a wall across the direct
+                // line. Walking blind into that wall (which is what this did,
+                // returning unconditionally every frame) is the "can't find
+                // the way" stall. So when the way is blocked, deliberately
+                // DON'T return - drop through to FOLLOW, which has steering,
+                // the gap leap and the climb to try instead of pressing into
+                // geometry forever.
+                //
+                // Note this branch does NOT climb on its own, even though
+                // the helper is right there. Replaying the player's own
+                // recorded climb looks considerably better than the generic
+                // mantle, so anything still heading for a takeoff spot
+                // should keep heading for it; climbing here stole that and
+                // the recorded climb stopped happening at all.
+                if (dyy <= COMP_STEP_UP) {
+                    updateCompanionPathVisual(c, { x: tk.x, y: c.y, z: tk.z }, { x: nx, y: c.y, z: nz });
+                    let ny = c.y;
+                    if (dyy < -0.05) ny += Math.max(dyy, -16 * delta); else if (dyy > 0.05) ny += Math.min(dyy, 6 * delta);
+                    _compFaceEuler.set(0, Math.atan2(dirTkX, dirTkZ), 0);
+                    _compFaceQuat.setFromEuler(_compFaceEuler);
+                    const mv = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
+                    companion.group.position.set(nx, ny, nz);
+                    companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(mv, delta), false);
+                    companion.update(delta);
+                    return;
+                }
             }
         }
 
         // ---- FOLLOW (manual, distance-based) ----
-        let dirx = c.x - p.x, dirz = c.z - p.z; let len = Math.hypot(dirx, dirz);
-        if (len < 0.001) { dirx = 0; dirz = 1; len = 1; }
-        dirx /= len; dirz /= len;
+        let dirx, dirz;
+        let wantsBehind = networkStateName === 'idle' && Math.abs(p.y - c.y) < 1.0;
+        if (wantsBehind) {
+            _compBehindDir.set(0, 0, 1).applyQuaternion(q).negate(); // player -> behind-spot direction
+            // Only actually worth it if that spot is clear. If the player's
+            // back is to a wall/box, "behind" lands inside or right up
+            // against it - the companion can't ever actually reach it, but
+            // kept trying every frame, and companionSteerDir's candidate
+            // angle flipped frame to frame as it hunted for a way in. That
+            // showed up as the run/walk clip flickering (repeatedly
+            // starting/stopping) rather than a smooth, settled approach.
+            _tempVec2.set(p.x, p.y + 0.9, p.z);
+            rayFwd.set(_tempVec2, _compBehindDir);
+            const behindHits = rayFwd.intersectObjects(collidables);
+            if (behindHits.length > 0 && behindHits[0].distance < COMP_FOLLOW_DIST + 0.3) wantsBehind = false;
+            else {
+                // Wall-clear isn't enough on its own - the spot also has to
+                // still be solid ground, not the far side of a ledge. A
+                // player standing with their back to a drop-off made
+                // "behind" send the companion over the edge (the new leap
+                // can actually reach it now) just to immediately climb back
+                // up once it re-targeted the player next frame - a pointless
+                // round trip that read as falling for no reason.
+                _tempVec2.set(p.x + _compBehindDir.x * COMP_FOLLOW_DIST, p.y + 3.0, p.z + _compBehindDir.z * COMP_FOLLOW_DIST);
+                rayDown.set(_tempVec2, _downVec);
+                const behindGroundHits = rayDown.intersectObjects(_compGroundList, true);
+                const behindGroundY = behindGroundHits.length ? behindGroundHits[0].point.y : -Infinity;
+                if (p.y - behindGroundY > COMP_LEAP_EDGE_DROP) wantsBehind = false;
+            }
+        }
+        if (wantsBehind) {
+            dirx = _compBehindDir.x; dirz = _compBehindDir.z;
+        } else {
+            dirx = c.x - p.x; dirz = c.z - p.z;
+            let len = Math.hypot(dirx, dirz);
+            if (len < 0.001) { dirx = 0; dirz = 1; len = 1; }
+            dirx /= len; dirz /= len;
+        }
         let tgx = p.x + dirx * COMP_FOLLOW_DIST, tgz = p.z + dirz * COMP_FOLLOW_DIST;
         if (playerElevated && (p.y - c.y) < 1.0) { tgx = p.x + dirx * 0.9; tgz = p.z + dirz * 0.9; } // up on the block: hug close
         const toX = tgx - c.x, toZ = tgz - c.z; const h = Math.hypot(toX, toZ);
+
+        // ---- Edge/gap detection: leap instead of trying to walk it ----
+        if (h > 1e-4) {
+            const travelX = toX / h, travelZ = toZ / h;
+            // Short probe just past the companion's own footprint, in the
+            // direction it's actually trying to go - a normal ramp/step
+            // still finds ground close by here, so this only fires for a
+            // genuine drop-off (see COMP_LEAP_EDGE_DROP).
+            _tempVec2.set(c.x + travelX * COMP_LEAP_EDGE_FWD, c.y + 3.0, c.z + travelZ * COMP_LEAP_EDGE_FWD);
+            rayDown.set(_tempVec2, _downVec);
+            const edgeHits = rayDown.intersectObjects(_compGroundList, true);
+            const edgeGroundY = edgeHits.length ? edgeHits[0].point.y : -Infinity;
+            if (c.y - edgeGroundY > COMP_LEAP_EDGE_DROP) {
+                // It's an edge, not a step - scan further out along the same
+                // direction for where solid footing actually resumes.
+                let landing = null;
+                for (let dist = COMP_LEAP_EDGE_FWD + 0.5; dist <= COMP_LEAP_MAX_DIST; dist += 0.5) {
+                    _tempVec2.set(c.x + travelX * dist, c.y + 3.0, c.z + travelZ * dist);
+                    rayDown.set(_tempVec2, _downVec);
+                    const hits = rayDown.intersectObjects(_compGroundList, true);
+                    if (hits.length && Math.abs(hits[0].point.y - c.y) < COMP_LEAP_LANDING_BAND) {
+                        landing = { x: c.x + travelX * dist, y: hits[0].point.y, z: c.z + travelZ * dist };
+                        break;
+                    }
+                }
+                if (landing) {
+                    _compLeapStart.copy(c);
+                    _compLeapEnd.set(landing.x, landing.y, landing.z);
+                    const leapDist = _compLeapStart.distanceTo(_compLeapEnd);
+                    _compLeapDur = Math.max(0.35, leapDist / COMP_LEAP_SPEED);
+                    _compLeapT = 0;
+                    _compLeapIsClimb = false;
+                    _compFaceEuler.set(0, Math.atan2(travelX, travelZ), 0);
+                    _compLeapFaceQuat.setFromEuler(_compFaceEuler);
+                    _compMode = 'leap';
+                    return;
+                }
+                // No safe landing found within range - fall through to the
+                // ordinary glide below rather than stranding it worse.
+            }
+        }
+
         let nx = c.x, nz = c.z;
-        if (h > 1e-4) { const s = Math.min(h, 7.5 * delta); nx += (toX / h) * s; nz += (toZ / h) * s; }
-        const gyHere = companionGroundY(nx, nz, c.y);
+        let steerDir = null;
+        if (h > 1e-4) {
+            // Steering only applies roughly on the level (matches the
+            // "behind player" height gate above) - it exists for genuine
+            // side obstacles (a box sitting between companion and player on
+            // flat ground), not for stairs/ramps/ledges. Once there's a
+            // real height gap the target is very likely sitting on or past
+            // exactly that kind of rise, and a chest-height ray can't tell
+            // "wall to steer around" from "step to walk into and climb" -
+            // it read every stair/ledge as blocked, which is what stopped
+            // the companion from ever closing the distance needed to reach
+            // a climb takeoff spot or step up onto nearby terrain.
+            if (Math.abs(p.y - c.y) < 1.0) {
+                steerDir = companionSteerDir(c, { x: tgx, z: tgz }, delta);
+                if (steerDir) {
+                    const s = Math.min(h, 7.5 * delta);
+                    nx += steerDir.x * s; nz += steerDir.z * s;
+                }
+            } else {
+                const s = Math.min(h, 7.5 * delta);
+                nx += (toX / h) * s; nz += (toZ / h) * s;
+            }
+        }
+        // Refuse the horizontal move if it would step onto something taller
+        // than a normal step, rather than taking it and sorting the height
+        // out vertically afterwards. Which of those two the code does is
+        // the whole difference between the two bugs this has bounced
+        // between:
+        //   - Capping the RISE but still moving xz (the original) let ny
+        //     freeze while nx/nz carried on, so the companion ended up with
+        //     its feet below a block's top while standing over that block's
+        //     footprint - embedded inside it.
+        //   - Uncapping the rise (the fix for that) removed the embedding
+        //     but meant any height at all got glided up in place, which is
+        //     the "riding an elevator" look - it ascended the side of a
+        //     block instead of climbing it.
+        // Blocking the xz move keeps position and height consistent with
+        // each other at all times: it simply stops at the base. Getting up
+        // there is then left to the paths that actually animate a climb -
+        // the breadcrumb replay (playerElevated, above) and the leap - which
+        // is the jump-and-grab-the-ledge behaviour this should always have
+        // been using for a real rise.
+        let gyHere = companionGroundY(nx, nz, c.y);
+        if (gyHere - c.y > COMP_STEP_UP) {
+            // Too tall to step - haul itself up onto the thing rather than
+            // stopping dead at the base. See tryCompanionClimbUp.
+            if (h > 1e-4 && tryCompanionClimbUp(c, nx, nz, toX / h, toZ / h)) return;
+            nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
+        }
+        updateCompanionPathVisual(c, { x: tgx, y: c.y, z: tgz }, { x: nx, y: c.y, z: nz });
         let ny = c.y; const dy = gyHere - c.y;
+        // Falling stays uncapped in distance (only in speed) - dropping to
+        // follow the player down is always legitimate, and it is only the
+        // upward direction that ever produced either bug above.
         if (dy < -0.05) ny += Math.max(dy, -16 * delta);            // fall to follow down
-        else if (dy > 0.05 && dy < 0.9) ny += Math.min(dy, 6 * delta); // small step up (ramps); taller = replay's job
+        else if (dy > 0.05) ny += Math.min(dy, 6 * delta);          // step up onto the ground actually under us
         _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
         _compFaceQuat.setFromEuler(_compFaceEuler);
         const movedH = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
-        const st = movedH > 3.5 ? 'run' : (movedH > 0.4 ? 'walk' : 'idle');
+        const st = companionLocoState(movedH, delta);
         companion.group.position.set(nx, ny, nz);
         companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
         companion.update(delta);
@@ -4251,6 +4711,20 @@ export function startGame(CharacterClass) {
             // top of groundY was adding an unwanted extra lift, which is
             // what was actually causing the floating look.
             tree.position.set(pos.x, groundY, pos.z);
+            // Forces this clone's whole ancestor chain to actually reflect
+            // the placement just set above before the Box3 below reads it.
+            // Box3.expandByObject calls object.updateWorldMatrix(false,
+            // false) - updateParents=false - so it trusts each ancestor's
+            // existing matrixWorld rather than recomputing it, and this
+            // freshly-cloned tree has never been through a render pass, so
+            // every node's matrixWorld is still stuck at the identity
+            // default. Without this, the BaseTreeLeaveBunch dither-probe
+            // sphere below (bc/bs) is computed against that stale identity
+            // chain and lands near local (0,0,0) instead of this tree's
+            // real spot - it would only ever trigger for a player standing
+            // near whatever coordinate that stale chain happens to work out
+            // to, not near this actual tree.
+            tree.updateMatrixWorld(true);
             tree.traverse(c => {
                 if (!c.isMesh) return;
                 // Visual-only parts (the "leave" fringe and the
@@ -4646,6 +5120,7 @@ export function startGame(CharacterClass) {
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = angleRad;
         levelGroup.add(ramp); collidables.push(ramp);
+        makeLevelOccluder(ramp);
 
         // Angle label at the ramp's own low/right corner (local +x, +z,
         // just above the surface) - parented to the ramp mesh itself so it
@@ -4710,11 +5185,13 @@ export function startGame(CharacterClass) {
         lower.position.set(x, cubeSize/2, z);
         lower.castShadow = true; lower.receiveShadow = true;
         levelGroup.add(lower); collidables.push(lower);
+        makeLevelOccluder(lower);
 
         const upper = new THREE.Mesh(boxGeoTemplate, platMat);
         upper.position.set(x, cubeSize + gap + cubeSize/2, z);
         upper.castShadow = true; upper.receiveShadow = true;
         levelGroup.add(upper); collidables.push(upper);
+        makeLevelOccluder(upper);
     }
 
     // Test prop (Cubes.glb) - same scale factor as Level.glb itself
@@ -4825,6 +5302,77 @@ export function startGame(CharacterClass) {
         });
     }
 
+    // Drops one real Tree.glb clone at a fixed spot, wired up exactly like a
+    // village/forest tree: visual-only fringe/Base excluded from collision
+    // and raycast (isTreeVisualOnly), the walkable trunk+canopy chunks
+    // pushed into collidables as a softObstacle (so they don't veto standing
+    // spots the way a plain AABB obstacle would), shadow rules split the
+    // same way (treeCastsShadow), and the Base gets an analytic dither-probe
+    // sphere since it carries no collidable mesh for the probe to see. Not
+    // instanced (unlike the forest) - a handful of standalone trees don't
+    // need InstancedMesh's draw-call savings, and a plain clone keeps each
+    // one an independent, individually-placed Object3D.
+    function spawnStandaloneTree(x, z, rotY = 0, scale = 1) {
+        if (!treeModel) return null;
+        const tree = treeModel.clone(true);
+        tree.rotation.y = rotY;
+        tree.scale.setScalar(scale);
+        tree.position.set(x, 0, z);
+        // Box3.setFromObject below reads c.parent.matrixWorld as-is rather
+        // than recomputing it (Box3.expandByObject calls
+        // object.updateWorldMatrix(false, false) - updateParents=false), and
+        // this clone has never been through a render pass, so every
+        // ancestor's matrixWorld is still the identity default from
+        // Object3D's constructor. Without this call the Base's world box
+        // would be computed against that stale identity chain - ignoring
+        // the position/rotation/scale just set above entirely - so the
+        // dither probe sphere lands near local (0,0,0) instead of this
+        // tree's actual spot.
+        tree.updateMatrixWorld(true);
+        tree.traverse(c => {
+            if (!c.isMesh) return;
+            const visualOnly = isTreeVisualOnly(c);
+            c.castShadow = treeCastsShadow(c);
+            c.receiveShadow = true;
+            if (visualOnly) {
+                const mats = Array.isArray(c.material) ? c.material : [c.material];
+                const cosmetic = mats.some(m => m && m.userData && m.userData.isCosmeticLeaf);
+                c.raycast = () => {};
+                if (!cosmetic) {
+                    const bb = new THREE.Box3().setFromObject(c);
+                    const bc = bb.getCenter(new THREE.Vector3());
+                    const bs = bb.getSize(new THREE.Vector3());
+                    ditherProbeSpheres.push({ x: bc.x, y: bc.y, z: bc.z, r: 0.5 * Math.max(bs.x, bs.z) });
+                }
+                return;
+            }
+            c.userData.softObstacle = true;
+            c.userData.isTreeCollider = true;
+            collidables.push(c);
+        });
+        levelGroup.add(tree);
+        return tree;
+    }
+
+    // Wraps a static level prop so it can dissolve when it ends up between the
+    // camera and the player - the same screen-door dither placeCube already
+    // gives player-built blocks, just extended to the level's own geometry
+    // (stairs, ramps, the walkway, turrets, the hemisphere). Clones the
+    // material first rather than dithering the one passed in: stair steps,
+    // ramps and walkway slabs all share one platMat instance, and
+    // updateDitherOccluders drives each occluder's fade off its OWN
+    // material.userData.ditherUniform - if many meshes pointed at the same
+    // material they'd all be fighting over the same uniform, and whichever
+    // one's turn came last in that frame's loop would win, stomping every
+    // other object using that material. A per-mesh clone gives each one an
+    // independent uniform so they fade in/out on their own.
+    function makeLevelOccluder(mesh) {
+        mesh.material = mesh.material.clone();
+        makeDitherable(mesh.material);
+        ditherOccluders.push(mesh);
+        return mesh;
+    }
+
     function buildStairsLevel() {
         rampAngleLabels.length = 0;
         stairNumberLabels.length = 0;
@@ -4833,6 +5381,7 @@ export function startGame(CharacterClass) {
         // See isOnHemisphere in the movement code.
         hemisphere.userData.isHemisphere = true;
         levelGroup.add(hemisphere); collidables.push(hemisphere);
+        makeLevelOccluder(hemisphere);
         addHemisphereDebugHelper(hemisphere);
 
         // A row of test ramps, one per angle, laid out in ANGLE order (not
@@ -4858,6 +5407,7 @@ export function startGame(CharacterClass) {
         const startMesh = new THREE.Mesh(boxGeoTemplate, platMat);
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
         levelGroup.add(startMesh); collidables.push(startMesh);
+        makeLevelOccluder(startMesh);
 
         // Builds one full column of 6 steps, centered at the given x -
         // pulled out so a second, flush-adjacent column (see below) can
@@ -4879,6 +5429,7 @@ export function startGame(CharacterClass) {
                 mesh.name = namePrefix + i;
                 mesh.castShadow = true; mesh.receiveShadow = true;
                 levelGroup.add(mesh); collidables.push(mesh);
+                makeLevelOccluder(mesh);
 
                 // Temporary debug numbering (always visible, no toggle) so
                 // steps can be pointed at unambiguously by column+number
@@ -4921,6 +5472,7 @@ export function startGame(CharacterClass) {
         jumpTestBlock.position.set(-cubeSize * 2, jumpTestH / 2, -10);
         jumpTestBlock.castShadow = true; jumpTestBlock.receiveShadow = true;
         levelGroup.add(jumpTestBlock); collidables.push(jumpTestBlock);
+        makeLevelOccluder(jumpTestBlock);
         // Elevated walkway from the top of the stairs (last one lands at
         // (0, 16.5, -25) per the loop above) over to the ramp row, so
         // approaching a ramp by walking/falling onto its high end can be
@@ -4939,6 +5491,7 @@ export function startGame(CharacterClass) {
             seg.position.set(x, y, z);
             seg.castShadow = true; seg.receiveShadow = true;
             levelGroup.add(seg); collidables.push(seg);
+            makeLevelOccluder(seg);
         };
         // First segment (leg 1, i=0, right at the stairs' own top) and last
         // segment (leg 2, its final i, right above the ramp row) are
@@ -4979,10 +5532,21 @@ export function startGame(CharacterClass) {
         const leg1TurretSurfaceY = THREE.MathUtils.lerp(16.5, 14.5, LEG1_TURRET_T) + 0.3;
         const rampEndShooter = new ShooterBox(levelGroup, leg1TurretX, leg1TurretSurfaceY + 1.4, -25, 'medium_high', new THREE.Vector3(1, 0, 0));
         shooters.push(rampEndShooter); collidables.push(rampEndShooter.mesh);
+        makeLevelOccluder(rampEndShooter.mesh);
 
         buildNarrowLedgeTestRig(15, 8, 1.2);
         buildNarrowLedgeTestRig(20, 8, 0.4);
         buildNarrowLedgeTestRig(25, 8, 0);
+
+        // A few real trees, same setup (materials/collision/shadow/dither)
+        // as Village/Forest - open ground on the +Z side of spawn, clear of
+        // the hemisphere (centered (10,0,-10), r=6, so entirely -Z), the
+        // stair columns (x -4.5..1.5, z -10..-28), and the bump fields
+        // (starting at z=20).
+        spawnStandaloneTree(7, 6, 0.4);
+        spawnStandaloneTree(-9, 8, 2.1);
+        spawnStandaloneTree(12, 11, 4.7);
+        spawnStandaloneTree(3, 13, 5.6);
 
         // All four bump-test fields lined up along the same Z (20), packed
         // as close together (and to spawn at 0,0,0) as their own widths
@@ -5007,12 +5571,16 @@ export function startGame(CharacterClass) {
 
         const sLow = new ShooterBox(levelGroup, 25, 1.0, 4.5, 'low');
         shooters.push(sLow); collidables.push(sLow.mesh);
+        makeLevelOccluder(sLow.mesh);
         const sMed = new ShooterBox(levelGroup, 25, 1.0, 1.5, 'medium');
         shooters.push(sMed); collidables.push(sMed.mesh);
+        makeLevelOccluder(sMed.mesh);
         const sMedHigh = new ShooterBox(levelGroup, 25, 1.0, -1.5, 'medium_high');
         shooters.push(sMedHigh); collidables.push(sMedHigh.mesh);
+        makeLevelOccluder(sMedHigh.mesh);
         const sHigh = new ShooterBox(levelGroup, 25, 1.0, -4.5, 'high');
         shooters.push(sHigh); collidables.push(sHigh.mesh);
+        makeLevelOccluder(sHigh.mesh);
 
         const movableBoxGeo = new RoundedBoxGeometry(cubeSize, cubeSize, cubeSize, 1, 0.15);
         const movableBoxMat = new THREE.MeshToonMaterial({ color: 0xffaa00, gradientMap: threeTone });
@@ -5088,6 +5656,7 @@ export function startGame(CharacterClass) {
                 under.position.set(stairL3.position.x, stairL3.position.y - cubeSize, stairL3.position.z);
                 under.castShadow = true; under.receiveShadow = true;
                 levelGroup.add(under); collidables.push(under);
+                makeLevelOccluder(under);
             }
 
             // B5: halved height, bottom edge kept where the full-height
@@ -5109,6 +5678,7 @@ export function startGame(CharacterClass) {
                 under.position.set(step.position.x, step.position.y - cubeSize, step.position.z);
                 under.castShadow = true; under.receiveShadow = true;
                 levelGroup.add(under); collidables.push(under);
+                makeLevelOccluder(under);
             });
 
             // A4: a pickup-able small box on top, deliberately off-center
@@ -5393,7 +5963,7 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_forest'; currentLevel = select.value;
+        select.value = 'local_stairs'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
