@@ -1060,7 +1060,52 @@ export function startGame(CharacterClass) {
     // multiplayer system at all. Not created until spawnAiBot() runs (panel
     // button) so it doesn't wander into every normal test session uninvited.
     let aiBot = null;
-    const AI_WANDER_SPEED = 5.0, AI_CHASE_SPEED = 6.5;
+    // AI_WANDER_SPEED doubles as the bot's ordinary walking pace - what it
+    // uses while wandering AND while following something it is already close
+    // to. AI_CHASE_SPEED is the far end, only reached when it has fallen
+    // behind. Wander used to be 5.0, past the run threshold, so the bot
+    // crossed the level at running pace playing a walk cycle and slid.
+    // 9.5, against the player's own full-tilt 8.0 (see actualSpeed in the
+    // movement block). It has to exceed that or a sprinting player simply
+    // outruns it forever and the chase never resolves - the old 6.5 was
+    // slower than the thing it was chasing. The margin is small on purpose:
+    // enough to close a gap over a few seconds, not enough to be inescapable.
+    const AI_WANDER_SPEED = 2.2, AI_CHASE_SPEED = 15.0;
+    // Two paces, not one continuous ramp from walking to sprinting. Lerping
+    // all the way up from AI_WANDER_SPEED meant that at ordinary chase
+    // distances the bot was doing 4-6 - already playing the run clip, but
+    // moving at a jog, and slower than the player at every separation short
+    // of 12. "Running" has to actually mean running.
+    //
+    // So: below AI_CATCHUP_NEAR it walks alongside; the moment it needs to
+    // run it runs at AI_RUN_SPEED, which is the player's own full-tilt 8.0,
+    // and only leans past that into AI_CHASE_SPEED once the gap is wide
+    // enough that it has ground to make up.
+    const AI_RUN_SPEED = 12.0;      // half again the player's own 8.0
+    // Speed the run clip is authored for - the player's own top speed, since
+    // it is the same Running.fbx. Used to rate-match the animation below.
+    const AI_RUN_ANIM_REF = 8.0;
+    // 2.5, not 5 - it keeps running until it is nearly on top of you, and
+    // only walks the last stretch before the punch lands (AI_PUNCH_RANGE is
+    // 1.3). Dropping to a walk five units out meant it spent the whole final
+    // approach strolling, which read as losing interest right when it should
+    // look most committed.
+    const AI_CATCHUP_NEAR = 2.5;    // at or inside this, walking keeps up
+    const AI_CATCHUP_FAR = 14.0;    // beyond this, full sprint
+    // Small enough to still leave a walking band between it and punch range,
+    // rather than running until the moment it swings.
+    const AI_CATCHUP_HYST = 0.6;    // has to close this much inside NEAR before dropping back to a walk
+    // Latched rather than a bare comparison: walk and run pace now differ by
+    // a step change, so sitting exactly at AI_CATCHUP_NEAR would otherwise
+    // flip the speed every frame.
+    let _aiChaseRunning = false;
+    function aiBotChaseSpeed(dist) {
+        if (!_aiChaseRunning && dist > AI_CATCHUP_NEAR) _aiChaseRunning = true;
+        else if (_aiChaseRunning && dist < AI_CATCHUP_NEAR - AI_CATCHUP_HYST) _aiChaseRunning = false;
+        if (!_aiChaseRunning) return AI_WANDER_SPEED;
+        const t = THREE.MathUtils.clamp((dist - AI_CATCHUP_NEAR) / (AI_CATCHUP_FAR - AI_CATCHUP_NEAR), 0, 1);
+        return THREE.MathUtils.lerp(AI_RUN_SPEED, AI_CHASE_SPEED, t);
+    }
 
     // ---- Companion ----
     // HYBRID follower:
@@ -1085,7 +1130,7 @@ export function startGame(CharacterClass) {
                                     // same recorded climb instead of being stuck below
     const _compTrail = [];          // {t,x,y,z,qx,qy,qz,qw,state}
     let _compTrailT = 0;
-    let _compMode = 'follow';       // 'follow' | 'replay' | 'leap' | 'shimmy' | 'hang' | 'climbup' | 'ledgefollow'
+    let _compMode = 'follow';       // 'follow' | 'replay' | 'leap' | 'shimmy' | 'hang' | 'climbup'
     let _replayStartT = 0, _replayT = 0;
     // Top out nearer than this to the player and it waits on the ledge
     // instead. Tight on purpose - being merely near the ledge is handled by
@@ -1110,30 +1155,19 @@ export function startGame(CharacterClass) {
     const _hangQuat = new THREE.Quaternion();
     const _hangTop = new THREE.Vector3();   // the surface it wants to end up on
     const _hangFwd = new THREE.Vector3();   // horizontal, hang position -> over the edge
-    const COMP_HANG_OUT = 0.35;             // body clearance from the wall face
-    const COMP_HANG_DROP = 1.5;             // how far below the lip the root sits while hanging
+    // Both taken from the player's own ledge grab rather than guessed, so an
+    // AI hang sits exactly where yours does. See the grab site: the root goes
+    // to (wallHit + normal*ledgeOffset) at (lipY - 1.85).
+    //
+    // The guessed values were 0.35 out and 1.5 down - nearly six times too far
+    // from the wall and a third of a metre too high. That is the hang looking
+    // wrong: floating off the face, hooked at chest height instead of hanging
+    // from the hands. It was never really a matter of failing to FIND the
+    // ledge; it found it and then held it in the wrong place.
+    const COMP_HANG_OUT = 0.06;             // matches ledgeOffset
+    const COMP_HANG_DROP = 1.85;            // matches the player's hangGroupY drop
     const _ledgeFwdVec = new THREE.Vector3();
     const _ledgeSpotTop = new THREE.Vector3();
-    // LEDGEFOLLOW: hang alongside the player while THEY are hanging, and
-    // shuffle with them as they shimmy. Offsets tried outward from the
-    // player's own grip until one is a real ledge spot.
-    const COMP_LEDGE_JUMP_FROM = 0.8;       // how close to under the grip it must be before jumping for it
-    // Path distance kept behind the player along the ledge. Measured ALONG
-    // the recorded crumbs rather than straight-line, so the gap stays honest
-    // when the ledge turns a corner.
-    const COMP_LEDGE_GAP = 1.2;
-    // Cursor into the trail while retracing a ledge, kept as the crumb's
-    // TIMESTAMP rather than its array index - the trail is pruned from the
-    // front, so an index quietly comes to mean a different crumb.
-    let _ledgeCrumbT = 0;
-    const COMP_LEDGE_CRUMB_REACH = 0.18;    // close enough to a crumb to move on to the next
-    // Closest the companion may ever be to the player on a ledge. Two bodies
-    // cannot hang in the same place, and a crumb nearer than this is just the
-    // player's own current grip.
-    const COMP_LEDGE_MIN_SEP = 0.9;
-    const COMP_LEDGE_RAY_OUT = 0.5;         // lift the corner-check ray off the wall so it doesn't graze the face
-    const COMP_LEDGE_PROBE_STRIDE = 0.25;   // path distance between corner-check probes
-    const COMP_LEDGE_MAX_PROBES = 8;        // hard cap on rays per frame for that search
     // CLIMBUP: the same shape as the player's own climb-up (see isClimbingUp
     // in the movement block) - hold the root still, play the climb clip, then
     // place the root on the ledge at the end. The generic mantle arc was
@@ -1190,7 +1224,68 @@ export function startGame(CharacterClass) {
     // not be the marginal case.
     const COMP_CLIMB_MAX = 3.4;         // tallest rise it can pull itself onto
     const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
+    const COMP_CLIMB_INSET_TIGHT = 0.3; // ...but only this far when the next step starts immediately (stairs)
     const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
+    // How far above the companion the player must be before climbing an
+    // obstacle is worth it at all. Matches the steering gate, so exactly one
+    // of "go around" and "go over" applies at any height difference.
+    const COMP_CLIMB_WORTH_IT = 1.0;
+    // How far ahead to look for "the wall is right here, just climb it". A
+    // bit past the body so it registers while still walking up to the face,
+    // not only once pressed against it.
+    const COMP_CLIMB_REACH_PROBE = 0.8;
+    // Beyond this the recorded takeoff is far enough that climbing something
+    // nearer is worth trying first.
+    const COMP_TAKEOFF_PREFER_DIST = 6.0;
+    // ---- Companion stuck detection ----
+    // Every individual stall has had its own cause and its own fix, and there
+    // keep being more. The follow logic is a stack of interacting rules
+    // (takeoff route, steering, climb, leap, the refuse-the-move guard) and
+    // there is no way to be confident some combination cannot deadlock. So:
+    // measure the one thing that is unambiguous - whether it is actually
+    // moving - and break the deadlock when it is not.
+    //
+    // The escape is a short sidestep, not a teleport. Deadlocks here are
+    // symmetric (pressed at a wall, or steering flip-flopping between two
+    // equally blocked sides), and moving perpendicular for a moment breaks
+    // the symmetry so the normal rules find a different answer next frame.
+    const _compStuckAt = new THREE.Vector3();
+    const _compUnstickDir = new THREE.Vector3();
+    let _compStuckT = 0, _compUnstickT = 0;
+    const COMP_STUCK_TIME = 1.2;    // no progress for this long = deadlocked
+    const COMP_STUCK_DIST = 0.25;   // moved less than this in that time = no progress
+    const COMP_UNSTICK_TIME = 0.5;  // how long to sidestep before resuming normal follow
+    // Set at each decision point so the debug readout can say WHY it is doing
+    // nothing - "decided to hold" and "every branch declined" look identical
+    // from outside, and they need opposite fixes.
+    let _compWhy = 'init';
+    // Above this travel speed the companion faces where it is going; below it
+    // (i.e. standing about) it turns to face the player. Matches the walk
+    // threshold, so it turns to you exactly when it stops walking.
+    const COMP_FACE_TRAVEL_MIN = 0.4;
+    // Close enough to the follow spot to just stand there. Generous on
+    // purpose - the spot itself moves constantly, so a tight radius means
+    // never actually arriving.
+    const COMP_ARRIVE_DEADZONE = 0.7;
+    // How long the companion stands and collects itself after a hit before it
+    // is willing to go anywhere again.
+    let _compRecoverT = 0;
+    const COMP_RECOVER_SETTLE = 0.8;
+    // Grace period straight after topping out, during which the companion
+    // will not step back off the ledge it just climbed. Without it the follow
+    // spot - which sits BEHIND the player, and so hangs out over the edge
+    // whenever they stand near one - pulled it straight back off, and it
+    // climbed again, and again. That is the almost-gets-up-then-gives-up
+    // loop: each attempt genuinely succeeded, and was immediately undone.
+    let _compJustClimbedT = 0;
+    const COMP_POST_CLIMB_HOLD = 1.2;
+    // Post-climb model offset: cancels the root placement's jump, then decays
+    // so the model settles back onto its root. See the CLIMBUP completion.
+    const _climbModelRest = new THREE.Vector3();
+    const _climbMoveDiff = new THREE.Vector3();
+    const _climbTmpQuat = new THREE.Quaternion();
+    let _climbBlendT = 0;
+    const COMP_CLIMB_BLEND = 0.3;
     let _compLeapToHang = false;        // this leap ends by catching a ledge, not by landing on ground
     // Locomotion clip picker state - low-pass filtered speed plus hysteresis
     // between the run/walk/idle thresholds. Feeding the raw per-frame speed
@@ -1202,8 +1297,17 @@ export function startGame(CharacterClass) {
     let _compSpeedSmooth = 0;
     let _compLocoState = 'idle';
     window.companionEnabled = true;   // on by default - toggle stays available from the panel ('Companion' → Add Companion)
-    const AI_CHASE_RADIUS = 8, AI_CHASE_GIVEUP_RADIUS = 11, AI_PUNCH_RANGE = 1.3;
+    // Wide enough that the bot actually follows rather than losing interest
+    // the moment you walk away - 8/11 meant it gave up almost immediately and
+    // went back to wandering. Still bounded, so it does return to wandering
+    // if you get properly far from it.
+    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
+    // Tallest rise the bot's ordinary walk snaps up (a stair step, not a
+    // climb). Module scope because the climb code needs the same number to
+    // know where walking stops and climbing starts - it used to be a local
+    // inside moveAiBotToward's ground-snap block.
+    const AI_MAX_STEP_UP = 0.4;
     const aiBotState = {
         mode: 'wander', // 'wander' | 'chase' | 'punch' | 'cooldown'
         target: new THREE.Vector3(char.group.position.x + 4, char.group.position.y, char.group.position.z + 4),
@@ -1211,6 +1315,9 @@ export function startGame(CharacterClass) {
         punchTimer: 0,
         punchHasHit: false,
         cooldownTimer: 0,
+        // Locked in when a swing starts (char or companion) so the bot can't
+        // switch targets mid-punch and pivot to face someone else.
+        victim: null,
         // Which side (-1 left / 0 none / 1 right) moveAiBotToward last
         // steered around an obstacle on. Persisted across frames so it
         // keeps preferring that same side next frame instead of
@@ -1306,6 +1413,85 @@ export function startGame(CharacterClass) {
     const _aiAvoidPerp = new THREE.Vector3();
     const _aiAvoidSideOrigin = new THREE.Vector3();
 
+    // Locomotion clip from how fast the bot is actually travelling, using the
+    // same thresholds the companion picks by, so the two agents change gait
+    // at the same speeds.
+    //
+    // Hysteresis (enter high, exit low) matters now that chase pace ramps
+    // continuously with distance: the bot can sit at exactly the separation
+    // where its speed equals the run threshold, and a single comparison would
+    // flip the clip every frame there. Same fix, same reason, as
+    // companionLocoState's.
+    let _aiLocoState = 'idle';
+    function aiBotLocoState(speed) {
+        if (_aiLocoState === 'run') {
+            if (speed < COMP_RUN_EXIT) _aiLocoState = speed > COMP_WALK_EXIT ? 'walk' : 'idle';
+        } else if (_aiLocoState === 'walk') {
+            if (speed > COMP_RUN_ENTER) _aiLocoState = 'run';
+            else if (speed < COMP_WALK_EXIT) _aiLocoState = 'idle';
+        } else {
+            if (speed > COMP_RUN_ENTER) _aiLocoState = 'run';
+            else if (speed > COMP_WALK_ENTER) _aiLocoState = 'walk';
+        }
+        // Rate-match the clip to the ground speed. The run cycle is authored
+        // for AI_RUN_ANIM_REF, and it plays at that rate no matter how fast
+        // the bot is actually travelling - so at 12-15 units/s the feet skate
+        // badly, which is exactly what "moving faster" would otherwise look
+        // like. Scaling playback keeps the stride matched to the distance
+        // covered. Clamped so a near-stationary frame cannot freeze the clip
+        // or a burst send it into a blur.
+        const runAction = aiBot.actions && aiBot.actions['run'];
+        if (runAction) {
+            runAction.timeScale = _aiLocoState === 'run'
+                ? THREE.MathUtils.clamp(speed / AI_RUN_ANIM_REF, 0.75, 2.2)
+                : 1;
+        }
+        return _aiLocoState;
+    }
+
+    // Straight at the target, no obstacle steering, same ground snap.
+    //
+    // Exists because the steering in moveAiBotToward is actively wrong when
+    // the target is ABOVE: the thing "in the way" is the very block the bot
+    // needs to climb, so avoiding it means orbiting the base forever and
+    // never presenting the head-on approach tryAiBotClimb probes for. That
+    // orbit is the bot getting stuck. The companion never had the problem
+    // because its own steering is gated off at exactly this height
+    // difference - this is the bot's version of that gate.
+    function moveAiBotDirect(destTarget, speed, delta) {
+        const pos = aiBot.group.position;
+        let dx = destTarget.x - pos.x, dz = destTarget.z - pos.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 0.001) return dist;
+        dx /= dist; dz /= dist;
+        const step = Math.min(dist, speed * delta);
+        let nx = pos.x + dx * step, nz = pos.z + dz * step;
+        let ny = pos.y;
+        let blocked = false;
+        rayDown.set(_tempVec1.set(nx, pos.y + 2.0, nz), _downVec);
+        const groundHits = rayDown.intersectObjects(collidables);
+        if (groundHits.length > 0) {
+            const newY = groundHits[0].point.y;
+            // Too tall to step: refuse the HORIZONTAL move as well, don't just
+            // decline the height change. Keeping xz while leaving y behind is
+            // what buries the bot in a box - its feet stay below the block's
+            // top while its position is already over that block's footprint.
+            // Height and position have to stay consistent with each other.
+            if (newY - pos.y <= AI_MAX_STEP_UP) ny = newY;
+            else { nx = pos.x; nz = pos.z; blocked = true; }
+        }
+        _tempVec3.set(dx, 0, dz);
+        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), _tempVec3);
+        // Actual step, not the requested speed - arriving at the target the
+        // step shrinks, and the gait should settle with it.
+        aiBot.setNetworkState([nx, ny, nz], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
+            aiBotLocoState(blocked ? 0 : step / Math.max(delta, 1e-3)), false);
+        // -1 means "walked into something and could not pass". The caller has
+        // to have somewhere else to go: this function has no steering of its
+        // own, so on its own it would just press against the wall forever.
+        return blocked ? -1 : dist;
+    }
+
     // Moves aiBot's group position toward destTarget at the given speed,
     // steering around anything in the way (see AI_AVOID_ANGLES) instead of
     // just refusing to move, with the same ground-snapping the plain wander
@@ -1377,19 +1563,478 @@ export function startGame(CharacterClass) {
             // idea as a normal stair step, not a real climb) makes it just
             // push against a low obstacle like that instead of mounting it;
             // stepping DOWN (a ledge, stairs going down) stays uncapped.
-            const AI_MAX_STEP_UP = 0.4;
+            //
+            // Refusing the height change alone is not enough though: the
+            // horizontal move has to be refused with it, or the bot ends up
+            // standing over the block's footprint with its feet still at the
+            // old height - buried inside the box. Position and height must
+            // agree.
             const newY = groundHits[0].point.y;
             if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
+            else { nextPos.x = pos.x; nextPos.z = pos.z; }
         }
 
-        aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'walk', false);
+        aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
+            aiBotLocoState(speed), false);
         return dist;
     }
+    // ---- AI bot climbing ----
+    // Same two-move vocabulary the companion uses - jump and catch the ledge,
+    // then pull up - so the bot getting onto a block reads the same as anyone
+    // else doing it. Kept as its own small state block rather than sharing
+    // the companion's: that machinery is written against the single
+    // `companion` object and a dozen `_comp*`/`_hang*` module variables, and
+    // making it serve two agents means threading all of it through a state
+    // parameter. Not worth it for the subset the bot actually needs (it never
+    // hangs around waiting, shimmies, or replays a route).
+    // Last-resort unstick. Every individual "it got stuck" has had its own
+    // specific cause and its own fix, but the chase is a pile of interacting
+    // rules (steering, climb, leap, the refuse-the-move guard) and there is
+    // no way to be sure some combination of them cannot deadlock. If the bot
+    // has genuinely not moved for a while, stop trusting the current plan and
+    // go wander - wandering picks a fresh direction, which breaks whatever
+    // the configuration was.
+    const _aiStuckAt = new THREE.Vector3();
+    let _aiStuckT = 0;
+    const AI_STUCK_TIME = 1.5;      // seconds of no progress before giving up on the route
+    const AI_STUCK_DIST = 0.35;     // moved less than this in that time = not moving
+    // Matches the companion's COMP_RECOVER_SETTLE - both take the same beat
+    // after a hit before they are willing to move again.
+    let _aiRecoverT = 0;
+    const AI_RECOVER_SETTLE = 0.8;
+    // Sidestep used to break a wedge - see the watchdog.
+    const _aiUnstickDir = new THREE.Vector3();
+    let _aiUnstickT = 0;
+    const AI_UNSTICK_TIME = 0.5;
+    const _aiClimbFrom = new THREE.Vector3();
+    const _aiClimbHang = new THREE.Vector3();
+    const _aiClimbTop = new THREE.Vector3();
+    const _aiClimbQuat = new THREE.Quaternion();
+    // Post-climb model offset, mirroring the companion's - cancels the root
+    // placement's jump, then decays so the model settles back onto its root.
+    const _aiClimbModelRest = new THREE.Vector3();
+    const _aiClimbMoveDiff = new THREE.Vector3();
+    const _aiClimbTmpQuat = new THREE.Quaternion();
+    let _aiClimbBlendT = 0;
+    const _aiHangFwd = new THREE.Vector3();
+    const _aiHangNormal = new THREE.Vector3();
+    let _aiClimbPhase = 'none';   // 'none' | 'jump' | 'pull' | 'leap'
+    let _aiClimbT = 0, _aiClimbDur = 0;
+    const AI_CLIMB_PROBE = 0.8;   // how far ahead to look for the wall
+    const AI_CLIMB_INSET = 0.7;   // land this far past the lip, not balanced on it
+
+    function aiBotSurfaceY(x, z, fromTopY) {
+        _tempVec1.set(x, fromTopY, z);
+        rayDown.set(_tempVec1, _downVec);
+        const hits = rayDown.intersectObjects(collidables, true);
+        return hits.length ? hits[0].point.y : -Infinity;
+    }
+
+
+    // Starts a climb if something climbable is directly between the bot and
+    // where it is trying to get to. Returns true if one began.
+    // maxRise caps how tall an obstacle this will take on. Callers pass the
+    // hop height when the target is only level with the bot - climbing a full
+    // block just because it is in the way is the "tries to get on top of the
+    // stacked cubes" behaviour, and going around is right there.
+    function tryAiBotClimb(pos, destPos, maxRise = COMP_CLIMB_MAX) {
+        if (_aiClimbPhase !== 'none') return false;
+        // Where the model normally sits on its root - captured before any
+        // offset is applied, so the decay has something true to return to.
+        if (aiBot.fbxModel && _aiClimbBlendT <= 0) _aiClimbModelRest.copy(aiBot.fbxModel.position);
+        let dx = destPos.x - pos.x, dz = destPos.z - pos.z;
+        const dl = Math.hypot(dx, dz);
+        if (dl < 1e-4) return false;
+        dx /= dl; dz /= dl;
+        const px = pos.x + dx * AI_CLIMB_PROBE, pz = pos.z + dz * AI_CLIMB_PROBE;
+        // Cast from above the tallest thing it could possibly climb, so a
+        // block taller than that is seen as too tall rather than missed
+        // entirely and mistaken for the lower surface behind it.
+        const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0);
+        const rise = topY - pos.y;
+        if (rise <= AI_MAX_STEP_UP || rise > maxRise) return false;
+        // Landing spot past the lip, and it must be the same surface - one
+        // hop, not the first step of a staircase.
+        let lx = px + dx * AI_CLIMB_INSET, lz = pz + dz * AI_CLIMB_INSET;
+        let landY = aiBotSurfaceY(lx, lz, topY + 1.0);
+        // Next step starting immediately past the lip = stairs. Land shorter
+        // rather than refusing to climb at all - see the same case in
+        // tryCompanionClimbUp.
+        if (landY > topY + 0.6) {
+            lx = px + dx * COMP_CLIMB_INSET_TIGHT; lz = pz + dz * COMP_CLIMB_INSET_TIGHT;
+            landY = aiBotSurfaceY(lx, lz, topY + 1.0);
+        }
+        if (Math.abs(landY - topY) >= 0.6) return false;
+        _aiClimbTop.set(lx, landY, lz);
+        _aiClimbFrom.copy(pos);
+        _compFaceEuler.set(0, Math.atan2(dx, dz), 0);
+        _aiClimbQuat.setFromEuler(_compFaceEuler);
+        // Low enough to hop straight onto - see the matching case in
+        // tryCompanionClimbUp. The hang sits COMP_HANG_DROP below the lip, so
+        // for a short rise it lands below the bot's own feet and the whole
+        // hang-then-pull sequence is nonsense for a step it can just jump.
+        if (rise <= COMP_LEAP_RISE_MAX) {
+            _aiClimbPhase = 'leap';
+            _aiClimbT = 0;
+            _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbTop) / COMP_LEAP_SPEED);
+            return true;
+        }
+        // Hang below the lip, then check the jump can even reach it - the
+        // bot may not out-jump the player any more than the companion may.
+        aiBotLedgeHang(px, pz, topY, dx, dz, _aiClimbHang);
+        // Face the wall, not the walk-in direction - matches the player's grab.
+        const wallN = aiBotSquareHang(dx, dz, _aiClimbHang);
+        if (wallN) {
+            _compFaceEuler.set(0, Math.atan2(-wallN.x, -wallN.z), 0);
+            _aiClimbQuat.setFromEuler(_compFaceEuler);
+        }
+        if (_aiClimbHang.y - pos.y > COMP_LEAP_RISE_MAX) return false;
+        _aiClimbPhase = 'jump';
+        _aiClimbT = 0;
+        _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbHang) / COMP_LEAP_SPEED);
+        return true;
+    }
+
+    // Where the player left `pos`'s own level, and which way they went up
+    // from there. Chasing their CURRENT position is useless once they are
+    // overhead: the straight line to them runs into the block face, so the
+    // follower ends up pressed against a wall it may not even be able to
+    // climb, metres away from the spot they actually got up by. The takeoff
+    // point is a place that CAN be stood on, and the crumb after it says
+    // which way the climb goes.
+    //
+    // Shared by the bot and the companion - both have the same problem and
+    // the trail is the same answer for both.
+    const _aiApproach = new THREE.Vector3();
+    function findTakeoffApproach(pos) {
+        // Walks BACK from the newest crumb to the moment the player left this
+        // level - the last crumb still at our height, with higher crumbs after
+        // it. That is the spot they actually went up from.
+        //
+        // Not "nearest crumb at my height", which is what this did before:
+        // that returns any point on their ground path, quite possibly one they
+        // merely walked across on the way somewhere else, with no way up at
+        // all. The follower would trek to it and find nothing.
+        //
+        // `up` ends up holding the EARLIEST high crumb seen while walking back
+        // (each assignment overwrites the later one), so it is the first place
+        // they got to off the ground - which is the direction the climb goes.
+        let up = null;
+        for (let i = _compTrail.length - 1; i >= 0; i--) {
+            const cr = _compTrail[i];
+            if (cr.y > pos.y + 1.0) { up = cr; continue; }
+            if (up && Math.abs(cr.y - pos.y) <= 0.9) return { at: cr, up };
+        }
+        return null;
+    }
+
+    // Where to hang in order to climb onto (topX, topZ) at height topY.
+    // Walks BACK from the top point until the surface falls away - that is
+    // the lip - and sits just outside it. The bot's own version of the
+    // companion's computeLedgeHang.
+    //
+    // The hang used to be placed a fixed distance back from the PROBE point,
+    // which has nothing to do with where the wall is: the probe is simply
+    // AI_CLIMB_PROBE ahead of the bot, so the hang always landed about 0.45
+    // ahead of wherever it happened to be standing - buried in the wall if it
+    // had walked right up to it, hanging off nothing if it had stopped short.
+    // That is the grabbing-on-in-odd-places. The lip is a property of the
+    // geometry and has to be measured, not assumed.
+    function aiBotLedgeHang(topX, topZ, topY, dirX, dirZ, out) {
+        let lo = 0, hi = 1.2;   // lo: known on the surface, hi: assumed past the edge
+        for (let i = 0; i < 7; i++) {
+            const mid = (lo + hi) * 0.5;
+            const sy = aiBotSurfaceY(topX - dirX * mid, topZ - dirZ * mid, topY + 1.0);
+            if (Math.abs(sy - topY) <= 0.4) lo = mid; else hi = mid;
+        }
+        out.set(topX - dirX * (hi + COMP_HANG_OUT), topY - COMP_HANG_DROP, topZ - dirZ * (hi + COMP_HANG_OUT));
+    }
+
+    // Squares an already-computed hang against the wall it is holding, using
+    // that wall's own normal, and returns the facing direction to use.
+    // Returns null if there is no wall in reach, leaving `out` untouched.
+    //
+    // The player's grab does exactly this - lookAt(position - n) off the wall
+    // normal - so taking the facing from the direction the bot happened to
+    // walk in only matches when it approached dead-on. Any angled approach
+    // left it hanging skewed across the face.
+    function aiBotSquareHang(fwdX, fwdZ, hang) {
+        _aiHangFwd.set(fwdX, 0, fwdZ);
+        _tempVec1.set(hang.x, hang.y + 0.4, hang.z);
+        rayFwd.set(_tempVec1, _aiHangFwd);
+        const hits = rayFwd.intersectObjects(collidables);
+        if (!hits.length || hits[0].distance > COMP_LEDGE_WALL_REACH || !hits[0].face) return null;
+        _aiHangNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+        _aiHangNormal.y = 0;
+        if (_aiHangNormal.lengthSq() < 1e-6) return null;
+        _aiHangNormal.normalize();      // outward from the wall
+        hang.set(
+            hits[0].point.x + _aiHangNormal.x * COMP_HANG_OUT,
+            hang.y,
+            hits[0].point.z + _aiHangNormal.z * COMP_HANG_OUT);
+        return _aiHangNormal;           // face INTO the wall = negated
+    }
+
+    // Hop OVER something rather than onto it. tryAiBotClimb only ever lands
+    // on top of an obstacle, and refuses anything it cannot stand on - so a
+    // narrow prop like a lock, where the far side of the lip is thin air,
+    // fails that check and nothing else picks it up. The bot then just stood
+    // against it. Vaulting is the obvious answer and it was simply missing.
+    function tryAiBotHopOver(pos, destPos) {
+        if (_aiClimbPhase !== 'none') return false;
+        let dx = destPos.x - pos.x, dz = destPos.z - pos.z;
+        const dl = Math.hypot(dx, dz);
+        if (dl < 1e-4) return false;
+        dx /= dl; dz /= dl;
+        const aheadY = aiBotSurfaceY(pos.x + dx * AI_CLIMB_PROBE, pos.z + dz * AI_CLIMB_PROBE, pos.y + COMP_CLIMB_MAX + 1.0);
+        const rise = aheadY - pos.y;
+        // Low enough to clear with a jump, tall enough to be in the way.
+        if (rise <= AI_MAX_STEP_UP || rise > COMP_LEAP_RISE_MAX) return false;
+        for (let d = AI_CLIMB_PROBE + 0.5; d <= COMP_LEAP_MAX_DIST; d += 0.4) {
+            const lx = pos.x + dx * d, lz = pos.z + dz * d;
+            const ly = aiBotSurfaceY(lx, lz, pos.y + COMP_CLIMB_MAX + 1.0);
+            if (ly === -Infinity) continue;
+            // Landing has to be at roughly its own level and BELOW the
+            // obstacle's top - that is what makes this clearing something
+            // rather than climbing onto it.
+            if (Math.abs(ly - pos.y) > COMP_LEAP_RISE_MAX) continue;
+            if (ly > aheadY - 0.3) continue;
+            _aiClimbFrom.copy(pos);
+            _aiClimbTop.set(lx, ly, lz);
+            _compFaceEuler.set(0, Math.atan2(dx, dz), 0);
+            _aiClimbQuat.setFromEuler(_compFaceEuler);
+            _aiClimbPhase = 'leap';
+            _aiClimbT = 0;
+            _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbTop) / COMP_LEAP_SPEED);
+            return true;
+        }
+        return false;
+    }
+
+    // Gap leap - the companion's, with the same two rules that keep it
+    // honest: never gain more height than the player's own jump, and never
+    // take a drop unless the target is actually down there. Without this the
+    // bot simply stopped at every edge, which is the other half of getting
+    // stuck.
+    function tryAiBotGapLeap(pos, destPos) {
+        if (_aiClimbPhase !== 'none') return false;
+        let dx = destPos.x - pos.x, dz = destPos.z - pos.z;
+        const dl = Math.hypot(dx, dz);
+        if (dl < 1e-4) return false;
+        dx /= dl; dz /= dl;
+        const aheadY = aiBotSurfaceY(pos.x + dx * COMP_LEAP_EDGE_FWD, pos.z + dz * COMP_LEAP_EDGE_FWD, pos.y + 3.0);
+        if (pos.y - aheadY <= COMP_LEAP_EDGE_DROP) return false;   // a step or a ramp, just walk it
+        let landing = null;
+        for (let d = COMP_LEAP_EDGE_FWD + 0.5; d <= COMP_LEAP_MAX_DIST; d += 0.5) {
+            const lx = pos.x + dx * d, lz = pos.z + dz * d;
+            const ly = aiBotSurfaceY(lx, lz, pos.y + 3.0);
+            if (ly === -Infinity) continue;
+            if (ly - pos.y > COMP_LEAP_RISE_MAX) continue;         // that is a climb, not a jump
+            if (pos.y - ly > COMP_LEAP_LANDING_BAND) continue;
+            landing = { x: lx, y: ly, z: lz };
+            break;
+        }
+        if (!landing) return false;
+        // Dropping down only makes sense if that is where the target is -
+        // otherwise it is a descent it will immediately have to undo.
+        if ((pos.y - landing.y) > COMP_LEAP_EDGE_DROP && destPos.y > landing.y + 1.0) return false;
+        _aiClimbFrom.copy(pos);
+        _aiClimbTop.set(landing.x, landing.y, landing.z);
+        _compFaceEuler.set(0, Math.atan2(dx, dz), 0);
+        _aiClimbQuat.setFromEuler(_compFaceEuler);
+        _aiClimbPhase = 'leap';
+        _aiClimbT = 0;
+        _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbTop) / COMP_LEAP_SPEED);
+        return true;
+    }
+
+    // Drives an in-progress climb. Returns true while it owns the bot.
+    function updateAiBotClimb(delta) {
+        if (_aiClimbPhase === 'none') return false;
+        _aiClimbT += delta;
+        const t = Math.min(1, _aiClimbT / _aiClimbDur);
+        if (_aiClimbPhase === 'leap') {
+            const gx = THREE.MathUtils.lerp(_aiClimbFrom.x, _aiClimbTop.x, t);
+            const gz = THREE.MathUtils.lerp(_aiClimbFrom.z, _aiClimbTop.z, t);
+            const gy = THREE.MathUtils.lerp(_aiClimbFrom.y, _aiClimbTop.y, t) + COMP_LEAP_ARC_HEIGHT * 4 * t * (1 - t);
+            aiBot.group.position.set(gx, gy, gz);
+            aiBot.setNetworkState([gx, gy, gz], [_aiClimbQuat.x, _aiClimbQuat.y, _aiClimbQuat.z, _aiClimbQuat.w],
+                t < 1 ? (_aiClimbT < 0.18 ? 'jump_start' : 'fall') : 'land', false);
+            aiBot.update(delta);
+            if (t >= 1) _aiClimbPhase = 'none';
+            return true;
+        }
+        if (_aiClimbPhase === 'jump') {
+            const jx = THREE.MathUtils.lerp(_aiClimbFrom.x, _aiClimbHang.x, t);
+            const jz = THREE.MathUtils.lerp(_aiClimbFrom.z, _aiClimbHang.z, t);
+            const jy = THREE.MathUtils.lerp(_aiClimbFrom.y, _aiClimbHang.y, t) + COMP_LEAP_ARC_HEIGHT * 4 * t * (1 - t);
+            aiBot.group.position.set(jx, jy, jz);
+            aiBot.setNetworkState([jx, jy, jz], [_aiClimbQuat.x, _aiClimbQuat.y, _aiClimbQuat.z, _aiClimbQuat.w],
+                t < 1 ? (_aiClimbT < 0.18 ? 'jump_start' : 'fall') : 'hang_idle', false);
+            if (t >= 1) {
+                _aiClimbPhase = 'pull';
+                _aiClimbT = 0;
+                const climbAction = aiBot.actions && aiBot.actions['climb'];
+                _aiClimbDur = climbAction ? climbAction.getClip().duration : 1.0;
+            }
+            aiBot.update(delta);
+            return true;
+        }
+        // pull: root held while the climb clip plays, placed on top at the end
+        const done = t >= 1;
+        const at = done ? _aiClimbTop : _aiClimbHang;
+        aiBot.group.position.copy(at);
+        if (done && aiBot.fbxModel) {
+            // The click. By the end of the clip the body is already on the
+            // ledge, so moving the root there as well applies the rise twice
+            // and it jumps. Shift the MODEL back by what the root gained to
+            // cancel it, then decay that offset so the model settles onto its
+            // root. Same fix the companion's climb uses, and the player's.
+            _aiClimbMoveDiff.copy(_aiClimbTop).sub(_aiClimbHang);
+            _aiClimbTmpQuat.copy(_aiClimbQuat).invert();
+            _aiClimbMoveDiff.applyQuaternion(_aiClimbTmpQuat);
+            aiBot.fbxModel.position.sub(_aiClimbMoveDiff);
+            _aiClimbBlendT = COMP_CLIMB_BLEND;
+        }
+        aiBot.setNetworkState([at.x, at.y, at.z], [_aiClimbQuat.x, _aiClimbQuat.y, _aiClimbQuat.z, _aiClimbQuat.w],
+            done ? 'idle' : 'climb', false);
+        aiBot.update(delta);
+        if (done) _aiClimbPhase = 'none';
+        return true;
+    }
+
+    // Ragdolling or getting back up means it is already being dealt with -
+    // hitting it again would just reset an animation that is mid-play.
+    function aiBotVictimAvailable(v) {
+        if (!v) return false;
+        if (v.isRagdoll || v.isStandingUp) return false;
+        if (v === companion) return companion.isLoaded && companion.group.visible;
+        return true;
+    }
+
+    // Nearest thing worth attacking. The companion is a target in its own
+    // right, not just scenery - so the bot picks a fight with whichever of
+    // the two it runs into, rather than walking past the companion to get
+    // to the player.
+    function aiBotPickVictim(pos) {
+        let best = null, bestD = Infinity;
+        if (aiBotVictimAvailable(char)) {
+            const d = pos.distanceTo(char.group.position);
+            if (d < bestD) { bestD = d; best = char; }
+        }
+        if (companion && aiBotVictimAvailable(companion)) {
+            const d = pos.distanceTo(companion.group.position);
+            if (d < bestD) { bestD = d; best = companion; }
+        }
+        return best;
+    }
+
+    // One punch landing. Character and RemoteAvatar both carry
+    // triggerHitFlash and RagdollPhysics' applyProceduralRecoil, so the same
+    // call works on either - only the networking differs.
+    function aiBotHitVictim(v, pos) {
+        const vp = v.group.position;
+        const velocity = _tempVec2.set(vp.x - pos.x, 0, vp.z - pos.z).normalize().multiplyScalar(AI_PUNCH_FORCE);
+        const hitPoint = vp.clone().setY(vp.y + 1.2);
+        v.triggerHitFlash(0.9);
+        v.applyProceduralRecoil(velocity, 'medium');
+        // Only the local player's own reaction is broadcast. The companion
+        // is driven identically on every client from the same inputs, so
+        // mirroring its hit would apply the recoil twice over there.
+        if (v === char && network) { network.sendHitEvent(0.9, hitPoint); network.sendRecoilEvent(velocity, 'medium'); }
+        if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
+        if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
+    }
+
     function updateAiBot(delta) {
         if (!aiBot || !aiBot.isLoaded) return;
-        if (aiBot.isRagdoll || aiBot.isStandingUp) { aiBot.update(delta); return; }
+        // A hit mid-climb drops it - being knocked off a wall should look
+        // like being knocked off a wall, not like finishing the climb anyway.
+        if (aiBot.isRagdoll || aiBot.isStandingUp) {
+            _aiClimbPhase = 'none';
+            // Ragdoll drives the bones directly - a leftover model offset
+            // would displace the whole ragdoll, so drop it outright.
+            if (_aiClimbBlendT > 0 && aiBot.fbxModel) { aiBot.fbxModel.position.copy(_aiClimbModelRest); _aiClimbBlendT = 0; }
+            aiBot.update(delta);
+            return;
+        }
+        // Settle the model back onto its root after a climb. Ahead of
+        // everything else so it keeps decaying whatever the bot does next.
+        if (_aiClimbBlendT > 0 && aiBot.fbxModel) {
+            _aiClimbBlendT -= delta;
+            if (_aiClimbBlendT <= 0) aiBot.fbxModel.position.copy(_aiClimbModelRest);
+            else aiBot.fbxModel.position.lerp(_aiClimbModelRest, Math.min(1, delta / _aiClimbBlendT));
+        }
+        // Owns the bot outright while it runs, ahead of the stagger step and
+        // the mode machine, so nothing interrupts it halfway up.
+        if (updateAiBotClimb(delta)) return;
 
         const pos = aiBot.group.position;
+
+        // Progress watchdog - see _aiStuckAt. Deliberately measured on the
+        // bot's real position rather than on any of the decisions that got it
+        // there, so it catches a deadlock regardless of which rule caused it.
+        // Punching and cooling down are legitimately stationary, so they do
+        // not count as being stuck.
+        if (pos.distanceToSquared(_aiStuckAt) > AI_STUCK_DIST * AI_STUCK_DIST) {
+            _aiStuckAt.copy(pos);
+            _aiStuckT = 0;
+        } else if ((aiBotState.mode === 'chase' || aiBotState.mode === 'wander') && _aiUnstickT <= 0) {
+            // Wandering counts too. It used to only watch during a chase, so
+            // a bot that wedged itself between blocks while wandering had
+            // nothing looking out for it at all.
+            _aiStuckT += delta;
+            if (_aiStuckT > AI_STUCK_TIME) {
+                // Physically step sideways, rather than only picking a new
+                // destination. Wedged in a gap, a new destination changes
+                // nothing - every route out of the gap is blocked the same
+                // way, so it re-derives the same jam and stays put. Moving
+                // perpendicular breaks the wedge itself.
+                _aiUnstickDir.set(-(pos.z - _aiStuckAt.z), 0, pos.x - _aiStuckAt.x);
+                if (_aiUnstickDir.lengthSq() < 1e-6) _aiUnstickDir.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+                if (_aiUnstickDir.lengthSq() < 1e-6) _aiUnstickDir.set(1, 0, 0);
+                _aiUnstickDir.normalize();
+                _aiUnstickT = AI_UNSTICK_TIME;
+                _aiClimbPhase = 'none';
+                aiBotState.mode = 'wander';
+                pickNewAiWanderTarget();
+                _aiStuckT = 0;
+                _aiStuckAt.copy(pos);
+            }
+        } else {
+            _aiStuckT = 0;
+        }
+
+        // Deadlock escape, ahead of every routing decision - the point is to
+        // do something none of them would have chosen. Ignores the normal
+        // step-up refusal too: being wedged is exactly the case where the
+        // ordinary "do not move onto that" rules are what is holding it.
+        if (_aiUnstickT > 0) {
+            _aiUnstickT -= delta;
+            const us = Math.min(AI_WANDER_SPEED * 2.0 * delta, 0.2);
+            const ux = pos.x + _aiUnstickDir.x * us, uz = pos.z + _aiUnstickDir.z * us;
+            const ugy = aiBotSurfaceY(ux, uz, pos.y + 2.0);
+            // A body-height ray as well as the ground check. Ground height
+            // alone says nothing about a wall standing in that direction, so
+            // the sidestep could - and did - walk straight into the side of a
+            // block, which is how it ended up inside them.
+            _tempVec3.set(_aiUnstickDir.x, 0, _aiUnstickDir.z);
+            rayFwd.set(_tempVec1.set(pos.x, pos.y + 0.5, pos.z), _tempVec3);
+            const uWall = rayFwd.intersectObjects(collidables);
+            const uClear = !(uWall.length > 0 && uWall[0].distance < 0.6);
+            // Only step somewhere it could stand: not into a wall, not up
+            // one, not off a cliff. If this side is no good, try the other
+            // next frame.
+            if (uClear && ugy !== -Infinity && ugy - pos.y <= AI_MAX_STEP_UP && pos.y - ugy < 2.0) {
+                _tempVec3.set(_aiUnstickDir.x, 0, _aiUnstickDir.z);
+                const uq = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), _tempVec3);
+                aiBot.group.position.set(ux, ugy, uz);
+                aiBot.setNetworkState([ux, ugy, uz], [uq.x, uq.y, uq.z, uq.w], 'walk', false);
+                aiBot.update(delta);
+                return;
+            }
+            _aiUnstickDir.negate();
+        }
 
         // Hit-recovery stagger step - mirrors the local player's own
         // recovery step in the main movement block below: pauses whatever
@@ -1405,50 +2050,82 @@ export function startGame(CharacterClass) {
         // legs visibly cycle instead of sliding/staying frozen mid-stumble.
         const hitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
         if (aiBot.hitRecoveryTimer > 0 && aiBot.hitRecoveryTimer <= hitRecoveryDuration) {
+            _aiClimbPhase = 'none';      // a hit drops whatever it was climbing
+            _aiRecoverT = AI_RECOVER_SETTLE;
+            _aiStuckT = 0; _aiStuckAt.copy(pos);   // not stuck, just hurt
             const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
             const recoveryStrengthMult = THREE.MathUtils.clamp(aiBot.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
             const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
             rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
             const groundHits = rayDown.intersectObjects(collidables);
-            if (groundHits.length > 0) nextPos.y = groundHits[0].point.y;
+            // Falls rather than snapping - see the companion's own stagger for
+            // why. Hit in mid-air, an outright snap teleports it to the floor.
+            if (groundHits.length > 0) {
+                const gY = groundHits[0].point.y;
+                if (gY < pos.y - 0.05) nextPos.y = pos.y + Math.max(gY - pos.y, -16 * delta);
+                else nextPos.y = gY;
+            }
+            // Moved DIRECTLY, not left to setNetworkState's lerp to chase.
+            // That lerp is a smoothing filter for network samples, and running
+            // the knockback through it swallowed most of the displacement -
+            // which is why the bot barely budged from a thrown object while
+            // the companion, which sets its position outright, was flung
+            // properly. Same hit, different plumbing.
+            aiBot.group.position.copy(nextPos);
             aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z],
                 [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'walk', false);
             aiBot.update(delta);
             return;
         }
+        // Settle - stands and collects itself before going anywhere, the same
+        // pause the companion takes. It is what makes the hit read as having
+        // landed rather than being shrugged off.
+        if (_aiRecoverT > 0) {
+            _aiRecoverT -= delta;
+            _aiStuckT = 0; _aiStuckAt.copy(pos);
+            let ry = pos.y;
+            rayDown.set(_tempVec1.set(pos.x, pos.y + 2.0, pos.z), _downVec);
+            const settleHits = rayDown.intersectObjects(collidables);
+            if (settleHits.length > 0) ry = settleHits[0].point.y;
+            aiBot.group.position.set(pos.x, ry, pos.z);
+            aiBot.setNetworkState([pos.x, ry, pos.z],
+                [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'idle', false);
+            aiBot.update(delta);
+            return;
+        }
 
-        const distToPlayer = pos.distanceTo(char.group.position);
-        const playerAvailable = !char.isRagdoll && !char.isStandingUp;
+        const victim = aiBotPickVictim(pos);
+        const distToVictim = victim ? pos.distanceTo(victim.group.position) : Infinity;
 
         // Combat mode transitions - punch/cooldown run their own timers below
         // and aren't interrupted by distance checks mid-swing.
-        if (aiBotState.mode === 'wander' && playerAvailable && distToPlayer < AI_CHASE_RADIUS) {
+        if (aiBotState.mode === 'wander' && victim && distToVictim < AI_CHASE_RADIUS) {
             aiBotState.mode = 'chase';
-        } else if (aiBotState.mode === 'chase' && (!playerAvailable || distToPlayer > AI_CHASE_GIVEUP_RADIUS)) {
+        } else if (aiBotState.mode === 'chase' && (!victim || distToVictim > AI_CHASE_GIVEUP_RADIUS)) {
             aiBotState.mode = 'wander';
             pickNewAiWanderTarget();
         }
 
         if (aiBotState.mode === 'punch') {
             aiBotState.punchTimer += delta;
-            const facingDir = _tempVec1.set(char.group.position.x - pos.x, 0, char.group.position.z - pos.z);
-            if (facingDir.lengthSq() > 0.0001) {
-                facingDir.normalize();
-                const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
-                aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'punch_left', false);
+            // Whoever the swing started against - not re-picked mid-punch, or
+            // the bot would spin to face someone else halfway through.
+            const pv = aiBotState.victim;
+            const pvPos = pv ? pv.group.position : null;
+            if (pvPos) {
+                const facingDir = _tempVec1.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
+                if (facingDir.lengthSq() > 0.0001) {
+                    facingDir.normalize();
+                    const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
+                    aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'punch_left', false);
+                }
             }
 
             if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_PUNCH_HIT_TIME) {
                 aiBotState.punchHasHit = true;
-                if (playerAvailable && pos.distanceTo(char.group.position) < AI_PUNCH_RANGE + 0.6) {
-                    const velocity = _tempVec2.set(char.group.position.x - pos.x, 0, char.group.position.z - pos.z).normalize().multiplyScalar(AI_PUNCH_FORCE);
-                    const hitPoint = char.group.position.clone().setY(char.group.position.y + 1.2);
-                    char.triggerHitFlash(0.9);
-                    char.applyProceduralRecoil(velocity, 'medium');
-                    if (network) { network.sendHitEvent(0.9, hitPoint); network.sendRecoilEvent(velocity, 'medium'); }
-                    if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
-                    if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
+                if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_PUNCH_RANGE + 0.6) {
+                    aiBotHitVictim(pv, pos);
                 }
             }
             if (aiBotState.punchTimer >= AI_PUNCH_DURATION) {
@@ -1462,20 +2139,56 @@ export function startGame(CharacterClass) {
         if (aiBotState.mode === 'cooldown') {
             aiBotState.cooldownTimer -= delta;
             aiBot.setNetworkState([pos.x, pos.y, pos.z], [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'idle', false);
-            if (aiBotState.cooldownTimer <= 0) aiBotState.mode = (playerAvailable && distToPlayer < AI_CHASE_RADIUS) ? 'chase' : 'wander';
+            if (aiBotState.cooldownTimer <= 0) aiBotState.mode = (victim && distToVictim < AI_CHASE_RADIUS) ? 'chase' : 'wander';
             aiBot.update(delta);
             return;
         }
 
         if (aiBotState.mode === 'chase') {
-            if (distToPlayer < AI_PUNCH_RANGE) {
+            if (distToVictim < AI_PUNCH_RANGE) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
+                aiBotState.victim = victim;
                 aiBot.update(delta);
                 return;
             }
-            if (moveAiBotToward(char.group.position, AI_CHASE_SPEED, delta) < 0) pickNewAiWanderTarget();
+            const vPos = victim.group.position;
+            const chaseSpeed = aiBotChaseSpeed(distToVictim);
+            const vAbove = vPos.y - pos.y > COMP_CLIMB_WORTH_IT;
+
+            // CLIMB FIRST. If there is something climbable directly in front,
+            // climbing it is the answer regardless of what else is going on -
+            // this used to be tried last, so the bot would walk off toward a
+            // recorded takeoff crumb metres away while standing against a
+            // perfectly good wall, and if the takeoff was unreachable it never
+            // got back to trying the wall at all.
+            //
+            // Full reach when the target is above, hop height when level. That
+            // distinction is what keeps it from scaling blocks for no reason
+            // on flat ground while still letting it follow upward.
+            if (tryAiBotClimb(pos, vPos, vAbove ? COMP_CLIMB_MAX : COMP_LEAP_RISE_MAX)) { aiBot.update(delta); return; }
+            // Couldn't land on it - it may still be something to vault.
+            if (tryAiBotHopOver(pos, vPos)) { aiBot.update(delta); return; }
+
+            if (vAbove) {
+                // Nothing climbable here, so go by way of where the player
+                // left this level - see findTakeoffApproach. Steering is
+                // deliberately skipped while heading up: avoiding the block is
+                // the wrong instinct when the block IS the route.
+                const app = findTakeoffApproach(pos);
+                if (app && Math.hypot(app.at.x - pos.x, app.at.z - pos.z) >= 0.7) {
+                    _aiApproach.set(app.at.x, pos.y, app.at.z);
+                    if (moveAiBotDirect(_aiApproach, chaseSpeed, delta) >= 0) { aiBot.update(delta); return; }
+                }
+                // No takeoff, or the way to it is blocked - close head-on and
+                // let the climb above catch the wall once it arrives.
+                if (moveAiBotDirect(vPos, chaseSpeed, delta) >= 0) { aiBot.update(delta); return; }
+                // Genuinely walled in with nothing climbable: fall through to
+                // steering and look for a way round.
+            }
+            if (tryAiBotGapLeap(pos, vPos)) { aiBot.update(delta); return; }
+            if (moveAiBotToward(vPos, chaseSpeed, delta) < 0) pickNewAiWanderTarget();
             aiBot.update(delta);
             return;
         }
@@ -1499,6 +2212,10 @@ export function startGame(CharacterClass) {
         if (aiBot) return;
         aiBot = new RemoteAvatar(scene, threeTone, 'ai-bot-1');
         window.aiBot = aiBot;
+        // Yellow, to tell it apart from the blue companion at a glance. Safe
+        // to call before the model has loaded: setColor stores the value and
+        // the material constructor reads it back (see bodyColor).
+        aiBot.setColor(0xffd633);
         const spawnPos = char.group.position;
         aiBotState.mode = 'wander';
         aiBotState.target.set(spawnPos.x + 4, spawnPos.y, spawnPos.z + 4);
@@ -1603,11 +2320,22 @@ export function startGame(CharacterClass) {
         if (rise <= COMP_STEP_UP || rise > COMP_CLIMB_MAX) return false;
         // Aim past the lip, or it lands balanced exactly on the edge and the
         // next frame's ground probe can miss the block entirely.
-        const climbX = destX + dirX * COMP_CLIMB_INSET;
-        const climbZ = destZ + dirZ * COMP_CLIMB_INSET;
-        const climbTopY = companionGroundY(climbX, climbZ, topY);
-        // Same surface, not a second even taller step just past it - this is
-        // one hop, not a staircase.
+        let climbX = destX + dirX * COMP_CLIMB_INSET;
+        let climbZ = destZ + dirZ * COMP_CLIMB_INSET;
+        let climbTopY = companionGroundY(climbX, climbZ, topY);
+        // Something TALLER starting right past the lip is a staircase, and
+        // refusing the climb because of it - which is what the old
+        // "same surface" test did - meant the companion simply stopped at
+        // every flight of stairs. The next step being higher is no reason not
+        // to get onto this one; it just means landing shorter, nearer the
+        // edge, so aim there instead.
+        if (climbTopY > topY + 0.6) {
+            climbX = destX + dirX * COMP_CLIMB_INSET_TIGHT;
+            climbZ = destZ + dirZ * COMP_CLIMB_INSET_TIGHT;
+            climbTopY = companionGroundY(climbX, climbZ, topY);
+        }
+        // Still rejected if the surface DROPS away past the lip - that is a
+        // ledge too narrow to stand on, not a step.
         if (Math.abs(climbTopY - topY) >= 0.6) return false;
         // Jump for the ledge and hang, rather than arcing straight onto the
         // top. Going up in one smooth curve to standing was the move that
@@ -1616,53 +2344,24 @@ export function startGame(CharacterClass) {
         // companion does the same - this call is only the jump, HANG decides
         // when to climb.
         _ledgeSpotTop.set(climbX, climbTopY, climbZ);
+        // Low enough to simply hop onto - so hop. Routing everything through
+        // hang-then-pull was wrong for short rises: the hang sits
+        // COMP_HANG_DROP below the lip, so for anything under about 1.5 that
+        // is BELOW the companion's own feet, and it would try to jump down
+        // into a hang in order to climb a step it could step onto. Nobody
+        // grabs a ledge at knee height.
+        if (rise <= COMP_LEAP_RISE_MAX) {
+            _compLeapStart.copy(c);
+            _compLeapEnd.copy(_ledgeSpotTop);
+            _compLeapDur = Math.max(0.35, _compLeapStart.distanceTo(_compLeapEnd) / COMP_LEAP_SPEED);
+            _compLeapT = 0;
+            _compLeapToHang = false;   // lands on top, no ledge involved
+            _compFaceEuler.set(0, Math.atan2(dirX, dirZ), 0);
+            _compLeapFaceQuat.setFromEuler(_compFaceEuler);
+            _compMode = 'leap';
+            return true;
+        }
         return startCompanionJumpGrab(c, _ledgeSpotTop, dirX, dirZ);
-    }
-
-    // Can the companion travel straight from where it is to this crumb
-    // without going through anything? Around a corner it cannot: the crumb
-    // is on the far face and the straight line between them passes through
-    // the block, while the recorded path goes around the outside.
-    //
-    // Both ends are lifted OUT from the wall before casting. A hanging body
-    // sits only COMP_HANG_OUT from the face, so a ray between two hang
-    // positions runs nearly parallel to it and grazes - reporting a hit on
-    // the flat wall it is simply sliding along, which would make every
-    // crumb look blocked.
-    function ledgeCrumbVisible(from, cr, outX, outZ) {
-        const ox = outX * COMP_LEDGE_RAY_OUT, oz = outZ * COMP_LEDGE_RAY_OUT;
-        const ax = from.x - ox, ay = from.y, az = from.z - oz;
-        const bx = cr.x - ox, by = cr.y, bz = cr.z - oz;
-        const dx = bx - ax, dy = by - ay, dz = bz - az;
-        const d = Math.hypot(dx, dy, dz);
-        if (d < 1e-4) return true;
-        _ledgeFwdVec.set(dx / d, dy / d, dz / d);
-        _tempVec2.set(ax, ay, az);
-        rayFwd.set(_tempVec2, _ledgeFwdVec);
-        const hits = rayFwd.intersectObjects(_compGroundList, true);
-        return !(hits.length && hits[0].distance < d - 0.1);
-    }
-
-    // Jump straight to a hang position that is already known good - a crumb
-    // the player themselves hung at. Nothing to validate but the reach.
-    function startCompanionJumpToHang(c, hangPos, quat) {
-        if (hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
-        _hangPos.copy(hangPos);
-        _hangQuat.copy(quat);
-        _hangFwd.set(0, 0, 1).applyQuaternion(quat);
-        _hangFwd.y = 0;
-        if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
-        // Where climbing up from here would land - the inverse of
-        // computeLedgeHang, since this route never had a `top` to start from.
-        _hangTop.set(hangPos.x + _hangFwd.x * COMP_HANG_OUT, hangPos.y + COMP_HANG_DROP, hangPos.z + _hangFwd.z * COMP_HANG_OUT);
-        _compLeapStart.copy(c);
-        _compLeapEnd.copy(_hangPos);
-        _compLeapDur = Math.max(0.35, _compLeapStart.distanceTo(_compLeapEnd) / COMP_LEAP_SPEED);
-        _compLeapT = 0;
-        _compLeapToHang = true;
-        _compLeapFaceQuat.copy(_hangQuat);
-        _compMode = 'leap';
-        return true;
     }
 
     // Jump from the ground and catch `top`'s ledge, ending in a hang.
@@ -1670,10 +2369,16 @@ export function startGame(CharacterClass) {
     // companion is never doing something you could not.
     function startCompanionJumpGrab(c, top, fwdX, fwdZ) {
         computeLedgeHang(top, fwdX, fwdZ, _hangPos);
+        _hangFwd.set(fwdX, 0, fwdZ);
+        // Square up to the wall before committing, so the grab lands facing
+        // the face rather than facing however it happened to walk in. The
+        // player takes its hang facing from the wall normal too (its grab does
+        // lookAt(position - n)); taking it from the travel direction only
+        // matches when the approach was dead-on.
+        squareHangToWall();
         if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
         _hangTop.copy(top);
-        _hangFwd.set(fwdX, 0, fwdZ);
-        _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
+        _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
         _hangQuat.setFromEuler(_compFaceEuler);
         _compLeapStart.copy(c);
         _compLeapEnd.copy(_hangPos);
@@ -1776,9 +2481,59 @@ export function startGame(CharacterClass) {
         return wallHits.length > 0 && wallHits[0].distance <= COMP_LEDGE_WALL_REACH;
     }
 
+    // Squares the hang up against the wall it is actually holding, using that
+    // wall's own normal.
+    //
+    // Before this the facing came from the direction the PLAYER happened to
+    // travel while climbing (takeoff crumb -> top-out crumb), which is only
+    // perpendicular to the wall if they went straight at it. Approach a ledge
+    // at an angle, or turn while climbing, and the companion ends up hanging
+    // skewed across the face instead of square to it - the misalignment.
+    // Re-placing off the hit point also puts it a consistent distance out,
+    // rather than wherever the lip search happened to land.
+    function squareHangToWall() {
+        _tempVec2.set(_hangPos.x, _hangPos.y + 0.4, _hangPos.z);
+        rayFwd.set(_tempVec2, _hangFwd);
+        const hits = rayFwd.intersectObjects(_compGroundList, true);
+        if (!hits.length || hits[0].distance > COMP_LEDGE_WALL_REACH || !hits[0].face) return;
+        _ledgeFwdVec.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+        _ledgeFwdVec.y = 0;
+        if (_ledgeFwdVec.lengthSq() < 1e-6) return;
+        _ledgeFwdVec.normalize();          // outward from the wall
+        _hangFwd.set(-_ledgeFwdVec.x, 0, -_ledgeFwdVec.z);   // face into it
+        _hangPos.set(
+            hits[0].point.x + _ledgeFwdVec.x * COMP_HANG_OUT,
+            _hangPos.y,
+            hits[0].point.z + _ledgeFwdVec.z * COMP_HANG_OUT);
+    }
+
+    // Slides the hang along the ledge until it is not on top of the player.
+    // Two bodies cannot occupy one grip, and the top-out clearance test says
+    // nothing about where the companion HANGS - only where it would end up
+    // standing - so nothing was stopping it grabbing on right where the
+    // player already was.
+    function nudgeHangClearOfPlayer(p) {
+        if (Math.hypot(_hangPos.x - p.x, _hangPos.z - p.z) >= COMP_LEDGE_MIN_SEP) return;
+        const sx = -_hangFwd.z, sz = _hangFwd.x;
+        for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
+            for (let s = 0; s < 2; s++) {
+                const off = COMP_SHIMMY_STEPS[i] * (s === 0 ? 1 : -1);
+                _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
+                if (Math.hypot(_ledgeSpotTop.x - p.x, _ledgeSpotTop.z - p.z) < COMP_LEDGE_MIN_SEP) continue;
+                if (!validateLedgeSpot(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _shimmyHang)) continue;
+                _hangTop.copy(_ledgeSpotTop);
+                _hangPos.copy(_shimmyHang);
+                return;
+            }
+        }
+    }
+
     // Climb from the current hang onto `target`, the way the player does it:
     // root held still while the climb clip plays, then placed on the ledge.
     function startCompanionLedgeClimb(c, target, fwdX, fwdZ) {
+        // Where the model sits on its root normally - captured now so the
+        // post-climb offset below has something to decay back to.
+        if (companion.fbxModel && _climbBlendT <= 0) _climbModelRest.copy(companion.fbxModel.position);
         _climbFrom.copy(c);
         _climbTo.set(target.x + fwdX * COMP_CLIMB_STAND_IN, target.y, target.z + fwdZ * COMP_CLIMB_STAND_IN);
         _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
@@ -1921,33 +2676,174 @@ export function startGame(CharacterClass) {
         return null;
     }
 
+    // Records the player's pose + anim state into the trail. Its own function,
+    // called unconditionally from the frame loop, because the trail is no
+    // longer just the companion's: the AI bot reads it too, to find where the
+    // player left its level (findTakeoffApproach). It used to live inside
+    // updateCompanion, below the companionEnabled early-out, which meant
+    // switching the companion off silently took the bot's ability to follow
+    // anyone upstairs with it.
+    //
+    // Uses the player's VISUAL position (fbxModel world pos), not the raw
+    // group: at the climb-end the group SNAPS to ledgeTarget while the model
+    // is offset back to hide it (see the isClimbingUp transition) - recording
+    // the compensated visual replays that SMOOTH climb-out instead of the raw
+    // root snap.
+    function recordPlayerTrail(delta) {
+        const q = char.group.quaternion;
+        if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(char.group.position);
+        _compTrailT += delta;
+        const last = _compTrail.length ? _compTrail[_compTrail.length - 1] : null;
+        if (last && Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
+        _compTrail.push({ t: _compTrailT, x: _compVisPos.x, y: _compVisPos.y, z: _compVisPos.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
+        while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
+    }
+
+    // On-screen readout of what the companion thinks it is doing. Off unless
+    // window._compDebug is set from the console.
+    //
+    // Worth having because "it is stuck" is the same picture for several
+    // completely different causes - deliberately holding a ledge, walking at
+    // an unreachable takeoff, every movement branch declining - and they need
+    // opposite fixes. Guessing between them from a screenshot has not worked.
+    function companionDebugReport(c, p) {
+        let el = document.getElementById('companion-debug');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'companion-debug';
+            el.style.cssText = 'position:fixed;top:0;right:0;background:rgba(0,0,0,.85);color:#6cf;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
+            document.body.appendChild(el);
+        }
+        const takeoff = findTakeoffApproach(c);
+        const dTk = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : -1;
+        el.textContent = [
+            'mode    ' + _compMode,
+            'why     ' + _compWhy,
+            'dPlayer ' + Math.hypot(p.x - c.x, p.z - c.z).toFixed(2) + '  dY ' + (p.y - c.y).toFixed(2),
+            'takeoff ' + (takeoff ? ('d=' + dTk.toFixed(2) + (dTk > COMP_TAKEOFF_PREFER_DIST ? ' (far)' : ' (near)')) : 'none'),
+            'trail   ' + _compTrail.length + ' crumbs',
+            'stuck   ' + _compStuckT.toFixed(1) + 's' + (_compUnstickT > 0 ? '  UNSTICKING' : '')
+        ].join('\n');
+    }
+
     function updateCompanion(delta) {
         if (!window.companionEnabled) { if (companion) companion.group.visible = false; return; }
         if (!companion) spawnCompanion();
         if (!companion) return;
         if (!companion.isLoaded) { companion.update(delta); return; }
         companion.group.visible = true;
-        if (companion.isRagdoll || companion.isStandingUp) { companion.update(delta); return; }
+        if (companion.isRagdoll || companion.isStandingUp) {
+            // Ragdoll drives the bones directly - leaving a model offset in
+            // place would displace the whole ragdoll. Drop it immediately.
+            if (_climbBlendT > 0 && companion.fbxModel) { companion.fbxModel.position.copy(_climbModelRest); _climbBlendT = 0; }
+            companion.update(delta);
+            return;
+        }
+        // Settle the model back onto its root after a climb. Runs before the
+        // mode dispatch so it keeps decaying whatever the companion goes on
+        // to do next - the climb is already over by the time this matters.
+        if (_climbBlendT > 0 && companion.fbxModel) {
+            _climbBlendT -= delta;
+            if (_climbBlendT <= 0) companion.fbxModel.position.copy(_climbModelRest);
+            else companion.fbxModel.position.lerp(_climbModelRest, Math.min(1, delta / _climbBlendT));
+        }
 
         // Ground-cast list for this frame's rays.
         _compGroundList.length = 0;
         for (let i = 0; i < collidables.length; i++) _compGroundList.push(collidables[i]);
         _compGroundList.push(ground);
 
-        // Always record the player's pose + anim state into the trail. Use the
-        // player's VISUAL position (fbxModel world pos), not the raw group: at
-        // the climb-end the group SNAPS to ledgeTarget while the model is
-        // offset back to hide it (see the isClimbingUp transition) - recording
-        // the compensated visual means the companion replays that SMOOTH climb-
-        // out instead of the raw root snap (the extra pop it used to show).
         const p = char.group.position, q = char.group.quaternion;
         const c = companion.group.position;
-        if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(p);
-        _compTrailT += delta;
-        const last = _compTrail.length ? _compTrail[_compTrail.length - 1] : null;
-        if (last && Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
-        _compTrail.push({ t: _compTrailT, x: _compVisPos.x, y: _compVisPos.y, z: _compVisPos.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
-        while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
+
+        // ---- Hit recovery ----
+        // Being punched has to interrupt whatever it was doing. Without this
+        // the follow logic kept running straight through the hit: the
+        // companion would be knocked back and, in the same breath, start
+        // walking to reclaim its spot behind the player - which reads as it
+        // not having noticed being hit at all.
+        //
+        // Two stages. First the stagger itself, stepping in the direction of
+        // the blow (the fields RagdollPhysics.applyProceduralRecoil already
+        // populates). Then a short settle where it stands and collects itself
+        // before it is willing to go anywhere - that pause is the part that
+        // makes the hit land, and it is why this is not just a movement lock.
+        const compHitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
+        if (companion.hitRecoveryTimer > 0 && companion.hitRecoveryTimer <= compHitRecoveryDuration) {
+            _compWhy = 'staggering';
+            _compMode = 'follow';        // abandon any route it was mid-way through
+            _compRecoverT = COMP_RECOVER_SETTLE;
+            _compStuckT = 0; _compStuckAt.copy(c);   // not stuck, just hurt
+            const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
+            const strengthMult = THREE.MathUtils.clamp(companion.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
+            const stepSpeed = recoveryStepSpeed * strengthMult * Math.min(1, companion.hitRecoveryTimer / compHitRecoveryDuration);
+            const rx = c.x + companion.hitRecoveryDir.x * stepSpeed * delta;
+            const rz = c.z + companion.hitRecoveryDir.z * stepSpeed * delta;
+            const rgy = companionGroundY(rx, rz, c.y);
+            let ry = c.y;
+            // FALL to the ground, do not snap to it. The old test was
+            // `rgy - c.y <= COMP_STEP_UP`, which a companion hit in mid-air
+            // passes trivially - the ground is far BELOW, so the difference is
+            // hugely negative - and it teleported straight down. Punch it
+            // off a wall it was climbing and it did not get knocked off, it
+            // vanished to the floor, restarting the whole route. Combined
+            // with the bot now hunting it, that made getting anywhere upward
+            // nearly impossible.
+            if (rgy < c.y - 0.05) ry += Math.max(rgy - c.y, -16 * delta);
+            else if (rgy > c.y + 0.05 && rgy - c.y <= COMP_STEP_UP) ry = rgy;
+            companion.group.position.set(rx, ry, rz);
+            companion.setNetworkState([rx, ry, rz], [companion.group.quaternion.x, companion.group.quaternion.y, companion.group.quaternion.z, companion.group.quaternion.w], 'walk', false);
+            companion.update(delta);
+            return;
+        }
+        if (_compRecoverT > 0) {
+            _compRecoverT -= delta;
+            _compWhy = 'recovering';
+            _compStuckT = 0; _compStuckAt.copy(c);
+            // Still falls if it was knocked somewhere with nothing under it -
+            // collecting itself should not mean hanging in the air.
+            const rgy = companionGroundY(c.x, c.z, c.y);
+            let ry = c.y;
+            if (rgy < c.y - 0.05) ry += Math.max(rgy - c.y, -16 * delta);
+            else if (rgy > c.y + 0.05 && rgy - c.y <= COMP_STEP_UP) ry = rgy;
+            _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+            _compFaceQuat.setFromEuler(_compFaceEuler);
+            companion.group.position.set(c.x, ry, c.z);
+            companion.setNetworkState([c.x, ry, c.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(0, delta), false);
+            companion.update(delta);
+            return;
+        }
+
+        if (_compJustClimbedT > 0) _compJustClimbedT -= delta;
+
+        // Progress watchdog - see _compStuckAt. Measured on the real position,
+        // so it catches a deadlock whichever rule caused it. Only counts while
+        // there is somewhere to be: standing still next to the player is not
+        // being stuck, and the deliberate holds (hanging, climbing, mid-leap)
+        // are not either.
+        const farFromPlayer = Math.hypot(p.x - c.x, p.z - c.z) > COMP_FOLLOW_DIST + 0.8 || Math.abs(p.y - c.y) > 1.0;
+        const shouldBeMoving = farFromPlayer && (_compMode === 'follow' || _compMode === 'replay');
+        if (c.distanceToSquared(_compStuckAt) > COMP_STUCK_DIST * COMP_STUCK_DIST) {
+            _compStuckAt.copy(c); _compStuckT = 0;
+        } else if (shouldBeMoving && _compUnstickT <= 0) {
+            _compStuckT += delta;
+            if (_compStuckT > COMP_STUCK_TIME) {
+                // Break the symmetry: sidestep perpendicular to the player for
+                // a moment. Which side does not matter, only that it is not
+                // the direction that is jammed.
+                _compUnstickDir.set(-(p.z - c.z), 0, p.x - c.x);
+                if (_compUnstickDir.lengthSq() < 1e-6) _compUnstickDir.set(1, 0, 0);
+                _compUnstickDir.normalize();
+                if (Math.random() < 0.5) _compUnstickDir.negate();
+                _compUnstickT = COMP_UNSTICK_TIME;
+                _compStuckT = 0;
+                _compMode = 'follow';
+                _compStuckAt.copy(c);
+            }
+        } else {
+            _compStuckT = 0;
+        }
+        if (window._compDebug) companionDebugReport(c, p);
 
         const gy = companionGroundY(c.x, c.z, c.y);
         const playerElevated = isGrounded && !isLedgeGrabbing && !isClimbingUp && (p.y - gy) > 1.0;
@@ -2016,196 +2912,34 @@ export function startGame(CharacterClass) {
         if (_compMode === 'climbup') {
             _climbT += delta;
             // Root stays put for the whole clip and is placed once at the
-            // end, which is exactly what the player's own climb does - the
-            // clip carries the body up, the root move just commits it.
+            // end - the clip carries the body up, the root move just commits
+            // it.
             const done = _climbT >= _climbDur;
             const pos = done ? _climbTo : _climbFrom;
             companion.group.position.copy(pos);
             companion.group.quaternion.copy(_climbQuat);
+            if (done && companion.fbxModel) {
+                // The pop. By the end of the clip the body is already stood on
+                // the ledge - the animation put it there - so moving the root
+                // up as well applies that same rise a second time and the
+                // companion visibly jumps.
+                //
+                // Same fix the player uses (see the isClimbingUp transition):
+                // shift the MODEL back by exactly what the root just gained,
+                // which cancels the jump outright, then let that offset decay
+                // so the model settles onto its root over a few frames. Local
+                // space, since fbxModel is a child of the group.
+                _climbMoveDiff.copy(_climbTo).sub(_climbFrom);
+                _climbTmpQuat.copy(_climbQuat).invert();
+                _climbMoveDiff.applyQuaternion(_climbTmpQuat);
+                companion.fbxModel.position.sub(_climbMoveDiff);
+                _climbBlendT = COMP_CLIMB_BLEND;
+            }
             companion.setNetworkState([pos.x, pos.y, pos.z], [_climbQuat.x, _climbQuat.y, _climbQuat.z, _climbQuat.w], done ? 'idle' : 'climb', false);
             companion.update(delta);
-            if (done) _compMode = 'follow';
+            if (done) { _compMode = 'follow'; _compJustClimbedT = COMP_POST_CLIMB_HOLD; }
             return;
         }
-
-        // ---- LEDGEFOLLOW (retrace the player's own path along a ledge) ----
-        // Placed after LEAP/CLIMBUP so neither gets cut off mid-move, but
-        // ahead of everything else: while the player is on a wall, being on
-        // that wall with them IS the follow behaviour, and the ground logic
-        // below has nothing sensible to say about it.
-        //
-        // Follows the player's recorded hang crumbs rather than probing the
-        // geometry for a free spot beside them. Every geometric check is a
-        // guess about where the wall is - which lip, which face, how far in
-        // to sample - and getting any one of them wrong means finding no
-        // ledge at all, which is exactly what kept happening. A hang crumb is
-        // not a guess: it is a position on this exact ledge that a body
-        // actually occupied, with the correct facing already baked in.
-        //
-        // Trailing by a fixed PATH distance (not a straight line) is also
-        // what keeps the gap honest as the ledge turns a corner.
-        let ledgeApproach = null;
-        if (isLedgeGrabbing) {
-            // Index of the crumb it is currently heading for. Following the
-            // chain crumb BY CRUMB is the point: heading straight at the
-            // trailing crumb instead draws a line from wherever the companion
-            // is to a point several crumbs back, and that line cuts the corner
-            // - straight through the block on an L-shaped ledge. That is the
-            // shortcut. The recorded path is the only route known to be
-            // walkable, so it has to be walked, not aimed across.
-            let want = -1, acc = 0, prev = null;
-            for (let i = _compTrail.length - 1; i >= 0; i--) {
-                const tc = _compTrail[i];
-                if (tc.state !== 'hang_idle') continue;
-                if (prev) acc += Math.hypot(prev.x - tc.x, prev.y - tc.y, prev.z - tc.z);
-                prev = tc;
-                want = i;   // furthest back so far; kept if the player hasn't moved COMP_LEDGE_GAP yet
-                if (acc >= COMP_LEDGE_GAP) break;
-            }
-            // Never target a crumb the player is still standing in. Hanging
-            // still leaves the trail full of crumbs at ONE position - their
-            // own - so the accumulated path length never reaches
-            // COMP_LEDGE_GAP and the loop above falls back to the oldest
-            // hang crumb, which is also that same spot. Following it walks
-            // the companion straight into the player. The recorded path only
-            // offers somewhere to be once they have actually moved along it,
-            // so step further back until a crumb is genuinely clear of them.
-            while (want >= 0) {
-                const wc = _compTrail[want];
-                if (Math.hypot(wc.x - p.x, wc.y - p.y, wc.z - p.z) >= COMP_LEDGE_MIN_SEP) break;
-                let next = -1;
-                for (let i = want - 1; i >= 0; i--) {
-                    if (_compTrail[i].state === 'hang_idle') { next = i; break; }
-                }
-                want = next;
-            }
-            const hangingNow = _compMode === 'ledgefollow' || _compMode === 'hang' || _compMode === 'shimmy';
-            if (want < 0 && hangingNow) {
-                // Already on the wall with nowhere clear to go: hold on where
-                // it is rather than converging on the player.
-                companion.setNetworkState([c.x, c.y, c.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
-                companion.update(delta);
-                _compMode = 'ledgefollow';
-                return;
-            }
-            if (want >= 0) {
-                const hanging = hangingNow;
-                if (hanging) {
-                    // Clamp the cursor into range, then walk it forward one
-                    // crumb at a time as each is reached. Never past `want`,
-                    // which is what holds the gap.
-                    // Locate the target crumb BY TIMESTAMP, not by index. The
-                    // trail is pruned from the front as crumbs expire (see
-                    // _compTrail.shift in the recorder), so every prune slides
-                    // all indices down by one while a stored index stays put -
-                    // meaning it silently starts naming a LATER crumb, and
-                    // keeps drifting further ahead the longer this runs. That
-                    // is both faults at once: the rotation came from the wrong
-                    // crumb, and steering toward a crumb further along the path
-                    // than the one actually next to it draws the straight line
-                    // through the block. Timestamps do not move when the array
-                    // does.
-                    let curIdx = -1;
-                    for (let i = 0; i < _compTrail.length; i++) {
-                        const tc = _compTrail[i];
-                        if (tc.state === 'hang_idle' && tc.t >= _ledgeCrumbT) { curIdx = i; break; }
-                    }
-                    if (curIdx < 0 || curIdx > want) curIdx = want;
-                    let cur = _compTrail[curIdx];
-                    if (Math.hypot(cur.x - c.x, cur.y - c.y, cur.z - c.z) < COMP_LEDGE_CRUMB_REACH) {
-                        for (let i = curIdx + 1; i <= want; i++) {
-                            if (_compTrail[i].state === 'hang_idle') { curIdx = i; break; }
-                        }
-                        cur = _compTrail[curIdx];
-                    }
-                    // Corner check. Following the chain by index is not on its
-                    // own enough to stay off the geometry: whenever the
-                    // companion is more than one crumb behind - it just
-                    // grabbed on, the player sped up, the separation guard
-                    // pushed the target backwards - the straight line to that
-                    // crumb can still cut across a corner even though the path
-                    // between them goes around it. So ask the ray, and if the
-                    // crumb cannot be reached in a straight line, back down
-                    // the chain until one can. That nearer crumb sits on the
-                    // near side of the corner, so heading for it takes the
-                    // companion AROUND the corner rather than through it, and
-                    // the far crumb becomes visible once it gets there.
-                    _hangFwd.set(0, 0, 1).applyQuaternion(_hangQuat);
-                    _hangFwd.y = 0;
-                    if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
-                    if (!ledgeCrumbVisible(c, cur, _hangFwd.x, _hangFwd.z)) {
-                        // Strided and capped. Crumbs are recorded every frame,
-                        // so stepping back one at a time would both fire
-                        // hundreds of rays in a single frame and barely move
-                        // the probe point - consecutive crumbs are a couple of
-                        // centimetres apart. Sample along the path instead.
-                        let probes = 0, back = 0;
-                        let lx = cur.x, ly = cur.y, lz = cur.z;
-                        for (let i = curIdx - 1; i >= 0 && probes < COMP_LEDGE_MAX_PROBES; i--) {
-                            const tc = _compTrail[i];
-                            if (tc.state !== 'hang_idle') continue;
-                            back += Math.hypot(lx - tc.x, ly - tc.y, lz - tc.z);
-                            lx = tc.x; ly = tc.y; lz = tc.z;
-                            if (back < COMP_LEDGE_PROBE_STRIDE) continue;
-                            back = 0; probes++;
-                            if (ledgeCrumbVisible(c, tc, _hangFwd.x, _hangFwd.z)) { curIdx = i; break; }
-                        }
-                        cur = _compTrail[curIdx];
-                    }
-                    _ledgeCrumbT = cur.t;
-                    const ldx = cur.x - c.x, ldy = cur.y - c.y, ldz = cur.z - c.z;
-                    const ld = Math.hypot(ldx, ldy, ldz);
-                    if (ld > 0.02) {
-                        const step = Math.min(ld, COMP_SHIMMY_SPEED * delta);
-                        companion.group.position.set(c.x + ldx / ld * step, c.y + ldy / ld * step, c.z + ldz / ld * step);
-                    }
-                    // Eased toward the crumb's facing rather than snapped to
-                    // it. Around a corner two consecutive crumbs can differ by
-                    // most of a right angle, and taking that in one frame
-                    // spins the body on the spot; easing turns it as it
-                    // travels, the way the player's own turn looked.
-                    _tempQuat.set(cur.qx, cur.qy, cur.qz, cur.qw);
-                    _hangQuat.slerp(_tempQuat, Math.min(1, delta * 12));
-                    companion.group.quaternion.copy(_hangQuat);
-                    // Which way it is sliding along the wall, in its own local
-                    // frame, so the correct shimmy clip plays instead of the
-                    // idle hang being dragged sideways. +X local is its right.
-                    _ledgeFwdVec.set(1, 0, 0).applyQuaternion(_hangQuat);
-                    const alongRight = ldx * _ledgeFwdVec.x + ldz * _ledgeFwdVec.z;
-                    let hangState = 'hang_idle';
-                    if (ld > 0.05) hangState = alongRight > 0 ? 'hang_right' : 'hang_left';
-                    const cp = companion.group.position;
-                    companion.setNetworkState([cp.x, cp.y, cp.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], hangState, false);
-                    companion.update(delta);
-                    // Kept current so HANG can take over cleanly the moment
-                    // the player lets go and it has to get off the wall.
-                    _hangPos.copy(cp);
-                    _hangFwd.set(0, 0, 1).applyQuaternion(_hangQuat); _hangFwd.y = 0;
-                    if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
-                    _hangTop.set(cp.x + _hangFwd.x * COMP_HANG_OUT, cp.y + COMP_HANG_DROP, cp.z + _hangFwd.z * COMP_HANG_OUT);
-                    _compMode = 'ledgefollow';
-                    return;
-                }
-                // Still on the ground: walk under the crumb, then jump for it.
-                // The crumb is a proven hang position, so there is nothing to
-                // validate - only whether the jump can reach it.
-                const target = _compTrail[want];
-                const rise = target.y - c.y;
-                if (Math.hypot(target.x - c.x, target.z - c.z) < COMP_LEDGE_JUMP_FROM
-                    && rise > COMP_STEP_UP && rise <= COMP_LEAP_RISE_MAX) {
-                    _tempVec2.set(target.x, target.y, target.z);
-                    _hangQuat.set(target.qx, target.qy, target.qz, target.qw);
-                    // Grabbing on here, so the crumb cursor starts there.
-                    _ledgeCrumbT = target.t;
-                    if (startCompanionJumpToHang(c, _tempVec2, _hangQuat)) return;
-                }
-                ledgeApproach = target;
-            }
-        }
-        // Player let go (or there was never a grip to share). Hand to HANG,
-        // not straight to follow - the companion is still physically on a
-        // wall, and HANG is what knows how to get off one.
-        if (_compMode === 'ledgefollow') _compMode = 'hang';
 
         // ---- HANG (holding a ledge whose top-out is occupied) ----
         // Committed state, entered from the replay. It does three things in
@@ -2213,18 +2947,13 @@ export function startGame(CharacterClass) {
         // it to oscillate: go up if the spot freed, shuffle sideways if the
         // ledge offers a clear one, otherwise just hold on.
         if (_compMode === 'hang') {
-            // Never climb up while the PLAYER is still hanging. Following
-            // someone onto a wall and then immediately standing up on top of
-            // it is not following them - it leaves them below, on the thing
-            // the companion just walked away from. Hold the ledge until they
-            // are done with it.
-            const topClear = !isLedgeGrabbing
-                && (Math.hypot(_hangTop.x - p.x, _hangTop.z - p.z) >= COMP_TOPOUT_CLEAR
-                    || p.y < _hangTop.y - 0.6);   // player left, or dropped below this ledge entirely
+            const topClear = Math.hypot(_hangTop.x - p.x, _hangTop.z - p.z) >= COMP_TOPOUT_CLEAR
+                || p.y < _hangTop.y - 0.6;   // player left, or dropped below this ledge entirely
             if (topClear) {
                 startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
                 return;
             }
+            _compWhy = "hang-look-sideways";
             if (tryCompanionShimmy(p)) return;
             companion.group.position.copy(_hangPos);
             companion.group.quaternion.copy(_hangQuat);
@@ -2271,7 +3000,9 @@ export function startGame(CharacterClass) {
                 _hangFwd.set(fx, 0, fz);
                 _hangTop.set(cr.x, cr.y, cr.z);
                 computeLedgeHang(_hangTop, fx, fz, _hangPos);
-                _compFaceEuler.set(0, Math.atan2(fx, fz), 0);
+                squareHangToWall();
+                nudgeHangClearOfPlayer(p);
+                _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
                 _hangQuat.setFromEuler(_compFaceEuler);
                 _compMode = 'hang';
                 companion.update(delta);
@@ -2286,22 +3017,58 @@ export function startGame(CharacterClass) {
             return;
         }
 
-        // Below a wall the player just climbed: walk precisely to the takeoff
-        // spot (nearest trail crumb at our own height), then replay the recorded
-        // climb from there. If no such crumb exists (player didn't actually
-        // climb here), fall through to normal follow and just wait below.
-        if (playerElevated && (p.y - c.y) > 1.0) {
-            let bi = -1, bd = Infinity;
-            for (let i = 0; i < _compTrail.length; i++) {
-                const cr = _compTrail[i];
-                if (Math.abs(cr.y - c.y) > 0.8) continue;          // only crumbs at our (base) height
-                const d = (cr.x - c.x) * (cr.x - c.x) + (cr.z - c.z) * (cr.z - c.z);
-                if (d < bd) { bd = d; bi = i; }
+        // Deadlock escape, ahead of every routing decision - the whole point
+        // is to do something none of them would have chosen.
+        if (_compUnstickT > 0) {
+            _compUnstickT -= delta;
+            _compWhy = 'unsticking';
+            const s = Math.min(COMP_SHIMMY_SPEED * 2.0 * delta, 0.2);
+            const ux = c.x + _compUnstickDir.x * s, uz = c.z + _compUnstickDir.z * s;
+            const ugy = companionGroundY(ux, uz, c.y);
+            // Same rule as everywhere else: only take the step if the ground
+            // there is somewhere it could stand.
+            if (ugy - c.y <= COMP_STEP_UP && c.y - ugy < 2.0) {
+                // Face where it is GOING, not at the player. Facing the player
+                // while moving perpendicular is a strafe, and there is no
+                // strafe clip - the walk cycle just slides sideways.
+                _compFaceEuler.set(0, Math.atan2(_compUnstickDir.x, _compUnstickDir.z), 0);
+                _compFaceQuat.setFromEuler(_compFaceEuler);
+                companion.group.position.set(ux, ugy > c.y ? ugy : c.y, uz);
+                const up2 = companion.group.position;
+                companion.setNetworkState([up2.x, up2.y, up2.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], 'walk', false);
+                companion.update(delta);
+                return;
             }
-            if (bi >= 0) {
-                const tk = _compTrail[bi];
+            // That way is blocked too - try the other side next frame.
+            _compUnstickDir.negate();
+        }
+
+        // Below a wall the player just climbed: walk to the spot they actually
+        // went up from (findTakeoffApproach), then replay the recorded climb
+        // from there. If there is no such spot, fall through to normal follow.
+        if (playerElevated && (p.y - c.y) > 1.0) {
+            _compWhy = 'takeoff-route';
+            const takeoff = findTakeoffApproach(c);
+            const dTakeoff = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : Infinity;
+            // The recorded takeoff is the RIGHT answer, but not at any price.
+            // It is wherever the player happened to go up, which can be right
+            // across the level - and walking all that way past a wall that
+            // would have done just as well is what reads as the companion not
+            // finding the route at all. So when the takeoff is far off, check
+            // for a way up here first; when it is close, go and use it.
+            if (dTakeoff > COMP_TAKEOFF_PREFER_DIST) {
+                let fx = p.x - c.x, fz = p.z - c.z;
+                const fl = Math.hypot(fx, fz);
+                if (fl > 1e-4) {
+                    fx /= fl; fz /= fl;
+                    if (tryCompanionClimbUp(c, c.x + fx * COMP_CLIMB_REACH_PROBE, c.z + fz * COMP_CLIMB_REACH_PROBE, fx, fz)) return;
+                }
+            }
+            if (takeoff) {
+                const tk = takeoff.at;
                 const dTk = Math.hypot(tk.x - c.x, tk.z - c.z);
-                if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; return; }
+                _compWhy = "walk-to-takeoff";
+            if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; return; }
                 // Walk straight at the takeoff spot - deliberately no
                 // obstacle steering here. tk sits right at the base of the
                 // wall the player is about to be replayed climbing, so a
@@ -2411,18 +3178,26 @@ export function startGame(CharacterClass) {
         }
         let tgx = p.x + dirx * followDist, tgz = p.z + dirz * followDist;
 
-        // Player is on a wall: head for the ground under the crumb the
-        // LEDGEFOLLOW block picked (see it for why crumbs and not geometry).
-        // The normal follow target is useless here - it sits OUTSIDE the
-        // block, because the follow direction points from the player back
-        // out toward the companion, so the companion walks to the base and
-        // stops with nothing to do. Aiming under the grip means the jump
-        // becomes available as soon as it arrives.
-        if (ledgeApproach) { tgx = ledgeApproach.x; tgz = ledgeApproach.z; }
         const toX = tgx - c.x, toZ = tgz - c.z; const h = Math.hypot(toX, toZ);
 
+        // Deadzone. The follow spot is recomputed every frame and drifts with
+        // every small move the player makes, so without this the companion is
+        // permanently making tiny corrections - which is the fidgeting back
+        // and forth. Near enough is near enough: stand still and face them.
+        if (h < COMP_ARRIVE_DEADZONE && Math.abs(p.y - c.y) < 1.0) {
+            _compWhy = 'arrived';
+            _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+            _compFaceQuat.setFromEuler(_compFaceEuler);
+            companion.setNetworkState([c.x, c.y, c.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(0, delta), false);
+            companion.update(delta);
+            return;
+        }
+
         // ---- Edge/gap detection: leap instead of trying to walk it ----
-        if (h > 1e-4) {
+        // Suppressed right after a climb - see _compJustClimbedT. Leaping back
+        // down off the ledge it has just hauled itself onto is the single
+        // worst thing it could do at that moment.
+        if (h > 1e-4 && _compJustClimbedT <= 0) {
             const travelX = toX / h, travelZ = toZ / h;
             // Short probe just past the companion's own footprint, in the
             // direction it's actually trying to go - a normal ramp/step
@@ -2478,6 +3253,7 @@ export function startGame(CharacterClass) {
             }
         }
 
+        _compWhy = 'follow-walk';
         let nx = c.x, nz = c.z;
         let steerDir = null;
         if (h > 1e-4) {
@@ -2522,10 +3298,40 @@ export function startGame(CharacterClass) {
         // is the jump-and-grab-the-ledge behaviour this should always have
         // been using for a real rise.
         let gyHere = companionGroundY(nx, nz, c.y);
+        // ...and it must not simply WALK off either. The leap is suppressed
+        // above, but the ordinary glide would happily carry it over the edge
+        // one step at a time, which is the same undo by a slower route.
+        if (_compJustClimbedT > 0 && c.y - gyHere > COMP_LEAP_EDGE_DROP) {
+            nx = c.x; nz = c.z;
+            gyHere = companionGroundY(c.x, c.z, c.y);
+        }
         if (gyHere - c.y > COMP_STEP_UP) {
-            // Too tall to step - haul itself up onto the thing rather than
-            // stopping dead at the base. See tryCompanionClimbUp.
-            if (h > 1e-4 && tryCompanionClimbUp(c, nx, nz, toX / h, toZ / h)) return;
+            // Climb only when the player is actually up there. A wall in the
+            // way is not a reason to climb it - the player, walking the same
+            // ground, just goes around, and the companion should read the
+            // same way. Without this it treated every obstacle as something
+            // to scale: walk into the stacked test cubes while the player
+            // stands beside them on the flat, and it would haul itself up
+            // onto them instead of stepping around, which is nothing a
+            // player would ever do.
+            //
+            // Going around is already handled - companionSteerDir runs
+            // exactly when the two are on the level, which is exactly when
+            // this now declines to climb.
+            _compWhy = 'blocked-try-climb';
+            // A short hop needs no justification. The "is the player high
+            // enough to be worth climbing for" test exists to stop the
+            // companion scaling random boxes on level ground - but applied to
+            // EVERY rise it also blocked knee-to-waist height steps whenever
+            // the player was only slightly above, which is neither walkable
+            // (over COMP_STEP_UP) nor climbable (gate refuses), so it just
+            // stopped. That gap is why it could only get up somewhere it had
+            // watched the player jump: the recorded route was the sole way
+            // through. Anyone would simply hop a step this size.
+            const riseHere = gyHere - c.y;
+            const climbWorthIt = riseHere <= COMP_LEAP_RISE_MAX || p.y - c.y > COMP_CLIMB_WORTH_IT;
+            if (climbWorthIt && h > 1e-4
+                && tryCompanionClimbUp(c, nx, nz, toX / h, toZ / h)) return;
             nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
         }
         updateCompanionPathVisual(c, { x: tgx, y: c.y, z: tgz }, { x: nx, y: c.y, z: nz });
@@ -2535,9 +3341,19 @@ export function startGame(CharacterClass) {
         // upward direction that ever produced either bug above.
         if (dy < -0.05) ny += Math.max(dy, -16 * delta);            // fall to follow down
         else if (dy > 0.05) ny += Math.min(dy, 6 * delta);          // step up onto the ground actually under us
-        _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+        // Face the direction of travel while actually travelling, and only
+        // turn to the player once stopped. Facing the player the whole time
+        // meant that any movement not straight at them - going round an
+        // obstacle, heading for a follow spot off to one side, closing on a
+        // takeoff point - was played as a sideways slide, because the only
+        // locomotion clips are forward ones. Walking forwards to where it is
+        // going is what it should have been doing.
+        const movedX = nx - c.x, movedZ = nz - c.z;
+        const movedH = Math.hypot(movedX, movedZ) / Math.max(delta, 1e-3);
+        _compFaceEuler.set(0, movedH > COMP_FACE_TRAVEL_MIN
+            ? Math.atan2(movedX, movedZ)
+            : Math.atan2(p.x - c.x, p.z - c.z), 0);
         _compFaceQuat.setFromEuler(_compFaceEuler);
-        const movedH = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
         const st = companionLocoState(movedH, delta);
         companion.group.position.set(nx, ny, nz);
         companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
@@ -2548,6 +3364,9 @@ export function startGame(CharacterClass) {
     const aiBotDespawnBtn = document.getElementById('ai-bot-despawn-btn');
     if (aiBotSpawnBtn) aiBotSpawnBtn.addEventListener('pointerdown', spawnAiBot);
     if (aiBotDespawnBtn) aiBotDespawnBtn.addEventListener('pointerdown', despawnAiBot);
+    // On by default, same as the companion. spawnAiBot also flips the panel's
+    // own spawn/despawn buttons and status text, so the UI still matches.
+    spawnAiBot();
 
     // Companion: off by default, added from the panel. updateCompanion spawns
     // it lazily on the first enabled frame and just hides it when disabled.
@@ -7446,9 +8265,32 @@ export function startGame(CharacterClass) {
     window.cameraMinCloseDistance = 5.0;
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
 
+    // The stick sticking - walking off in one direction until you drag it that
+    // way and let go, and never releasing at all on mobile - was this only
+    // ever listening for `pointerup`.
+    //
+    // A touch does not always end in pointerup. The browser fires
+    // `pointercancel` instead whenever it takes the pointer over: a second
+    // finger starting a system gesture, the OS deciding a scroll or back-swipe
+    // has begun, a call arriving. That cancel was unhandled, so activePointer
+    // stayed set, the input vector kept its last value, and the character kept
+    // running. The only way out was to press again, drag to that same
+    // direction (so the ids matched again) and release - exactly the recovery
+    // described. It shows up on mobile far more because that is where the
+    // browser steals pointers.
+    //
+    // Fixed by capturing the pointer, which routes the whole stream to this
+    // element until it is explicitly released, and by treating every way a
+    // pointer can end - up, cancel, and losing the capture - as a release.
     function setupJoystick(baseId, stickId, inputRef) {
         const base = document.getElementById(baseId), stick = document.getElementById(stickId);
-        let activePointer = null, maxR = 40;
+        let activePointer = null;
+        const maxR = 40;
+        const release = () => {
+            activePointer = null;
+            stick.style.transform = 'translate(0,0)';
+            inputRef.x = 0; inputRef.y = 0;
+        };
         const update = (e) => {
             if (e.pointerId !== activePointer) return;
             const rect = base.getBoundingClientRect(), cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
@@ -7456,17 +8298,23 @@ export function startGame(CharacterClass) {
             if (dist > maxR) { dx *= maxR/dist; dy *= maxR/dist; }
             stick.style.transform = `translate(${dx}px, ${dy}px)`; inputRef.x = dx/maxR; inputRef.y = dy/maxR;
         };
-        const onPointerMove = (e) => { if (e.pointerId === activePointer) update(e); };
-        const onPointerUp = (e) => {
-            if (e.pointerId !== activePointer) return;
-            activePointer = null; stick.style.transform = `translate(0,0)`; inputRef.x = 0; inputRef.y = 0;
-            window.removeEventListener('pointermove', onPointerMove); window.removeEventListener('pointerup', onPointerUp);
-        };
+        const onEnd = (e) => { if (e.pointerId === activePointer) release(); };
         base.addEventListener('pointerdown', (e) => {
             if (activePointer !== null) return;
-            activePointer = e.pointerId; update(e);
-            window.addEventListener('pointermove', onPointerMove); window.addEventListener('pointerup', onPointerUp);
+            activePointer = e.pointerId;
+            // Capture means move/up/cancel for this pointer all arrive here
+            // even once the finger leaves the base, so there is no longer any
+            // need for window-level listeners that outlive the gesture.
+            try { base.setPointerCapture(e.pointerId); } catch (err) { /* not capturable - handlers below still fire */ }
+            update(e);
         });
+        base.addEventListener('pointermove', (e) => { if (e.pointerId === activePointer) update(e); });
+        base.addEventListener('pointerup', onEnd);
+        // The two that were missing. lostpointercapture is the backstop: if
+        // capture is broken for any reason not covered above, that is still
+        // the gesture ending, and the stick must not be left held.
+        base.addEventListener('pointercancel', onEnd);
+        base.addEventListener('lostpointercapture', onEnd);
     }
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
     // Camera-rotate joystick (right stick): kept fully working in code, but
@@ -10495,23 +11343,37 @@ export function startGame(CharacterClass) {
                     // punch landing on it (ClimbGame.html), applied directly
                     // instead of through sendPunchEvent since there's no
                     // remote to send it to.
-                    if (!consumed && window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
-                        const botHitPos = window.aiBot.getHitReferencePoint();
-                        if (botHitPos.distanceTo(c.mesh.position) < hitRadius + 1.0) {
-                            if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
-                            if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
-                            const intensity = hitForce >= 70 ? 'high' : (hitForce >= 45 ? 'medium_high' : 'medium');
-                            const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
-                            const strength = flashStrengthByIntensity[intensity] || 1.0;
-                            const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
-                            const magnitudeForRagdoll = intensity === 'high' ? knockback : hitForce;
-                            const botVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
-                            window.aiBot.triggerHitFlash(strength);
-                            if (intensity === 'high') window.aiBot.initRagdoll(botVelocity, intensity);
-                            else window.aiBot.applyProceduralRecoil(botVelocity, intensity);
-                            consumed = true;
-                        }
-                    }
+                    // Throwing something at one of the AI characters. Both of
+                    // them, not just the bot - the companion was not checked
+                    // here at all, so objects passed straight through it.
+                    //
+                    // A thrown object registers at 'medium_high' - the orange
+                    // turret's own intensity - rather than being graded down
+                    // from throwHitForce. The force ladder put a default throw
+                    // (35) in 'medium', which is the light tap reaction; but
+                    // heaving a crate at someone is a deliberate, heavy hit
+                    // and should land like one. 'high' is still reserved for
+                    // a genuinely huge throw, since that ragdolls outright.
+                    const throwHit = (victim) => {
+                        if (consumed || !victim || !victim.isLoaded || victim.isRagdoll || victim.isStandingUp) return;
+                        if (victim.group && victim.group.visible === false) return;
+                        const vHitPos = victim.getHitReferencePoint();
+                        if (vHitPos.distanceTo(c.mesh.position) >= hitRadius + 1.0) return;
+                        if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
+                        if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
+                        const intensity = hitForce >= 70 ? 'high' : 'medium_high';
+                        const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
+                        const strength = flashStrengthByIntensity[intensity] || 1.0;
+                        const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                        const magnitudeForRagdoll = intensity === 'high' ? knockback : hitForce;
+                        const vVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
+                        victim.triggerHitFlash(strength);
+                        if (intensity === 'high') victim.initRagdoll(vVelocity, intensity);
+                        else victim.applyProceduralRecoil(vVelocity, intensity);
+                        consumed = true;
+                    };
+                    if (!consumed) throwHit(window.aiBot);
+                    if (!consumed) throwHit(window.companion);
 
                     // A thrown jar shatters on any of these hits too, same
                     // as it already does hitting a wall in the collision
@@ -12177,6 +13039,9 @@ export function startGame(CharacterClass) {
             }
             network.update(delta);
         }
+        // Before both consumers - the bot reads the trail to find where the
+        // player left its level, the companion to retrace their route.
+        recordPlayerTrail(delta);
         updateAiBot(delta);
         updateCompanion(delta);
         // Broadcasts under a fixed id ('ai-bot-1') so every connected client
