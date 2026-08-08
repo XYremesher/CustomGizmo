@@ -1076,13 +1076,74 @@ export function startGame(CharacterClass) {
     //    standing on the exact spot it would emerge (waits until you move).
     let companion = null;
     const COMP_FOLLOW_DIST = 1.8;   // manual-follow stand-off distance
+    // Stand-off distances tried in order until one lands on solid ground at
+    // the player's level - see the follow-target block. 0.7 is close enough
+    // to share a single 3-unit block with the player.
+    const COMP_FOLLOW_FALLBACKS = [1.8, 1.3, 0.9, 0.7];
     const COMP_TRAIL_KEEP = 15.0;   // seconds of trail kept - long enough that after a
                                     // fall the companion can walk back and re-replay the
                                     // same recorded climb instead of being stuck below
     const _compTrail = [];          // {t,x,y,z,qx,qy,qz,qw,state}
     let _compTrailT = 0;
-    let _compMode = 'follow';       // 'follow' | 'replay' | 'leap'
+    let _compMode = 'follow';       // 'follow' | 'replay' | 'leap' | 'shimmy' | 'hang' | 'climbup' | 'ledgefollow'
     let _replayStartT = 0, _replayT = 0;
+    // Top out nearer than this to the player and it waits on the ledge
+    // instead. Tight on purpose - being merely near the ledge is handled by
+    // COMP_FOLLOW_FALLBACKS taking a shorter stand-off, so this only catches
+    // "the landing spot is literally occupied".
+    const COMP_TOPOUT_CLEAR = 0.6;
+    // Sideways offsets along the ledge tried when the top-out is occupied,
+    // nearest first - the companion shuffles along the edge to a clear spot
+    // and mantles up there instead of hanging until the player moves.
+    const COMP_SHIMMY_STEPS = [1.0, 1.8, 2.6];
+    const COMP_SHIMMY_SPEED = 1.6;  // units/sec sliding along the ledge
+    const COMP_LEDGE_WALL_REACH = 1.2; // a hang spot needs wall within this, or there's nothing to hold
+    const _shimmyHang = new THREE.Vector3();   // where to hang once shuffled across
+    const _shimmyTop = new THREE.Vector3();    // the clear surface to mantle onto
+    const _shimmyFaceQuat = new THREE.Quaternion();
+    // HANG mode: committed to holding a ledge. Captured once when the replay
+    // finds its top-out occupied, then owned by that mode - the point being
+    // that the decision is made ONCE. Re-deciding every frame inside the
+    // replay (advance, notice it's blocked, rewind, snap back down) is what
+    // made it lunge at the ledge and throw itself back repeatedly.
+    const _hangPos = new THREE.Vector3();
+    const _hangQuat = new THREE.Quaternion();
+    const _hangTop = new THREE.Vector3();   // the surface it wants to end up on
+    const _hangFwd = new THREE.Vector3();   // horizontal, hang position -> over the edge
+    const COMP_HANG_OUT = 0.35;             // body clearance from the wall face
+    const COMP_HANG_DROP = 1.5;             // how far below the lip the root sits while hanging
+    const _ledgeFwdVec = new THREE.Vector3();
+    const _ledgeSpotTop = new THREE.Vector3();
+    // LEDGEFOLLOW: hang alongside the player while THEY are hanging, and
+    // shuffle with them as they shimmy. Offsets tried outward from the
+    // player's own grip until one is a real ledge spot.
+    const COMP_LEDGE_JUMP_FROM = 0.8;       // how close to under the grip it must be before jumping for it
+    // Path distance kept behind the player along the ledge. Measured ALONG
+    // the recorded crumbs rather than straight-line, so the gap stays honest
+    // when the ledge turns a corner.
+    const COMP_LEDGE_GAP = 1.2;
+    // Cursor into the trail while retracing a ledge, kept as the crumb's
+    // TIMESTAMP rather than its array index - the trail is pruned from the
+    // front, so an index quietly comes to mean a different crumb.
+    let _ledgeCrumbT = 0;
+    const COMP_LEDGE_CRUMB_REACH = 0.18;    // close enough to a crumb to move on to the next
+    // Closest the companion may ever be to the player on a ledge. Two bodies
+    // cannot hang in the same place, and a crumb nearer than this is just the
+    // player's own current grip.
+    const COMP_LEDGE_MIN_SEP = 0.9;
+    const COMP_LEDGE_RAY_OUT = 0.5;         // lift the corner-check ray off the wall so it doesn't graze the face
+    const COMP_LEDGE_PROBE_STRIDE = 0.25;   // path distance between corner-check probes
+    const COMP_LEDGE_MAX_PROBES = 8;        // hard cap on rays per frame for that search
+    // CLIMBUP: the same shape as the player's own climb-up (see isClimbingUp
+    // in the movement block) - hold the root still, play the climb clip, then
+    // place the root on the ledge at the end. The generic mantle arc was
+    // standing in for this, which is why coming up off a ledge didn't look
+    // like the player's version of the same move.
+    const _climbFrom = new THREE.Vector3();
+    const _climbTo = new THREE.Vector3();
+    const _climbQuat = new THREE.Quaternion();
+    let _climbT = 0, _climbDur = 1.0;
+    const COMP_CLIMB_STAND_IN = 0.25;       // matches the player's own ledgeTarget + fwd*0.25
     const _compFaceEuler = new THREE.Euler();
     const _compFaceQuat = new THREE.Quaternion();
     const _compBehindDir = new THREE.Vector3();
@@ -1107,7 +1168,13 @@ export function startGame(CharacterClass) {
     const COMP_LEAP_EDGE_FWD = 0.6;     // how far ahead to probe for "is there ground where I'm about to step"
     const COMP_LEAP_EDGE_DROP = 1.3;    // bigger than this counts as an edge, not a step/ramp (those keep gliding)
     const COMP_LEAP_MAX_DIST = 6.0;     // furthest the landing scan looks for solid footing
-    const COMP_LEAP_LANDING_BAND = 3.0; // landing must be within this much of launch height
+    const COMP_LEAP_LANDING_BAND = 3.0; // how far BELOW launch height a landing may be
+    // How far ABOVE launch height a landing may be. Deliberately just under
+    // the player's own jump apex: their jump is v0=10 against gravity 30
+    // (see the jump code), so v0^2/2g = 1.67 units. The companion must never
+    // out-jump the player - it is the same world. Anything higher than this
+    // is reachable only by climbing, and the climb paths own it.
+    const COMP_LEAP_RISE_MAX = 1.6;
     const COMP_LEAP_SPEED = 6.0;        // horizontal m/s while airborne - sets the leap's duration
     const COMP_LEAP_ARC_HEIGHT = 1.4;   // visual arc peak above the straight launch->landing line
     // Climb-up: the same leap, aimed at the TOP of a rise too tall to step
@@ -1124,9 +1191,7 @@ export function startGame(CharacterClass) {
     const COMP_CLIMB_MAX = 3.4;         // tallest rise it can pull itself onto
     const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
     const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
-    const COMP_CLIMB_LIFT = 0.25;       // extra rise mid-climb so the feet clear the lip - deliberately small
-    const COMP_CLIMB_RATE = 4.5;        // climb units/sec; a full 3-unit block takes ~0.67s, reads as a haul rather than a jump
-    let _compLeapIsClimb = false;       // climb (mantle up a wall) vs gap leap - different flight paths, see LEAP mode
+    let _compLeapToHang = false;        // this leap ends by catching a ledge, not by landing on ground
     // Locomotion clip picker state - low-pass filtered speed plus hysteresis
     // between the run/walk/idle thresholds. Feeding the raw per-frame speed
     // straight into a single threshold made the clip flicker between
@@ -1544,20 +1609,184 @@ export function startGame(CharacterClass) {
         // Same surface, not a second even taller step just past it - this is
         // one hop, not a staircase.
         if (Math.abs(climbTopY - topY) >= 0.6) return false;
+        // Jump for the ledge and hang, rather than arcing straight onto the
+        // top. Going up in one smooth curve to standing was the move that
+        // read as flying: nothing in this game rises like that. The player
+        // gets onto a wall by jumping, grabbing, and then climbing, so the
+        // companion does the same - this call is only the jump, HANG decides
+        // when to climb.
+        _ledgeSpotTop.set(climbX, climbTopY, climbZ);
+        return startCompanionJumpGrab(c, _ledgeSpotTop, dirX, dirZ);
+    }
+
+    // Can the companion travel straight from where it is to this crumb
+    // without going through anything? Around a corner it cannot: the crumb
+    // is on the far face and the straight line between them passes through
+    // the block, while the recorded path goes around the outside.
+    //
+    // Both ends are lifted OUT from the wall before casting. A hanging body
+    // sits only COMP_HANG_OUT from the face, so a ray between two hang
+    // positions runs nearly parallel to it and grazes - reporting a hit on
+    // the flat wall it is simply sliding along, which would make every
+    // crumb look blocked.
+    function ledgeCrumbVisible(from, cr, outX, outZ) {
+        const ox = outX * COMP_LEDGE_RAY_OUT, oz = outZ * COMP_LEDGE_RAY_OUT;
+        const ax = from.x - ox, ay = from.y, az = from.z - oz;
+        const bx = cr.x - ox, by = cr.y, bz = cr.z - oz;
+        const dx = bx - ax, dy = by - ay, dz = bz - az;
+        const d = Math.hypot(dx, dy, dz);
+        if (d < 1e-4) return true;
+        _ledgeFwdVec.set(dx / d, dy / d, dz / d);
+        _tempVec2.set(ax, ay, az);
+        rayFwd.set(_tempVec2, _ledgeFwdVec);
+        const hits = rayFwd.intersectObjects(_compGroundList, true);
+        return !(hits.length && hits[0].distance < d - 0.1);
+    }
+
+    // Jump straight to a hang position that is already known good - a crumb
+    // the player themselves hung at. Nothing to validate but the reach.
+    function startCompanionJumpToHang(c, hangPos, quat) {
+        if (hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
+        _hangPos.copy(hangPos);
+        _hangQuat.copy(quat);
+        _hangFwd.set(0, 0, 1).applyQuaternion(quat);
+        _hangFwd.y = 0;
+        if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
+        // Where climbing up from here would land - the inverse of
+        // computeLedgeHang, since this route never had a `top` to start from.
+        _hangTop.set(hangPos.x + _hangFwd.x * COMP_HANG_OUT, hangPos.y + COMP_HANG_DROP, hangPos.z + _hangFwd.z * COMP_HANG_OUT);
         _compLeapStart.copy(c);
-        _compLeapEnd.set(climbX, climbTopY, climbZ);
-        // Paced by the RISE, not the total distance - a climb should take
-        // longer the taller it is, and the horizontal part of it is
-        // incidental. Using the gap leap's own distance/speed made a tall
-        // climb finish just as fast as a short hop, which is a big part of
-        // why it read as an implausibly powerful jump.
-        _compLeapDur = Math.max(0.45, rise / COMP_CLIMB_RATE);
+        _compLeapEnd.copy(_hangPos);
+        _compLeapDur = Math.max(0.35, _compLeapStart.distanceTo(_compLeapEnd) / COMP_LEAP_SPEED);
         _compLeapT = 0;
-        _compLeapIsClimb = true;
-        _compFaceEuler.set(0, Math.atan2(dirX, dirZ), 0);
-        _compLeapFaceQuat.setFromEuler(_compFaceEuler);
+        _compLeapToHang = true;
+        _compLeapFaceQuat.copy(_hangQuat);
         _compMode = 'leap';
         return true;
+    }
+
+    // Jump from the ground and catch `top`'s ledge, ending in a hang.
+    // Refuses anything the player's own jump could not reach, so the
+    // companion is never doing something you could not.
+    function startCompanionJumpGrab(c, top, fwdX, fwdZ) {
+        computeLedgeHang(top, fwdX, fwdZ, _hangPos);
+        if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
+        _hangTop.copy(top);
+        _hangFwd.set(fwdX, 0, fwdZ);
+        _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
+        _hangQuat.setFromEuler(_compFaceEuler);
+        _compLeapStart.copy(c);
+        _compLeapEnd.copy(_hangPos);
+        _compLeapDur = Math.max(0.35, _compLeapStart.distanceTo(_compLeapEnd) / COMP_LEAP_SPEED);
+        _compLeapT = 0;
+        _compLeapToHang = true;
+        _compLeapFaceQuat.copy(_hangQuat);
+        _compMode = 'leap';
+        return true;
+    }
+
+    // Looks left and right along the ledge currently being hung from (the
+    // HANG state) for somewhere clear to come up, and starts a shimmy toward
+    // it. Returns true if one was found - SHIMMY mode drives from there.
+    //
+    // _hangFwd points from the hang position out over the edge, so its
+    // perpendicular runs ALONG the edge: that's the axis to search and the
+    // axis to slide down. Each candidate gets two rays, because a spot needs
+    // BOTH halves of a ledge to be usable:
+    //   - down, to confirm the top surface continues at the same height
+    //     (otherwise the edge has run out, or that's a different step);
+    //   - forward, to confirm there's still a wall face to hold onto
+    //     (otherwise it's an outside corner and there's nothing to hang from
+    //     even though the floor above continues).
+    function tryCompanionShimmy(p) {
+        const sx = -_hangFwd.z, sz = _hangFwd.x;
+        for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
+            const d = COMP_SHIMMY_STEPS[i];
+            for (let s = 0; s < 2; s++) {
+                const sign = s === 0 ? 1 : -1;
+                const off = d * sign;
+                const tx = _hangTop.x + sx * off, tz = _hangTop.z + sz * off;
+                // Far enough along that it isn't landing on the player again.
+                if (Math.hypot(tx - p.x, tz - p.z) < COMP_TOPOUT_CLEAR + 0.4) continue;
+                // Hang derived from THIS spot's own lip, not the current hang
+                // slid sideways - the edge can bend or set back as it runs,
+                // and offsetting the old position blindly is how it ended up
+                // hanging somewhere the wall isn't.
+                _ledgeSpotTop.set(tx, _hangTop.y, tz);
+                if (!validateLedgeSpot(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _shimmyHang)) continue;
+                _shimmyTop.copy(_ledgeSpotTop);
+                _shimmyFaceQuat.copy(_hangQuat);
+                _compMode = 'shimmy';
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Where to hang in order to climb onto `top`, given the direction the
+    // climb runs over the edge. Finds the lip by walking BACK from the top
+    // point until the surface falls away, then sits just outside it.
+    //
+    // Computed from the ledge itself rather than reused from a recorded
+    // hang_idle crumb, which is what put the companion in the wrong place:
+    // the crumb search took the last hang before this moment in the trail,
+    // and that can easily be a completely different ledge from an earlier
+    // grab. A pose that was correct somewhere else is still the wrong place
+    // here.
+    function computeLedgeHang(top, fwdX, fwdZ, out) {
+        let lo = 0, hi = 1.2;   // lo: known on the surface, hi: assumed past the edge
+        for (let i = 0; i < 7; i++) {
+            const mid = (lo + hi) * 0.5;
+            _tempVec2.set(top.x - fwdX * mid, top.y + 5.0, top.z - fwdZ * mid);
+            rayDown.set(_tempVec2, _downVec);
+            const hits = rayDown.intersectObjects(_compGroundList, true);
+            let onSurface = false;
+            for (let hh = 0; hh < hits.length; hh++) {
+                if (Math.abs(hits[hh].point.y - top.y) <= 0.4) { onSurface = true; break; }
+            }
+            if (onSurface) lo = mid; else hi = mid;
+        }
+        const outset = hi + COMP_HANG_OUT;
+        out.set(top.x - fwdX * outset, top.y - COMP_HANG_DROP, top.z - fwdZ * outset);
+    }
+
+    // Is `top` somewhere the companion could actually hang from, given the
+    // wall runs along (fwdX, fwdZ)? Snaps top.y onto the real surface and
+    // fills `outHang` with the hang position. A spot needs BOTH halves of a
+    // ledge, which is why there are two rays:
+    //   - down: the top surface continues at this height (otherwise the edge
+    //     has run out, or that's a different step);
+    //   - forward: there is still a wall face within reach to hold (otherwise
+    //     it's an outside corner - floor above, nothing to grip).
+    function validateLedgeSpot(top, fwdX, fwdZ, outHang) {
+        _tempVec2.set(top.x, top.y + 5.0, top.z);
+        rayDown.set(_tempVec2, _downVec);
+        const hits = rayDown.intersectObjects(_compGroundList, true);
+        let surfaceY = null;
+        for (let i = 0; i < hits.length; i++) {
+            if (Math.abs(hits[i].point.y - top.y) <= 0.4) { surfaceY = hits[i].point.y; break; }
+        }
+        if (surfaceY === null) return false;
+        top.y = surfaceY;
+        computeLedgeHang(top, fwdX, fwdZ, outHang);
+        _ledgeFwdVec.set(fwdX, 0, fwdZ);
+        _tempVec2.set(outHang.x, outHang.y + 0.4, outHang.z);
+        rayFwd.set(_tempVec2, _ledgeFwdVec);
+        const wallHits = rayFwd.intersectObjects(_compGroundList, true);
+        return wallHits.length > 0 && wallHits[0].distance <= COMP_LEDGE_WALL_REACH;
+    }
+
+    // Climb from the current hang onto `target`, the way the player does it:
+    // root held still while the climb clip plays, then placed on the ledge.
+    function startCompanionLedgeClimb(c, target, fwdX, fwdZ) {
+        _climbFrom.copy(c);
+        _climbTo.set(target.x + fwdX * COMP_CLIMB_STAND_IN, target.y, target.z + fwdZ * COMP_CLIMB_STAND_IN);
+        _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
+        _climbQuat.setFromEuler(_compFaceEuler);
+        const climbAction = companion.actions && companion.actions['climb'];
+        _climbDur = climbAction ? climbAction.getClip().duration : 1.0;
+        _climbT = 0;
+        _compMode = 'climbup';
     }
 
     // Picks the companion's idle/walk/run clip from its actual closing
@@ -1723,45 +1952,284 @@ export function startGame(CharacterClass) {
         const gy = companionGroundY(c.x, c.z, c.y);
         const playerElevated = isGrounded && !isLedgeGrabbing && !isClimbingUp && (p.y - gy) > 1.0;
 
-        // ---- LEAP (crossing a ledge/gap, or climbing onto one) ----
+        // ---- LEAP (a jump: across a gap, or up to catch a ledge) ----
+        // Only ever a jump now. There used to be a second "mantle" arc here
+        // that rose straight onto a ledge top, which is the move that read as
+        // flying - nothing in this game ascends like that. Getting onto a wall
+        // is a jump to a hang (startCompanionJumpGrab) followed by a climb
+        // (CLIMBUP), and both of those are real moves the player also has.
         if (_compMode === 'leap') {
             _compLeapT += delta;
             const t = Math.min(1, _compLeapT / _compLeapDur);
-            let lx, ly, lz;
-            if (_compLeapIsClimb) {
-                // A climb has to go UP first and only then move in, the way a
-                // mantle does. Interpolating x/z/y together (what the gap
-                // leap does, and what this used to do too) draws a straight
-                // diagonal from the base of the wall to the top of it - a
-                // line that lies INSIDE the wall for most of its length, so
-                // the companion visibly passed through the block. Separating
-                // the two phases keeps the path outside the geometry without
-                // needing to collide-check it.
-                const yT = Math.min(1, t / 0.55);            // at full height by 55% in
-                const xzRaw = Math.max(0, (t - 0.4) / 0.6);  // only starts moving in at 40%
-                const xzT = xzRaw * xzRaw * (3 - 2 * xzRaw); // smoothstep, so the step-in isn't abrupt
-                lx = THREE.MathUtils.lerp(_compLeapStart.x, _compLeapEnd.x, xzT);
-                lz = THREE.MathUtils.lerp(_compLeapStart.z, _compLeapEnd.z, xzT);
-                // Small lift only - just enough for the feet to clear the
-                // lip. The old shared 1.4 arc height on top of an already
-                // 3-unit rise is what made this look like it was jumping far
-                // higher than the player ever can.
-                ly = THREE.MathUtils.lerp(_compLeapStart.y, _compLeapEnd.y, yT) + COMP_CLIMB_LIFT * Math.sin(Math.PI * t);
-            } else {
-                lx = THREE.MathUtils.lerp(_compLeapStart.x, _compLeapEnd.x, t);
-                lz = THREE.MathUtils.lerp(_compLeapStart.z, _compLeapEnd.z, t);
-                // Parabolic bump on top of the straight launch->landing height
-                // lerp, peaking at t=0.5 - 4*t*(1-t) is 0 at t=0/1 and 1 at t=0.5.
-                ly = THREE.MathUtils.lerp(_compLeapStart.y, _compLeapEnd.y, t) + COMP_LEAP_ARC_HEIGHT * 4 * t * (1 - t);
-            }
+            const lx = THREE.MathUtils.lerp(_compLeapStart.x, _compLeapEnd.x, t);
+            const lz = THREE.MathUtils.lerp(_compLeapStart.z, _compLeapEnd.z, t);
+            // Parabolic bump on top of the straight launch->landing height
+            // lerp, peaking at t=0.5 - 4*t*(1-t) is 0 at t=0/1 and 1 at t=0.5.
+            const ly = THREE.MathUtils.lerp(_compLeapStart.y, _compLeapEnd.y, t) + COMP_LEAP_ARC_HEIGHT * 4 * t * (1 - t);
             // jump_start is a short one-shot push-off, fall loops through the
             // airborne middle, land is a one-shot touchdown right at the end -
-            // same three clips a real jump already uses elsewhere.
-            const leapState = _compLeapT < 0.18 ? 'jump_start' : (t < 1 ? 'fall' : 'land');
+            // same three clips a real jump already uses elsewhere. A jump that
+            // ends by catching a ledge finishes on hang_idle instead: it never
+            // lands on anything.
+            let leapState;
+            if (t >= 1) leapState = _compLeapToHang ? 'hang_idle' : 'land';
+            else if (_compLeapT < 0.18) leapState = 'jump_start';
+            else leapState = 'fall';
             companion.group.position.set(lx, ly, lz);
             companion.setNetworkState([lx, ly, lz], [_compLeapFaceQuat.x, _compLeapFaceQuat.y, _compLeapFaceQuat.z, _compLeapFaceQuat.w], leapState, false);
             companion.update(delta);
-            if (t >= 1) _compMode = 'follow';
+            if (t >= 1) {
+                // Catching a ledge hands over to HANG, which then decides
+                // between holding on, shuffling along, and climbing up.
+                _compMode = _compLeapToHang ? 'hang' : 'follow';
+                _compLeapToHang = false;
+            }
+            return;
+        }
+
+        // ---- SHIMMY (sidestep along a ledge to a clear top-out) ----
+        // Slides the hang along the edge, then climbs at the far end.
+        if (_compMode === 'shimmy') {
+            const sdx = _shimmyHang.x - c.x, sdz = _shimmyHang.z - c.z;
+            const sd = Math.hypot(sdx, sdz);
+            if (sd > 0.12) {
+                const step = Math.min(sd, COMP_SHIMMY_SPEED * delta);
+                const nx = c.x + sdx / sd * step, nz = c.z + sdz / sd * step;
+                companion.group.position.set(nx, _shimmyHang.y, nz);
+                companion.group.quaternion.copy(_shimmyFaceQuat);
+                // Which way along the wall it is sliding, in its own frame, so
+                // the real shimmy clip plays rather than the idle hang being
+                // dragged sideways. +X local is its right.
+                _ledgeFwdVec.set(1, 0, 0).applyQuaternion(_shimmyFaceQuat);
+                const alongRight = sdx * _ledgeFwdVec.x + sdz * _ledgeFwdVec.z;
+                companion.setNetworkState([nx, _shimmyHang.y, nz], [_shimmyFaceQuat.x, _shimmyFaceQuat.y, _shimmyFaceQuat.z, _shimmyFaceQuat.w], alongRight > 0 ? 'hang_right' : 'hang_left', false);
+                companion.update(delta);
+                return;
+            }
+            // Arrived alongside the clear spot - now the climb, same as the
+            // player's: hold the root, play the clip, place it at the end.
+            startCompanionLedgeClimb(c, _shimmyTop, _hangFwd.x, _hangFwd.z);
+            return;
+        }
+
+        // ---- CLIMBUP (pulling onto a ledge from a hang) ----
+        if (_compMode === 'climbup') {
+            _climbT += delta;
+            // Root stays put for the whole clip and is placed once at the
+            // end, which is exactly what the player's own climb does - the
+            // clip carries the body up, the root move just commits it.
+            const done = _climbT >= _climbDur;
+            const pos = done ? _climbTo : _climbFrom;
+            companion.group.position.copy(pos);
+            companion.group.quaternion.copy(_climbQuat);
+            companion.setNetworkState([pos.x, pos.y, pos.z], [_climbQuat.x, _climbQuat.y, _climbQuat.z, _climbQuat.w], done ? 'idle' : 'climb', false);
+            companion.update(delta);
+            if (done) _compMode = 'follow';
+            return;
+        }
+
+        // ---- LEDGEFOLLOW (retrace the player's own path along a ledge) ----
+        // Placed after LEAP/CLIMBUP so neither gets cut off mid-move, but
+        // ahead of everything else: while the player is on a wall, being on
+        // that wall with them IS the follow behaviour, and the ground logic
+        // below has nothing sensible to say about it.
+        //
+        // Follows the player's recorded hang crumbs rather than probing the
+        // geometry for a free spot beside them. Every geometric check is a
+        // guess about where the wall is - which lip, which face, how far in
+        // to sample - and getting any one of them wrong means finding no
+        // ledge at all, which is exactly what kept happening. A hang crumb is
+        // not a guess: it is a position on this exact ledge that a body
+        // actually occupied, with the correct facing already baked in.
+        //
+        // Trailing by a fixed PATH distance (not a straight line) is also
+        // what keeps the gap honest as the ledge turns a corner.
+        let ledgeApproach = null;
+        if (isLedgeGrabbing) {
+            // Index of the crumb it is currently heading for. Following the
+            // chain crumb BY CRUMB is the point: heading straight at the
+            // trailing crumb instead draws a line from wherever the companion
+            // is to a point several crumbs back, and that line cuts the corner
+            // - straight through the block on an L-shaped ledge. That is the
+            // shortcut. The recorded path is the only route known to be
+            // walkable, so it has to be walked, not aimed across.
+            let want = -1, acc = 0, prev = null;
+            for (let i = _compTrail.length - 1; i >= 0; i--) {
+                const tc = _compTrail[i];
+                if (tc.state !== 'hang_idle') continue;
+                if (prev) acc += Math.hypot(prev.x - tc.x, prev.y - tc.y, prev.z - tc.z);
+                prev = tc;
+                want = i;   // furthest back so far; kept if the player hasn't moved COMP_LEDGE_GAP yet
+                if (acc >= COMP_LEDGE_GAP) break;
+            }
+            // Never target a crumb the player is still standing in. Hanging
+            // still leaves the trail full of crumbs at ONE position - their
+            // own - so the accumulated path length never reaches
+            // COMP_LEDGE_GAP and the loop above falls back to the oldest
+            // hang crumb, which is also that same spot. Following it walks
+            // the companion straight into the player. The recorded path only
+            // offers somewhere to be once they have actually moved along it,
+            // so step further back until a crumb is genuinely clear of them.
+            while (want >= 0) {
+                const wc = _compTrail[want];
+                if (Math.hypot(wc.x - p.x, wc.y - p.y, wc.z - p.z) >= COMP_LEDGE_MIN_SEP) break;
+                let next = -1;
+                for (let i = want - 1; i >= 0; i--) {
+                    if (_compTrail[i].state === 'hang_idle') { next = i; break; }
+                }
+                want = next;
+            }
+            const hangingNow = _compMode === 'ledgefollow' || _compMode === 'hang' || _compMode === 'shimmy';
+            if (want < 0 && hangingNow) {
+                // Already on the wall with nowhere clear to go: hold on where
+                // it is rather than converging on the player.
+                companion.setNetworkState([c.x, c.y, c.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
+                companion.update(delta);
+                _compMode = 'ledgefollow';
+                return;
+            }
+            if (want >= 0) {
+                const hanging = hangingNow;
+                if (hanging) {
+                    // Clamp the cursor into range, then walk it forward one
+                    // crumb at a time as each is reached. Never past `want`,
+                    // which is what holds the gap.
+                    // Locate the target crumb BY TIMESTAMP, not by index. The
+                    // trail is pruned from the front as crumbs expire (see
+                    // _compTrail.shift in the recorder), so every prune slides
+                    // all indices down by one while a stored index stays put -
+                    // meaning it silently starts naming a LATER crumb, and
+                    // keeps drifting further ahead the longer this runs. That
+                    // is both faults at once: the rotation came from the wrong
+                    // crumb, and steering toward a crumb further along the path
+                    // than the one actually next to it draws the straight line
+                    // through the block. Timestamps do not move when the array
+                    // does.
+                    let curIdx = -1;
+                    for (let i = 0; i < _compTrail.length; i++) {
+                        const tc = _compTrail[i];
+                        if (tc.state === 'hang_idle' && tc.t >= _ledgeCrumbT) { curIdx = i; break; }
+                    }
+                    if (curIdx < 0 || curIdx > want) curIdx = want;
+                    let cur = _compTrail[curIdx];
+                    if (Math.hypot(cur.x - c.x, cur.y - c.y, cur.z - c.z) < COMP_LEDGE_CRUMB_REACH) {
+                        for (let i = curIdx + 1; i <= want; i++) {
+                            if (_compTrail[i].state === 'hang_idle') { curIdx = i; break; }
+                        }
+                        cur = _compTrail[curIdx];
+                    }
+                    // Corner check. Following the chain by index is not on its
+                    // own enough to stay off the geometry: whenever the
+                    // companion is more than one crumb behind - it just
+                    // grabbed on, the player sped up, the separation guard
+                    // pushed the target backwards - the straight line to that
+                    // crumb can still cut across a corner even though the path
+                    // between them goes around it. So ask the ray, and if the
+                    // crumb cannot be reached in a straight line, back down
+                    // the chain until one can. That nearer crumb sits on the
+                    // near side of the corner, so heading for it takes the
+                    // companion AROUND the corner rather than through it, and
+                    // the far crumb becomes visible once it gets there.
+                    _hangFwd.set(0, 0, 1).applyQuaternion(_hangQuat);
+                    _hangFwd.y = 0;
+                    if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
+                    if (!ledgeCrumbVisible(c, cur, _hangFwd.x, _hangFwd.z)) {
+                        // Strided and capped. Crumbs are recorded every frame,
+                        // so stepping back one at a time would both fire
+                        // hundreds of rays in a single frame and barely move
+                        // the probe point - consecutive crumbs are a couple of
+                        // centimetres apart. Sample along the path instead.
+                        let probes = 0, back = 0;
+                        let lx = cur.x, ly = cur.y, lz = cur.z;
+                        for (let i = curIdx - 1; i >= 0 && probes < COMP_LEDGE_MAX_PROBES; i--) {
+                            const tc = _compTrail[i];
+                            if (tc.state !== 'hang_idle') continue;
+                            back += Math.hypot(lx - tc.x, ly - tc.y, lz - tc.z);
+                            lx = tc.x; ly = tc.y; lz = tc.z;
+                            if (back < COMP_LEDGE_PROBE_STRIDE) continue;
+                            back = 0; probes++;
+                            if (ledgeCrumbVisible(c, tc, _hangFwd.x, _hangFwd.z)) { curIdx = i; break; }
+                        }
+                        cur = _compTrail[curIdx];
+                    }
+                    _ledgeCrumbT = cur.t;
+                    const ldx = cur.x - c.x, ldy = cur.y - c.y, ldz = cur.z - c.z;
+                    const ld = Math.hypot(ldx, ldy, ldz);
+                    if (ld > 0.02) {
+                        const step = Math.min(ld, COMP_SHIMMY_SPEED * delta);
+                        companion.group.position.set(c.x + ldx / ld * step, c.y + ldy / ld * step, c.z + ldz / ld * step);
+                    }
+                    // Eased toward the crumb's facing rather than snapped to
+                    // it. Around a corner two consecutive crumbs can differ by
+                    // most of a right angle, and taking that in one frame
+                    // spins the body on the spot; easing turns it as it
+                    // travels, the way the player's own turn looked.
+                    _tempQuat.set(cur.qx, cur.qy, cur.qz, cur.qw);
+                    _hangQuat.slerp(_tempQuat, Math.min(1, delta * 12));
+                    companion.group.quaternion.copy(_hangQuat);
+                    // Which way it is sliding along the wall, in its own local
+                    // frame, so the correct shimmy clip plays instead of the
+                    // idle hang being dragged sideways. +X local is its right.
+                    _ledgeFwdVec.set(1, 0, 0).applyQuaternion(_hangQuat);
+                    const alongRight = ldx * _ledgeFwdVec.x + ldz * _ledgeFwdVec.z;
+                    let hangState = 'hang_idle';
+                    if (ld > 0.05) hangState = alongRight > 0 ? 'hang_right' : 'hang_left';
+                    const cp = companion.group.position;
+                    companion.setNetworkState([cp.x, cp.y, cp.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], hangState, false);
+                    companion.update(delta);
+                    // Kept current so HANG can take over cleanly the moment
+                    // the player lets go and it has to get off the wall.
+                    _hangPos.copy(cp);
+                    _hangFwd.set(0, 0, 1).applyQuaternion(_hangQuat); _hangFwd.y = 0;
+                    if (_hangFwd.lengthSq() < 1e-6) _hangFwd.set(0, 0, 1); else _hangFwd.normalize();
+                    _hangTop.set(cp.x + _hangFwd.x * COMP_HANG_OUT, cp.y + COMP_HANG_DROP, cp.z + _hangFwd.z * COMP_HANG_OUT);
+                    _compMode = 'ledgefollow';
+                    return;
+                }
+                // Still on the ground: walk under the crumb, then jump for it.
+                // The crumb is a proven hang position, so there is nothing to
+                // validate - only whether the jump can reach it.
+                const target = _compTrail[want];
+                const rise = target.y - c.y;
+                if (Math.hypot(target.x - c.x, target.z - c.z) < COMP_LEDGE_JUMP_FROM
+                    && rise > COMP_STEP_UP && rise <= COMP_LEAP_RISE_MAX) {
+                    _tempVec2.set(target.x, target.y, target.z);
+                    _hangQuat.set(target.qx, target.qy, target.qz, target.qw);
+                    // Grabbing on here, so the crumb cursor starts there.
+                    _ledgeCrumbT = target.t;
+                    if (startCompanionJumpToHang(c, _tempVec2, _hangQuat)) return;
+                }
+                ledgeApproach = target;
+            }
+        }
+        // Player let go (or there was never a grip to share). Hand to HANG,
+        // not straight to follow - the companion is still physically on a
+        // wall, and HANG is what knows how to get off one.
+        if (_compMode === 'ledgefollow') _compMode = 'hang';
+
+        // ---- HANG (holding a ledge whose top-out is occupied) ----
+        // Committed state, entered from the replay. It does three things in
+        // priority order every frame and nothing else, so there is no way for
+        // it to oscillate: go up if the spot freed, shuffle sideways if the
+        // ledge offers a clear one, otherwise just hold on.
+        if (_compMode === 'hang') {
+            // Never climb up while the PLAYER is still hanging. Following
+            // someone onto a wall and then immediately standing up on top of
+            // it is not following them - it leaves them below, on the thing
+            // the companion just walked away from. Hold the ledge until they
+            // are done with it.
+            const topClear = !isLedgeGrabbing
+                && (Math.hypot(_hangTop.x - p.x, _hangTop.z - p.z) >= COMP_TOPOUT_CLEAR
+                    || p.y < _hangTop.y - 0.6);   // player left, or dropped below this ledge entirely
+            if (topClear) {
+                startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
+                return;
+            }
+            if (tryCompanionShimmy(p)) return;
+            companion.group.position.copy(_hangPos);
+            companion.group.quaternion.copy(_hangQuat);
+            companion.setNetworkState([_hangPos.x, _hangPos.y, _hangPos.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
+            companion.update(delta);
             return;
         }
 
@@ -1772,15 +2240,40 @@ export function startGame(CharacterClass) {
             const wantT = _replayStartT + _replayT;
             let cr = endCr;
             for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t >= wantT) { cr = _compTrail[i]; break; } }
-            // Wait (hang) if we'd top out onto the exact spot the player stands.
-            const blocked = cr.y >= p.y - 0.6 && Math.hypot(cr.x - p.x, cr.z - p.z) < 0.9;
+            // Wait, hanging, if the spot we'd top out onto is where the
+            // player is standing. No timeout - it holds the ledge for as
+            // long as the spot is occupied. COMP_TOPOUT_CLEAR is deliberately
+            // tight (practically on top of them): merely being NEAR the ledge
+            // is not a reason to wait, since the follow-target fallbacks let
+            // the companion take a shorter stand-off and share the space.
+            const blocked = cr.y >= p.y - 0.6 && Math.hypot(cr.x - p.x, cr.z - p.z) < COMP_TOPOUT_CLEAR;
             if (blocked) {
-                _replayT -= delta;
-                let hangCr = cr;
-                for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t <= wantT && _compTrail[i].y <= p.y - 1.2) hangCr = _compTrail[i]; }
-                companion.group.position.set(hangCr.x, hangCr.y, hangCr.z);
-                companion.group.quaternion.set(hangCr.qx, hangCr.qy, hangCr.qz, hangCr.qw);
-                companion.setNetworkState([hangCr.x, hangCr.y, hangCr.z], [hangCr.qx, hangCr.qy, hangCr.qz, hangCr.qw], 'hang_idle', false);
+                // Commit to the ledge once, here, and hand off to HANG mode.
+                // This used to rewind _replayT and re-run the same test next
+                // frame, which meant the replay kept stepping up, noticing it
+                // was blocked, and snapping back down to a hang pose - the
+                // lunge-and-recoil loop. Deciding once removes the loop.
+                //
+                // The climb direction comes from THIS replay - takeoff crumb
+                // to top-out crumb - and the hang position is then measured
+                // off the real ledge (computeLedgeHang). Both are properties
+                // of the wall being climbed right now, unlike the previous
+                // approach of reusing the last recorded hang_idle pose, which
+                // could belong to a different ledge entirely and put the
+                // companion nowhere near this one.
+                let takeoff = _compTrail[0];
+                for (let i = 0; i < _compTrail.length; i++) {
+                    if (_compTrail[i].t >= _replayStartT) { takeoff = _compTrail[i]; break; }
+                }
+                let fx = cr.x - takeoff.x, fz = cr.z - takeoff.z;
+                const flen = Math.hypot(fx, fz);
+                if (flen < 1e-3) { fx = 0; fz = 1; } else { fx /= flen; fz /= flen; }
+                _hangFwd.set(fx, 0, fz);
+                _hangTop.set(cr.x, cr.y, cr.z);
+                computeLedgeHang(_hangTop, fx, fz, _hangPos);
+                _compFaceEuler.set(0, Math.atan2(fx, fz), 0);
+                _hangQuat.setFromEuler(_compFaceEuler);
+                _compMode = 'hang';
                 companion.update(delta);
                 return;
             }
@@ -1895,8 +2388,37 @@ export function startGame(CharacterClass) {
             if (len < 0.001) { dirx = 0; dirz = 1; len = 1; }
             dirx /= len; dirz /= len;
         }
-        let tgx = p.x + dirx * COMP_FOLLOW_DIST, tgz = p.z + dirz * COMP_FOLLOW_DIST;
-        if (playerElevated && (p.y - c.y) < 1.0) { tgx = p.x + dirx * 0.9; tgz = p.z + dirz * 0.9; } // up on the block: hug close
+        // Stand-off distance, shortened until the spot is actually solid
+        // ground at the player's own level. A fixed COMP_FOLLOW_DIST assumes
+        // there is always that much room behind the player, which on a single
+        // block or a narrow ledge there simply isn't - the target landed out
+        // in the air past the edge, so the companion either never arrived or
+        // treated its own follow spot as a gap to leap. Closing in when the
+        // space is tight is better than standing politely off a cliff.
+        let followDist = COMP_FOLLOW_DIST;
+        if (playerElevated && (p.y - c.y) < 1.0) followDist = 0.9; // up on the block with them: hug close anyway
+        for (let attempt = 0; attempt < COMP_FOLLOW_FALLBACKS.length; attempt++) {
+            const d = Math.min(followDist, COMP_FOLLOW_FALLBACKS[attempt]);
+            _tempVec2.set(p.x + dirx * d, p.y + 3.0, p.z + dirz * d);
+            rayDown.set(_tempVec2, _downVec);
+            const spotHits = rayDown.intersectObjects(_compGroundList, true);
+            const spotY = spotHits.length ? spotHits[0].point.y : -Infinity;
+            // Same level as the player, not the floor far below a ledge.
+            if (p.y - spotY <= COMP_LEAP_EDGE_DROP) { followDist = d; break; }
+            // Nothing worked even at the closest fallback - keep the original
+            // distance and let the ordinary edge/leap logic deal with it.
+            if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) followDist = Math.min(followDist, COMP_FOLLOW_FALLBACKS[attempt]);
+        }
+        let tgx = p.x + dirx * followDist, tgz = p.z + dirz * followDist;
+
+        // Player is on a wall: head for the ground under the crumb the
+        // LEDGEFOLLOW block picked (see it for why crumbs and not geometry).
+        // The normal follow target is useless here - it sits OUTSIDE the
+        // block, because the follow direction points from the player back
+        // out toward the companion, so the companion walks to the base and
+        // stops with nothing to do. Aiming under the grip means the jump
+        // becomes available as soon as it arrives.
+        if (ledgeApproach) { tgx = ledgeApproach.x; tgz = ledgeApproach.z; }
         const toX = tgx - c.x, toZ = tgz - c.z; const h = Math.hypot(toX, toZ);
 
         // ---- Edge/gap detection: leap instead of trying to walk it ----
@@ -1918,18 +2440,34 @@ export function startGame(CharacterClass) {
                     _tempVec2.set(c.x + travelX * dist, c.y + 3.0, c.z + travelZ * dist);
                     rayDown.set(_tempVec2, _downVec);
                     const hits = rayDown.intersectObjects(_compGroundList, true);
-                    if (hits.length && Math.abs(hits[0].point.y - c.y) < COMP_LEAP_LANDING_BAND) {
-                        landing = { x: c.x + travelX * dist, y: hits[0].point.y, z: c.z + travelZ * dist };
-                        break;
-                    }
+                    if (!hits.length) continue;
+                    const ly = hits[0].point.y;
+                    // A leap may never gain more height than the player's own
+                    // jump can. The band used to be symmetric at 3.0, so a
+                    // spot 3 units up counted as a valid landing and the
+                    // companion launched itself at it - that is the "super
+                    // jump", and nothing in this game can do it. Anything
+                    // higher belongs to the climb paths.
+                    if (ly - c.y > COMP_LEAP_RISE_MAX) continue;
+                    if (c.y - ly > COMP_LEAP_LANDING_BAND) continue;
+                    landing = { x: c.x + travelX * dist, y: ly, z: c.z + travelZ * dist };
+                    break;
                 }
+                // Dropping off a ledge is only worth it if the player is
+                // actually down there. The follow target drifts around the
+                // player every frame, and when it drifted out past an edge
+                // the companion would take the drop purely to chase it - then
+                // immediately have to get back up again. That down-then-up
+                // round trip is where the flying came from; the fix is to not
+                // make the pointless descent in the first place.
+                if (landing && (c.y - landing.y) > COMP_LEAP_EDGE_DROP && p.y > landing.y + 1.0) landing = null;
                 if (landing) {
                     _compLeapStart.copy(c);
                     _compLeapEnd.set(landing.x, landing.y, landing.z);
                     const leapDist = _compLeapStart.distanceTo(_compLeapEnd);
                     _compLeapDur = Math.max(0.35, leapDist / COMP_LEAP_SPEED);
                     _compLeapT = 0;
-                    _compLeapIsClimb = false;
+                    _compLeapToHang = false;
                     _compFaceEuler.set(0, Math.atan2(travelX, travelZ), 0);
                     _compLeapFaceQuat.setFromEuler(_compFaceEuler);
                     _compMode = 'leap';

@@ -13,6 +13,11 @@ const REMOTE_ANIMS = [
     { name: 'fall', file: 'JumpMidAir.fbx' },
     { name: 'land', file: 'Landing.fbx' },
     { name: 'hang_idle', file: 'Hanging%20Idle.fbx' },
+    // Sideways shimmy clips - same two the local Character loads. Without
+    // them a companion moving along a ledge slid in the idle hang pose,
+    // which reads as being dragged rather than climbing.
+    { name: 'hang_left', file: 'Moving%20While%20Hanging%20Left.fbx' },
+    { name: 'hang_right', file: 'Moving%20While%20Hanging%20Right.fbx' },
     { name: 'climb', file: 'Freehang%20Climb.fbx' },
     { name: 'push', file: 'Push.fbx' },
     { name: 'pull', file: 'Pull.fbx' },
