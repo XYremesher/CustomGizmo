@@ -165,6 +165,7 @@
            2*radius square (400px) with the corner sitting at its middle,
            so it's shifted outward by one full radius (-200px) on both the
            horizontal and vertical side that point off-screen. */
+
         .drag-deadzone { position: fixed; bottom: -200px; width: 400px; height: 400px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); pointer-events: none; z-index: 9; display: none; }
         #drag-deadzone-left { left: -200px; }
         #drag-deadzone-right { right: -200px; }
@@ -453,8 +454,8 @@
                     <select id="level-select" style="width: 100%; margin-bottom: 10px; color: black;"></select><br>
                     <label><input type="checkbox" id="toggle-blank-white"> White backdrop</label><br>
                     <label><input type="checkbox" id="toggle-grass" checked> Scattered grass</label><br>
-                    <label>Grass Count: <span id="grass-count-val">2000</span></label><br>
-                    <input type="range" id="grass-count-slider" min="0" max="6000" step="100" value="2000" style="width: 100%;"><br>
+                    <label>Grass Count: <span id="grass-count-val">4000</span></label><br>
+                    <input type="range" id="grass-count-slider" min="0" max="8000" step="100" value="4000" style="width: 100%;"><br>
                     <label>Grass Size: <span id="grass-size-val">1.40</span></label><br>
                     <input type="range" id="grass-size-slider" min="0.2" max="3.0" step="0.05" value="1.40" style="width: 100%;"><br>
                     <label>Grass Area (radius): <span id="grass-area-val">80</span></label><br>
@@ -516,8 +517,8 @@
                 <div class="category-header">Camera Dither</div>
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-dither-hole" checked> Hole around player</label><br>
-                    <label>Dither Strength: <span id="dither-strength-val">0.90</span></label><br>
-                    <input type="range" id="dither-strength-slider" min="0.0" max="1.0" step="0.01" value="0.90" style="width: 100%;"><br>
+                    <label>Dither Strength: <span id="dither-strength-val">0.98</span></label><br>
+                    <input type="range" id="dither-strength-slider" min="0.0" max="1.0" step="0.01" value="0.98" style="width: 100%;"><br>
                     <label>Hole Radius (px): <span id="dither-hole-radius-val">200</span></label><br>
                     <input type="range" id="dither-hole-radius-slider" min="40" max="600" step="5" value="200" style="width: 100%;"><br>
                     <label>Hole Feather: <span id="dither-hole-feather-val">0.50</span></label><br>
@@ -613,6 +614,8 @@
                     <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
                     <label>Orange Recoil Force: <span id="orange-recoil-val">60.0</span></label><br>
                     <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="60.0" style="width: 100%;"><br>
+                    <label>Head Size (all characters): <span id="head-scale-val">0.70</span></label><br>
+                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.70" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -651,7 +654,7 @@
                          just make them reachable again for testing. -->
                     <label><input type="checkbox" id="toggle-camera-joystick"> Show Camera Joystick</label><br>
                     <label><input type="checkbox" id="toggle-build-btn"> Show Build (B) Button</label><br>
-                    <label><input type="checkbox" id="toggle-punch-btn"> Show Punch Button</label><br>
+                    <label><input type="checkbox" id="toggle-punch-btn" checked> Show Punch Button</label><br>
                     <label><input type="checkbox" id="toggle-drag-deadzone"> Show Drag Dead-Zone (matte overlay)</label><br>
                     <label>Icon Size: <span id="icon-size-val">40</span>px</label><br>
                     <input type="range" id="icon-size-slider" min="12" max="96" step="1" value="40" style="width: 100%;"><br>
@@ -690,13 +693,15 @@
                     <input type="range" id="light-intensity-slider" min="0.0" max="3.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label>Fill Light Intensity: <span id="fill-light-intensity-val">1.00</span></label><br>
                     <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="1.00" style="width: 100%;"><br>
-                    <label><input type="checkbox" id="toggle-pixel-effect"> Pixelate (postprocessing)</label><br>
-                    <label>Pixel Size: <span id="pixel-size-val">6</span></label><br>
-                    <input type="range" id="pixel-size-slider" min="1" max="16" step="1" value="6" style="width: 100%;"><br>
-                    <label>Normal Edge Strength: <span id="pixel-normal-edge-val">0.30</span></label><br>
-                    <input type="range" id="pixel-normal-edge-slider" min="0.0" max="2.0" step="0.05" value="0.30" style="width: 100%;"><br>
-                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">0.40</span></label><br>
-                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="2.0" step="0.05" value="0.40" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-pixel-effect" checked> Pixelate (postprocessing)</label><br>
+                    <label>Pixel Size: <span id="pixel-size-val">1</span></label><br>
+                    <input type="range" id="pixel-size-slider" min="1" max="16" step="1" value="1" style="width: 100%;"><br>
+                    <label>Normal Edge Strength: <span id="pixel-normal-edge-val">0.00</span></label><br>
+                    <input type="range" id="pixel-normal-edge-slider" min="0.0" max="2.0" step="0.05" value="0.00" style="width: 100%;"><br>
+                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">7.00</span></label><br>
+                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="7.00" style="width: 100%;"><br>
+                    <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.055</span></label><br>
+                    <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.055" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
@@ -715,8 +720,8 @@
             <div class="category">
                 <div class="category-header">AI Bot</div>
                 <div class="category-content">
-                    <button id="ai-bot-spawn-btn" style="width: 100%;">Spawn AI Bot</button>
-                    <button id="ai-bot-despawn-btn" style="width: 100%; margin-top: 6px; display: none;">Remove AI Bot</button>
+                    <button id="ai-bot-spawn-btn" style="width: 100%;">Spawn Enemies</button>
+                    <button id="ai-bot-despawn-btn" style="width: 100%; margin-top: 6px; display: none;">Remove Enemies</button>
                     <div id="ai-bot-status" style="margin-top: 6px; opacity: 0.8;">not spawned</div>
                     <label style="display: block; margin-top: 6px;"><input type="checkbox" id="ai-bot-path-toggle" checked> Show AI Bot Path</label>
                 </div>
@@ -1443,8 +1448,17 @@
                 // same intensity mapping/reaction _applyPunchEvent uses for a
                 // real targeted punch (see multiplayer.js), just skipping the
                 // network round-trip since there's nothing to send it to.
-                if (window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
-                    const botHitPos = window.aiBot.getHitReferencePoint();
+                // Every spawned enemy, not just the first: the poise pool used
+                // to be a set of window.aiBotStagger* globals, which is a
+                // single shared pool - with more than one bot, hitting one of
+                // them drained the other's poise too and whichever you hit
+                // last went down. It lives on the avatar now (see
+                // staggerPool), so each takes its own beating.
+                const enemies = window.aiBots || (window.aiBot ? [window.aiBot] : []);
+                for (let bi = 0; bi < enemies.length; bi++) {
+                    const bot = enemies[bi];
+                    if (!bot || !bot.isLoaded || bot.isRagdoll) continue;
+                    const botHitPos = bot.getHitReferencePoint();
                     if (botHitPos.distanceTo(hitCenter) < hitRadius + 1.0) {
                         if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                         if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
@@ -1454,34 +1468,12 @@
                         const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 60;
                         const magnitudeForRagdoll = intensity === 'high' ? knockback : forceMagnitude;
                         const velocity = fwdDir.clone().multiplyScalar(magnitudeForRagdoll);
-                        window.aiBot.triggerHitFlash(strength);
-                        if (intensity === 'high') {
-                            window.aiBot.initRagdoll(velocity, intensity);
-                            window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
-                            window.aiBotStaggerRegenCooldown = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
-                        } else {
-                            // Hidden poise pool, mirrors multiplayer.js's
-                            // _applyPunchEvent exactly (same numbers): a
-                            // mature charge punch always knocks the bot down
-                            // outright ('high' above), but a flurry of
-                            // ordinary/combo hits that never lets it recover
-                            // (regen only resumes after a gap without being
-                            // hit) should be able to finish the job too,
-                            // instead of every non-charge hit only ever
-                            // flinching it.
-                            if (window.aiBotStagger === undefined) window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
-                            const staggerDamage = intensity === 'medium_high'
-                                ? (window.staggerDamageMediumHigh !== undefined ? window.staggerDamageMediumHigh : 35)
-                                : (window.staggerDamageMedium !== undefined ? window.staggerDamageMedium : 10);
-                            window.aiBotStagger -= staggerDamage;
-                            window.aiBotStaggerRegenCooldown = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
-                            if (window.aiBotStagger <= 0) {
-                                window.aiBotStagger = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
-                                window.aiBot.initRagdoll(velocity, 'high');
-                            } else {
-                                window.aiBot.applyProceduralRecoil(velocity, intensity);
-                            }
-                        }
+                        // Poise pool and the knock-down decision live in
+                        // game_js.js's staggerBot - the companions' counter-
+                        // attack lands on the same bots and has to obey the
+                        // same rule, and two copies of that arithmetic would
+                        // drift apart the first time either was retuned.
+                        window.staggerBot(bot, velocity, intensity, strength);
                     }
                 }
             }

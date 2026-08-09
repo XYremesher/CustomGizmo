@@ -15,9 +15,59 @@ const _hingeV2 = new THREE.Vector3();
 const _hingeAxis = new THREE.Vector3();
 const _hingeQuat = new THREE.Quaternion();
 const _particleBox = new THREE.Box3();
-const _obstacleBox = new THREE.Box3();
 const _prevPos = new THREE.Vector3();
 const _boxSize = new THREE.Vector3();
+
+// ---- Broad phase ----
+// The collision step used to walk the WHOLE collidables array for every
+// particle on every solver iteration: 20 iterations x ~15 particles x however
+// many collidables the level has. In the forest that is ~205 objects, so
+// ~61,000 getObstacleBox calls per ragdoll per frame, and with three bots and
+// three companions able to go down at once, ~370,000.
+//
+// Almost all of that is answering "is this tree on the far side of the map
+// touching us?" over and over. A ragdoll spans maybe two metres, so one pass
+// per frame over the array - testing each object's box against the ragdoll's
+// own padded bounds - leaves a handful of genuine candidates, and the 300
+// inner iterations then run against those instead. The per-object boxes are
+// cached in the same pass, so getObstacleBox is called once per object per
+// frame rather than 300 times.
+const _ragdollAABB = new THREE.Box3();
+// Grown as needed and kept - a ragdoll is rarely near more than a few things,
+// and reusing the entries keeps the solver allocation-free the way the rest of
+// these scratch objects do.
+const _candidates = [];
+let _candidateCount = 0;
+function _candidate(i) {
+    if (!_candidates[i]) _candidates[i] = { obj: null, isSphere: false, radius: 0, box: new THREE.Box3() };
+    return _candidates[i];
+}
+// How far a particle can travel during one frame's solve. The bounds are
+// measured once, before the iterations, so they have to cover where the
+// particles END UP too - anything less and a limb could swing into something
+// that was culled at the top of the frame.
+const RAGDOLL_BROAD_MARGIN = 1.0;
+
+// ---- Cost knobs ----
+// Trimmed from 0.02 / 0.4 / 0.8 / 1.6. The high tier is the one that matters:
+// it is the knockdown you actually see, and it was lying limp for a second and
+// a half after it had already come to rest.
+window.ragdollTimeLow = 0.02;
+window.ragdollTimeMedium = 0.3;
+window.ragdollTimeMediumHigh = 0.6;
+window.ragdollTimeHigh = 1.1;
+// How many of the 20 solver iterations also resolve collision.
+//
+// All 20 used to. That is what keeps a limb out of a wall DURING the solve,
+// but the passes that decide where the body actually comes to rest are the
+// last ones - the earlier ones are re-resolving contacts that the next
+// constraint pass is about to move anyway. Running collision on the final 8
+// leaves the constraint solver its full 20 passes and still ends the frame
+// penetration-free, because collision is the last thing each iteration does.
+//
+// The floor clamp is NOT part of this - it runs every iteration regardless.
+// It costs nothing (no array walk) and it is what stops a body sinking.
+window.ragdollCollisionIters = 8;
 
 export const RagdollPhysics = {
     getParticle(id) {
@@ -46,18 +96,28 @@ export const RagdollPhysics = {
         this.fbxModel.updateMatrixWorld(true);
         this.currentRagdollIntensity = intensity;
 
+        // How long the body stays limp before it is allowed to start getting
+        // up. This is the single biggest lever on ragdoll cost, because it is
+        // a FRAME COUNT: the solver runs every frame the character is down, so
+        // shortening the high tier from 1.6s to 1.1s is ~30 fewer full solves
+        // per knockdown at 60fps.
+        //
+        // Only a floor, not a ceiling - beginStandUp additionally waits until
+        // the character is actually near the ground (see the caller), so a
+        // body still falling keeps simulating however long the fall takes.
+        // Cutting these therefore shortens the lying-there part, not the fall.
         let velocityModifier = 1.0;
         if (intensity === 'low') {
-            this.ragdollMaxTime = 0.02; 
+            this.ragdollMaxTime = window.ragdollTimeLow;
             velocityModifier = 0.05; 
         } else if (intensity === 'medium') {
-            this.ragdollMaxTime = 0.4; 
+            this.ragdollMaxTime = window.ragdollTimeMedium;
             velocityModifier = 0.25;
         } else if (intensity === 'medium_high') {
-            this.ragdollMaxTime = 0.8;
+            this.ragdollMaxTime = window.ragdollTimeMediumHigh;
             velocityModifier = 0.4;
         } else {
-            this.ragdollMaxTime = 1.6; 
+            this.ragdollMaxTime = window.ragdollTimeHigh;
             velocityModifier = 0.55;
         }
 
@@ -372,7 +432,42 @@ export const RagdollPhysics = {
             p.oldPos.set(tempX, tempY, tempZ);
         });
 
+        // ---- Broad phase, once per frame (see _candidates) ----
+        _ragdollAABB.makeEmpty();
+        let broadMaxRadius = 0;
+        for (let i = 0; i < this.ragdollParticles.length; i++) {
+            const p = this.ragdollParticles[i];
+            _ragdollAABB.expandByPoint(p.pos);
+            if (p.radius > broadMaxRadius) broadMaxRadius = p.radius;
+        }
+        _ragdollAABB.expandByScalar(broadMaxRadius + RAGDOLL_BROAD_MARGIN);
+        _candidateCount = 0;
+        for (let i = 0; i < collidables.length; i++) {
+            const obj = collidables[i];
+            if (obj === window.ground) continue;
+            const cand = _candidate(_candidateCount);
+            if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
+                const radius = obj.geometry.parameters.radius || 6;
+                // Sphere test is cheap enough to do exactly rather than via a box.
+                if (_ragdollAABB.distanceToPoint(obj.position) > radius) continue;
+                cand.obj = obj; cand.isSphere = true; cand.radius = radius;
+                _candidateCount++;
+                continue;
+            }
+            // Written straight into the candidate's own box so a rejected
+            // object costs nothing beyond the one getObstacleBox call, and an
+            // accepted one is already cached for the 300 inner iterations.
+            if (window.getObstacleBox) window.getObstacleBox(obj, cand.box);
+            else continue;
+            if (!cand.box.intersectsBox(_ragdollAABB)) continue;
+            cand.obj = obj; cand.isSphere = false;
+            _candidateCount++;
+        }
+
+        const collisionIters = window.ragdollCollisionIters !== undefined ? window.ragdollCollisionIters : 8;
+        const collisionFrom = 20 - Math.max(1, Math.min(20, Math.round(collisionIters)));
         for (let iter = 0; iter < 20; iter++) {
+            const resolveCollision = iter >= collisionFrom;
             this.ragdollConstraints.forEach(c => {
                 _tempVec1.subVectors(c.p2.pos, c.p1.pos);
                 const dist = _tempVec1.length();
@@ -403,16 +498,18 @@ export const RagdollPhysics = {
                         p.pos.z += (p.oldPos.z - p.pos.z) * 0.2;
                     }
 
+                    if (!resolveCollision) return;
+
                     const particleBox = _particleBox;
                     _boxSize.set(p.radius * 2, p.radius * 2, p.radius * 2);
                     particleBox.setFromCenterAndSize(p.pos, _boxSize);
-                    const obstacleBox = _obstacleBox;
 
-                    collidables.forEach(obj => {
-                        if (obj === window.ground) return;
+                    for (let ci = 0; ci < _candidateCount; ci++) {
+                        const cand = _candidates[ci];
+                        const obj = cand.obj;
 
-                        if (obj.geometry && (obj.geometry.type === 'SphereGeometry' || obj.geometry.constructor.name === 'SphereGeometry')) {
-                            const radius = obj.geometry.parameters.radius || 6;
+                        if (cand.isSphere) {
+                            const radius = cand.radius;
                             const dist = p.pos.distanceTo(obj.position);
                             const minDist = radius + p.radius;
                             if (dist < minDist) {
@@ -427,10 +524,13 @@ export const RagdollPhysics = {
                                 // velocity, horizontal contact should keep sliding.
                                 if (normal.y > 0.5) p.oldPos.y = p.pos.y;
                             }
-                            return;
+                            continue;
                         }
 
-                        if (window.getObstacleBox) window.getObstacleBox(obj, obstacleBox);
+                        // Cached by the broad phase above - the obstacles do
+                        // not move while the solver runs, so recomputing this
+                        // 300 times per object was pure waste.
+                        const obstacleBox = cand.box;
 
                         if (particleBox.intersectsBox(obstacleBox)) {
                             const prevPos = _prevPos.copy(p.pos);
@@ -461,7 +561,7 @@ export const RagdollPhysics = {
                             if (correctedY) p.oldPos.y = p.pos.y;
                             particleBox.setFromCenterAndSize(p.pos, _boxSize);
                         }
-                    });
+                    }
                 });
         }
 

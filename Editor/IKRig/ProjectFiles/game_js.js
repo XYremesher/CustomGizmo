@@ -537,11 +537,108 @@ export function startGame(CharacterClass) {
     // Pixelation post-processing test (https://threejs.org/examples/webgl_postprocessing_pixel.html)
     // - off by default, toggled from the settings panel. Built once up front
     // rather than lazily on first enable, so the toggle is instant either way.
-    window.pixelEffectEnabled = false;
+    window.pixelEffectEnabled = true;
     const composer = new EffectComposer(renderer);
-    const renderPixelatedPass = new RenderPixelatedPass(6, scene, camera);
+    // Pixel size 1 - no pixelation at all. The pass is kept purely for its
+    // depth-edge outline; raise the Pixel Size slider for the chunky look.
+    const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
+    renderPixelatedPass.normalEdgeStrength = 0.0;
+    // 7, well past the 0..1 the pass's own maths assumes: the indicator is
+    // quantised to 0 / 0.5 / 1 and the result is texel * (1 - strength * dei),
+    // so anything over 2 drives an edge fragment negative and it clamps to
+    // solid black. That is the point - a hard black outline rather than a
+    // darkened one.
+    renderPixelatedPass.depthEdgeStrength = 7.0;
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
+
+    // ---- Depth-edge fix ----
+    // The stock pass differences the RAW depth buffer and thresholds it at a
+    // fixed smoothstep(0.01, 0.02). Depth buffers are wildly non-linear, so
+    // that threshold is only meaningful right in front of the camera: with
+    // near 0.1 / far 1000, a half-unit step is 0.0100 of buffer range at 2
+    // units out, 0.0018 at 5, and 0.00003 at 40. Everything past a couple of
+    // metres therefore falls under the threshold and produces no edge at all -
+    // which is exactly the "only works on very close things" complaint. Turning
+    // depthEdgeStrength up cannot help, because the indicator it multiplies is
+    // already zero.
+    //
+    // The fix is to compare LINEAR view depth and to make the comparison
+    // relative (difference divided by distance), which is scale-invariant: a
+    // 3% depth step reads as an edge whether it is 2 metres away or 200.
+    //
+    // Done by patching the pass's own shader rather than by forking the class,
+    // and every replacement is verified - if a three.js update changes the
+    // source out from under this, it leaves the stock shader alone and says so
+    // rather than silently rendering a broken pass.
+    window.pixelDepthEdgeSensitivity = 0.055;  // relative depth step counted as an edge
+    const _pixelEdgeUniforms = {
+        uEdgeNear: { value: 0.1 },
+        uEdgeFar: { value: 1000 },
+        uEdgeOrtho: { value: 0 },
+        uEdgeLo: { value: 0.055 },
+        uEdgeHi: { value: 0.1375 },
+    };
+    (function patchPixelDepthEdge() {
+        const mat = renderPixelatedPass.pixelatedMaterial;
+        if (!mat) { console.warn('RenderPixelatedPass: no material to patch'); return; }
+        let fs = mat.fragmentShader;
+        // 1. helpers + uniforms, right after the varying every version declares
+        const declRe = /varying\s+vec2\s+vUv\s*;/;
+        if (!declRe.test(fs)) { console.warn('RenderPixelatedPass: shader layout changed, depth-edge fix skipped'); return; }
+        fs = fs.replace(declRe, `varying vec2 vUv;
+                uniform float uEdgeNear, uEdgeFar, uEdgeOrtho, uEdgeLo, uEdgeHi;
+                float linearizeDepth(float d) {
+                    // Orthographic depth is already linear in view space.
+                    if (uEdgeOrtho > 0.5) return uEdgeNear + d * (uEdgeFar - uEdgeNear);
+                    float z = d * 2.0 - 1.0;
+                    return (2.0 * uEdgeNear * uEdgeFar) / (uEdgeFar + uEdgeNear - z * (uEdgeFar - uEdgeNear));
+                }
+                float getLinearDepth(int x, int y) {
+                    return linearizeDepth(texture2D(tDepth, vUv + vec2(x, y) * resolution.zw).r);
+                }`);
+        // 2. the depth-edge indicator itself. getDepth is deliberately left
+        //    alone - neighborNormalEdgeIndicator uses it with a hardcoded
+        //    0.0025 bias tuned for raw buffer values, so linearising it
+        //    globally would change the NORMAL edges too.
+        const indRe = /float\s+depthEdgeIndicator\s*\(([^)]*)\)\s*\{[\s\S]*?smoothstep\([^)]*\)[^}]*\}/;
+        if (!indRe.test(fs)) { console.warn('RenderPixelatedPass: depthEdgeIndicator not found, fix skipped'); return; }
+        fs = fs.replace(indRe, `float depthEdgeIndicator($1) {
+                    // INVERSE depth, and a second difference rather than a
+                    // first one.
+                    //
+                    // A first difference calls any depth step an edge, and a
+                    // surface seen at a grazing angle is nothing but depth
+                    // steps: on flat ground 150 units out, one pixel of
+                    // screen space is already 7.6 units further away - a 5%
+                    // relative step, past any usable sensitivity. Every row of
+                    // pixels near the horizon therefore lit up, which is the
+                    // thick band along it. Tightening the threshold does not
+                    // help; it only moves the band.
+                    //
+                    // 1/z is LINEAR in screen space across any plane, whatever
+                    // its angle, so the second difference of 1/z is zero on
+                    // flat ground and large only where the surface actually
+                    // breaks. That is the difference between "far away" and
+                    // "a silhouette".
+                    float w  = 1.0 / max(getLinearDepth( 0,  0), 1e-4);
+                    float wl = 1.0 / max(getLinearDepth(-1,  0), 1e-4);
+                    float wr = 1.0 / max(getLinearDepth( 1,  0), 1e-4);
+                    float wd = 1.0 / max(getLinearDepth( 0, -1), 1e-4);
+                    float wu = 1.0 / max(getLinearDepth( 0,  1), 1e-4);
+                    float curv = abs(wl + wr - 2.0 * w) + abs(wd + wu - 2.0 * w);
+                    // Normalised by w, so the measure stays the same relative
+                    // depth step the sensitivity slider is calibrated in.
+                    float edge = curv / w;
+                    // Only the NEARER side of a break draws, so a silhouette
+                    // yields one line instead of one on each surface.
+                    float nearer = step(0.0, w - 0.25 * (wl + wr + wd + wu));
+                    return floor(smoothstep(uEdgeLo, uEdgeHi, edge) * 2.) / 2. * nearer;
+                }`);
+        mat.fragmentShader = fs;
+        Object.assign(mat.uniforms, _pixelEdgeUniforms);
+        mat.needsUpdate = true;
+    })();
 
     // ---- Light budget ----
     // ONE shadow-casting directional, not two. There used to be a tight,
@@ -653,9 +750,76 @@ export function startGame(CharacterClass) {
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshToonMaterial({ map: groundTex, gradientMap: threeTone }));
     ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
-    scene.add(ground); 
-    
+    scene.add(ground);
+
     window.ground = ground;
+
+    // ---- Forest clearing tint ----
+    // Turns the ground yellow wherever the forest's own noise says no tree
+    // belongs, so the gaps between the trees read as worn paths rather than
+    // uniform grass. Driven by a mask painted from the SAME noise the scatter
+    // uses (see buildForestLevel), so the yellow lands exactly where the trees
+    // are not - anything else would only be a coincidence that drifts the
+    // moment the seed or density changes.
+    //
+    // A tint on the existing texture rather than a second material or a
+    // replacement map: the ground is one 1000-unit plane shared by every
+    // level, so it has to stay one draw call and be switchable off. It
+    // MULTIPLIES the sampled colour rather than replacing it, which keeps the
+    // grass detail visible through the yellow instead of flattening it to a
+    // solid patch.
+    const _groundTintUniforms = {
+        uForestMask: { value: null },
+        uForestTintOn: { value: 0 },
+        uForestArea: { value: 1 },
+        // Target colour for the worn ground, and how far to go toward it.
+        // A per-channel MULTIPLIER was tried first and cannot reach beige:
+        // the grass texture's green channel is the strongest, so scaling
+        // channels keeps green dominant and only ever yields a yellow-green.
+        // Tinting toward an explicit colour is the only way to actually leave
+        // the green behind.
+        uForestTintColor: { value: new THREE.Color(0xd9c9a6) },
+        uForestTintAmt: { value: 0.85 },
+    };
+    ground.material.onBeforeCompile = (shader) => {
+        shader.uniforms.uForestMask = _groundTintUniforms.uForestMask;
+        shader.uniforms.uForestTintOn = _groundTintUniforms.uForestTintOn;
+        shader.uniforms.uForestArea = _groundTintUniforms.uForestArea;
+        shader.uniforms.uForestTintColor = _groundTintUniforms.uForestTintColor;
+        shader.uniforms.uForestTintAmt = _groundTintUniforms.uForestTintAmt;
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nvarying vec3 vGroundWorld;')
+            .replace('#include <project_vertex>', '#include <project_vertex>\nvGroundWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', `#include <common>
+                uniform sampler2D uForestMask;
+                uniform float uForestTintOn;
+                uniform float uForestArea;
+                uniform vec3 uForestTintColor;
+                uniform float uForestTintAmt;
+                varying vec3 vGroundWorld;`)
+            .replace('#include <map_fragment>', `#include <map_fragment>
+                if (uForestTintOn > 0.5) {
+                    // World xz -> mask uv. The mask only covers the forest
+                    // area; outside it the ground stays plain grass, which is
+                    // what bounds the effect to the wood itself.
+                    vec2 muv = vGroundWorld.xz / uForestArea + 0.5;
+                    if (muv.x > 0.0 && muv.x < 1.0 && muv.y > 0.0 && muv.y < 1.0) {
+                        float openness = texture2D(uForestMask, muv).r;
+                        // Tint toward beige while keeping the texture's own
+                        // light and dark variation: the target is scaled by
+                        // the grass luminance, so blades and dirt still read
+                        // through instead of the path becoming a flat blob.
+                        float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+                        vec3 worn = uForestTintColor * (0.55 + 0.9 * lum);
+                        diffuseColor.rgb = mix(diffuseColor.rgb, worn, openness * uForestTintAmt);
+                    }
+                }`);
+    };
+    // onBeforeCompile is not part of three's program cache key, so without
+    // this the ground could be handed an identically-configured material's
+    // compiled program and silently lose the injection.
+    ground.material.customProgramCacheKey = () => 'ground-forest-tint';
 
     // ---- Scattered grass tufts ----
     // Crossed quads (two planes at 90 degrees per tuft) rather than billboards:
@@ -732,7 +896,11 @@ export function startGame(CharacterClass) {
         return merged;
     })();
     const grassMeshes = [];
-    window.grassCount = 2000;
+    // 4000, up from 2000. Instanced, so the cost of the extra blades is a
+    // bigger instance buffer and nothing else - and with 60% of the budget now
+    // going to tree bases, 2000 worked out to about six blades per tree, which
+    // does not read as a ring around anything.
+    window.grassCount = 4000;
     window.grassSize = 1.4;
     window.grassArea = 80;
     // Independent of grassSize (which is the width/depth of the card) - lets
@@ -743,6 +911,21 @@ export function startGame(CharacterClass) {
     // see the placement loop for why this has to scale with height rather
     // than being a fixed world-unit offset.
     window.grassBaseSink = 0.25;
+    // ---- Grass at the foot of trees ----
+    // The scatter is uniform random over grassArea, which spreads a fixed
+    // budget of blades evenly across the whole level - so the wooded parts,
+    // where grass actually belongs, got no more of it than the bare paths did.
+    // This share of the budget goes into a ring around a trunk instead, which
+    // both thickens the green areas and puts grass against the trees.
+    window.grassTreeShare = 0.6;    // fraction of blades placed at tree bases
+    // A collar hugging the trunk, not a wide apron: the point is to hide the
+    // seam where the trunk meets the ground, which is what the soil patches
+    // used to do.
+    window.grassTreeInner = 0.25;   // ring starts this far from the trunk axis
+    window.grassTreeSpread = 0.75;  // ...and extends this much further out
+    // Collar tufts vary more in size than the scattered ones - a uniform ring
+    // reads as a manufactured collar rather than as something growing there.
+    window.grassTreeSizeMin = 0.45, window.grassTreeSizeMax = 1.75;
     function clearGrass() {
         grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
         grassMeshes.length = 0;
@@ -796,12 +979,70 @@ export function startGame(CharacterClass) {
         let attempts = 0;
         const maxAttempts = total * 6;
         let placed = 0;
+        // Tree bases to cluster around, when there are any. _forestPlacements
+        // is the scatter's own list, so the grass follows wherever the trees
+        // actually ended up rather than re-deriving it from the noise.
+        const treeSpots = (currentLevel === 'local_forest' && _forestPlacements && _forestPlacements.length)
+            ? _forestPlacements : null;
         while (placed < total && attempts++ < maxAttempts) {
-            const x = (Math.random() * 2 - 1) * half;
-            const z = (Math.random() * 2 - 1) * half;
+            let x, z;
+            let collarTree = null;
+            if (treeSpots && Math.random() < window.grassTreeShare) {
+                const t = treeSpots[(Math.random() * treeSpots.length) | 0];
+                collarTree = t;
+                // A ring, not a disc: the inner radius scales with the tree so
+                // blades never sprout out of the middle of a trunk, and the
+                // sqrt keeps the remaining area evenly covered rather than
+                // bunching everything against the inner edge.
+                const inner = window.grassTreeInner * t.scale;
+                const outer = inner + window.grassTreeSpread * t.scale;
+                const rr = Math.sqrt(inner * inner + Math.random() * (outer * outer - inner * inner));
+                const a = Math.random() * Math.PI * 2;
+                x = t.x + Math.cos(a) * rr;
+                z = t.z + Math.sin(a) * rr;
+            } else {
+                x = (Math.random() * 2 - 1) * half;
+                z = (Math.random() * 2 - 1) * half;
+                // With the exemption above, a uniformly placed blade can now
+                // land inside a trunk. The raycast cannot catch that - the
+                // collider is front-faced, so a ray straight down the middle
+                // of a trunk reports only the canopy far above it - so it is
+                // rejected here by distance instead.
+                if (treeSpots) {
+                    let inTrunk = false;
+                    for (let i = 0; i < treeSpots.length; i++) {
+                        const t = treeSpots[i];
+                        const rr = window.grassTreeInner * t.scale;
+                        if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < rr * rr) { inTrunk = true; break; }
+                    }
+                    if (inTrunk) continue;
+                }
+            }
+            // Nothing grows in the water. The raycast cannot rule this out on
+            // its own - a lake bed and a river bed are perfectly good solid
+            // ground as far as a downward ray is concerned, so tufts were
+            // sprouting up through the surface. Tested against the BANK, not
+            // the waterline: the torus is a wet shore that shelves into the
+            // lake, and blades on its inner slope stand half-submerged.
+            if (currentLevel === 'local_forest') {
+                let inWater = false;
+                for (let i = 0; i < _forestLakes.length; i++) {
+                    const L = _forestLakes[i];
+                    const rr = L.r + FOREST_LAKE_RIM_TUBE;
+                    if ((x - L.x) * (x - L.x) + (z - L.z) * (z - L.z) < rr * rr) { inWater = true; break; }
+                }
+                // The river channel, plus its banks for the same reason.
+                if (!inWater && Math.abs(x - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + FOREST_GAP_CLEAR) inWater = true;
+                if (inWater) continue;
+            }
             _grassFrom.set(x, 60, z);
             _grassRay.set(_grassFrom, _grassDown);
             const hits = _grassRay.intersectObjects(blockers, true);
+            // No ground under it at all. On a level with a shared ground plane
+            // that never happens, but the forest is two islands over open
+            // space - and a miss was being treated as "clear ground", so tufts
+            // were being planted in mid-air off the edges and over the chasm.
+            if (!hits.length && !ground.visible) continue;
             if (hits.length > 0) {
                 // Not an automatic reject anymore. The ray still has to start
                 // from a safely-high origin - some level pieces (the extra-
@@ -819,10 +1060,21 @@ export function startGame(CharacterClass) {
                 // the clearance line, so it's still rejected exactly as
                 // before - this only opens up placement that was always
                 // physically valid to begin with.
-                window.getObstacleBox(hits[0].object, _grassObstacleBox);
-                if (_grassObstacleBox.min.y < maxGrassClearance) continue;
+                // Trees are exempt from this test. Their collider is ONE
+                // merged mesh per tree - trunk plus canopy chunks - so its
+                // Box3 always starts at the trunk base whatever part the ray
+                // actually hit, and the test therefore rejected every point
+                // under a canopy. Which is precisely where grass belongs, and
+                // why the wooded areas had none. A trunk is thin; being under
+                // its branches is not being under an overhang.
+                if (!hits[0].object.userData.isTreeCollider && !hits[0].object.userData.isGroundSlab) {
+                    window.getObstacleBox(hits[0].object, _grassObstacleBox);
+                    if (_grassObstacleBox.min.y < maxGrassClearance) continue;
+                }
             }
-            const s = window.grassSize * (0.65 + Math.random() * 0.7);
+            const sizeLo = collarTree ? window.grassTreeSizeMin : 0.65;
+            const sizeHi = collarTree ? window.grassTreeSizeMax : 1.35;
+            const s = window.grassSize * (sizeLo + Math.random() * (sizeHi - sizeLo));
             const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
             // Sunk below the ground plane, PROPORTIONAL to this instance's
             // own height rather than a fixed amount. The polygon's base is
@@ -837,7 +1089,15 @@ export function startGame(CharacterClass) {
             // Grass Height could scale a tuft up to 3x. Sinking by a
             // fraction of h instead keeps the fix correct at any height.
             _grassPos.set(x, -h * window.grassBaseSink, z);
-            _grassQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
+            // Collar tufts turn to face the trunk they belong to, so the ring
+            // reads as one thing wrapping the base rather than as scattered
+            // blades that happen to be nearby. The tuft is a CROSS of two
+            // quads, so facing is a 90-degree-periodic property - a small
+            // random skew stops the four cardinal directions from lining up
+            // into a visible pinwheel around the trunk.
+            _grassQuat.setFromAxisAngle(_upVec, collarTree
+                ? Math.atan2(collarTree.x - x, collarTree.z - z) + (Math.random() - 0.5) * 0.5
+                : Math.random() * Math.PI * 2);
             _grassScale.set(s, h, s);
             const bucket = (Math.abs(x) < shadowSafe && Math.abs(z) < shadowSafe) ? 'near' : 'far';
             perMat[placed % grassMats.length][bucket].push(
@@ -1048,7 +1308,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_stairs";
+    let currentLevel = "local_forest";
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -1070,7 +1330,28 @@ export function startGame(CharacterClass) {
     // outruns it forever and the chase never resolves - the old 6.5 was
     // slower than the thing it was chasing. The margin is small on purpose:
     // enough to close a gap over a few seconds, not enough to be inescapable.
-    const AI_WANDER_SPEED = 2.2, AI_CHASE_SPEED = 15.0;
+    // 3.2, up from 2.2 - the walk was a stroll. Deliberately kept under
+    // COMP_RUN_ENTER (3.5), which is the speed the gait picker switches to the
+    // run clip at: any faster and the "walking alongside" band disappears
+    // entirely and they only ever run.
+    const AI_WANDER_SPEED = 3.2, AI_CHASE_SPEED = 15.0;
+    // Bots push each other apart rather than occupying the same spot. They all
+    // chase the same victim, so without this they converge on one point and
+    // walk through one another - three overlapping bodies reading as one.
+    // Roughly two body radii; the push is soft (a fraction resolved per frame)
+    // so it reads as jostling rather than as a collision impulse.
+    const AI_BOT_SEPARATION = 1.15;
+    const AI_BOT_SEPARATION_PUSH = 0.5;   // share of the overlap aimed at per second
+    // Ceiling on how fast the push can actually move a bot. Without it, two
+    // bots spawned on the same spot resolve the whole 1.15 in one frame - a
+    // half-unit jump each, which reads as a teleport rather than as being
+    // shouldered aside. Well under the walk pace, so separation always looks
+    // like drift on top of a walk, never like being shoved.
+    const AI_BOT_SEPARATION_MAX_SPEED = 2.0;
+    // Only bots on roughly the same level shove each other. One standing on a
+    // block above another is not overlapping it, and pushing them apart there
+    // would drag a bot off its ledge.
+    const AI_BOT_SEPARATION_DY = 1.4;
     // Two paces, not one continuous ramp from walking to sprinting. Lerping
     // all the way up from AI_WANDER_SPEED meant that at ordinary chase
     // distances the bot was doing 4-6 - already playing the run clip, but
@@ -1085,6 +1366,19 @@ export function startGame(CharacterClass) {
     // Speed the run clip is authored for - the player's own top speed, since
     // it is the same Running.fbx. Used to rate-match the animation below.
     const AI_RUN_ANIM_REF = 8.0;
+    // Pace the walk cycle is authored for, same idea as AI_RUN_ANIM_REF.
+    const AI_WALK_ANIM_REF = 2.6;
+    // The bot's OWN walk/run gait thresholds, not the companion's.
+    //
+    // It used to be judged by COMP_RUN_ENTER/EXIT (3.5 / 2.8), which worked
+    // only while its walking pace was 2.2. Raising that pace to 3.2 put it
+    // ABOVE the run-exit threshold: a bot that had been chasing and then
+    // slowed to walk alongside never dropped below 2.8, so it kept playing the
+    // run clip at walking speed forever. These sit either side of the step
+    // change aiBotChaseSpeed actually makes - it returns either
+    // AI_WANDER_SPEED (3.2) or at least AI_RUN_SPEED (12), never anything in
+    // between - so there is a wide dead band and no chance of flicker.
+    const AI_RUN_ENTER = 5.5, AI_RUN_EXIT = 4.5;
     // 2.5, not 5 - it keeps running until it is nearly on top of you, and
     // only walks the last stretch before the punch lands (AI_PUNCH_RANGE is
     // 1.3). Dropping to a walk five units out meant it spent the whole final
@@ -1120,11 +1414,31 @@ export function startGame(CharacterClass) {
     //    geometry AI, no flying. And it won't top out while the player is
     //    standing on the exact spot it would emerge (waits until you move).
     let companion = null;
-    const COMP_FOLLOW_DIST = 1.8;   // manual-follow stand-off distance
+    // FARTHEST manual-follow stand-off. Companions no longer all stand at this
+    // distance - they queue between it and the player, ordered by index (see
+    // _compFollowDist). All three at one radius put them shoulder to shoulder
+    // in a row behind you, which read as a wall rather than as a group.
+    const COMP_FOLLOW_DIST = 2.8;
+    // Nearest any of them will stand. Above COMP_MIN_PLAYER_GAP (0.55), since
+    // that guard freezes a companion outright and one parked permanently on
+    // its own limit would never settle - but only just above it, so the lead
+    // companion is genuinely at your shoulder.
+    const COMP_FOLLOW_NEAR = 0.8;
+    // Floor on the stand-off fallbacks below. Without it the lead companion's
+    // shorter attempts (its own 0.8 scaled by 0.5 and 0.39) land at 0.4 and
+    // 0.31 - inside COMP_MIN_PLAYER_GAP, which does not move it closer, it
+    // freezes it. A fallback that cannot be stood on is worse than no fallback.
+    const COMP_FOLLOW_MIN = 0.7;
+    // This companion's own stand-off, set from its record on activate.
+    let _compFollowDist = COMP_FOLLOW_DIST;
     // Stand-off distances tried in order until one lands on solid ground at
     // the player's level - see the follow-target block. 0.7 is close enough
     // to share a single 3-unit block with the player.
-    const COMP_FOLLOW_FALLBACKS = [1.8, 1.3, 0.9, 0.7];
+    // Ratios now, not absolutes - each companion tries its OWN stand-off first
+    // and then closes in from there. As fixed numbers the near companions were
+    // already inside the first two fallbacks, so their first "shorter" attempt
+    // was actually further away than where they were trying to stand.
+    const COMP_FOLLOW_FALLBACKS = [1.0, 0.72, 0.5, 0.39];
     const COMP_TRAIL_KEEP = 15.0;   // seconds of trail kept - long enough that after a
                                     // fall the companion can walk back and re-replay the
                                     // same recorded climb instead of being stuck below
@@ -1143,18 +1457,18 @@ export function startGame(CharacterClass) {
     const COMP_SHIMMY_STEPS = [1.0, 1.8, 2.6];
     const COMP_SHIMMY_SPEED = 1.6;  // units/sec sliding along the ledge
     const COMP_LEDGE_WALL_REACH = 1.2; // a hang spot needs wall within this, or there's nothing to hold
-    const _shimmyHang = new THREE.Vector3();   // where to hang once shuffled across
-    const _shimmyTop = new THREE.Vector3();    // the clear surface to mantle onto
-    const _shimmyFaceQuat = new THREE.Quaternion();
+    let _shimmyHang = new THREE.Vector3();   // where to hang once shuffled across
+    let _shimmyTop = new THREE.Vector3();    // the clear surface to mantle onto
+    let _shimmyFaceQuat = new THREE.Quaternion();
     // HANG mode: committed to holding a ledge. Captured once when the replay
     // finds its top-out occupied, then owned by that mode - the point being
     // that the decision is made ONCE. Re-deciding every frame inside the
     // replay (advance, notice it's blocked, rewind, snap back down) is what
     // made it lunge at the ledge and throw itself back repeatedly.
-    const _hangPos = new THREE.Vector3();
-    const _hangQuat = new THREE.Quaternion();
-    const _hangTop = new THREE.Vector3();   // the surface it wants to end up on
-    const _hangFwd = new THREE.Vector3();   // horizontal, hang position -> over the edge
+    let _hangPos = new THREE.Vector3();
+    let _hangQuat = new THREE.Quaternion();
+    let _hangTop = new THREE.Vector3();   // the surface it wants to end up on
+    let _hangFwd = new THREE.Vector3();   // horizontal, hang position -> over the edge
     // Both taken from the player's own ledge grab rather than guessed, so an
     // AI hang sits exactly where yours does. See the grab site: the root goes
     // to (wallHit + normal*ledgeOffset) at (lipY - 1.85).
@@ -1168,18 +1482,47 @@ export function startGame(CharacterClass) {
     const COMP_HANG_DROP = 1.85;            // matches the player's hangGroupY drop
     const _ledgeFwdVec = new THREE.Vector3();
     const _ledgeSpotTop = new THREE.Vector3();
+    // How far apart two grips have to be. Roughly two body radii (0.45 each),
+    // so shoulders clear; the first shimmy step is 1.0, which is enough to
+    // resolve a clash in one move.
+    //
+    // This constant was USED by nudgeHangClearOfPlayer and never declared -
+    // an undeclared identifier in a module is a ReferenceError, so that
+    // function threw every single time it ran and the exception propagated
+    // out through updateCompanion. Which is why companions have been grabbing
+    // on wherever they liked: the code meant to stop it never completed.
+    const COMP_LEDGE_MIN_SEP = 0.9;
+    // Only bodies within this much height of each other count as sharing a
+    // grip. A hang is 1.85 below its lip, so anything looser would have a
+    // companion on the ledge above competing with one on the ledge below.
+    const COMP_LEDGE_SEP_DY = 1.2;
+    // How long a companion stands off after finding the ledge occupied.
+    //
+    // Refusing the grab on its own is not enough: the refusal is re-derived
+    // every frame from the same geometry, so it just re-probes the same wall
+    // sixty times a second and presses against it. This makes the refusal
+    // STICK for long enough that the one already on the ledge can top out -
+    // a climb-up clip plus the post-climb hold is a little over a second - and
+    // turns "both scrambling at the same grip" into a queue.
+    const COMP_LEDGE_WAIT = 1.1;
+    // Jitter on that wait. Two companions blocked by the same climber would
+    // otherwise come off cooldown on the same frame, re-probe together, and
+    // block each other again - the retry has to be desynchronised or the queue
+    // is just a slower deadlock.
+    const COMP_LEDGE_WAIT_JITTER = 0.5;
+    let _compLedgeWaitT = 0;
     // CLIMBUP: the same shape as the player's own climb-up (see isClimbingUp
     // in the movement block) - hold the root still, play the climb clip, then
     // place the root on the ledge at the end. The generic mantle arc was
     // standing in for this, which is why coming up off a ledge didn't look
     // like the player's version of the same move.
-    const _climbFrom = new THREE.Vector3();
-    const _climbTo = new THREE.Vector3();
-    const _climbQuat = new THREE.Quaternion();
+    let _climbFrom = new THREE.Vector3();
+    let _climbTo = new THREE.Vector3();
+    let _climbQuat = new THREE.Quaternion();
     let _climbT = 0, _climbDur = 1.0;
     const COMP_CLIMB_STAND_IN = 0.25;       // matches the player's own ledgeTarget + fwd*0.25
     const _compFaceEuler = new THREE.Euler();
-    const _compFaceQuat = new THREE.Quaternion();
+    let _compFaceQuat = new THREE.Quaternion();
     const _compBehindDir = new THREE.Vector3();
     const _compGroundOrigin = new THREE.Vector3();
     const _compGroundList = [];
@@ -1195,9 +1538,9 @@ export function startGame(CharacterClass) {
     // fell short of the far side or froze at the edge waiting for ground
     // that was never going to appear directly below. See the edge-detect
     // block in FOLLOW for how a leap gets triggered.
-    const _compLeapStart = new THREE.Vector3();
-    const _compLeapEnd = new THREE.Vector3();
-    const _compLeapFaceQuat = new THREE.Quaternion();
+    let _compLeapStart = new THREE.Vector3();
+    let _compLeapEnd = new THREE.Vector3();
+    let _compLeapFaceQuat = new THREE.Quaternion();
     let _compLeapT = 0, _compLeapDur = 0.35;
     const COMP_LEAP_EDGE_FWD = 0.6;     // how far ahead to probe for "is there ground where I'm about to step"
     const COMP_LEAP_EDGE_DROP = 1.3;    // bigger than this counts as an edge, not a step/ramp (those keep gliding)
@@ -1249,8 +1592,8 @@ export function startGame(CharacterClass) {
     // symmetric (pressed at a wall, or steering flip-flopping between two
     // equally blocked sides), and moving perpendicular for a moment breaks
     // the symmetry so the normal rules find a different answer next frame.
-    const _compStuckAt = new THREE.Vector3();
-    const _compUnstickDir = new THREE.Vector3();
+    let _compStuckAt = new THREE.Vector3();
+    let _compUnstickDir = new THREE.Vector3();
     let _compStuckT = 0, _compUnstickT = 0;
     const COMP_STUCK_TIME = 1.2;    // no progress for this long = deadlocked
     const COMP_STUCK_DIST = 0.25;   // moved less than this in that time = no progress
@@ -1279,9 +1622,24 @@ export function startGame(CharacterClass) {
     // loop: each attempt genuinely succeeded, and was immediately undone.
     let _compJustClimbedT = 0;
     const COMP_POST_CLIMB_HOLD = 1.2;
+    // Closest the companion may stand to the player on the level. Roughly two
+    // body widths - enough that they never occupy the same spot.
+    const COMP_MIN_PLAYER_GAP = 0.55;
+    // Timestamp of the takeoff crumb currently being headed for, -1 for none.
+    // Latched so a knock-back does not silently re-pick a different one.
+    let _compTakeoffT = -1;
+    // Set when a punch lands: wherever the blow leaves the companion, it stays
+    // there as long as that is still a reasonable place to be, instead of
+    // immediately trudging back to its exact follow spot. Walking back the
+    // moment it stops reeling makes the hit look like it did not matter, and
+    // the follow spot was never a place it needed to be to the centimetre.
+    // Cleared once the player has moved far enough that following again is
+    // the point.
+    let _compHitSettled = false;
+    const COMP_HIT_OK_DIST = 3.2;
     // Post-climb model offset: cancels the root placement's jump, then decays
     // so the model settles back onto its root. See the CLIMBUP completion.
-    const _climbModelRest = new THREE.Vector3();
+    let _climbModelRest = new THREE.Vector3();
     const _climbMoveDiff = new THREE.Vector3();
     const _climbTmpQuat = new THREE.Quaternion();
     let _climbBlendT = 0;
@@ -1296,6 +1654,43 @@ export function startGame(CharacterClass) {
     // at a constant speed) - see companionLocoState.
     let _compSpeedSmooth = 0;
     let _compLocoState = 'idle';
+    // ---- Companion retaliation ----
+    // Companions do not pick fights - they hit back. Being punched arms a
+    // counter-attack (see COMP_RETALIATE_CHANCE), and once the stagger and
+    // settle are over they turn on whichever bot is nearest and throw a short
+    // combo at it. Reactive rather than aggressive keeps them reading as
+    // companions rather than as a second set of enemies, and it means the
+    // fight only starts when a bot has already committed to one.
+    let _compPunchT = -1;        // <0 = not swinging
+    let _compPunchIndex = 0;     // next swing whose hit frame has yet to fire
+    let _compPunchTarget = null;
+    let _compRetaliate = false;
+    const COMP_PUNCH_SWING = 0.42;    // seconds per swing in the combo
+    const COMP_PUNCH_RANGE = 1.9;     // has to be this close when the fist lands
+    const COMP_PUNCH_SEEK = 4.5;      // how far it will look for who to hit back at
+    // Per hit. Chips the bot's 100-point poise pool by the standard 'medium'
+    // damage, so a 2-hit combo is a real contribution without a companion
+    // being able to floor a bot on its own.
+    const COMP_PUNCH_FORCE = 16;
+    // What a whole counter-attack is worth against a bot's 100-point poise
+    // pool, however many hits it is split into.
+    const COMP_PUNCH_TOTAL_POISE = 30;
+    let _compFullCombo = false;
+    let _compCharge = false;
+    let _compAttackCD = 0;
+    // Proactive engage: a bot this close gets attacked without waiting to be
+    // hit first. Shorter than COMP_PUNCH_SEEK (which is how far it will look
+    // for whoever just hit it) - answering a punch is worth crossing a bit of
+    // ground for, starting one is not.
+    const COMP_ATTACK_SEEK = 3.0;
+    const COMP_ATTACK_COOLDOWN = 1.8;
+    // Charge attack (the dark blue one). Deliberately under the hold clip's
+    // own length - see the swingAnim comment for why that matters.
+    const COMP_CHARGE_HOLD = 0.75;
+    const COMP_CHARGE_SWING = 0.5;
+    const COMP_CHARGE_HIT_T = 0.28;   // the player's own chargePunchHitTime
+    const COMP_CHARGE_FORCE = 60;     // matches window.chargePunchKnockback
+    const COMP_CHARGE_COOLDOWN = 4.5; // one knockdown at a time, not a loop
     window.companionEnabled = true;   // on by default - toggle stays available from the panel ('Companion' → Add Companion)
     // Wide enough that the bot actually follows rather than losing interest
     // the moment you walk away - 8/11 meant it gave up almost immediately and
@@ -1303,18 +1698,65 @@ export function startGame(CharacterClass) {
     // if you get properly far from it.
     const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45, AI_PUNCH_RANGE = 1.3;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
+    // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
+    // normalized hit times the player's own combo uses, so it reads as the
+    // same move rather than a bot-only approximation - RemoteAvatar already
+    // fires swing particles on these exact frames for the clip, and this is
+    // what makes the damage land on them too.
+    const AI_COMBO_HIT_TIMES = [0.15, 0.32, 0.48, 0.65, 0.82];
+    // Per-hit force well under AI_PUNCH_FORCE: five of these in a row against
+    // a 100-point stagger pool has to add up to roughly one heavy punch's
+    // worth of pressure, not five of them, or the combo alone ragdolls you
+    // every time it connects. The last hit is the one with weight behind it.
+    const AI_COMBO_FORCE = 9, AI_COMBO_FINISH_FORCE = 20;
+    // Longer than AI_PUNCH_COOLDOWN - a combo is a committed attack, and the
+    // recovery after it is the window you get to hit back in.
+    const AI_COMBO_COOLDOWN = 1.6;
+    // Charge attack (the red enemy). Winds up visibly first, then throws one
+    // heavy punch - the same two-clip shape the player's own charge uses
+    // (punch_charge_hold -> punch_charge_punch).
+    //
+    // The hold is the whole point of the move. It lands at 'high' intensity,
+    // which ragdolls outright rather than staggering, so it has to be
+    // telegraphed long enough to run from or interrupt - an untelegraphed
+    // knockdown is just an unavoidable one.
+    const AI_CHARGE_HOLD = 1.1;
+    // Fraction into the swing clip where the fist connects - the player's own
+    // number, so both charge punches land on the same frame of the same clip.
+    const AI_CHARGE_HIT_T = 0.28;
+    // Matches window.chargePunchKnockback (60), the force an orange-intensity
+    // hit throws its target with. Deliberately not chargePunchForce (80):
+    // that is the number used to CLASSIFY the hit as 'high', and feeding it
+    // to a limp ragdoll flings it across the level - the knockback constant is
+    // the one tuned for the impulse itself.
+    const AI_CHARGE_FORCE = 60;
+    // It gets one heavy hit; the recovery is correspondingly long.
+    const AI_CHARGE_COOLDOWN = 2.2;
+    // Slightly further out than a jab - a wound-up swing has reach.
+    const AI_CHARGE_RANGE = 1.8;
     // Tallest rise the bot's ordinary walk snaps up (a stair step, not a
     // climb). Module scope because the climb code needs the same number to
     // know where walking stops and climbing starts - it used to be a local
     // inside moveAiBotToward's ground-snap block.
     const AI_MAX_STEP_UP = 0.4;
-    const aiBotState = {
+    // NOT a const, and neither are the _ai* registers further down: there is
+    // more than one bot now, and rather than thread a bot handle through the
+    // ~1200 lines of tuned chase/climb logic below (every line of which was
+    // arrived at by a lot of trial and error, and none of which wants
+    // rewriting), each bot owns its own copy of this state and
+    // activateAiBot() re-points these bindings at whichever one is being
+    // updated. See the registry near spawnAiBot.
+    let aiBotState = {
         mode: 'wander', // 'wander' | 'chase' | 'punch' | 'cooldown'
         target: new THREE.Vector3(char.group.position.x + 4, char.group.position.y, char.group.position.z + 4),
         waitTimer: 0,
         punchTimer: 0,
         punchHasHit: false,
         cooldownTimer: 0,
+        // Combo swings alternate hands and land several hits per attack -
+        // see AI_COMBO_HITS. Only bots flagged `combo` use these.
+        comboIndex: 0,
+        comboHand: 'punch_left',
         // Locked in when a swing starts (char or companion) so the bot can't
         // switch targets mid-punch and pivot to face someone else.
         victim: null,
@@ -1425,28 +1867,69 @@ export function startGame(CharacterClass) {
     let _aiLocoState = 'idle';
     function aiBotLocoState(speed) {
         if (_aiLocoState === 'run') {
-            if (speed < COMP_RUN_EXIT) _aiLocoState = speed > COMP_WALK_EXIT ? 'walk' : 'idle';
+            if (speed < AI_RUN_EXIT) _aiLocoState = speed > COMP_WALK_EXIT ? 'walk' : 'idle';
         } else if (_aiLocoState === 'walk') {
-            if (speed > COMP_RUN_ENTER) _aiLocoState = 'run';
+            if (speed > AI_RUN_ENTER) _aiLocoState = 'run';
             else if (speed < COMP_WALK_EXIT) _aiLocoState = 'idle';
         } else {
-            if (speed > COMP_RUN_ENTER) _aiLocoState = 'run';
+            if (speed > AI_RUN_ENTER) _aiLocoState = 'run';
             else if (speed > COMP_WALK_ENTER) _aiLocoState = 'walk';
         }
-        // Rate-match the clip to the ground speed. The run cycle is authored
-        // for AI_RUN_ANIM_REF, and it plays at that rate no matter how fast
-        // the bot is actually travelling - so at 12-15 units/s the feet skate
-        // badly, which is exactly what "moving faster" would otherwise look
-        // like. Scaling playback keeps the stride matched to the distance
-        // covered. Clamped so a near-stationary frame cannot freeze the clip
-        // or a burst send it into a blur.
+        // Rate-match the clip to the ground speed. A cycle is authored for one
+        // pace and plays at it no matter how fast the bot is actually
+        // travelling - so at 12-15 units/s the run's feet skate badly, which
+        // is exactly what "moving faster" would otherwise look like, and the
+        // walk has the same problem now that walking pace is 3.2 rather than
+        // the 2.2 it used to be. Scaling playback keeps the stride matched to
+        // the distance covered. Clamped so a near-stationary frame cannot
+        // freeze a clip or a burst send it into a blur.
         const runAction = aiBot.actions && aiBot.actions['run'];
         if (runAction) {
             runAction.timeScale = _aiLocoState === 'run'
                 ? THREE.MathUtils.clamp(speed / AI_RUN_ANIM_REF, 0.75, 2.2)
                 : 1;
         }
+        const walkAction = aiBot.actions && aiBot.actions['walk'];
+        if (walkAction) {
+            walkAction.timeScale = _aiLocoState === 'walk'
+                ? THREE.MathUtils.clamp(speed / AI_WALK_ANIM_REF, 0.8, 1.5)
+                : 1;
+        }
         return _aiLocoState;
+    }
+
+    // Pushes a bot's intended next XZ out of any other bot it would be
+    // standing inside. Writes into `out` (x/z only - the caller does its own
+    // ground snap AFTER this, so the height still comes from the surface the
+    // bot actually ends up over rather than the one it was heading for).
+    //
+    // Applied to the step target rather than to the finished position for that
+    // reason: shoving a bot sideways after it has been snapped to the ground
+    // moves it over a different surface without updating its height, which is
+    // exactly how a bot ends up buried in a block.
+    const _aiSepOut = new THREE.Vector2();
+    function aiBotSeparate(x, z, y, delta, out) {
+        out.set(x, z);
+        const maxPush = AI_BOT_SEPARATION_MAX_SPEED * delta;
+        for (let i = 0; i < aiBots.length; i++) {
+            const other = aiBots[i].bot;
+            if (other === aiBot || !other.isLoaded) continue;
+            const op = other.group.position;
+            if (Math.abs(op.y - y) > AI_BOT_SEPARATION_DY) continue;
+            let dx = out.x - op.x, dz = out.y - op.z;
+            let d = Math.hypot(dx, dz);
+            if (d >= AI_BOT_SEPARATION) continue;
+            // Exactly coincident (a shared spawn point, or both snapped to the
+            // same wander target): no direction to separate along, so pick one
+            // off their ids instead of leaving them welded together.
+            if (d < 1e-4) {
+                const a = (i + 1) * 2.399963;   // golden angle, so ids fan out
+                dx = Math.cos(a); dz = Math.sin(a); d = 1;
+            }
+            const push = Math.min((AI_BOT_SEPARATION - d) * AI_BOT_SEPARATION_PUSH, maxPush) / d;
+            out.x += dx * push;
+            out.y += dz * push;
+        }
     }
 
     // Straight at the target, no obstacle steering, same ground snap.
@@ -1466,6 +1949,8 @@ export function startGame(CharacterClass) {
         dx /= dist; dz /= dist;
         const step = Math.min(dist, speed * delta);
         let nx = pos.x + dx * step, nz = pos.z + dz * step;
+        aiBotSeparate(nx, nz, pos.y, delta, _aiSepOut);
+        nx = _aiSepOut.x; nz = _aiSepOut.y;
         let ny = pos.y;
         let blocked = false;
         rayDown.set(_tempVec1.set(nx, pos.y + 2.0, nz), _downVec);
@@ -1550,6 +2035,8 @@ export function startGame(CharacterClass) {
         const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), moveDir);
 
         const nextPos = _tempVec3.copy(pos).addScaledVector(moveDir, speed * delta);
+        aiBotSeparate(nextPos.x, nextPos.z, pos.y, delta, _aiSepOut);
+        nextPos.x = _aiSepOut.x; nextPos.z = _aiSepOut.y;
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
         const groundHits = rayDown.intersectObjects(collidables);
         if (groundHits.length > 0) {
@@ -1594,7 +2081,7 @@ export function startGame(CharacterClass) {
     // has genuinely not moved for a while, stop trusting the current plan and
     // go wander - wandering picks a fresh direction, which breaks whatever
     // the configuration was.
-    const _aiStuckAt = new THREE.Vector3();
+    let _aiStuckAt = new THREE.Vector3();
     let _aiStuckT = 0;
     const AI_STUCK_TIME = 1.5;      // seconds of no progress before giving up on the route
     const AI_STUCK_DIST = 0.35;     // moved less than this in that time = not moving
@@ -1603,21 +2090,26 @@ export function startGame(CharacterClass) {
     let _aiRecoverT = 0;
     const AI_RECOVER_SETTLE = 0.8;
     // Sidestep used to break a wedge - see the watchdog.
-    const _aiUnstickDir = new THREE.Vector3();
+    let _aiUnstickDir = new THREE.Vector3();
     let _aiUnstickT = 0;
     const AI_UNSTICK_TIME = 0.5;
-    const _aiClimbFrom = new THREE.Vector3();
-    const _aiClimbHang = new THREE.Vector3();
-    const _aiClimbTop = new THREE.Vector3();
-    const _aiClimbQuat = new THREE.Quaternion();
+    let _aiClimbFrom = new THREE.Vector3();
+    let _aiClimbHang = new THREE.Vector3();
+    let _aiClimbTop = new THREE.Vector3();
+    let _aiClimbQuat = new THREE.Quaternion();
     // Post-climb model offset, mirroring the companion's - cancels the root
     // placement's jump, then decays so the model settles back onto its root.
-    const _aiClimbModelRest = new THREE.Vector3();
+    let _aiClimbModelRest = new THREE.Vector3();
     const _aiClimbMoveDiff = new THREE.Vector3();
     const _aiClimbTmpQuat = new THREE.Quaternion();
     let _aiClimbBlendT = 0;
     const _aiHangFwd = new THREE.Vector3();
     const _aiHangNormal = new THREE.Vector3();
+    // Why the last climb attempt did or did not happen. Set at every exit of
+    // tryAiBotClimb and shown by the debug readout - "it cannot climb here" is
+    // the same picture for half a dozen different refusals, and they need
+    // different fixes.
+    let _aiClimbWhy = 'none', _aiClimbRise = 0;
     let _aiClimbPhase = 'none';   // 'none' | 'jump' | 'pull' | 'leap'
     let _aiClimbT = 0, _aiClimbDur = 0;
     const AI_CLIMB_PROBE = 0.8;   // how far ahead to look for the wall
@@ -1638,7 +2130,7 @@ export function startGame(CharacterClass) {
     // block just because it is in the way is the "tries to get on top of the
     // stacked cubes" behaviour, and going around is right there.
     function tryAiBotClimb(pos, destPos, maxRise = COMP_CLIMB_MAX) {
-        if (_aiClimbPhase !== 'none') return false;
+        if (_aiClimbPhase !== 'none') { _aiClimbWhy = 'busy:' + _aiClimbPhase; return false; }
         // Where the model normally sits on its root - captured before any
         // offset is applied, so the decay has something true to return to.
         if (aiBot.fbxModel && _aiClimbBlendT <= 0) _aiClimbModelRest.copy(aiBot.fbxModel.position);
@@ -1652,7 +2144,9 @@ export function startGame(CharacterClass) {
         // entirely and mistaken for the lower surface behind it.
         const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0);
         const rise = topY - pos.y;
-        if (rise <= AI_MAX_STEP_UP || rise > maxRise) return false;
+        _aiClimbRise = rise;
+        if (rise <= AI_MAX_STEP_UP) { _aiClimbWhy = 'no wall (rise ' + rise.toFixed(2) + ')'; return false; }
+        if (rise > maxRise) { _aiClimbWhy = 'too tall ' + rise.toFixed(2) + ' > ' + maxRise.toFixed(2); return false; }
         // Landing spot past the lip, and it must be the same surface - one
         // hop, not the first step of a staircase.
         let lx = px + dx * AI_CLIMB_INSET, lz = pz + dz * AI_CLIMB_INSET;
@@ -1664,7 +2158,16 @@ export function startGame(CharacterClass) {
             lx = px + dx * COMP_CLIMB_INSET_TIGHT; lz = pz + dz * COMP_CLIMB_INSET_TIGHT;
             landY = aiBotSurfaceY(lx, lz, topY + 1.0);
         }
-        if (Math.abs(landY - topY) >= 0.6) return false;
+        // Only a surface that DROPS away is unusable - see the same case in
+        // tryCompanionClimbUp. A rising one is a ramp or stairs.
+        if (landY < topY - 0.6) {
+            _aiClimbWhy = 'ledge too narrow (top ' + topY.toFixed(2) + ' vs ' + landY.toFixed(2) + ')';
+            return false;
+        }
+        if (landY - pos.y > maxRise) {
+            _aiClimbWhy = 'landing too high ' + (landY - pos.y).toFixed(2);
+            return false;
+        }
         _aiClimbTop.set(lx, landY, lz);
         _aiClimbFrom.copy(pos);
         _compFaceEuler.set(0, Math.atan2(dx, dz), 0);
@@ -1677,6 +2180,7 @@ export function startGame(CharacterClass) {
             _aiClimbPhase = 'leap';
             _aiClimbT = 0;
             _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbTop) / COMP_LEAP_SPEED);
+            _aiClimbWhy = 'hop ' + rise.toFixed(2);
             return true;
         }
         // Hang below the lip, then check the jump can even reach it - the
@@ -1688,10 +2192,14 @@ export function startGame(CharacterClass) {
             _compFaceEuler.set(0, Math.atan2(-wallN.x, -wallN.z), 0);
             _aiClimbQuat.setFromEuler(_compFaceEuler);
         }
-        if (_aiClimbHang.y - pos.y > COMP_LEAP_RISE_MAX) return false;
+        if (_aiClimbHang.y - pos.y > COMP_LEAP_RISE_MAX) {
+            _aiClimbWhy = 'grip too high (' + (_aiClimbHang.y - pos.y).toFixed(2) + ' > ' + COMP_LEAP_RISE_MAX + ')';
+            return false;
+        }
         _aiClimbPhase = 'jump';
         _aiClimbT = 0;
         _aiClimbDur = Math.max(0.35, _aiClimbFrom.distanceTo(_aiClimbHang) / COMP_LEAP_SPEED);
+        _aiClimbWhy = 'grab+pull ' + rise.toFixed(2);
         return true;
     }
 
@@ -1706,7 +2214,7 @@ export function startGame(CharacterClass) {
     // Shared by the bot and the companion - both have the same problem and
     // the trail is the same answer for both.
     const _aiApproach = new THREE.Vector3();
-    function findTakeoffApproach(pos) {
+    function findTakeoffApproach(pos, trail = _compTrail) {
         // Walks BACK from the newest crumb to the moment the player left this
         // level - the last crumb still at our height, with higher crumbs after
         // it. That is the spot they actually went up from.
@@ -1720,12 +2228,37 @@ export function startGame(CharacterClass) {
         // (each assignment overwrites the later one), so it is the first place
         // they got to off the ground - which is the direction the climb goes.
         let up = null;
-        for (let i = _compTrail.length - 1; i >= 0; i--) {
-            const cr = _compTrail[i];
+        for (let i = trail.length - 1; i >= 0; i--) {
+            const cr = trail[i];
             if (cr.y > pos.y + 1.0) { up = cr; continue; }
             if (up && Math.abs(cr.y - pos.y) <= 0.9) return { at: cr, up };
         }
         return null;
+    }
+
+    // The companion leaves its own trail, so the bot can follow IT up as well
+    // as the player. Only the player was recorded before, which meant a bot
+    // chasing the companion had no route to work from the moment the chase
+    // went vertical - the companion would climb away and the bot would stand
+    // at the bottom with nothing recorded to retrace. Since the companion is
+    // itself good at finding a way up, its path is exactly the right thing to
+    // copy.
+    //
+    // Deliberately a separate list rather than merging into one: the two
+    // wander off in different directions, and a single interleaved trail
+    // would have the bot cutting between whichever crumbs happened to be
+    // adjacent in time.
+    let _companionTrail = [];
+    let _companionTrailT = 0;
+    function recordCompanionTrail(delta) {
+        if (!companion || !companion.isLoaded || !companion.group.visible) return;
+        const c = companion.group.position;
+        const q = companion.group.quaternion;
+        _companionTrailT += delta;
+        const last = _companionTrail.length ? _companionTrail[_companionTrail.length - 1] : null;
+        if (last && Math.hypot(c.x - last.x, c.y - last.y, c.z - last.z) > 5) _companionTrail.length = 0; // teleport → reset
+        _companionTrail.push({ t: _companionTrailT, x: c.x, y: c.y, z: c.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: 'walk' });
+        while (_companionTrail.length > 2 && (_companionTrailT - _companionTrail[0].t) > COMP_TRAIL_KEEP) _companionTrail.shift();
     }
 
     // Where to hang in order to climb onto (topX, topZ) at height topY.
@@ -1903,28 +2436,75 @@ export function startGame(CharacterClass) {
         return true;
     }
 
+    // A punch landing ON a bot, poise pool and all. Shared by everything that
+    // can hit one - the player's melee (ClimbGame.html's detectMeleeHits) and
+    // the companions' counter-attack below - so the "how much does it take to
+    // put a bot down" rule lives in exactly one place. It used to be inlined
+    // in detectMeleeHits, which meant a second attacker either duplicated the
+    // pool arithmetic or quietly used different numbers.
+    //
+    // Returns true if the bot went down, so the caller can react.
+    // poiseOverride replaces the intensity's own poise cost while leaving the
+    // recoil/flash it drives alone - so a long combo can look like every one
+    // of its hits landed without being worth the sum of them. See the
+    // companions' full combo.
+    window.staggerBot = function staggerBot(bot, velocity, intensity, flashStrength, poiseOverride) {
+        if (!bot || !bot.isLoaded || bot.isRagdoll) return false;
+        const staggerMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
+        const regenDelay = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
+        bot.triggerHitFlash(flashStrength);
+        if (intensity === 'high') {
+            bot.initRagdoll(velocity, intensity);
+            bot.staggerPool = staggerMax;
+            bot.staggerRegenCooldown = regenDelay;
+            return true;
+        }
+        // Hidden poise pool: a mature charge punch knocks a bot down outright
+        // ('high' above), but a flurry of ordinary hits that never lets it
+        // recover (regen only resumes after a gap without being hit) has to be
+        // able to finish the job too - otherwise every non-charge hit only
+        // ever flinches it.
+        if (bot.staggerPool === undefined) bot.staggerPool = staggerMax;
+        const staggerDamage = poiseOverride !== undefined ? poiseOverride
+            : intensity === 'medium_high'
+            ? (window.staggerDamageMediumHigh !== undefined ? window.staggerDamageMediumHigh : 35)
+            : (window.staggerDamageMedium !== undefined ? window.staggerDamageMedium : 10);
+        bot.staggerPool -= staggerDamage;
+        bot.staggerRegenCooldown = regenDelay;
+        if (bot.staggerPool <= 0) {
+            bot.staggerPool = staggerMax;
+            bot.initRagdoll(velocity, 'high');
+            return true;
+        }
+        bot.applyProceduralRecoil(velocity, intensity);
+        return false;
+    };
+
     // Ragdolling or getting back up means it is already being dealt with -
     // hitting it again would just reset an animation that is mid-play.
     function aiBotVictimAvailable(v) {
         if (!v) return false;
         if (v.isRagdoll || v.isStandingUp) return false;
-        if (v === companion) return companion.isLoaded && companion.group.visible;
+        // A companion that has not loaded yet, or is switched off, is not
+        // something to walk over to and punch.
+        if (v !== char) return v.isLoaded && v.group.visible;
         return true;
     }
 
-    // Nearest thing worth attacking. The companion is a target in its own
-    // right, not just scenery - so the bot picks a fight with whichever of
-    // the two it runs into, rather than walking past the companion to get
-    // to the player.
+    // Nearest thing worth attacking. Companions are targets in their own
+    // right, not scenery - so the bot picks a fight with whichever of them it
+    // runs into, rather than walking past one to get to the player.
     function aiBotPickVictim(pos) {
         let best = null, bestD = Infinity;
         if (aiBotVictimAvailable(char)) {
             const d = pos.distanceTo(char.group.position);
             if (d < bestD) { bestD = d; best = char; }
         }
-        if (companion && aiBotVictimAvailable(companion)) {
-            const d = pos.distanceTo(companion.group.position);
-            if (d < bestD) { bestD = d; best = companion; }
+        for (let i = 0; i < companions.length; i++) {
+            const cmp = companions[i].comp;
+            if (!aiBotVictimAvailable(cmp)) continue;
+            const d = pos.distanceTo(cmp.group.position);
+            if (d < bestD) { bestD = d; best = cmp; }
         }
         return best;
     }
@@ -1932,16 +2512,25 @@ export function startGame(CharacterClass) {
     // One punch landing. Character and RemoteAvatar both carry
     // triggerHitFlash and RagdollPhysics' applyProceduralRecoil, so the same
     // call works on either - only the networking differs.
-    function aiBotHitVictim(v, pos) {
+    function aiBotHitVictim(v, pos, force = AI_PUNCH_FORCE, intensity = 'medium') {
         const vp = v.group.position;
-        const velocity = _tempVec2.set(vp.x - pos.x, 0, vp.z - pos.z).normalize().multiplyScalar(AI_PUNCH_FORCE);
+        const velocity = _tempVec2.set(vp.x - pos.x, 0, vp.z - pos.z).normalize().multiplyScalar(force);
         const hitPoint = vp.clone().setY(vp.y + 1.2);
-        v.triggerHitFlash(0.9);
-        v.applyProceduralRecoil(velocity, 'medium');
+        const flash = intensity === 'high' ? 2.5 : (intensity === 'low' ? 0.55 : 0.9);
+        v.triggerHitFlash(flash);
+        // 'high' knocks down outright rather than staggering - the same split
+        // every other hit path in the game uses for that intensity. Without
+        // this the charge bot's finisher would read as a light shove.
+        if (intensity === 'high') v.initRagdoll(velocity, intensity);
+        else v.applyProceduralRecoil(velocity, intensity);
         // Only the local player's own reaction is broadcast. The companion
         // is driven identically on every client from the same inputs, so
         // mirroring its hit would apply the recoil twice over there.
-        if (v === char && network) { network.sendHitEvent(0.9, hitPoint); network.sendRecoilEvent(velocity, 'medium'); }
+        if (v === char && network) {
+            network.sendHitEvent(flash, hitPoint);
+            if (intensity === 'high') network.sendRagdollEvent(velocity, intensity);
+            else network.sendRecoilEvent(velocity, intensity);
+        }
         if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
         if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
     }
@@ -1970,6 +2559,33 @@ export function startGame(CharacterClass) {
         if (updateAiBotClimb(delta)) return;
 
         const pos = aiBot.group.position;
+
+        if (window._botDebug) {
+            // One panel per bot, stacked - a shared id had the two of them
+            // overwriting each other's readout every frame, which is worse
+            // than useless when the whole point is comparing what they are
+            // each doing.
+            const panelId = 'bot-debug-' + aiBot.id;
+            let el = document.getElementById(panelId);
+            if (!el) {
+                el = document.createElement('div');
+                el.id = panelId;
+                const slot = aiBots.findIndex(r => r.bot === aiBot);
+                el.style.cssText = 'position:fixed;bottom:' + Math.max(0, slot) * 130 + 'px;right:0;background:rgba(0,0,0,.85);color:#fd6;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
+                document.body.appendChild(el);
+            }
+            const v = aiBotPickVictim(pos);
+            el.textContent = [
+                aiBot.id + (aiBotState.combo ? '  (combo)' : aiBotState.charge ? '  (charge)' : ''),
+                'mode    ' + aiBotState.mode + (_aiClimbPhase !== 'none' ? '  [' + _aiClimbPhase + ']' : ''),
+                'victim  ' + (v ? (v === char ? 'player' : 'companion') : 'none'),
+                'dist    ' + (v ? pos.distanceTo(v.group.position).toFixed(2) : '-') +
+                    '   dY ' + (v ? (v.group.position.y - pos.y).toFixed(2) : '-'),
+                'climb   ' + _aiClimbWhy,
+                'rise    ' + _aiClimbRise.toFixed(2) + '  (step<=' + AI_MAX_STEP_UP + ' hop<=' + COMP_LEAP_RISE_MAX + ' max ' + COMP_CLIMB_MAX + ')',
+                'stuck   ' + _aiStuckT.toFixed(1) + 's' + (_aiUnstickT > 0 ? '  UNSTICKING' : '')
+            ].join('\n');
+        }
 
         // Progress watchdog - see _aiStuckAt. Deliberately measured on the
         // bot's real position rather than on any of the decisions that got it
@@ -2113,13 +2729,70 @@ export function startGame(CharacterClass) {
             // the bot would spin to face someone else halfway through.
             const pv = aiBotState.victim;
             const pvPos = pv ? pv.group.position : null;
+            const comboAction = aiBotState.combo && aiBot.actions && aiBot.actions['punch_combo'];
+            const chargeAction = aiBotState.charge && aiBot.actions && aiBot.actions['punch_charge_punch'];
+            // Wind-up first, then the swing - the charge bot's swingAnim flips
+            // partway through the same 'punch' mode rather than needing a
+            // separate state.
+            const charging = chargeAction && aiBotState.punchTimer < AI_CHARGE_HOLD;
+            const swingAnim = charging ? 'punch_charge_hold'
+                : chargeAction ? 'punch_charge_punch'
+                : comboAction ? 'punch_combo' : 'punch_left';
             if (pvPos) {
                 const facingDir = _tempVec1.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
                 if (facingDir.lengthSq() > 0.0001) {
                     facingDir.normalize();
                     const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
-                    aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], 'punch_left', false);
+                    aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], swingAnim, false);
                 }
+            }
+
+            if (chargeAction) {
+                const swingDur = chargeAction.getClip().duration;
+                // One hit, at the same point in the clip the player's own
+                // charge connects, and only if the victim is still in front of
+                // it - the wind-up gives them a full second to leave, and the
+                // punch landing on an empty spot afterwards is the whole
+                // reward for reacting to the telegraph.
+                if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_CHARGE_HOLD + swingDur * AI_CHARGE_HIT_T) {
+                    aiBotState.punchHasHit = true;
+                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_CHARGE_RANGE + 0.6) {
+                        aiBotHitVictim(pv, pos, AI_CHARGE_FORCE, 'high');
+                    }
+                }
+                if (aiBotState.punchTimer >= AI_CHARGE_HOLD + swingDur) {
+                    aiBotState.mode = 'cooldown';
+                    aiBotState.cooldownTimer = AI_CHARGE_COOLDOWN;
+                }
+                aiBot.update(delta);
+                return;
+            }
+
+            if (comboAction) {
+                // Five hits paced off the clip's own duration rather than off
+                // fixed seconds, so the damage stays on the frames the swings
+                // visibly land on however long the clip happens to be.
+                const comboDur = comboAction.getClip().duration;
+                const nt = aiBotState.punchTimer / Math.max(comboDur, 1e-3);
+                for (let i = aiBotState.comboIndex; i < AI_COMBO_HIT_TIMES.length; i++) {
+                    if (nt < AI_COMBO_HIT_TIMES[i]) break;
+                    aiBotState.comboIndex = i + 1;
+                    const last = i === AI_COMBO_HIT_TIMES.length - 1;
+                    // Re-checked per hit, not once for the whole combo: five
+                    // hits take most of a second, and the victim can ragdoll,
+                    // be knocked away or walk off partway through. Landing the
+                    // rest of the string on empty air afterwards is the bug
+                    // this guard exists for.
+                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_PUNCH_RANGE + 0.6) {
+                        aiBotHitVictim(pv, pos, last ? AI_COMBO_FINISH_FORCE : AI_COMBO_FORCE, last ? 'medium' : 'low');
+                    }
+                }
+                if (aiBotState.punchTimer >= comboDur) {
+                    aiBotState.mode = 'cooldown';
+                    aiBotState.cooldownTimer = AI_COMBO_COOLDOWN;
+                }
+                aiBot.update(delta);
+                return;
             }
 
             if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_PUNCH_HIT_TIME) {
@@ -2145,10 +2818,14 @@ export function startGame(CharacterClass) {
         }
 
         if (aiBotState.mode === 'chase') {
-            if (distToVictim < AI_PUNCH_RANGE) {
+            // The charge bot starts its wind-up from further out - the swing
+            // has more reach, and starting it at jab distance would put it
+            // nose-to-nose with the victim for the whole telegraph.
+            if (distToVictim < (aiBotState.charge ? AI_CHARGE_RANGE : AI_PUNCH_RANGE)) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
+                aiBotState.comboIndex = 0;
                 aiBotState.victim = victim;
                 aiBot.update(delta);
                 return;
@@ -2176,7 +2853,10 @@ export function startGame(CharacterClass) {
                 // left this level - see findTakeoffApproach. Steering is
                 // deliberately skipped while heading up: avoiding the block is
                 // the wrong instinct when the block IS the route.
-                const app = findTakeoffApproach(pos);
+                // Retrace whoever it is actually chasing. Following the
+                // player's route to reach the companion is no use when the
+                // companion went up somewhere else entirely.
+                const app = findTakeoffApproach(pos, trailForVictim(victim));
                 if (app && Math.hypot(app.at.x - pos.x, app.at.z - pos.z) >= 0.7) {
                     _aiApproach.set(app.at.x, pos.y, app.at.z);
                     if (moveAiBotDirect(_aiApproach, chaseSpeed, delta) >= 0) { aiBot.update(delta); return; }
@@ -2209,35 +2889,37 @@ export function startGame(CharacterClass) {
     }
 
     function spawnAiBot() {
-        if (aiBot) return;
-        aiBot = new RemoteAvatar(scene, threeTone, 'ai-bot-1');
-        window.aiBot = aiBot;
-        // Yellow, to tell it apart from the blue companion at a glance. Safe
-        // to call before the model has loaded: setColor stores the value and
-        // the material constructor reads it back (see bodyColor).
-        aiBot.setColor(0xffd633);
-        const spawnPos = char.group.position;
-        aiBotState.mode = 'wander';
-        aiBotState.target.set(spawnPos.x + 4, spawnPos.y, spawnPos.z + 4);
-        aiBotState.waitTimer = 0;
-        aiBotState.cooldownTimer = 0;
-        aiBot.group.position.copy(spawnPos).add(new THREE.Vector3(3, 0, 3));
-        createAiBotPathLines();
+        if (aiBots.length) return;
+        // Yellow, to tell it apart from the blue companion at a glance.
+        addAiBot({ id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] });
+        // The orange one. Same chase/climb brain, different attack: it throws
+        // the five-hit combo instead of a single punch (see AI_COMBO_*).
+        addAiBot({ id: 'ai-bot-2', color: 0xff7a1a, offset: [-3.5, 0, 3.5], combo: true });
+        // The red one - charge punch. Winds up visibly, then one knockdown
+        // blow (see AI_CHARGE_*). Spawned behind the other two so the three
+        // do not start life inside one another.
+        addAiBot({ id: 'ai-bot-3', color: 0xd42a2a, offset: [0, 0, -4.5], charge: true });
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
         const statusEl = document.getElementById('ai-bot-status');
         if (spawnBtn) spawnBtn.style.display = 'none';
         if (despawnBtn) despawnBtn.style.display = 'block';
-        if (statusEl) statusEl.textContent = 'spawned';
+        if (statusEl) statusEl.textContent = aiBots.length + ' spawned (yellow, orange=combo, red=charge)';
     }
 
     function despawnAiBot() {
-        if (!aiBot) return;
-        aiBot.dispose();
+        if (!aiBots.length) return;
+        aiBots.forEach(rec => {
+            activateAiBot(rec);
+            disposeAiBotPathLines();
+            saveAiBot(rec);
+            rec.bot.dispose();
+        });
+        aiBots.length = 0;
         aiBot = null;
         window.aiBot = null;
-        disposeAiBotPathLines();
+        window.aiBots = [];
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
@@ -2245,6 +2927,100 @@ export function startGame(CharacterClass) {
         if (spawnBtn) spawnBtn.style.display = 'block';
         if (despawnBtn) despawnBtn.style.display = 'none';
         if (statusEl) statusEl.textContent = 'not spawned';
+    }
+
+    // ---- Bot registry ----
+    // One record per enemy. Everything in here is state the chase/climb code
+    // above keeps between frames; the module-level `aiBot`/`aiBotState`/`_ai*`
+    // bindings it actually reads are re-pointed at one record at a time by
+    // activateAiBot, and written back by saveAiBot.
+    //
+    // Done this way, rather than passing a bot handle into all forty-odd
+    // functions, because that logic is heavily tuned and touching every line
+    // of it to add a parameter is a lot of risk for no behavioural gain. The
+    // rule to keep it honest: anything the bot code REMEMBERS across frames
+    // belongs in both functions below. Per-call scratch (_aiAvoidPerp,
+    // _aiHangFwd, _aiClimbMoveDiff, _aiApproach, ...) deliberately does not -
+    // it is written and consumed inside a single call, so sharing it between
+    // bots is free.
+    const aiBots = [];
+    window.aiBots = [];
+    function addAiBot(opts) {
+        const rec = {
+            bot: new RemoteAvatar(scene, threeTone, opts.id),
+            // Safe before the model has loaded: setColor stores the value and
+            // the material constructor reads it back (see bodyColor).
+            state: {
+                mode: 'wander',
+                target: new THREE.Vector3(),
+                waitTimer: 0, punchTimer: 0, punchHasHit: false, cooldownTimer: 0,
+                comboIndex: 0, comboHand: 'punch_left',
+                combo: !!opts.combo, charge: !!opts.charge,
+                victim: null, avoidSide: 0,
+            },
+            chaseRunning: false, locoState: 'idle',
+            stuckAt: new THREE.Vector3(), stuckT: 0,
+            recoverT: 0,
+            unstickDir: new THREE.Vector3(), unstickT: 0,
+            climbFrom: new THREE.Vector3(), climbHang: new THREE.Vector3(),
+            climbTop: new THREE.Vector3(), climbQuat: new THREE.Quaternion(),
+            climbModelRest: new THREE.Vector3(), climbBlendT: 0,
+            climbWhy: 'none', climbRise: 0, climbPhase: 'none', climbT: 0, climbDur: 0,
+            goalLine: null, stepLine: null,
+        };
+        rec.bot.setColor(opts.color);
+        const spawnPos = char.group.position;
+        rec.bot.group.position.copy(spawnPos).add(
+            new THREE.Vector3(opts.offset[0], opts.offset[1], opts.offset[2]));
+        rec.state.target.set(
+            spawnPos.x + opts.offset[0], spawnPos.y, spawnPos.z + opts.offset[2]);
+        rec.stuckAt.copy(rec.bot.group.position);
+        aiBots.push(rec);
+        // Every damage path in the game (melee, projectiles, thrown props)
+        // needs the whole list; window.aiBot stays pointed at the first one
+        // for the multiplayer send, which has a single 'ai-bot-1' slot.
+        window.aiBots = aiBots.map(r => r.bot);
+        if (!aiBot) { aiBot = rec.bot; window.aiBot = rec.bot; }
+        // Path lines are per-bot too, so two bots do not overwrite one
+        // another's debug geometry every frame.
+        activateAiBot(rec);
+        createAiBotPathLines();
+        saveAiBot(rec);
+        return rec;
+    }
+    function activateAiBot(rec) {
+        aiBot = rec.bot;
+        aiBotState = rec.state;
+        _aiChaseRunning = rec.chaseRunning; _aiLocoState = rec.locoState;
+        _aiStuckAt = rec.stuckAt; _aiStuckT = rec.stuckT;
+        _aiRecoverT = rec.recoverT;
+        _aiUnstickDir = rec.unstickDir; _aiUnstickT = rec.unstickT;
+        _aiClimbFrom = rec.climbFrom; _aiClimbHang = rec.climbHang;
+        _aiClimbTop = rec.climbTop; _aiClimbQuat = rec.climbQuat;
+        _aiClimbModelRest = rec.climbModelRest; _aiClimbBlendT = rec.climbBlendT;
+        _aiClimbWhy = rec.climbWhy; _aiClimbRise = rec.climbRise;
+        _aiClimbPhase = rec.climbPhase; _aiClimbT = rec.climbT; _aiClimbDur = rec.climbDur;
+        aiBotGoalLine = rec.goalLine; aiBotStepLine = rec.stepLine;
+    }
+    function saveAiBot(rec) {
+        // Objects (state, vectors, quaternion) are shared BY REFERENCE with
+        // the record, so they need no copying back - only the scalars, which
+        // the bot code reassigns rather than mutates, do.
+        rec.chaseRunning = _aiChaseRunning; rec.locoState = _aiLocoState;
+        rec.stuckT = _aiStuckT;
+        rec.recoverT = _aiRecoverT;
+        rec.unstickT = _aiUnstickT;
+        rec.climbBlendT = _aiClimbBlendT;
+        rec.climbWhy = _aiClimbWhy; rec.climbRise = _aiClimbRise;
+        rec.climbPhase = _aiClimbPhase; rec.climbT = _aiClimbT; rec.climbDur = _aiClimbDur;
+        rec.goalLine = aiBotGoalLine; rec.stepLine = aiBotStepLine;
+    }
+    function updateAiBots(delta) {
+        for (let i = 0; i < aiBots.length; i++) {
+            activateAiBot(aiBots[i]);
+            updateAiBot(delta);
+            saveAiBot(aiBots[i]);
+        }
     }
 
     // Same debug path-line pair aiBot's own createAiBotPathLines/
@@ -2284,21 +3060,260 @@ export function startGame(CharacterClass) {
         ]);
     }
 
-    function spawnCompanion() {
-        if (companion) return;
-        companion = new RemoteAvatar(scene, threeTone, 'companion');
-        window.companion = companion;
-        companion.group.position.copy(char.group.position);
+    // ---- Companion registry ----
+    // Same shape as the bot registry (see addAiBot): one record per companion
+    // holding everything the follow/climb code remembers between frames, with
+    // activateCompanion re-pointing the module-level `companion`/`_comp*`/
+    // `_hang*`/`_climb*` bindings at whichever one is being updated. Threading
+    // a handle through all of updateCompanion instead would mean editing every
+    // line of the most heavily iterated-on code in this file.
+    //
+    // Same rule as the bots: anything REMEMBERED across frames goes in both
+    // activate and save. Per-call scratch (_compBehindDir, _compGroundOrigin,
+    // _compGroundList, _compVisPos, _compFaceEuler, _ledge*, _climbMoveDiff,
+    // _climbTmpQuat) stays shared - it is written and consumed inside one call.
+    const companions = [];
+    window.companions = [];
+    // How likely a hit is to be answered, and how long the answer runs. The
+    // blue one hits back only sometimes and short; the pale one always does,
+    // and throws the full three.
+    let _compRetaliateChance = 0.5;
+    let _compPunchCount = 2;
+    function addCompanion(opts) {
+        const rec = {
+            comp: new RemoteAvatar(scene, threeTone, opts.id),
+            retaliateChance: opts.retaliateChance,
+            punchCount: opts.punchCount,
+            fullCombo: !!opts.fullCombo,
+            charge: !!opts.charge,
+            followDist: COMP_FOLLOW_DIST,
+            mode: 'follow', replayStartT: 0, replayT: 0,
+            shimmyHang: new THREE.Vector3(), shimmyTop: new THREE.Vector3(),
+            shimmyFaceQuat: new THREE.Quaternion(),
+            hangPos: new THREE.Vector3(), hangQuat: new THREE.Quaternion(),
+            hangTop: new THREE.Vector3(), hangFwd: new THREE.Vector3(),
+            climbFrom: new THREE.Vector3(), climbTo: new THREE.Vector3(),
+            climbQuat: new THREE.Quaternion(), climbT: 0, climbDur: 1.0,
+            climbModelRest: new THREE.Vector3(), climbBlendT: 0,
+            faceQuat: new THREE.Quaternion(),
+            leapStart: new THREE.Vector3(), leapEnd: new THREE.Vector3(),
+            leapFaceQuat: new THREE.Quaternion(), leapT: 0, leapDur: 0.35, leapToHang: false,
+            stuckAt: new THREE.Vector3(), unstickDir: new THREE.Vector3(),
+            stuckT: 0, unstickT: 0,
+            why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false,
+            speedSmooth: 0, locoState: 'idle',
+            avoidSide: 0, steerDirSmooth: new THREE.Vector3(),
+            steerDirValid: false, steerBlockedFor: 0,
+            punchT: -1, punchIndex: 0, punchTarget: null, retaliate: false, attackCD: 0,
+            ledgeWaitT: 0,
+            // Its OWN breadcrumb trail. Deliberately not shared: the two
+            // wander off in different directions, and a bot retracing one
+            // interleaved trail would cut between whichever crumbs happened to
+            // be adjacent in time. Same reasoning as keeping the companion's
+            // trail separate from the player's in the first place.
+            trail: [], trailT: 0,
+            goalLine: null, stepLine: null,
+        };
+        if (opts.color !== undefined) rec.comp.setColor(opts.color);
+        // Spawn BEHIND the player, on ground, not on top of them. Copying the
+        // player's position outright put the two in the same place, and the
+        // companion then spent its first moments resolving an overlap it
+        // should never have been in - reading as climbing the player and
+        // hopping about. The bot has always offset itself at spawn; this just
+        // never did. The side offset then keeps two companions from starting
+        // life inside each other for exactly the same reason.
+        _compBehindDir.set(0, 0, 1).applyQuaternion(char.group.quaternion).negate();
+        _compBehindDir.y = 0;
+        if (_compBehindDir.lengthSq() < 1e-6) _compBehindDir.set(0, 0, 1);
+        _compBehindDir.normalize();
+        companions.push(rec);
+        window.companions = companions.map(r => r.comp);
+        // Re-spread the whole queue every time one joins, so the spacing is
+        // right whatever the roster ends up being rather than only for three.
+        // The LAST one keeps COMP_FOLLOW_DIST - that is the far end of the
+        // line - and the rest are stepped evenly in toward the player.
+        //
+        // Before the spawn placement below, not after: that reads followDist
+        // to decide where to stand, and a companion placed at the old value
+        // would spend its first seconds walking to the spot it should have
+        // started on.
+        for (let i = 0; i < companions.length; i++) {
+            companions[i].followDist = companions.length < 2
+                ? COMP_FOLLOW_DIST
+                : THREE.MathUtils.lerp(COMP_FOLLOW_NEAR, COMP_FOLLOW_DIST, i / (companions.length - 1));
+        }
+        const side = opts.sideOffset || 0;
+        const sx = char.group.position.x + _compBehindDir.x * rec.followDist - _compBehindDir.z * side;
+        const sz = char.group.position.z + _compBehindDir.z * rec.followDist + _compBehindDir.x * side;
+        // Drop onto whatever is actually under that spot rather than
+        // inheriting the player's height, which on a ledge would leave it
+        // hanging in the air behind them.
+        rayDown.set(_tempVec1.set(sx, char.group.position.y + 3.0, sz), _downVec);
+        const spawnHits = rayDown.intersectObjects(collidables, true);
+        const sy = spawnHits.length ? spawnHits[0].point.y : char.group.position.y;
+        rec.comp.group.position.set(sx, sy, sz);
+        rec.stuckAt.copy(rec.comp.group.position);
+        // window.companion stays pointed at the first one - the thrown-object
+        // hit path and the head-scale pass reference it by name.
+        if (!companion) { companion = rec.comp; window.companion = rec.comp; }
+        activateCompanion(rec);
         createCompanionPathLines();
+        saveCompanion(rec);
+        return rec;
+    }
+    function spawnCompanion() {
+        if (companions.length) return;
+        // Retaliation is near-certain now rather than a coin flip - they were
+        // shrugging off half the hits they took, which read as not noticing.
+        addCompanion({ id: 'companion', retaliateChance: 0.85, punchCount: 2, sideOffset: 0 });
+        // Between the blue companion and the grey player - a paler, washed-out
+        // blue, so the two read as a pair rather than as unrelated characters.
+        addCompanion({
+            id: 'companion-2', color: 0xa1c3ee,
+            retaliateChance: 1.0, punchCount: 3, fullCombo: true, sideOffset: 1.3,
+        });
+        // Dark blue - the heavy. One wound-up knockdown rather than a string.
+        addCompanion({
+            id: 'companion-3', color: 0x1b3fa0,
+            retaliateChance: 1.0, punchCount: 1, charge: true, sideOffset: -1.3,
+        });
+    }
+    function activateCompanion(rec) {
+        companion = rec.comp;
+        _compRetaliateChance = rec.retaliateChance; _compPunchCount = rec.punchCount;
+        _compFullCombo = rec.fullCombo; _compCharge = rec.charge;
+        _compFollowDist = rec.followDist;
+        _compAttackCD = rec.attackCD; _compLedgeWaitT = rec.ledgeWaitT;
+        _compMode = rec.mode; _replayStartT = rec.replayStartT; _replayT = rec.replayT;
+        _shimmyHang = rec.shimmyHang; _shimmyTop = rec.shimmyTop; _shimmyFaceQuat = rec.shimmyFaceQuat;
+        _hangPos = rec.hangPos; _hangQuat = rec.hangQuat; _hangTop = rec.hangTop; _hangFwd = rec.hangFwd;
+        _climbFrom = rec.climbFrom; _climbTo = rec.climbTo; _climbQuat = rec.climbQuat; _climbT = rec.climbT; _climbDur = rec.climbDur;
+        _climbModelRest = rec.climbModelRest; _climbBlendT = rec.climbBlendT;
+        _compFaceQuat = rec.faceQuat;
+        _compLeapStart = rec.leapStart; _compLeapEnd = rec.leapEnd;
+        _compLeapFaceQuat = rec.leapFaceQuat; _compLeapT = rec.leapT;
+        _compLeapDur = rec.leapDur; _compLeapToHang = rec.leapToHang;
+        _compStuckAt = rec.stuckAt; _compUnstickDir = rec.unstickDir;
+        _compStuckT = rec.stuckT; _compUnstickT = rec.unstickT;
+        _compWhy = rec.why; _compRecoverT = rec.recoverT;
+        _compJustClimbedT = rec.justClimbedT; _compTakeoffT = rec.takeoffT;
+        _compHitSettled = rec.hitSettled;
+        _compSpeedSmooth = rec.speedSmooth; _compLocoState = rec.locoState;
+        _compAvoidSide = rec.avoidSide; _compSteerDirSmooth = rec.steerDirSmooth;
+        _compSteerDirValid = rec.steerDirValid; _compSteerBlockedFor = rec.steerBlockedFor;
+        _compPunchT = rec.punchT; _compPunchIndex = rec.punchIndex;
+        _compPunchTarget = rec.punchTarget; _compRetaliate = rec.retaliate;
+        _companionTrail = rec.trail; _companionTrailT = rec.trailT;
+        companionGoalLine = rec.goalLine; companionStepLine = rec.stepLine;
+    }
+    function saveCompanion(rec) {
+        // Objects (vectors, quaternions, the trail array) are shared BY
+        // REFERENCE with the record and need no copying back - only the
+        // scalars, which the companion code reassigns rather than mutates.
+        rec.mode = _compMode; rec.replayStartT = _replayStartT; rec.replayT = _replayT;
+        rec.climbT = _climbT; rec.climbDur = _climbDur; rec.climbBlendT = _climbBlendT;
+        rec.leapT = _compLeapT; rec.leapDur = _compLeapDur; rec.leapToHang = _compLeapToHang;
+        rec.stuckT = _compStuckT; rec.unstickT = _compUnstickT;
+        rec.why = _compWhy; rec.recoverT = _compRecoverT;
+        rec.justClimbedT = _compJustClimbedT; rec.takeoffT = _compTakeoffT;
+        rec.hitSettled = _compHitSettled;
+        rec.speedSmooth = _compSpeedSmooth; rec.locoState = _compLocoState;
+        rec.avoidSide = _compAvoidSide; rec.steerDirValid = _compSteerDirValid;
+        rec.steerBlockedFor = _compSteerBlockedFor;
+        rec.punchT = _compPunchT; rec.punchIndex = _compPunchIndex;
+        rec.punchTarget = _compPunchTarget; rec.retaliate = _compRetaliate;
+        rec.attackCD = _compAttackCD; rec.ledgeWaitT = _compLedgeWaitT;
+        rec.trailT = _companionTrailT;
+        rec.goalLine = companionGoalLine; rec.stepLine = companionStepLine;
+    }
+    function updateCompanions(delta) {
+        if (!window.companionEnabled) {
+            companions.forEach(r => { r.comp.group.visible = false; });
+            return;
+        }
+        if (!companions.length) spawnCompanion();
+        for (let i = 0; i < companions.length; i++) {
+            activateCompanion(companions[i]);
+            updateCompanion(delta);
+            saveCompanion(companions[i]);
+        }
+    }
+    function recordCompanionTrails(delta) {
+        for (let i = 0; i < companions.length; i++) {
+            activateCompanion(companions[i]);
+            recordCompanionTrail(delta);
+            saveCompanion(companions[i]);
+        }
+    }
+    // Companion equivalent of aiBotSeparate - see that function for why the
+    // push is applied to the step TARGET and why it is speed-capped rather
+    // than resolving the whole overlap in one frame.
+    const _compSepOut = new THREE.Vector2();
+    const COMP_SEPARATION = 1.15;
+    const COMP_SEPARATION_PUSH = 0.5;
+    const COMP_SEPARATION_MAX_SPEED = 2.0;
+    const COMP_SEPARATION_DY = 1.4;   // only shove ones on roughly the same level
+    function companionSeparate(x, z, y, delta, out) {
+        out.set(x, z);
+        const maxPush = COMP_SEPARATION_MAX_SPEED * delta;
+        for (let i = 0; i < companions.length; i++) {
+            const other = companions[i].comp;
+            if (other === companion || !other.isLoaded) continue;
+            const op = other.group.position;
+            if (Math.abs(op.y - y) > COMP_SEPARATION_DY) continue;
+            let dx = out.x - op.x, dz = out.y - op.z;
+            let d = Math.hypot(dx, dz);
+            if (d >= COMP_SEPARATION) continue;
+            // Exactly coincident - no direction to separate along, so pick one
+            // off the index rather than leaving them welded together.
+            if (d < 1e-4) {
+                const a = (i + 1) * 2.399963;   // golden angle, so they fan out
+                dx = Math.cos(a); dz = Math.sin(a); d = 1;
+            }
+            const push = Math.min((COMP_SEPARATION - d) * COMP_SEPARATION_PUSH, maxPush) / d;
+            out.x += dx * push;
+            out.y += dz * push;
+        }
+    }
+
+    // Which breadcrumb trail retraces this victim's route up. A bot chasing a
+    // companion has to follow THAT companion's crumbs - the other one may have
+    // gone somewhere else entirely.
+    function trailForVictim(v) {
+        for (let i = 0; i < companions.length; i++) {
+            if (companions[i].comp === v) return companions[i].trail;
+        }
+        return _compTrail;
     }
 
     // Highest solid surface under (x,z) (falls back to fallbackY on a miss).
     // Casts against _compGroundList, rebuilt once per updateCompanion frame.
-    function companionGroundY(x, z, fallbackY) {
+    // Highest surface under (x,z) that is not more than `maxAbove` over the
+    // reference height - i.e. something the companion could actually be
+    // standing on, or step onto.
+    //
+    // Taking the topmost hit (which this used to do) is wrong whenever there
+    // is anything OVERHEAD: the ray starts above the player, so with the
+    // player up on a block the first hit at a point near that block's
+    // footprint is the block's top, not the ground the companion is standing
+    // on. Right at the footprint boundary a few centimetres of movement flips
+    // the answer between the two, and the vertical follow alternates between
+    // rising and falling - the up-and-down jitter.
+    //
+    // The climb probes genuinely do want the obstacle above, so they pass a
+    // larger maxAbove rather than this having to guess which caller it is.
+    function companionGroundY(x, z, fallbackY, maxAbove = COMP_STEP_UP) {
         _compGroundOrigin.set(x, Math.max(fallbackY, char.group.position.y) + 3.0, z);
         rayDown.set(_compGroundOrigin, _downVec);
         const hits = rayDown.intersectObjects(_compGroundList, true);
-        return hits.length ? hits[0].point.y : fallbackY;
+        const ceiling = fallbackY + maxAbove;
+        // Hits come back top-down, so the first at or under the ceiling is the
+        // highest qualifying surface.
+        for (let i = 0; i < hits.length; i++) {
+            if (hits[i].point.y <= ceiling) return hits[i].point.y;
+        }
+        // Everything here is overhead - nothing to stand on at this height.
+        return hits.length ? hits[hits.length - 1].point.y : fallbackY;
     }
 
     // Starts a climb-up leap onto whatever is blocking a step to
@@ -2313,16 +3328,16 @@ export function startGame(CharacterClass) {
     // somewhere unvisited leaves no recorded route, and the plain follow
     // walk has no upward move beyond a single step.
     function tryCompanionClimbUp(c, destX, destZ, dirX, dirZ) {
-        // companionGroundY reports the topmost surface at an xz, so this is
-        // the height of the thing in the way.
-        const topY = companionGroundY(destX, destZ, c.y);
+        // Asks for surfaces ABOVE, up to climb reach - this wants the height
+        // of the thing in the way, not the floor it is standing on.
+        const topY = companionGroundY(destX, destZ, c.y, COMP_CLIMB_MAX);
         const rise = topY - c.y;
         if (rise <= COMP_STEP_UP || rise > COMP_CLIMB_MAX) return false;
         // Aim past the lip, or it lands balanced exactly on the edge and the
         // next frame's ground probe can miss the block entirely.
         let climbX = destX + dirX * COMP_CLIMB_INSET;
         let climbZ = destZ + dirZ * COMP_CLIMB_INSET;
-        let climbTopY = companionGroundY(climbX, climbZ, topY);
+        let climbTopY = companionGroundY(climbX, climbZ, topY, 0.6);
         // Something TALLER starting right past the lip is a staircase, and
         // refusing the climb because of it - which is what the old
         // "same surface" test did - meant the companion simply stopped at
@@ -2332,11 +3347,19 @@ export function startGame(CharacterClass) {
         if (climbTopY > topY + 0.6) {
             climbX = destX + dirX * COMP_CLIMB_INSET_TIGHT;
             climbZ = destZ + dirZ * COMP_CLIMB_INSET_TIGHT;
-            climbTopY = companionGroundY(climbX, climbZ, topY);
+            climbTopY = companionGroundY(climbX, climbZ, topY, 0.6);
         }
-        // Still rejected if the surface DROPS away past the lip - that is a
-        // ledge too narrow to stand on, not a step.
-        if (Math.abs(climbTopY - topY) >= 0.6) return false;
+        // Reject ONLY a surface that drops away past the lip - that is a ledge
+        // too narrow to stand on. A surface that keeps RISING is a slope or a
+        // staircase, and landing on it is still progress.
+        //
+        // The old test rejected both directions equally, which meant any
+        // continuously rising ground failed it: the steep test ramps rise
+        // more than the 0.6 tolerance even over the short inset, so the climb
+        // was refused and the companion simply stopped at the bottom of them.
+        if (climbTopY < topY - 0.6) return false;
+        // ...but the landing still has to be somewhere it can actually get to.
+        if (climbTopY - c.y > COMP_CLIMB_MAX) return false;
         // Jump for the ledge and hang, rather than arcing straight onto the
         // top. Going up in one smooth curve to standing was the move that
         // read as flying: nothing in this game rises like that. The player
@@ -2378,6 +3401,20 @@ export function startGame(CharacterClass) {
         squareHangToWall();
         if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
         _hangTop.copy(top);
+        // Clear of whoever is already on this ledge before committing to the
+        // jump. This path had no such check at all, which is the main way two
+        // companions ended up on one grip: they both probe the same wall on
+        // the same frame, both compute the same hang from the same geometry,
+        // and both leap to it. Refusing sends this one back to following, and
+        // it tries again once the ledge is free or from somewhere else along it.
+        if (!nudgeHangClear(char.group.position)) {
+            _compLedgeWaitT = COMP_LEDGE_WAIT * (1 + Math.random() * COMP_LEDGE_WAIT_JITTER);
+            _compWhy = 'ledge busy, waiting';
+            return false;
+        }
+        // The nudge may have slid the grip along the ledge, so the reach test
+        // is re-run against where it will ACTUALLY jump to.
+        if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
         _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
         _hangQuat.setFromEuler(_compFaceEuler);
         _compLeapStart.copy(c);
@@ -2507,25 +3544,70 @@ export function startGame(CharacterClass) {
             hits[0].point.z + _ledgeFwdVec.z * COMP_HANG_OUT);
     }
 
-    // Slides the hang along the ledge until it is not on top of the player.
-    // Two bodies cannot occupy one grip, and the top-out clearance test says
+    // Is (x,z) already taken, at this height, by the player or by another
+    // companion? Measured against everyone's actual position rather than
+    // against their recorded hang spot: a companion hanging IS at its grip, so
+    // one test covers hanging, climbing and standing at the lip alike.
+    function hangSpotTaken(x, z, y, p) {
+        // Height-gated throughout: two companions on ledges one above the
+        // other are not sharing a grip, and pushing them apart there would
+        // send one shimmying off along a ledge for no reason.
+        const clashes = (ox, oy, oz) =>
+            Math.abs(oy - y) < COMP_LEDGE_SEP_DY && Math.hypot(x - ox, z - oz) < COMP_LEDGE_MIN_SEP;
+        // The player counts only if it is actually ON the ledge. Its raw
+        // position was being tested with the same generous height window as a
+        // grip, and a grip sits 1.85 below its lip - so on a 3-unit wall a
+        // player STANDING AT THE BOTTOM was 1.15 from the grip in y, inside
+        // the window, and blocked the grab from below.
+        if (window.playerIsLedgeGrabbing && clashes(p.x, p.y, p.z)) return true;
+        for (let i = 0; i < companions.length; i++) {
+            const rec = companions[i];
+            if (rec.comp === companion) continue;
+            // ONLY companions actually on, or committed to, a ledge. Testing
+            // raw positions here is what deadlocked two of them at the foot of
+            // a wall: each saw the other standing a metre away, decided the
+            // grip was taken, and waited - symmetrically, forever, neither
+            // ever climbing. Standing near a wall is not holding it.
+            if (rec.mode === 'leap' && rec.leapToHang) {
+                if (clashes(rec.leapEnd.x, rec.leapEnd.y, rec.leapEnd.z)) return true;
+            } else if (rec.mode === 'hang' || rec.mode === 'shimmy') {
+                if (clashes(rec.hangPos.x, rec.hangPos.y, rec.hangPos.z)) return true;
+            } else if (rec.mode === 'climbup') {
+                if (clashes(rec.climbTo.x, rec.climbTo.y, rec.climbTo.z)) return true;
+                // ...and where it physically is while the clip plays, since
+                // that is on the ledge too.
+                const op = rec.comp.group.position;
+                if (clashes(op.x, op.y, op.z)) return true;
+            }
+        }
+        return false;
+    }
+
+    // Slides the hang along the ledge until it is not on top of anyone else.
+    // Two bodies cannot share one grip, and the top-out clearance test says
     // nothing about where the companion HANGS - only where it would end up
-    // standing - so nothing was stopping it grabbing on right where the
-    // player already was.
-    function nudgeHangClearOfPlayer(p) {
-        if (Math.hypot(_hangPos.x - p.x, _hangPos.z - p.z) >= COMP_LEDGE_MIN_SEP) return;
+    // standing - so nothing was stopping it grabbing on right where someone
+    // already was.
+    function nudgeHangClear(p) {
+        if (!hangSpotTaken(_hangPos.x, _hangPos.z, _hangPos.y, p)) return true;
         const sx = -_hangFwd.z, sz = _hangFwd.x;
         for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
             for (let s = 0; s < 2; s++) {
                 const off = COMP_SHIMMY_STEPS[i] * (s === 0 ? 1 : -1);
                 _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
-                if (Math.hypot(_ledgeSpotTop.x - p.x, _ledgeSpotTop.z - p.z) < COMP_LEDGE_MIN_SEP) continue;
+                // Validate FIRST, then test the grip it would actually produce
+                // - the top point and the hang hang half a body apart, and it
+                // is the grip that has to be clear, not the lip above it.
                 if (!validateLedgeSpot(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _shimmyHang)) continue;
+                if (hangSpotTaken(_shimmyHang.x, _shimmyHang.z, _shimmyHang.y, p)) continue;
                 _hangTop.copy(_ledgeSpotTop);
                 _hangPos.copy(_shimmyHang);
-                return;
+                return true;
             }
         }
+        // Every spot along this ledge is occupied. The caller decides what to
+        // do about it - grabbing on regardless is the one thing it must not do.
+        return false;
     }
 
     // Climb from the current hang onto `target`, the way the player does it:
@@ -2616,7 +3698,7 @@ export function startGame(CharacterClass) {
     // search kick in, and only THAT result gets smoothed + given a brief
     // hold - the case it actually targets (see the comments below).
     let _compAvoidSide = 0;
-    const _compSteerDirSmooth = new THREE.Vector3();
+    let _compSteerDirSmooth = new THREE.Vector3();
     let _compSteerDirValid = false;
     let _compSteerBlockedFor = 0;
     const COMP_STEER_HOLD = 0.12;
@@ -2676,6 +3758,41 @@ export function startGame(CharacterClass) {
         return null;
     }
 
+    // ---- Head size ----
+    // Scales the head BONE, so it carries the whole head through animation
+    // (and its children - hair, anything parented above the neck) rather than
+    // being a mesh-level trick that the skinning would fight.
+    //
+    // Reapplied every frame rather than set once on change: the animation
+    // mixer rewrites bone transforms each update, and although the clips in
+    // use only animate rotation (and hip position), that is a property of
+    // these particular clips and not a guarantee. Writing it after the
+    // avatars have updated costs a handful of assignments and cannot be
+    // silently undone by a clip that does carry a scale track.
+    window.headScale = 0.7;
+    function getHeadBone(avatar) {
+        if (!avatar || !avatar.fbxModel) return null;
+        if (avatar._headBone !== undefined) return avatar._headBone;
+        let found = null;
+        // Same match the rigs' own findBone uses, so this picks the identical
+        // bone their ragdoll/IK setups do.
+        avatar.fbxModel.traverse(o => {
+            if (!found && o.isBone && o.name.toLowerCase().includes('head')) found = o;
+        });
+        avatar._headBone = found;   // cached, including a null result
+        return found;
+    }
+    function applyHeadScale() {
+        const s = window.headScale;
+        const set = (a) => { const b = getHeadBone(a); if (b) b.scale.setScalar(s); };
+        set(char);
+        companions.forEach(r => set(r.comp));
+        aiBots.forEach(r => set(r.bot));
+        if (window.multiplayerClient && window.multiplayerClient.remotes) {
+            window.multiplayerClient.remotes.forEach(set);
+        }
+    }
+
     // Records the player's pose + anim state into the trail. Its own function,
     // called unconditionally from the frame loop, because the trail is no
     // longer just the companion's: the AI bot reads it too, to find where the
@@ -2707,16 +3824,22 @@ export function startGame(CharacterClass) {
     // an unreachable takeoff, every movement branch declining - and they need
     // opposite fixes. Guessing between them from a screenshot has not worked.
     function companionDebugReport(c, p) {
-        let el = document.getElementById('companion-debug');
+        // One panel per companion, stacked - a shared id had the two of them
+        // overwriting each other's readout every frame.
+        const panelId = 'companion-debug-' + companion.id;
+        let el = document.getElementById(panelId);
         if (!el) {
             el = document.createElement('div');
-            el.id = 'companion-debug';
-            el.style.cssText = 'position:fixed;top:0;right:0;background:rgba(0,0,0,.85);color:#6cf;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
+            el.id = panelId;
+            const slot = companions.findIndex(r => r.comp === companion);
+            el.style.cssText = 'position:fixed;top:' + Math.max(0, slot) * 130 + 'px;right:0;background:rgba(0,0,0,.85);color:#6cf;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
             document.body.appendChild(el);
         }
         const takeoff = findTakeoffApproach(c);
         const dTk = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : -1;
         el.textContent = [
+            companion.id + (_compCharge ? '   charge' : _compFullCombo ? '   full combo' : '   combo x' + _compPunchCount)
+                + (_compAttackCD > 0 ? '  cd ' + _compAttackCD.toFixed(1) : ''),
             'mode    ' + _compMode,
             'why     ' + _compWhy,
             'dPlayer ' + Math.hypot(p.x - c.x, p.z - c.z).toFixed(2) + '  dY ' + (p.y - c.y).toFixed(2),
@@ -2726,9 +3849,9 @@ export function startGame(CharacterClass) {
         ].join('\n');
     }
 
+    // Drives ONE companion - whichever activateCompanion last pointed the
+    // module bindings at. updateCompanions is the entry point.
     function updateCompanion(delta) {
-        if (!window.companionEnabled) { if (companion) companion.group.visible = false; return; }
-        if (!companion) spawnCompanion();
         if (!companion) return;
         if (!companion.isLoaded) { companion.update(delta); return; }
         companion.group.visible = true;
@@ -2772,7 +3895,13 @@ export function startGame(CharacterClass) {
         if (companion.hitRecoveryTimer > 0 && companion.hitRecoveryTimer <= compHitRecoveryDuration) {
             _compWhy = 'staggering';
             _compMode = 'follow';        // abandon any route it was mid-way through
+            // Roll for a counter-attack ONCE per hit, not once per frame of
+            // the stagger. _compRecoverT is only ever 0 here on the first
+            // frame of a new one - every later frame of the same stagger has
+            // already re-armed it on the line below.
+            if (_compRecoverT <= 0) _compRetaliate = Math.random() < _compRetaliateChance;
             _compRecoverT = COMP_RECOVER_SETTLE;
+            _compHitSettled = true;      // hold wherever this leaves it, if that spot is fine
             _compStuckT = 0; _compStuckAt.copy(c);   // not stuck, just hurt
             const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
             const strengthMult = THREE.MathUtils.clamp(companion.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
@@ -2814,14 +3943,193 @@ export function startGame(CharacterClass) {
             return;
         }
 
+        if (_compAttackCD > 0) _compAttackCD -= delta;
+        // Nearest bot worth swinging at, within `range`.
+        const nearestBot = (range) => {
+            let best = null, bestD = range;
+            for (let i = 0; i < aiBots.length; i++) {
+                const b = aiBots[i].bot;
+                if (!b.isLoaded || b.isRagdoll || b.isStandingUp) continue;
+                const d = c.distanceTo(b.group.position);
+                if (d < bestD) { bestD = d; best = b; }
+            }
+            return best;
+        };
+        const startAttack = (target) => {
+            _compPunchTarget = target;
+            _compPunchT = 0;
+            _compPunchIndex = 0;
+            _compAttackCD = _compCharge ? COMP_CHARGE_COOLDOWN : COMP_ATTACK_COOLDOWN;
+        };
+        // Whether it is free to start swinging at anything at all.
+        //
+        // 'follow' specifically, not just "not busy": this block sits ahead of
+        // the mode dispatch, so without it a companion breaks off a climb, a
+        // ledge hang or a breadcrumb replay to throw punches - and an attack
+        // holds it still, which mid-route is how it ends up stranded.
+        //
+        // _compJustClimbedT matters just as much, and is the subtler half. A
+        // climb ends by setting mode back to 'follow' the instant the clip
+        // finishes, while the companion is still standing right on the lip. An
+        // attack starting on that frame pins it there and runs its own ground
+        // scan, and at the lip that scan can just as easily find the level
+        // BELOW - so it drops off the ledge it has only just climbed. That is
+        // the "gets to the top and goes back down" case. The post-climb hold
+        // already exists to stop it leaping or walking back down; this puts
+        // punching under the same rule.
+        const canStartAttack = _compMode === 'follow' && _compJustClimbedT <= 0;
+        // Counter-attack, once the stagger and the settle are both over - the
+        // hit has to visibly land before the answer to it does.
+        //
+        // The flag is left ARMED while it cannot act rather than being
+        // consumed and dropped: punched off a wall halfway up, a companion
+        // should still hit back when it gets there, not forget it was hit.
+        if (_compRetaliate && canStartAttack) {
+            _compRetaliate = false;
+            const hitBack = nearestBot(COMP_PUNCH_SEEK);
+            if (hitBack) startAttack(hitBack);
+        }
+        // ...and they no longer WAIT to be hit. A bot that wanders into reach
+        // gets swung at on its own - but never at the cost of finishing a
+        // climb, per the gate above.
+        if (!_compPunchTarget && _compAttackCD <= 0 && canStartAttack) {
+            const prey = nearestBot(COMP_ATTACK_SEEK);
+            if (prey) startAttack(prey);
+        }
+        if (_compPunchTarget) {
+            // Whoever it started swinging at, held for the whole combo - so it
+            // does not pivot mid-string to face a bot that wandered closer.
+            const tp = _compPunchTarget.group.position;
+            _compPunchT += delta;
+            _compFaceEuler.set(0, Math.atan2(tp.x - c.x, tp.z - c.z), 0);
+            _compFaceQuat.setFromEuler(_compFaceEuler);
+            // The REAL combo clip when this companion has one - Punch_Combo.fbx,
+            // the same five-hit string the player and the orange bot throw, on
+            // its own hit frames. The alternating left/right jabs below are the
+            // fallback for a companion without the clip (and what the short
+            // two-hit counter still uses).
+            const comboAction = _compFullCombo && companion.actions && companion.actions['punch_combo'];
+            const comboDur = comboAction ? comboAction.getClip().duration : 0;
+            const chargeAction = _compCharge && companion.actions && companion.actions['punch_charge_punch'];
+            const hitCount = chargeAction ? 1
+                : comboAction ? AI_COMBO_HIT_TIMES.length : _compPunchCount;
+            // Total poise the whole string is worth, split evenly across it.
+            // Held at COMP_PUNCH_TOTAL_POISE whatever the hit count, so the
+            // full five-hit combo is a longer, better-looking attack rather
+            // than a straight damage upgrade - five hits at the flat 'medium'
+            // 10 would be 50, half a bot's pool from one companion.
+            // The charge is the exception: it is ONE hit and it is meant to
+            // put a bot down, so it ignores the shared budget entirely.
+            const poisePerHit = COMP_PUNCH_TOTAL_POISE / hitCount;
+            const hitT = window.punchHitTime !== undefined ? window.punchHitTime : 0.42;
+            // Where in this attack's own timeline each hit lands.
+            const hitAt = (i) => chargeAction
+                ? COMP_CHARGE_HOLD + COMP_CHARGE_SWING * COMP_CHARGE_HIT_T
+                : comboAction ? AI_COMBO_HIT_TIMES[i] * comboDur
+                : (i + hitT) * COMP_PUNCH_SWING;
+            const totalDur = chargeAction ? COMP_CHARGE_HOLD + COMP_CHARGE_SWING
+                : comboAction ? comboDur : hitCount * COMP_PUNCH_SWING;
+            // Fire every hit frame this step crossed. A long frame can span a
+            // whole swing, and skipping it would silently drop a punch.
+            while (_compPunchIndex < hitCount && _compPunchT >= hitAt(_compPunchIndex)) {
+                const i = _compPunchIndex++;
+                const target = _compPunchTarget;
+                // Re-checked per swing: a combo takes most of a second and the
+                // bot can ragdoll, be knocked back or walk off partway through.
+                if (target.isLoaded && !target.isRagdoll &&
+                    c.distanceTo(target.group.position) < COMP_PUNCH_RANGE) {
+                    // Last swing carries visible weight - more knockback, a
+                    // brighter flash - but the same poise cost as the rest.
+                    // Companions are meant to contribute to a fight, not win it
+                    // while you watch: with the pool regenerating 20/s after a
+                    // 2.5s gap, a 30-point string cannot grind a bot down on
+                    // its own between your hits.
+                    const last = i === hitCount - 1;
+                    const vel = _tempVec2.set(tp.x - c.x, 0, tp.z - c.z).normalize()
+                        .multiplyScalar(chargeAction ? COMP_CHARGE_FORCE
+                            : last ? COMP_PUNCH_FORCE * 1.7 : COMP_PUNCH_FORCE);
+                    const hitPoint = tp.clone().setY(tp.y + 1.2);
+                    if (chargeAction) {
+                        // Knocks down outright, like every other charge punch
+                        // in the game. Affordable because it is rare: a long
+                        // wind-up, a long cooldown, and a companion cannot
+                        // chase - it follows the player, so it only ever gets
+                        // the chance when a bot comes to it.
+                        window.staggerBot(target, vel, 'high', 2.5);
+                    } else {
+                        window.staggerBot(target, vel, 'medium', last ? 1.3 : 0.9, poisePerHit);
+                    }
+                    if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
+                    if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
+                }
+            }
+            if (_compPunchT >= totalDur) {
+                _compPunchTarget = null;
+                _compPunchT = -1;
+            } else {
+                // Stationary, feet planted - it is throwing punches, not
+                // walking. Ground height still tracked so it does not hang in
+                // the air if it was knocked off something.
+                const pgy = companionGroundY(c.x, c.z, c.y);
+                let py = c.y;
+                if (pgy < c.y - 0.05) py += Math.max(pgy - c.y, -16 * delta);
+                else if (pgy > c.y + 0.05 && pgy - c.y <= COMP_STEP_UP) py = pgy;
+                companion.group.position.set(c.x, py, c.z);
+                let swingAnim;
+                if (chargeAction) {
+                    // Wind-up, then the swing - the same two-clip shape the
+                    // player and the red bot use. COMP_CHARGE_HOLD is
+                    // deliberately SHORTER than the hold clip: RemoteAvatar
+                    // spawns a charge projectile when that clip reaches its
+                    // last frame, and a companion firing one would land a
+                    // second, uncontrolled knockdown on top of this one.
+                    // Stopping short leaves the wind-up read intact without it.
+                    swingAnim = _compPunchT < COMP_CHARGE_HOLD ? 'punch_charge_hold' : 'punch_charge_punch';
+                } else if (comboAction) {
+                    // One clip, held for its whole natural duration - it plays
+                    // at its authored speed, which is what makes it read as
+                    // the same combo the player throws.
+                    swingAnim = 'punch_combo';
+                } else {
+                    const swing = Math.floor(_compPunchT / COMP_PUNCH_SWING);
+                    swingAnim = swing % 2 === 0 ? 'punch_left' : 'punch_right';
+                    // Rate-match the clip to the slot it has to fit in. The
+                    // punch clips run about a second each; at their own speed a
+                    // string would take that long per hit and only the first
+                    // 40% of each swing would be seen before the next restarted
+                    // it. Same trick the bot's run cycle uses to stop its feet
+                    // skating.
+                    const swingAction = companion.actions && companion.actions[swingAnim];
+                    if (swingAction) {
+                        swingAction.timeScale = THREE.MathUtils.clamp(
+                            swingAction.getClip().duration / COMP_PUNCH_SWING, 0.5, 3.0);
+                    }
+                }
+                companion.setNetworkState([c.x, py, c.z],
+                    [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w],
+                    swingAnim, false);
+                companion.update(delta);
+                _compWhy = 'punching ' + _compPunchIndex + '/' + hitCount;
+                _compStuckT = 0; _compStuckAt.copy(c);
+                return;
+            }
+        }
+
         if (_compJustClimbedT > 0) _compJustClimbedT -= delta;
+        if (_compLedgeWaitT > 0) {
+            _compLedgeWaitT -= delta;
+            // Standing in a queue is not being stuck. Without this the
+            // progress watchdog reads a waiting companion as wedged and sends
+            // it off to wander, which is the opposite of holding its place.
+            _compStuckT = 0; _compStuckAt.copy(c);
+        }
 
         // Progress watchdog - see _compStuckAt. Measured on the real position,
         // so it catches a deadlock whichever rule caused it. Only counts while
         // there is somewhere to be: standing still next to the player is not
         // being stuck, and the deliberate holds (hanging, climbing, mid-leap)
         // are not either.
-        const farFromPlayer = Math.hypot(p.x - c.x, p.z - c.z) > COMP_FOLLOW_DIST + 0.8 || Math.abs(p.y - c.y) > 1.0;
+        const farFromPlayer = Math.hypot(p.x - c.x, p.z - c.z) > _compFollowDist + 0.8 || Math.abs(p.y - c.y) > 1.0;
         const shouldBeMoving = farFromPlayer && (_compMode === 'follow' || _compMode === 'replay');
         if (c.distanceToSquared(_compStuckAt) > COMP_STUCK_DIST * COMP_STUCK_DIST) {
             _compStuckAt.copy(c); _compStuckT = 0;
@@ -2878,6 +4186,15 @@ export function startGame(CharacterClass) {
                 // Catching a ledge hands over to HANG, which then decides
                 // between holding on, shuffling along, and climbing up.
                 _compMode = _compLeapToHang ? 'hang' : 'follow';
+                // A leap that ENDED HIGHER is a hop onto something, and it
+                // leaves the companion on a lip exactly like a full climb
+                // does. It gets the same post-climb hold, so nothing - a
+                // separation nudge, an attack, a leap back down - can knock it
+                // off in the moment it lands. Landing level or lower is just
+                // crossing a gap and needs no such protection.
+                if (!_compLeapToHang && _compLeapEnd.y > _compLeapStart.y + 0.3) {
+                    _compJustClimbedT = COMP_POST_CLIMB_HOLD;
+                }
                 _compLeapToHang = false;
             }
             return;
@@ -3001,7 +4318,16 @@ export function startGame(CharacterClass) {
                 _hangTop.set(cr.x, cr.y, cr.z);
                 computeLedgeHang(_hangTop, fx, fz, _hangPos);
                 squareHangToWall();
-                nudgeHangClearOfPlayer(p);
+                if (!nudgeHangClear(p)) {
+                    // Ledge full - stay on the ground and keep following
+                    // rather than piling onto an occupied grip. The route is
+                    // still recorded, so it retries once the wait expires.
+                    _compLedgeWaitT = COMP_LEDGE_WAIT * (1 + Math.random() * COMP_LEDGE_WAIT_JITTER);
+                    _compWhy = 'ledge busy, waiting';
+                    _compMode = 'follow';
+                    companion.update(delta);
+                    return;
+                }
                 _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
                 _hangQuat.setFromEuler(_compFaceEuler);
                 _compMode = 'hang';
@@ -3048,7 +4374,36 @@ export function startGame(CharacterClass) {
         // from there. If there is no such spot, fall through to normal follow.
         if (playerElevated && (p.y - c.y) > 1.0) {
             _compWhy = 'takeoff-route';
-            const takeoff = findTakeoffApproach(c);
+            // Latch the takeoff once chosen rather than re-deriving it every
+            // frame. findTakeoffApproach keys off the follower's OWN height,
+            // so anything that moves the companion vertically - being punched
+            // by the bot, knocked down, falling - makes a different crumb
+            // qualify as "at my height" and the destination jumps elsewhere.
+            // Committing to the first answer means a disruption costs it the
+            // attempt, not the plan: it returns to the same spot and jumps
+            // from the same place.
+            let takeoff = null;
+            if (_compTakeoffT >= 0) {
+                for (let i = 0; i < _compTrail.length; i++) {
+                    if (_compTrail[i].t !== _compTakeoffT) continue;
+                    // Only still valid if it is genuinely reachable from where
+                    // the companion now is - knocked onto a different level,
+                    // the old plan is void.
+                    if (Math.abs(_compTrail[i].y - c.y) <= 0.9) {
+                        let up = null;
+                        for (let j = i + 1; j < _compTrail.length; j++) {
+                            if (_compTrail[j].y > _compTrail[i].y + 1.0) { up = _compTrail[j]; break; }
+                        }
+                        if (up) takeoff = { at: _compTrail[i], up };
+                    }
+                    break;
+                }
+                if (!takeoff) _compTakeoffT = -1;   // aged out of the trail, or no longer reachable
+            }
+            if (!takeoff) {
+                takeoff = findTakeoffApproach(c);
+                _compTakeoffT = takeoff ? takeoff.at.t : -1;
+            }
             const dTakeoff = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : Infinity;
             // The recorded takeoff is the RIGHT answer, but not at any price.
             // It is wherever the player happened to go up, which can be right
@@ -3061,14 +4416,17 @@ export function startGame(CharacterClass) {
                 const fl = Math.hypot(fx, fz);
                 if (fl > 1e-4) {
                     fx /= fl; fz /= fl;
-                    if (tryCompanionClimbUp(c, c.x + fx * COMP_CLIMB_REACH_PROBE, c.z + fz * COMP_CLIMB_REACH_PROBE, fx, fz)) return;
+                    if (_compLedgeWaitT <= 0
+                        && tryCompanionClimbUp(c, c.x + fx * COMP_CLIMB_REACH_PROBE, c.z + fz * COMP_CLIMB_REACH_PROBE, fx, fz)) return;
                 }
             }
             if (takeoff) {
                 const tk = takeoff.at;
                 const dTk = Math.hypot(tk.x - c.x, tk.z - c.z);
                 _compWhy = "walk-to-takeoff";
-            if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; return; }
+            // Arrived - the latch has done its job, release it so the next
+            // climb picks a fresh takeoff rather than inheriting this one.
+            if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1; return; }
                 // Walk straight at the takeoff spot - deliberately no
                 // obstacle steering here. tk sits right at the base of the
                 // wall the player is about to be replayed climbing, so a
@@ -3114,6 +4472,24 @@ export function startGame(CharacterClass) {
                     return;
                 }
             }
+        }
+
+        // Knocked somewhere perfectly reasonable - stay there. See
+        // _compHitSettled. Only the distance to the PLAYER matters here, not
+        // the distance to the follow spot: the spot is an ideal, and after
+        // taking a punch "near enough" is the honest standard.
+        if (_compHitSettled) {
+            if (Math.hypot(p.x - c.x, p.z - c.z) <= COMP_HIT_OK_DIST && Math.abs(p.y - c.y) < 1.0) {
+                _compWhy = 'hit-settled';
+                _compStuckT = 0; _compStuckAt.copy(c);   // standing here on purpose
+                _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+                _compFaceQuat.setFromEuler(_compFaceEuler);
+                companion.setNetworkState([c.x, c.y, c.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(0, delta), false);
+                companion.update(delta);
+                return;
+            }
+            // Player has moved on - following is the point again.
+            _compHitSettled = false;
         }
 
         // ---- FOLLOW (manual, distance-based) ----
@@ -3162,10 +4538,10 @@ export function startGame(CharacterClass) {
         // in the air past the edge, so the companion either never arrived or
         // treated its own follow spot as a gap to leap. Closing in when the
         // space is tight is better than standing politely off a cliff.
-        let followDist = COMP_FOLLOW_DIST;
+        let followDist = _compFollowDist;
         if (playerElevated && (p.y - c.y) < 1.0) followDist = 0.9; // up on the block with them: hug close anyway
         for (let attempt = 0; attempt < COMP_FOLLOW_FALLBACKS.length; attempt++) {
-            const d = Math.min(followDist, COMP_FOLLOW_FALLBACKS[attempt]);
+            const d = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
             _tempVec2.set(p.x + dirx * d, p.y + 3.0, p.z + dirz * d);
             rayDown.set(_tempVec2, _downVec);
             const spotHits = rayDown.intersectObjects(_compGroundList, true);
@@ -3174,7 +4550,7 @@ export function startGame(CharacterClass) {
             if (p.y - spotY <= COMP_LEAP_EDGE_DROP) { followDist = d; break; }
             // Nothing worked even at the closest fallback - keep the original
             // distance and let the ordinary edge/leap logic deal with it.
-            if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) followDist = Math.min(followDist, COMP_FOLLOW_FALLBACKS[attempt]);
+            if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) followDist = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
         }
         let tgx = p.x + dirx * followDist, tgz = p.z + dirz * followDist;
 
@@ -3297,7 +4673,48 @@ export function startGame(CharacterClass) {
         // the breadcrumb replay (playerElevated, above) and the leap - which
         // is the jump-and-grab-the-ledge behaviour this should always have
         // been using for a real rise.
+        // Never close inside the player's own footprint. The follow spot is
+        // meant to keep a distance, but it drifts every frame and on a tight
+        // ledge the fallbacks pull it in to 0.7 - close enough that the two
+        // end up standing in each other. Overlapping is what makes the
+        // companion start scrambling: it reads the shared spot as somewhere
+        // it has to resolve, and climbs or hops to get out of it.
+        if (Math.hypot(nx - p.x, nz - p.z) < COMP_MIN_PLAYER_GAP && Math.abs(p.y - c.y) < 1.0) {
+            nx = c.x; nz = c.z;
+        }
+        // ...and never inside EACH OTHER either. Both companions aim at the
+        // same follow spot behind the player, so they converge on one point
+        // and walk through one another. Applied here, before gyHere is read
+        // off nx/nz below, for the same reason the bots' own separation runs
+        // before their ground snap: nudging them sideways afterwards would
+        // move them over a different surface while keeping the old height.
+        // Suspended right after a climb. The push is applied to the step
+        // target, and on the lip of a ledge a sideways nudge of even a few
+        // centimetres puts the companion over the edge - the ground scan below
+        // then finds the lower level and it walks straight back down. Standing
+        // where it landed matters more for that second than being spaced out.
+        if (_compJustClimbedT <= 0) {
+            companionSeparate(nx, nz, c.y, delta, _compSepOut);
+            nx = _compSepOut.x; nz = _compSepOut.y;
+        }
+        // Two separate questions, and conflating them is what made the
+        // companion jitter. `gyHere` is what it would be STANDING on - never
+        // something overhead - and drives the vertical follow. `obstacleY`
+        // asks whether there is something in the way worth climbing, which
+        // deliberately does look upward.
         let gyHere = companionGroundY(nx, nz, c.y);
+        // The obstacle is looked for a fixed distance AHEAD, not at the next
+        // step position. A step is only 0.125 at walking speed, so probing
+        // there means the companion cannot see a ledge until it is already
+        // 12cm from the face - and anything that halts it before that (the
+        // arrival deadzone, the min-gap guard, simply reaching its follow
+        // spot) meant the step was never noticed at all. It would stand next
+        // to a knee-high ledge doing nothing. The bot has always probed a
+        // fixed distance out; this now does the same.
+        const probeDx = h > 1e-4 ? toX / h : 0, probeDz = h > 1e-4 ? toZ / h : 0;
+        const probeX = c.x + probeDx * COMP_CLIMB_REACH_PROBE;
+        const probeZ = c.z + probeDz * COMP_CLIMB_REACH_PROBE;
+        const obstacleY = companionGroundY(probeX, probeZ, c.y, COMP_CLIMB_MAX);
         // ...and it must not simply WALK off either. The leap is suppressed
         // above, but the ordinary glide would happily carry it over the edge
         // one step at a time, which is the same undo by a slower route.
@@ -3305,7 +4722,7 @@ export function startGame(CharacterClass) {
             nx = c.x; nz = c.z;
             gyHere = companionGroundY(c.x, c.z, c.y);
         }
-        if (gyHere - c.y > COMP_STEP_UP) {
+        if (obstacleY - c.y > COMP_STEP_UP) {
             // Climb only when the player is actually up there. A wall in the
             // way is not a reason to climb it - the player, walking the same
             // ground, just goes around, and the companion should read the
@@ -3328,10 +4745,14 @@ export function startGame(CharacterClass) {
             // stopped. That gap is why it could only get up somewhere it had
             // watched the player jump: the recorded route was the sole way
             // through. Anyone would simply hop a step this size.
-            const riseHere = gyHere - c.y;
+            const riseHere = obstacleY - c.y;
             const climbWorthIt = riseHere <= COMP_LEAP_RISE_MAX || p.y - c.y > COMP_CLIMB_WORTH_IT;
+            // Climb toward the probed spot, which is where the step actually
+            // is - passing the next-step position would have it measuring the
+            // ledge from somewhere it has not reached yet.
             if (climbWorthIt && h > 1e-4
-                && tryCompanionClimbUp(c, nx, nz, toX / h, toZ / h)) return;
+                && _compLedgeWaitT <= 0
+                && tryCompanionClimbUp(c, probeX, probeZ, probeDx, probeDz)) return;
             nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
         }
         updateCompanionPathVisual(c, { x: tgx, y: c.y, z: tgz }, { x: nx, y: c.y, z: nz });
@@ -3599,7 +5020,7 @@ export function startGame(CharacterClass) {
             if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) p.set(0, 0, 0);
             if (!Number.isFinite(s.x) || !Number.isFinite(s.y) || !Number.isFinite(s.z)) s.set(1, 1, 1);
         });
-        if (pendingVillageLevelBuild && treeModel) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        if (pendingVillageLevelBuild && treeModel && mountainGeometry) { pendingVillageLevelBuild = false; buildVillageLevel(); }
     };
     villageLoader.load('VillageModel/Village.glb', onVillageLoaded, undefined, () => {
         villageLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Village.glb',
@@ -3731,7 +5152,7 @@ export function startGame(CharacterClass) {
                 ditherAlwaysOnMats.push(m);
             });
         });
-        if (pendingVillageLevelBuild && villageScene) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        if (pendingVillageLevelBuild && villageScene && mountainGeometry) { pendingVillageLevelBuild = false; buildVillageLevel(); }
         // The forest level is built entirely out of this one model, so it has
         // nothing else to wait on - retry as soon as it lands.
         if (pendingForestLevelBuild) { pendingForestLevelBuild = false; buildForestLevel(); }
@@ -3740,6 +5161,56 @@ export function startGame(CharacterClass) {
         villageTreeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Tree.glb',
             onVillageTreeLoaded, undefined, (e) => console.error('Tree.glb load failed:', e));
     });
+
+    // Real mountain prop, replacing the whitebox cones baked into Village.glb
+    // ("Cyl 16" and its copies) exactly the way Tree.glb replaces the
+    // placeholder trees. mountains.glb was authored in the village's own
+    // coordinate space - its two instances sit at roughly two of the cones'
+    // positions and carry the same scales - so it is the intended stand-in
+    // for them rather than a separate piece of set dressing.
+    //
+    // Only ONE mesh in the file, instanced twice by the author with different
+    // yaw; the swap below clones it onto every cone and varies the yaw itself,
+    // so the whole ridge line the level author composed survives instead of
+    // dropping from five peaks to two.
+    // The GEOMETRY, deliberately, not the loaded scene. Cloning gltf.scene
+    // would drag the author's own two placements along with it - each of those
+    // nodes carries a translation out at (-209, -22, -119) and a scale of 136,
+    // so a clone re-scaled onto a proxy would land nowhere near it and at the
+    // product of the two scales. The mesh's own local frame is the useful part:
+    // y:[0,1] with the base on the origin plane and roughly unit radius, which
+    // is exactly the frame the whitebox cones use, so a proxy's transform drops
+    // straight onto it.
+    let mountainGeometry = null, mountainMaterial = null;
+    // Where the whitebox cones stood, read off Village.glb the first time the
+    // village is built and kept because that read is destructive - see the
+    // swap in buildVillageLevel.
+    let _villageMountainPlacements = null;
+    const mountainLoader = new GLTFLoader();
+    const onMountainLoaded = (gltf) => {
+        let src = null;
+        gltf.scene.traverse(o => { if (o.isMesh && !src) src = o; });
+        if (!src) { console.error('mountains.glb: no mesh found'); return; }
+        mountainGeometry = src.geometry;
+        // Same re-material the tree gets: toon + the shared gradient map,
+        // keeping the asset's own baseColor texture. One material, shared by
+        // every peak - they are identical apart from their transform.
+        const m0 = Array.isArray(src.material) ? src.material[0] : src.material;
+        mountainMaterial = new THREE.MeshToonMaterial({
+            map: m0 && m0.map ? m0.map : null,
+            color: m0 && m0.map ? 0xffffff : 0x8fa3b0,
+            gradientMap: threeTone,
+        });
+        if (pendingVillageLevelBuild && villageScene && treeModel) {
+            pendingVillageLevelBuild = false;
+            buildVillageLevel();
+        }
+    };
+    mountainLoader.load('VillageModel/mountains.glb', onMountainLoaded, undefined, () => {
+        mountainLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/mountains.glb',
+            onMountainLoaded, undefined, (e) => console.error('mountains.glb load failed:', e));
+    });
+
 
     // Single place both level builders ask "should this part of the tree take
     // part in collision at all?", because the two exclusions are told apart by
@@ -4753,6 +6224,14 @@ export function startGame(CharacterClass) {
         uFoamOn: { value: new Array(MAX_WATER_BODIES).fill(0) },
         uFoamMin: { value: Array.from({ length: MAX_WATER_BODIES }, () => new THREE.Vector2()) },
         uFoamMax: { value: Array.from({ length: MAX_WATER_BODIES }, () => new THREE.Vector2()) },
+        // >0 means the body is a disc of this radius, not a rectangle, and the
+        // "am I in it?" test below is a circle test instead of a box one. A
+        // box around a round lake bulges sqrt(2) past the water at the
+        // corners, and anything standing in that bulge at the right height
+        // foams - which is how the lake bank ended up with a white ring
+        // running along its OUTER slope, on dry ground facing away from the
+        // water, in the four diagonal quadrants only.
+        uFoamRadius: { value: new Array(MAX_WATER_BODIES).fill(0) },
     };
     // Live-tunable globals (see the Water sliders in the debug panel).
     // foamDepthScale multiplies the band on EVERYTHING; charFoamScale is an
@@ -4842,7 +6321,8 @@ export function startGame(CharacterClass) {
                     uniform float uFoamBand[${MAX_WATER_BODIES}];
                     uniform float uFoamOn[${MAX_WATER_BODIES}];
                     uniform vec2 uFoamMin[${MAX_WATER_BODIES}];
-                    uniform vec2 uFoamMax[${MAX_WATER_BODIES}];`)
+                    uniform vec2 uFoamMax[${MAX_WATER_BODIES}];
+                    uniform float uFoamRadius[${MAX_WATER_BODIES}];`)
                 .replace('#include <dithering_fragment>', `
                     // Pick the water body this fragment belongs to: the one
                     // whose XZ footprint it is inside (or nearest to), ties
@@ -4850,22 +6330,54 @@ export function startGame(CharacterClass) {
                     // on top of the sea's huge plane wins over it.
                     float fFoamBestDist = 1e9;
                     float fFoamBestArea = 1e9;
+                    float fFoamBestSlack = 0.5;
                     float fFoamLevel = 0.0, fFoamSpeed = 0.0, fFoamAmp = 0.0, fFoamBand = 0.0, fFoamOn = 0.0;
                     for (int i = 0; i < ${MAX_WATER_BODIES}; i++) {
                         if (float(i) >= uFoamCount) continue;
                         if (uFoamOn[i] < 0.5) continue;
                         vec2 mn = uFoamMin[i];
                         vec2 mx = uFoamMax[i];
-                        float dxx = max(max(mn.x - vFoamPositionW.x, vFoamPositionW.x - mx.x), 0.0);
-                        float dzz = max(max(mn.y - vFoamPositionW.z, vFoamPositionW.z - mx.y), 0.0);
-                        float dd = dxx * dxx + dzz * dzz;
+                        float dd;
+                        // A disc body measures from its centre; a rectangular
+                        // one from its edges. Same units either way (squared
+                        // distance to the footprint), so the pick below and
+                        // the cutoff after it do not care which it was.
+                        float rr = uFoamRadius[i];
+                        if (rr > 0.0) {
+                            vec2 dc = vFoamPositionW.xz - (mn + mx) * 0.5;
+                            float dr = max(length(dc) - rr, 0.0);
+                            dd = dr * dr;
+                        } else {
+                            float dxx = max(max(mn.x - vFoamPositionW.x, vFoamPositionW.x - mx.x), 0.0);
+                            float dzz = max(max(mn.y - vFoamPositionW.z, vFoamPositionW.z - mx.y), 0.0);
+                            dd = dxx * dxx + dzz * dzz;
+                        }
                         float aa = (mx.x - mn.x) * (mx.y - mn.y);
                         if (dd < fFoamBestDist - 1e-4 || (abs(dd - fFoamBestDist) <= 1e-4 && aa < fFoamBestArea)) {
                             fFoamBestDist = dd; fFoamBestArea = aa;
+                            // A disc gets a wider tolerance than a box. The
+                            // band climbs a sloped bank, so it reaches further
+                            // out than the water's own edge, and a disc has no
+                            // corner bulge to spend the slack on - the whole
+                            // point of testing it as a circle.
+                            fFoamBestSlack = rr > 0.0 ? 1.0 : 0.5;
                             fFoamLevel = uFoamLevel[i]; fFoamSpeed = uFoamSpeed[i];
                             fFoamAmp = uFoamAmp[i]; fFoamBand = uFoamBand[i]; fFoamOn = 1.0;
                         }
                     }
+                    // Nearest is not the same as inside. The loop above keeps
+                    // the closest body no matter how far away it is, which was
+                    // fine when the only water was a 256-unit sea that covered
+                    // everything worth foaming - but with small ponds, EVERY
+                    // point in the level is "nearest to" one of them, so a
+                    // character standing in dry grass on the far side of the
+                    // map still got a foam band across its shins.
+                    //
+                    // Requiring the fragment to be essentially within the
+                    // footprint fixes that. The tolerance is small and in
+                    // squared units; it exists only so the band does not cut
+                    // off hard exactly at the boundary.
+                    if (fFoamBestDist > fFoamBestSlack * fFoamBestSlack) fFoamOn = 0.0;
                     // A clean 0..1 band mask (NOT the terrain/rocks shaders'
                     // ported formula, which relied on smoothstep with
                     // edge0>edge1 - an "overshoot" trick that reads as white
@@ -5755,15 +7267,25 @@ export function startGame(CharacterClass) {
         // Cubes.glb prop that normally flips it, so the loading overlay would
         // otherwise never hide.
         window._cubesLoaded = true;
-        ground.visible = true;
-        collidables.push(ground);
+        // A slab under the forest instead of the shared 1000x1000 plane, so
+        // the world visibly ENDS at the treeline with void beyond it rather
+        // than running off flat to the horizon. The border walls (Pass 3a) sit
+        // well inside the slab's edge, so the drop is something you see, never
+        // something you can walk off.
+        ground.visible = false;
         star.visible = false;
+        buildForestGroundBox();
 
         // ---- Pass 1: decide where trees go (no geometry built yet) ----
         seedPerlin(window.forestSeed);
+        buildForestGroundMask();
         const area = window.forestAreaSize, grid = Math.max(2, Math.round(window.forestGridSize));
         const step = area / grid, half = area * 0.5;
         const noiseScale = window.forestNoiseScale;
+        // Chosen BEFORE the trees so the scatter can avoid them. The other
+        // way round would mean deleting trees a lake happened to land on, or
+        // leaving lakes with trunks standing in the middle of them.
+        const lakes = pickForestLakes(half, noiseScale);
         const placements = [];
         for (let xi = 0; xi < grid; xi++) {
             for (let zi = 0; zi < grid; zi++) {
@@ -5779,6 +7301,14 @@ export function startGame(CharacterClass) {
                 const px = x + offX, pz = z + offZ;
                 // Keep the spawn pocket open.
                 if (Math.hypot(px, pz) < window.forestClearingRadius) continue;
+                // ...and nothing standing over the chasm.
+                if (Math.abs(px - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + FOREST_GAP_CLEAR) continue;
+                // ...and keep the lakes clear, with a bank around them.
+                let inLake = false;
+                for (let L = 0; L < lakes.length; L++) {
+                    if (Math.hypot(px - lakes[L].x, pz - lakes[L].z) < lakes[L].r + FOREST_LAKE_BANK) { inLake = true; break; }
+                }
+                if (inLake) continue;
                 const scale = THREE.MathUtils.lerp(window.forestMinScale, window.forestMaxScale, spawnNoise);
                 // Overlap rejection, scaled by both trees' sizes so big trees
                 // claim more room than saplings (straight from TreeGenerator).
@@ -5789,9 +7319,24 @@ export function startGame(CharacterClass) {
                     if (Math.hypot(px - o.x, pz - o.z) < minDist) { tooClose = true; break; }
                 }
                 if (tooClose) continue;
-                placements.push({ x: px, z: pz, scale, rotY: spawnNoise * Math.PI * 2 });
+                // Facing comes from its own hash of the position, NOT from
+                // spawnNoise. spawnNoise is above forestTreeThreshold by
+                // construction - that is what decided a tree belongs here at
+                // all - so it only ever spans [threshold, 1], and scaling that
+                // to a full turn gave every tree a facing inside the same
+                // ~160-degree arc. They all pointed roughly one way.
+                //
+                // Position-hashed rather than Math.random() so the forest is
+                // still reproducible from forestSeed: same seed, same wood.
+                placements.push({ x: px, z: pz, scale, rotY: forestHash01(px, pz) * Math.PI * 2 });
             }
         }
+
+        // No border ring of trees any more. It existed because the scatter is
+        // pure noise, and noise has no notion of an edge, so the wood thinned
+        // out toward the boundary and you could see straight out of the level.
+        // The ground slab now ends at a hard cliff instead, which closes the
+        // view just as well and does not need a hedge to explain it.
 
         // ---- Pass 2: one InstancedMesh per source mesh, not one clone per tree ----
         // Tree.glb is 9 meshes (4 leaf nodes x 2 primitives, plus the trunk),
@@ -5825,7 +7370,7 @@ export function startGame(CharacterClass) {
             const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
             placements.forEach((p, i) => {
                 _q.setFromAxisAngle(_upVec, p.rotY);
-                _pos.set(p.x, 0, p.z);
+                _pos.set(p.x, p.y || 0, p.z);
                 _scl.setScalar(p.scale);
                 _treeMat.compose(_pos, _q, _scl);
                 _instMat.multiplyMatrices(_treeMat, src.rel);
@@ -5897,8 +7442,16 @@ export function startGame(CharacterClass) {
         const colliderMat = new THREE.MeshBasicMaterial({ visible: false });
         if (treeCollisionGeo) {
             placements.forEach(p => {
+                // Border trees are VISUAL only - the four walls below stand in
+                // for all of them. Giving each its own collider would add
+                // ~500 meshes to `collidables`, and that array is walked by
+                // every raycast in the game (ground scan, foot IK, dither
+                // probes, both AI characters' obstacle checks). The drawing is
+                // free because it is instanced; the collision would not be.
+                // Four boxes also make a better barrier than a row of trunks,
+                // which has gaps to squeeze between.
                 const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
-                col.position.set(p.x, 0, p.z);
+                col.position.set(p.x, p.y || 0, p.z);
                 col.rotation.y = p.rotY;
                 col.scale.setScalar(p.scale);
                 col.castShadow = false;
@@ -5913,6 +7466,196 @@ export function startGame(CharacterClass) {
                 col.updateMatrixWorld(true);
                 levelGroup.add(col);
                 collidables.push(col);
+            });
+        }
+
+        // ---- Lakes ----
+        // One shared water body for all of them: they sit at the same height,
+        // and a body carries a whole shader/uniform set, so five would be five
+        // times the cost for identical water.
+        if (!forestLakeBody) forestLakeBody = createWaterBody({
+            // waveAmplitude 0 on purpose - the rise and fall is driven from
+            // JS instead (updateForestLakeSurfaces), so that the surface
+            // height, the disc's radius and the foam band all come from one
+            // number. A non-zero value here would add a SECOND, independent
+            // bob on top of it.
+            waterLevel: FOREST_LAKE_Y, waveSpeed: FOREST_LAKE_WAVE_SPEED, waveAmplitude: 0, foamDepth: 0.14,
+            textureSize: 40, colorNear: 0x4fc6e8, colorFar: 0x14618c,
+        });
+        // Re-enabled every build, not just at creation: buildLevel switches
+        // foam off on every body before dispatching, and the `if (!...)` guard
+        // means the constructor default only ever applies the first time. Same
+        // trap the Water Test pond documents.
+        forestLakeBody.uniforms.uFoamEnabled.value = 1;
+        // Rebuilt every time the level is - the old entries point at meshes
+        // levelGroup has already dropped, and scaling those each frame would
+        // be work done on nothing.
+        _forestLakeMeshes.length = 0;
+        lakes.forEach(L => {
+            // Sized to meet the bank at the water's height, not to L.r. L.r is
+            // where the bank's tube centre line crosses, which is BELOW the
+            // water: the bank's inner face leans outwards as it rises, so at
+            // the surface it has already pulled back over a metre. A disc cut
+            // to L.r left that metre as a ring of dry ground between the water
+            // and the shore, which read as a small puddle sitting in an
+            // oversized crater rather than a lake filling its basin.
+            // Cut for the HIGHEST the water ever rises, not for its resting
+            // height. A flat disc meeting a sloped bank already produces a
+            // waterline that slides up and down as the disc rises - that comes
+            // free from the geometry - so the disc only has to be big enough
+            // never to fall short. Oversize is invisible: the bank is above
+            // the water everywhere past the contact ring, so the excess is
+            // hidden under the slope.
+            const fillR = forestLakeInnerRadius(L.r, FOREST_LAKE_Y + FOREST_LAKE_WAVE_AMP) + FOREST_LAKE_FILL_BITE;
+            const lake = new THREE.Mesh(new THREE.CircleGeometry(fillR, 40), forestLakeBody.waterMaterial);
+            lake.rotation.x = -Math.PI / 2;
+            lake.position.set(L.x, FOREST_LAKE_Y, L.z);
+            levelGroup.add(lake);
+            // Kept so the surface can be widened and narrowed every frame to
+            // keep its edge on the bank as the wave rises - see
+            // updateForestLakeSurfaces.
+            _forestLakeMeshes.push({ mesh: lake, baseR: fillR, lakeR: L.r });
+            // NOT a collidable, deliberately - you wade through it. Pushing it
+            // into collidables (which the Water Test pond does, because there
+            // it is a surface you stand on) would make the surface solid, and
+            // it would also become ground for every probe in the game: the
+            // foot IK, the AI ground scans and the climb checks all read that
+            // array, and a lake would read as a floor at 0.38 - a step to
+            // climb onto rather than water to walk into.
+            //
+            // Passing through is also what makes the foam work: the shoreline
+            // band keys off the character's height against uWaterLevel, so it
+            // only appears once you are actually standing in the water.
+            linkWaterMeshToBody(lake, forestLakeBody);
+
+            // Lake bed, in the bank's colour, so looking down through the
+            // water shows a shore-coloured basin instead of the grass the
+            // ground plane would otherwise give. Purely visual - you still
+            // stand on the ground plane underneath it.
+            if (!forestLakeBedMaterial) {
+                // No shoreline foam here, unlike the bank: the bed sits
+                // entirely below the water line, so the band that marks where
+                // a surface enters the water would cover the whole thing.
+                forestLakeBedMaterial = new THREE.MeshToonMaterial({
+                    color: FOREST_LAKE_RIM_COLOR, gradientMap: threeTone,
+                });
+            }
+            // Runs out to where the bank meets the ground, plus a little, so
+            // it tucks under the bank's foot. Beyond that the bank's own
+            // inner slope is the floor - same colour, so the two read as one
+            // continuous basin, shelving up from the bed to the shore.
+            const bed = new THREE.Mesh(
+                new THREE.CircleGeometry(forestLakeInnerRadius(L.r, 0) + FOREST_LAKE_BED_OVERLAP, 40),
+                forestLakeBedMaterial);
+            bed.rotation.x = -Math.PI / 2;
+            // Lifted a hair off the ground plane to stay out of a z-fight
+            // with it.
+            bed.position.set(L.x, FOREST_LAKE_BED_Y, L.z);
+            bed.receiveShadow = true;
+            levelGroup.add(bed);
+
+            // Raised bank. Ring radius puts the tube's inner face at the
+            // water's edge, so the water meets the slope rather than stopping
+            // short of it with a strip of grass between.
+            if (!forestLakeRimMaterial) {
+                forestLakeRimMaterial = new THREE.MeshToonMaterial({ color: FOREST_LAKE_RIM_COLOR, gradientMap: threeTone });
+                // Wet line where the bank enters the water.
+                applyShorelineFoam(forestLakeRimMaterial);
+            }
+            const rim = new THREE.Mesh(
+                new THREE.TorusGeometry(L.r + FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE_SEGS, FOREST_LAKE_RIM_SEGS),
+                forestLakeRimMaterial);
+            rim.rotation.x = -Math.PI / 2;    // torus is authored in XY; lay it flat
+            // Squash applied on world Y. Done after the rotation, so this is
+            // the torus's own tube axis - see FOREST_LAKE_RIM_FLATTEN.
+            rim.scale.set(1, 1, FOREST_LAKE_RIM_FLATTEN);
+            // Sunk below the ground plane rather than centred on it, so less
+            // of the bank stands proud - a low mound at the water's edge
+            // instead of a ring you have to climb. Sinking also shortens the
+            // exposed outer face, which flattens the walk-up further.
+            rim.position.set(L.x, -FOREST_LAKE_RIM_SINK, L.z);
+            rim.castShadow = true;
+            rim.receiveShadow = true;
+            // Walkable, so it needs real collision. Exempt from the
+            // bounding-box clearance test for the same reason the tree
+            // colliders are: a torus's box is mostly empty air, and letting
+            // that veto standing spots would block the whole clearing.
+            rim.userData.softObstacle = true;
+            rim.updateMatrixWorld(true);
+            levelGroup.add(rim);
+            collidables.push(rim);
+        });
+        _forestLakes = lakes;
+
+        // ---- Pass 3a: the cliff wall that frames the level ----
+        // The invisible walls are gone. They existed to stop you leaving, but
+        // there is a sea to fall into now and falling into it is meant to be
+        // possible - for the player and for every bot and companion. What
+        // bounds the level instead is a real wall of grey blocks, tall as the
+        // biggest tree, standing along the outer edge of the islands.
+        //
+        // Solid geometry rather than an invisible barrier means it also reads
+        // as the far side of the world from anywhere in the level, and its top
+        // carries the same earth-and-grass treatment as the ground, with its
+        // own trees, so the eye reads it as land continuing upward rather than
+        // as a lid.
+        {
+            const step = FOREST_BORDER_BLOCK;
+            const top = FOREST_BORDER_HEIGHT;
+            if (!_forestBorderMat) {
+                _forestBorderMat = new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
+            }
+            // Grass projected onto the caps, the same triplanar treatment the
+            // Level 1 blocks get - so the tops read as earth with grass rather
+            // than as painted grey.
+            if (!_forestBorderCapMat) {
+                _forestBorderCapMat = new THREE.MeshToonMaterial({ color: 0xa89880, gradientMap: threeTone });
+                applyTriplanarGrass(_forestBorderCapMat);
+            }
+            const spots = [];
+            forestBorderLayout((bx, bz) => spots.push([bx, bz]));
+            // INSTANCED, not one mesh per block. There are ~85 of them and
+            // three.js does not batch identical meshes on its own, so the
+            // straightforward version would be 170 extra draw calls for a
+            // wall that never moves.
+            const mk = (geo, mat, yc) => {
+                const inst = new THREE.InstancedMesh(geo, mat, spots.length);
+                const m = new THREE.Matrix4();
+                spots.forEach(([bx, bz], i) => {
+                    m.makeTranslation(bx, yc, bz);
+                    inst.setMatrixAt(i, m);
+                });
+                inst.instanceMatrix.needsUpdate = true;
+                inst.castShadow = true; inst.receiveShadow = true;
+                inst.frustumCulled = false;
+                levelGroup.add(inst);
+                return inst;
+            };
+            mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
+            mk(new THREE.BoxGeometry(step, FOREST_BORDER_CAP, step), _forestBorderCapMat,
+                top + FOREST_BORDER_CAP * 0.5);
+            // Collision is a few long boxes rather than one per block: an
+            // InstancedMesh reports ONE bounding box for the whole ring, which
+            // every box-based test in the game would read as the entire level
+            // being solid. Nothing climbs an 11-unit wall, so a plain barrier
+            // is all this has to be.
+            const bh = forestSlabHalf();
+            const gapLo = FOREST_GAP_X - FOREST_GAP_W * 0.5 - step;
+            const gapHi = FOREST_GAP_X + FOREST_GAP_W * 0.5 + step;
+            const segs = [];
+            [bh, -bh].forEach(bz => {
+                // Split around the strait, on the two sides it crosses.
+                segs.push([(-bh + gapLo) * 0.5, bz, gapLo + bh, step]);
+                segs.push([(gapHi + bh) * 0.5, bz, bh - gapHi, step]);
+            });
+            [bh, -bh].forEach(bx => segs.push([bx, 0, step, bh * 2]));
+            segs.forEach(([cx, cz, sx, sz]) => {
+                if (sx <= 0.01 || sz <= 0.01) return;
+                const w = new THREE.Mesh(new THREE.BoxGeometry(sx, top + FOREST_BORDER_CAP, sz),
+                    new THREE.MeshBasicMaterial({ visible: false }));
+                w.position.set(cx, (top + FOREST_BORDER_CAP) * 0.5, cz);
+                w.updateMatrixWorld(true);
+                levelGroup.add(w); collidables.push(w);
             });
         }
 
@@ -5963,14 +7706,425 @@ export function startGame(CharacterClass) {
             });
         }
 
+        // Kept for the grass scatter, which clusters tufts around each
+        // trunk - see the tree ring in rebuildGrass.
+        _forestPlacements = placements;
+
         char.group.position.set(0, 2.0, 0);
         char.group.rotation.y = 0;
         window.compassTarget = null;
         console.log(`Forest: ${placements.length} trees, ${sources.length} draw calls (instanced), collision ${treeCollisionGeo ? treeCollisionGeo.getAttribute('position').count / 3 : 0} tris/tree.`);
     }
 
+    // Paints the clearing mask from the forest's own spawn noise: 1 where the
+    // noise falls short of the tree threshold (open ground - a path), 0 where
+    // trees stand.
+    //
+    // Must be called AFTER seedPerlin, since it reads the same perlin2 the
+    // scatter does - that shared source is the whole point. Evaluating the
+    // real function beats approximating it in GLSL: a shader re-implementation
+    // would have to match this Perlin exactly, and any drift would show up as
+    // yellow creeping under the trees.
+    //
+    // The soft edge matters more than the resolution here. A hard cut at the
+    // threshold gives a stencilled outline; ramping across a band either side
+    // makes the paths fade into the grass the way worn ground does.
+    // Deterministic 0..1 from a position, folded with forestSeed so the whole
+    // forest still regenerates identically from that one number. Used for
+    // tree facing and for the border's jitter/scale - anywhere Math.random()
+    // would have broken reproducibility.
+    function forestHash01(x, z) {
+        const h = Math.sin(x * 12.9898 + z * 78.233 + window.forestSeed) * 43758.5453;
+        return h - Math.floor(h);
+    }
+    // ---- Forest lakes ----
+    // Small ponds dropped into the clearings. They go where the spawn noise
+    // says NO tree belongs, which is the same test that paints the beige
+    // paths - so a lake always lands in an opening rather than having to
+    // clear trees out of its way, and the two features agree about where the
+    // wood is thin instead of contradicting each other.
+    //
+    // Sitting just above the ground plane rather than in a dug basin: the
+    // forest floor is one flat plane, so there is nothing to sink into. The
+    // shoreline foam band (uFoamDepth) is what sells the edge.
+    // 4, not more: every linked water mesh takes one of MAX_WATER_BODIES
+    // slots, because each needs its own footprint even though all the lakes
+    // share a single water body. A fifth would be clamped out of foamCount
+    // and end up as a lake with no foam at all. Raising the limit is possible
+    // but it widens a per-fragment loop that runs on every foam material,
+    // including the full-screen ground plane - not worth one more pond.
+    // 3, not 4. The foam shader carries MAX_WATER_BODIES (4) footprints, and
+    // the river now takes one of those slots - a fifth entry would simply be
+    // dropped from the array, and the thing dropped would be the river.
+    const FOREST_LAKE_COUNT = 3;
+    const FOREST_LAKE_MIN_R = 3.0, FOREST_LAKE_MAX_R = 6.0;
+    // High enough to actually wash around the legs - at 0.07 it was level with
+    // the grass and read as a painted puddle. This is what gives the foam band
+    // something to sit on.
+    const FOREST_LAKE_Y = 0.30;
+    // Tree-free margin around each lake. Has to clear the whole bank, not just
+    // the water: the torus reaches its full half-width out from L.r, so a
+    // smaller margin plants trees on the outer slope, half-sunk in it.
+    const FOREST_LAKE_BANK = 4.8;
+    const FOREST_LAKE_RIM_COLOR = 0xa08154;   // shared by the bank and the bed
+    const FOREST_LAKE_BED_Y = 0.02;           // clear of a z-fight with the ground
+    const FOREST_LAKE_BED_OVERLAP = 0.25;     // past the bank's foot, tucked under it
+    const FOREST_LAKE_FILL_BITE = 0.05;       // water edge buried in the bank, no seam
+
+    // Radius of the bank's inner face at height `y`. The bank is an ellipse in
+    // cross-section, so its inner wall pulls outwards the higher you go - which
+    // means the water's edge and the bed's edge are at different radii, and
+    // neither is L.r. L.r is only where the tube's centre line crosses, which
+    // sits FOREST_LAKE_RIM_SINK below the ground.
+    function forestLakeInnerRadius(baseR, y) {
+        const a = FOREST_LAKE_RIM_TUBE;
+        const b = a * FOREST_LAKE_RIM_FLATTEN;
+        const dy = (y + FOREST_LAKE_RIM_SINK) / b;      // up from the tube centre, normalised
+        // Above the crest there is no wall left to meet; clamp so the caller
+        // still gets a sane radius instead of a NaN out of the sqrt.
+        const half = Math.abs(dy) >= 1 ? 0 : a * Math.sqrt(1 - dy * dy);
+        return baseR + a - half;
+    }
+    // Raised bank around each lake - a torus, half-buried so only the upper
+    // half shows. Its curved cross-section is what makes it walkable: the
+    // outer face starts almost flat and steepens gradually, so you stroll up
+    // it instead of hitting a wall, and the same curve carries you back down
+    // into the water on the inside.
+    // Wide and FLATTENED, not a round tube. A circular cross-section is very
+    // steep at its outer edge - about 64 degrees a tenth of the way in, which
+    // is well past the ~39.6-degree slide threshold, so the player would slide
+    // straight back off instead of walking up, and no amount of shrinking it
+    // helps because the angle profile of a circle is the same at any size.
+    // Squashing it vertically turns the cross-section into an ellipse and
+    // scales every angle down with it. A broad shallow bank is also closer to
+    // what a real lake shore looks like.
+    // The bank is a torus with an elliptical (squashed) cross-section. Only
+    // the ratio flatten/1 sets the slope, so widening the tube while keeping
+    // the crest height buys walk-up margin. Sinking it steepens the foot -
+    // the exposed face starts further up the ellipse - which is why the tube
+    // got wider when the sink went in.
+    const FOREST_LAKE_RIM_TUBE = 2.4;      // horizontal half-width of the bank
+    const FOREST_LAKE_RIM_FLATTEN = 0.29;  // vertical squash -> tube half-height 0.70
+    const FOREST_LAKE_RIM_SINK = 0.28;     // tube centre below ground -> crest 0.42 proud
+    const FOREST_LAKE_RIM_SEGS = 30;       // around the ring
+    const FOREST_LAKE_RIM_TUBE_SEGS = 8;   // around the cross-section
+    let forestLakeRimMaterial = null;
+    let forestLakeBedMaterial = null;
+    let forestLakeBody = null;
+    // Foam is opt-in PER MATERIAL - applyShorelineFoam injects the band into
+    // whatever it is given, and a material that never got it simply cannot
+    // show one no matter how the water is set up. Only buildWaterTestLevel
+    // was calling it, so the forest lakes had no foam anywhere: not on the
+    // characters wading through, not on the bank.
+    //
+    // Called every frame while the forest is up rather than once at build
+    // time, because the avatars' materials do not exist until their FBX
+    // finishes loading - which is usually after the level is built, and for
+    // the companion/bot can be much later. applyShorelineFoam early-outs on
+    // an already-treated material, so the steady-state cost is a handful of
+    // boolean checks.
+    function applyForestFoam() {
+        const avatars = [char, ...companions.map(r => r.comp), ...aiBots.map(r => r.bot)];
+        for (let i = 0; i < avatars.length; i++) {
+            const a = avatars[i];
+            if (!a || !a.bodyMaterials) continue;
+            a.bodyMaterials.forEach(m => applyShorelineFoam(m, { objScale: window.charFoamScale, trackGlobal: 'charFoamScale' }));
+        }
+        // The ground itself, which is what draws the wet ring where the
+        // lake meets the grass.
+        if (ground && ground.material) applyShorelineFoam(ground.material);
+    }
+    function pickForestLakes(half, noiseScale) {
+        const lakes = [];
+        for (let i = 0; i < 500 && lakes.length < FOREST_LAKE_COUNT; i++) {
+            const x = (forestHash01(i * 7.31, i * 2.17) - 0.5) * 2 * (half - 12);
+            const z = (forestHash01(i * 3.97, i * 5.73) - 0.5) * 2 * (half - 12);
+            // Never on the spawn pocket - you would start in the water.
+            if (Math.hypot(x, z) < window.forestClearingRadius + 8) continue;
+            // Never straddling the chasm either. Measured against the BANK's
+            // full reach, not the water's: the torus extends FOREST_LAKE_BANK
+            // past the lake radius, and half a torus hanging over a drop is
+            // worse than half a lake.
+            if (Math.abs(x - FOREST_GAP_X) < FOREST_LAKE_MAX_R + FOREST_LAKE_BANK + FOREST_GAP_W) continue;
+            // Only where the noise says the wood is open.
+            const n = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
+            if (n >= window.forestTreeThreshold) continue;
+            const r = FOREST_LAKE_MIN_R + forestHash01(x * 1.7, z * 2.3) * (FOREST_LAKE_MAX_R - FOREST_LAKE_MIN_R);
+            let clash = false;
+            for (let k = 0; k < lakes.length; k++) {
+                if (Math.hypot(x - lakes[k].x, z - lakes[k].z) < r + lakes[k].r + 10) { clash = true; break; }
+            }
+            if (clash) continue;
+            lakes.push({ x, z, r });
+        }
+        return lakes;
+    }
+
+    let _forestMaskTex = null;
+    const FOREST_MASK_RES = 256;
+    const FOREST_MASK_FEATHER = 0.12;
+    function buildForestGroundMask() {
+        const res = FOREST_MASK_RES;
+        const area = window.forestAreaSize;
+        const noiseScale = window.forestNoiseScale;
+        const threshold = window.forestTreeThreshold;
+        const data = new Uint8Array(res * res * 4);
+        for (let j = 0; j < res; j++) {
+            for (let i = 0; i < res; i++) {
+                const wx = ((i + 0.5) / res - 0.5) * area;
+                const wz = ((j + 0.5) / res - 0.5) * area;
+                const n = perlin2((wx + window.forestSeed) / noiseScale, (wz + window.forestSeed) / noiseScale);
+                const openness = THREE.MathUtils.clamp((threshold - n) / FOREST_MASK_FEATHER, 0, 1);
+                const v = Math.round(openness * 255);
+                const o = (j * res + i) * 4;
+                data[o] = v; data[o + 1] = v; data[o + 2] = v; data[o + 3] = 255;
+            }
+        }
+        if (_forestMaskTex) _forestMaskTex.dispose();
+        _forestMaskTex = new THREE.DataTexture(data, res, res);
+        _forestMaskTex.needsUpdate = true;
+        // Clamped, or the mask would tile across the whole 1000-unit plane and
+        // paint paths far outside the wood.
+        _forestMaskTex.wrapS = _forestMaskTex.wrapT = THREE.ClampToEdgeWrapping;
+        _forestMaskTex.minFilter = _forestMaskTex.magFilter = THREE.LinearFilter;
+        _groundTintUniforms.uForestMask.value = _forestMaskTex;
+        _groundTintUniforms.uForestArea.value = area;
+        _groundTintUniforms.uForestTintOn.value = 1;
+    }
+
+    let _forestPlacements = null;
+    let _forestLakes = [];
+    const _forestLakeMeshes = [];
+    // Half-extent of the forest slab: past the outermost row of border trees,
+    // with a margin so the edge is not flush with a trunk.
+    const FOREST_BOX_MARGIN = 4;
+    // Deep enough that the sides read as a land mass hanging in the void
+    // rather than as a sheet of card seen edge-on. Nothing stands on the
+    // underside, so the cost is six more triangles and no draw-call change.
+    const FOREST_BOX_DEPTH = 40;
+    // The forest is TWO masses, not one, split by a chasm running north-south.
+    // FOREST_GAP_X is where the seam sits: deliberately off-centre, because the
+    // spawn clearing is at the origin and a chasm through it would drop you in
+    // on the first frame. That makes the two sides unequal, which is the point
+    // - a main wood and a smaller shelf reads better than two matching halves.
+    const FOREST_GAP_X = 18;
+    // Width of the channel the river runs down. Wider than a jump now (the
+    // player's flat reach is 5.33), which is fine because it is no longer a
+    // drop into nothing: it has a bed you wade across. That also means there
+    // is no way to strand yourself in it, which matters - there is NO fall
+    // recovery anywhere in this game.
+    const FOREST_GAP_W = 7.0;
+    // The channel floor, and the water sitting in it.
+    //
+    // 3.0 deep, which is not an arbitrary "looks about right" - it is the
+    // shallowest bank you can actually HANG from. A ledge grab puts the root
+    // 1.85 below the lip (COMP_HANG_DROP, taken from the player's own grab)
+    // and needs the 2.0 above that clear, so a 0.6 ditch left the hang
+    // position underground and the grab simply never triggered. At 3.0 the
+    // hanging feet still clear the bed by 1.15.
+    //
+    // Capped at the other end by what the AI can get back out of: a bot climbs
+    // COMP_CLIMB_MAX (3.4) at most, so 3.0 leaves a little margin and both it
+    // and the companion climb out the same way you do - jump, catch the lip,
+    // pull up. Deeper and they would live in the river.
+    const FOREST_RIVER_BED_Y = -3.0;
+    const FOREST_RIVER_Y = -2.3;    // 0.7 of water to wade in at the bottom
+    // The bed is cut slightly WIDER than the channel so its side faces end up
+    // buried inside the land masses. Flush would put two solid faces in the
+    // same plane down the whole length of the river, which z-fights.
+    const FOREST_RIVER_BED_OVERLAP = 0.06;
+    // Matches the Water Test sea's own plane, so the horizon reads the same.
+    const FOREST_SEA_SIZE = 256;
+    // The frame. Height is set to match a large tree so the wall reads as the
+    // far side of the same wood rather than as an arbitrary barrier.
+    const FOREST_BORDER_HEIGHT = 11;
+    const FOREST_BORDER_BLOCK = 6;     // one block's footprint along the edge
+    const FOREST_BORDER_CAP = 0.8;     // the earth-and-grass layer on top
+    let _forestBorderMat = null, _forestBorderCapMat = null;
+    // Walks every block position along the four edges, skipping the stretch
+    // the strait runs out through. Shared so the trees planted on top (pass 1)
+    // and the blocks themselves (pass 3a) cannot disagree about where the wall
+    // is - they are built in different passes, and any drift would leave trees
+    // standing on nothing.
+    function forestBorderLayout(cb) {
+        const bh = forestSlabHalf();
+        const step = FOREST_BORDER_BLOCK;
+        for (let side = 0; side < 4; side++) {
+            for (let t = -bh; t <= bh + 0.01; t += step) {
+                const bx = (side < 2) ? t : (side === 2 ? bh : -bh);
+                const bz = (side === 0) ? bh : (side === 1 ? -bh : t);
+                // The sea has to continue past the islands rather than be
+                // dammed by the frame.
+                if (Math.abs(bx - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + step) continue;
+                cb(bx, bz);
+            }
+        }
+    }
+    // How far back from the drop trees and lakes are kept, so nothing hangs
+    // over the edge with its roots in the air.
+    const FOREST_GAP_CLEAR = 1.6;
+    let _forestGroundBoxes = [];
+    // Where the land ends and the void begins. Shared with the barrier walls,
+    // which now sit just inside it - with the border trees gone there is
+    // nothing else out there to be stopped by, and being stopped at a visible
+    // cliff edge reads far better than being stopped in open grass.
+    function forestSlabHalf() {
+        return window.forestAreaSize * 0.5 + FOREST_BOX_MARGIN;
+    }
+    function buildForestGroundBox() {
+        const half = forestSlabHalf();
+        _forestGroundBoxes = [];
+        // [xMin, xMax] of each mass, either side of the chasm.
+        const spans = [
+            [-half, FOREST_GAP_X - FOREST_GAP_W * 0.5],
+            [FOREST_GAP_X + FOREST_GAP_W * 0.5, half],
+        ];
+        spans.forEach(([x0, x1]) => buildForestSlab(x0, x1, -half, half));
+        // The SEABED - one floor under the whole sea, not just under the
+        // channel. It is what makes falling off an island survivable rather
+        // than a bottomless drop, and it puts the strait and the open water on
+        // the same bottom, because they are the same sea.
+        //
+        // Its top sits FOREST_RIVER_BED_Y down, which makes every island edge
+        // a 3.0 wall: tall enough for the player to hang from (a grip is 1.85
+        // below its lip) and just inside what a bot can climb back out of
+        // (COMP_CLIMB_MAX 3.4). Those two numbers are why it is 3.0 and not
+        // something rounder.
+        const seaHalf = FOREST_SEA_SIZE * 0.5;
+        buildForestSlab(-seaHalf, seaHalf, -seaHalf, seaHalf, FOREST_RIVER_BED_Y);
+
+        // The sea. Not a river-shaped strip any more: it is the SAME body of
+        // water inside the channel and out past the ends of the islands, so it
+        // is one big plane on the Water Test level's own sea material, and the
+        // land is simply what pokes above it. Sized like that sea (256) so it
+        // runs to the horizon in every direction - the two slabs read as
+        // islands in it, and the channel between them as the strait you cross.
+        defaultWaterBody.uniforms.uFoamEnabled.value = 1;
+        const sea = new THREE.Mesh(
+            new THREE.PlaneGeometry(FOREST_SEA_SIZE, FOREST_SEA_SIZE), defaultWaterBody.waterMaterial);
+        sea.rotation.x = -Math.PI / 2;
+        sea.position.set(0, FOREST_RIVER_Y, 0);
+        levelGroup.add(sea);
+        // NOT a collidable - you wade and swim through it, exactly as with the
+        // lakes, and adding it would make it read as a floor to every ground
+        // scan in the game.
+        linkWaterMeshToBody(sea, defaultWaterBody);
+    }
+    function buildForestSlab(x0, x1, z0, z1, topY = 0) {
+        const sx = x1 - x0, sz = z1 - z0;
+        // Every slab's underside sits at the same depth, so a lowered one (the
+        // river bed) is shorter rather than hanging below the rest.
+        const depth = FOREST_BOX_DEPTH + topY;
+        const geo = new THREE.BoxGeometry(sx, depth, sz);
+        // BoxGeometry's uv runs 0..1 per face, and the ground texture repeats
+        // 150x - which across a face this size would be a tile per metre
+        // instead of the plane's one per 6.67. Remapping the uv to
+        // worldXZ/1000 reproduces the plane's exact texel density, since that
+        // plane is 1000 units wide with the same repeat.
+        //
+        // World coordinates, not each slab's own 0..1: the two masses are
+        // different widths and sit at different offsets, so a per-face uv would
+        // restart the pattern at each slab's edge and the grass would visibly
+        // change scale and phase across the chasm.
+        const uv = geo.attributes.uv;
+        for (let i = 0; i < uv.count; i++) {
+            uv.setXY(i,
+                (uv.getX(i) * sx + x0) / 1000,
+                (uv.getY(i) * sz + z0) / 1000);
+        }
+        uv.needsUpdate = true;
+        // Sides get their own plain material - the ground material carries the
+        // forest path tint and the shoreline foam, both of which are keyed off
+        // world XZ and would smear down a vertical face.
+        if (!_forestBoxSideMaterial) {
+            _forestBoxSideMaterial = new THREE.MeshToonMaterial({ color: 0x6b5433, gradientMap: threeTone });
+            // The sides ARE the river banks - the channel is cut into them -
+            // so they need the waterline band. Everywhere else on the slab
+            // this is a cliff face hundreds of units from any water, and the
+            // per-fragment footprint test (see foamSharedUniforms) keeps the
+            // band off it.
+            applyShorelineFoam(_forestBoxSideMaterial);
+        }
+        // BoxGeometry group order is +x, -x, +y, -y, +z, -z - index 2 is the
+        // top. Grass on the land masses; the river bed is underwater, so it
+        // takes the same earth material as the banks around it.
+        const topMat = topY < 0 ? _forestBoxSideMaterial : ground.material;
+        const mats = [
+            _forestBoxSideMaterial, _forestBoxSideMaterial, topMat,
+            _forestBoxSideMaterial, _forestBoxSideMaterial, _forestBoxSideMaterial,
+        ];
+        const slab = new THREE.Mesh(geo, mats);
+        // Top face flush with y=0, where the plane used to be, so nothing else
+        // in the level has to move.
+        slab.position.set((x0 + x1) * 0.5, topY - depth / 2, (z0 + z1) * 0.5);
+        slab.receiveShadow = true;
+        slab.castShadow = false;
+        // The forest's floor. Its Box3 runs 40 units DOWN, so the grass
+        // scatter's overhang test would read every point on the island as
+        // standing under something and reject the lot - the same trap the tree
+        // colliders hit. This says "I am the ground, not a thing above it".
+        slab.userData.isGroundSlab = true;
+        slab.updateMatrixWorld(true);
+        levelGroup.add(slab);
+        // Takes the plane's place as the level's floor - every ground scan,
+        // foot IK probe and climb check reads this array.
+        collidables.push(slab);
+        _forestGroundBoxes.push(slab);
+    }
+    let _forestBoxSideMaterial = null;
+    // Makes the lake surface actually LOOK like it is rising.
+    //
+    // The water material already bobs the disc vertically (uWaveAmplitude in
+    // createStylizedWaterMaterial's vertex shader) and the foam band already
+    // tracks that same sine - they were never out of sync. The problem is that
+    // you cannot SEE a flat disc move 5cm: its edge is buried in the bank, so
+    // the only visible waterline is where the water meets the shore, and on a
+    // fixed-radius disc that contact ring never moves. The foam band, being
+    // computed from world height, slides 0.54 up and down the slope over a
+    // cycle - so the foam visibly climbed while the water sat still.
+    //
+    // ONE source of truth for the level, and it is this function.
+    //
+    // The wave used to be computed in three places off the same numbers: the
+    // water material's vertex shader bobbed the disc, the foam shader added
+    // its own sine to the waterline, and this widened the disc. All three
+    // agreed on paper, but the disc's height came from the GPU while its
+    // radius came from the CPU, and the foam uniforms were uploaded at a
+    // different point in the frame from this call - so the contact ring and
+    // the foam band could sit at heights that disagreed by a frame's worth of
+    // wave, which is exactly the strip of bare bank between the water and its
+    // foam. Three clocks that only happen to match is a bug waiting for a
+    // reordering.
+    //
+    // Now the body is created with waveAmplitude 0, which switches OFF both
+    // the shader bob and the foam's own sine, and the height is set here on
+    // mesh.position.y. The foam reads uWaterLevel straight off that position
+    // (see waterMeshSyncs), so the band is pinned to wherever the surface
+    // actually is, by construction rather than by coincidence.
+    //
+    // Scaled rather than rebuilt: the geometry is authored in local XY (it is
+    // rotated flat), so x/y scale the radius. z is untouched.
+    const FOREST_LAKE_WAVE_SPEED = 0.5;
+    const FOREST_LAKE_WAVE_AMP = 0.06;
+    function updateForestLakeSurfaces() {
+        if (!_forestLakeMeshes.length) return;
+        const wave = Math.sin(clock.elapsedTime * FOREST_LAKE_WAVE_SPEED) * FOREST_LAKE_WAVE_AMP;
+        const y = FOREST_LAKE_Y + wave;
+        for (let i = 0; i < _forestLakeMeshes.length; i++) {
+            // Height ONLY. The radius used to be re-fitted to the bank every
+            // frame as well, which was both unnecessary and the source of a
+            // visible gap: the disc's edge and the foam band were two separate
+            // calculations of the same waterline, and they only had to
+            // disagree by a fraction for a ring of dry bank to open between
+            // them. Sized once for the top of the wave (see fillR), the disc
+            // always reaches past the contact ring and the bank hides the
+            // rest, so there is nothing left to disagree about.
+            _forestLakeMeshes[i].mesh.position.y = y;
+        }
+    }
+
     function buildVillageLevel() {
-        if (!villageScene || !treeModel) { pendingVillageLevelBuild = true; return; }
+        if (!villageScene || !treeModel || !mountainGeometry) { pendingVillageLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
@@ -6132,6 +8286,68 @@ export function startGame(CharacterClass) {
                 collidables.push(c);
             });
             levelGroup.add(tree);
+        });
+
+        // Whitebox mountains ("Cyl 16" + its copies - a 231-vertex cone each,
+        // all sharing one mesh, scattered along the horizon at scales from 64
+        // to 136) swapped for mountains.glb clones, the same trade the trees
+        // just went through. Matched by name: unlike the tree proxies there is
+        // no distinctive child structure to detect them by, but "Cyl 16" is
+        // used for nothing else in the file.
+        //
+        // Captured ONCE, into a cache that survives rebuilds. Detaching the
+        // proxies mutates villageScene permanently, but villageScene is loaded
+        // once and re-added to a levelGroup that gets wiped on every build - so
+        // reading the proxies fresh each time would find them on the first
+        // entry and nothing at all on the second, and the mountains would
+        // simply stop appearing after you left the village and came back.
+        if (!_villageMountainPlacements) {
+            _villageMountainPlacements = [];
+            const mountainProxies = [];
+            villageScene.traverse(o => {
+                if (o.isMesh && o.name && o.name.startsWith('Cyl_16')) mountainProxies.push(o);
+            });
+            mountainProxies.forEach(proxy => {
+                const pos = new THREE.Vector3();
+                const quat = new THREE.Quaternion();
+                const scale = new THREE.Vector3();
+                proxy.updateWorldMatrix(true, false);
+                proxy.matrixWorld.decompose(pos, quat, scale);
+                _villageMountainPlacements.push({ pos, scale });
+                if (proxy.parent) proxy.parent.remove(proxy);
+            });
+        }
+        _villageMountainPlacements.forEach((placement, idx) => {
+            const pos = placement.pos, scale = placement.scale;
+            // The proxy cone and the mountain share the same local frame -
+            // both authored y:[0,1] with the base on the origin plane and
+            // roughly unit radius - so the proxy's own scale carries straight
+            // across and the new peak stands exactly as tall, and on exactly
+            // the same ground line, as the one it replaces. The mountain
+            // reaches a little further on +x/+z (local max 1.42/1.25 against
+            // the cone's 1.02/1.0), which just makes it a touch broader.
+            const mountain = new THREE.Mesh(mountainGeometry, mountainMaterial);
+            mountain.position.copy(pos);
+            mountain.scale.copy(scale);
+            // Yaw only. The proxies are all axis-aligned, which on identical
+            // cloned geometry means five copies of the same silhouette in a
+            // row - the same "every tree faces one way" problem the forest
+            // had. Spread around the circle by index, offset by the author's
+            // own second instance (-94 degrees) so the two shapes they placed
+            // by hand still read the way they intended.
+            mountain.rotation.y = -1.642 + idx * (Math.PI * 2 / _villageMountainPlacements.length);
+            mountain.castShadow = false;
+            mountain.receiveShadow = false;
+            // NOT collidable, and not answering raycasts either. These sit
+            // 100-220 units out and 21 below the play area, purely a skyline;
+            // the proxies were in collidables only because the blanket traverse
+            // at the top of this function sweeps up every mesh in the file.
+            // Putting the detailed versions back would be strictly worse - 1888
+            // vertices each against the cone's 231, sitting in the array that
+            // every ground scan, foot IK probe and ledge check reads.
+            mountain.raycast = () => {};
+            mountain.updateMatrixWorld(true);
+            levelGroup.add(mountain);
         });
 
         // Spawn: this whitebox has no dedicated "Empty" spawn marker yet
@@ -6477,7 +8693,7 @@ export function startGame(CharacterClass) {
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = angleRad;
         levelGroup.add(ramp); collidables.push(ramp);
-        makeLevelOccluder(ramp);
+        makeLevelOccluder(ramp, { grass: true });
 
         // Angle label at the ramp's own low/right corner (local +x, +z,
         // just above the surface) - parented to the ramp mesh itself so it
@@ -6723,11 +8939,103 @@ export function startGame(CharacterClass) {
     // one's turn came last in that frame's loop would win, stomping every
     // other object using that material. A per-mesh clone gives each one an
     // independent uniform so they fade in/out on their own.
-    function makeLevelOccluder(mesh) {
+    function makeLevelOccluder(mesh, opts) {
         mesh.material = mesh.material.clone();
+        // BEFORE makeDitherable, and on the CLONE rather than on the shared
+        // platMat. Both of these chain onBeforeCompile using the same
+        // replace-the-include-and-re-insert-it pattern, so they stack in
+        // either order - but Material.clone() does not carry an
+        // onBeforeCompile across, so anything applied to the source material
+        // would be silently lost here.
+        if (opts && opts.grass) applyTriplanarGrass(mesh.material);
         makeDitherable(mesh.material);
         ditherOccluders.push(mesh);
         return mesh;
+    }
+
+    // ---- Triplanar grass ----
+    // Projects the terrain's own grass texture onto a mesh from world space
+    // instead of from its uv, and blends by the world normal: grass on
+    // anything facing up, earth down the sides.
+    //
+    // World-projected because these are RoundedBoxGeometry blocks and ramps
+    // whose uv is per-face 0..1 - mapping a texture through that stretches it
+    // to whatever each face happens to measure, so a tall block and a thin
+    // slab would show grass at completely different scales, and a ramp's
+    // sloped face would show it stretched along the slope. Sampling by world
+    // position gives every surface in the level the same texel density
+    // regardless of shape, and neighbouring blocks line up.
+    //
+    // Live-tunable, following the panel convention - see the globals below.
+    window.triGrassScale = 0.16;    // world units -> uv; smaller = bigger blades
+    window.triGrassUpStart = 0.35;  // normal.y where earth starts turning to grass
+    window.triGrassUpEnd = 0.72;    // ...and where it is fully grass
+    window.triGrassSharpness = 4.0; // how hard the three projections cut over
+    const _triGrassUniforms = {
+        uTriMap: { value: groundTex },
+        uTriScale: { value: window.triGrassScale },
+        uTriUp0: { value: window.triGrassUpStart },
+        uTriUp1: { value: window.triGrassUpEnd },
+        uTriSharp: { value: window.triGrassSharpness },
+        // Sides are the same grass texture pushed toward earth rather than a
+        // second texture - one sampler, and the two always match in scale and
+        // pattern, which is what makes the transition read as one surface.
+        uTriSideTint: { value: new THREE.Color(0x9c7b4e) },
+        uTriTopTint: { value: new THREE.Color(0xffffff) },
+    };
+    function applyTriplanarGrass(material) {
+        if (!material || material.userData.hasTriplanarGrass) return;
+        material.userData.hasTriplanarGrass = true;
+        const prev = material.onBeforeCompile;
+        material.onBeforeCompile = (shader, renderer) => {
+            if (prev) prev(shader, renderer);
+            Object.assign(shader.uniforms, _triGrassUniforms);
+            shader.vertexShader = shader.vertexShader
+                .replace('#include <common>', `#include <common>
+                    varying vec3 vTriWorld;
+                    varying vec3 vTriNormal;`)
+                .replace('#include <defaultnormal_vertex>', `#include <defaultnormal_vertex>
+                    vTriNormal = normalize(mat3(modelMatrix) * objectNormal);`)
+                // Same anchor applyShorelineFoam uses, for the same reason:
+                // <skinning_vertex> runs in every material's template and
+                // `transformed` is the posed vertex, where `position` at
+                // <begin_vertex> would be the bind pose.
+                .replace('#include <skinning_vertex>', `#include <skinning_vertex>
+                    vTriWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+            shader.fragmentShader = shader.fragmentShader
+                .replace('#include <common>', `#include <common>
+                    varying vec3 vTriWorld;
+                    varying vec3 vTriNormal;
+                    uniform sampler2D uTriMap;
+                    uniform float uTriScale, uTriUp0, uTriUp1, uTriSharp;
+                    uniform vec3 uTriSideTint, uTriTopTint;`)
+                .replace('#include <map_fragment>', `#include <map_fragment>
+                    {
+                        vec3 triN = normalize(vTriNormal);
+                        // Blend weights from the normal, sharpened so the
+                        // three projections cut over quickly instead of
+                        // smearing all three across every curved surface -
+                        // these are rounded boxes, and a soft blend on the
+                        // fillets reads as blur.
+                        vec3 triW = pow(abs(triN), vec3(uTriSharp));
+                        triW /= max(triW.x + triW.y + triW.z, 1e-4);
+                        vec3 triX = texture2D(uTriMap, vTriWorld.zy * uTriScale).rgb;
+                        vec3 triY = texture2D(uTriMap, vTriWorld.xz * uTriScale).rgb;
+                        vec3 triZ = texture2D(uTriMap, vTriWorld.xy * uTriScale).rgb;
+                        vec3 triCol = triX * triW.x + triY * triW.y + triZ * triW.z;
+                        // Grass only where it would actually grow. Underside
+                        // faces (normal.y < 0) never qualify, so the bottom of
+                        // an overhang stays earth.
+                        float triUp = smoothstep(uTriUp0, uTriUp1, triN.y);
+                        diffuseColor.rgb = triCol * mix(uTriSideTint, uTriTopTint, triUp);
+                    }`);
+        };
+        // onBeforeCompile is not part of three's program cache key, so without
+        // this a treated material could share a compiled program with an
+        // untreated one.
+        const prevKey = material.customProgramCacheKey;
+        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|triGrass';
+        material.needsUpdate = true;
     }
 
     function buildStairsLevel() {
@@ -6764,7 +9072,7 @@ export function startGame(CharacterClass) {
         const startMesh = new THREE.Mesh(boxGeoTemplate, platMat);
         startMesh.position.set(0, cubeSize/2, 0); startMesh.castShadow = true; startMesh.receiveShadow = true;
         levelGroup.add(startMesh); collidables.push(startMesh);
-        makeLevelOccluder(startMesh);
+        makeLevelOccluder(startMesh, { grass: true });
 
         // Builds one full column of 6 steps, centered at the given x -
         // pulled out so a second, flush-adjacent column (see below) can
@@ -6786,7 +9094,7 @@ export function startGame(CharacterClass) {
                 mesh.name = namePrefix + i;
                 mesh.castShadow = true; mesh.receiveShadow = true;
                 levelGroup.add(mesh); collidables.push(mesh);
-                makeLevelOccluder(mesh);
+                makeLevelOccluder(mesh, { grass: true });
 
                 // Temporary debug numbering (always visible, no toggle) so
                 // steps can be pointed at unambiguously by column+number
@@ -6829,7 +9137,7 @@ export function startGame(CharacterClass) {
         jumpTestBlock.position.set(-cubeSize * 2, jumpTestH / 2, -10);
         jumpTestBlock.castShadow = true; jumpTestBlock.receiveShadow = true;
         levelGroup.add(jumpTestBlock); collidables.push(jumpTestBlock);
-        makeLevelOccluder(jumpTestBlock);
+        makeLevelOccluder(jumpTestBlock, { grass: true });
         // Elevated walkway from the top of the stairs (last one lands at
         // (0, 16.5, -25) per the loop above) over to the ramp row, so
         // approaching a ramp by walking/falling onto its high end can be
@@ -6848,7 +9156,7 @@ export function startGame(CharacterClass) {
             seg.position.set(x, y, z);
             seg.castShadow = true; seg.receiveShadow = true;
             levelGroup.add(seg); collidables.push(seg);
-            makeLevelOccluder(seg);
+            makeLevelOccluder(seg, { grass: true });
         };
         // First segment (leg 1, i=0, right at the stairs' own top) and last
         // segment (leg 2, its final i, right above the ramp row) are
@@ -7013,7 +9321,7 @@ export function startGame(CharacterClass) {
                 under.position.set(stairL3.position.x, stairL3.position.y - cubeSize, stairL3.position.z);
                 under.castShadow = true; under.receiveShadow = true;
                 levelGroup.add(under); collidables.push(under);
-                makeLevelOccluder(under);
+                makeLevelOccluder(under, { grass: true });
             }
 
             // B5: halved height, bottom edge kept where the full-height
@@ -7035,7 +9343,7 @@ export function startGame(CharacterClass) {
                 under.position.set(step.position.x, step.position.y - cubeSize, step.position.z);
                 under.castShadow = true; under.receiveShadow = true;
                 levelGroup.add(under); collidables.push(under);
-                makeLevelOccluder(under);
+                makeLevelOccluder(under, { grass: true });
             });
 
             // A4: a pickup-able small box on top, deliberately off-center
@@ -7237,6 +9545,11 @@ export function startGame(CharacterClass) {
         // scene state (ground material, sky, fog), so every other level has to
         // put it back rather than assuming it was never touched.
         if (currentLevel !== "local_blank") setPresentationGreyscale(false);
+        // Same reason as ground.visible and the greyscale reset above: the
+        // ground is shared, so a level that tints it has to be undone by every
+        // other level rather than assumed never to have happened.
+        // buildForestLevel turns it back on.
+        _groundTintUniforms.uForestTintOn.value = 0;
         // EVERY body, not just defaultWaterBody: a body created by one level
         // (the Water Test level's pond) outlives that level - it is a
         // module-scope `let`, still in waterBodies, still holding its own
@@ -7320,7 +9633,7 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_stairs'; currentLevel = select.value;
+        select.value = 'local_forest'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
@@ -7367,7 +9680,7 @@ export function startGame(CharacterClass) {
     // a quarter of the pixels keeps the block's shape and edges readable, so
     // you can still judge what you are standing on/next to while seeing
     // through it.
-    window.ditherStrength = 0.90;
+    window.ditherStrength = 0.98;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     window.ditherFadeSpeed = 2.0;
@@ -7497,13 +9810,23 @@ export function startGame(CharacterClass) {
     function updateDitherOccluders(cam, playerPoint, delta) {
         _ditherScreenVec.copy(playerPoint).project(cam);
         renderer.getDrawingBufferSize(_ditherDrawSize);
+        // The hole is measured in gl_FragCoord, i.e. in whatever buffer the
+        // scene is actually being drawn into. With the pixelation pass on that
+        // is NOT the drawing buffer - RenderPixelatedPass renders the scene at
+        // 1/pixelSize resolution and upscales afterwards. Sizing the hole from
+        // the full drawing buffer therefore put its centre at pixelSize times
+        // the right coordinates and made its radius pixelSize times too big,
+        // which is the "hole is in the wrong place and too large at pixel size
+        // 2" report. Both are the same divide.
+        const pixelDiv = (window.pixelEffectEnabled && renderPixelatedPass.pixelSize > 0)
+            ? renderPixelatedPass.pixelSize : 1;
         _ditherScreenUniform.value.set(
-            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x,
-            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y);
+            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x / pixelDiv,
+            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y / pixelDiv);
         // Matches vViewPosition.z in the shader: distance in front of the
         // camera, not straight-line distance to it.
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
-        _ditherRadiusUniform.value = window.ditherHoleRadius;
+        _ditherRadiusUniform.value = window.ditherHoleRadius / pixelDiv;
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
@@ -8592,11 +10915,14 @@ export function startGame(CharacterClass) {
     // hit was judged purely on its own forceMagnitude, so no amount of
     // never letting the bot recover between combo hits could ever knock
     // it down on its own.
-    window.aiBotStagger = 100.0;
+    //
+    // These are the SHARED TUNING (max/rate/delay); the pool itself is per
+    // enemy, on the avatar as bot.staggerPool/bot.staggerRegenCooldown. It
+    // used to be a global too, which with more than one bot meant they drew
+    // down a single pool between them - punch one, and the other went down.
     window.aiBotStaggerMax = 100.0;
     window.aiBotStaggerRegenRate = 20.0;
     window.aiBotStaggerRegenDelay = 2.5;
-    window.aiBotStaggerRegenCooldown = 0;
     // How much of the stagger pool each hit tier chips away (ClimbGame.html's
     // AI-bot block and multiplayer.js's _applyPunchEvent both read these).
     // Tuned so the full left->right->5-hit combo (6 'medium' hits at the
@@ -8799,6 +11125,7 @@ export function startGame(CharacterClass) {
         { id: 'proj-size-slider', vId: 'proj-size-val', func: v => projSize = v, raw: true },
         { id: 'proj-speed-slider', vId: 'proj-speed-val', func: v => projSpeed = v, raw: true },
         { id: 'orange-recoil-slider', vId: 'orange-recoil-val', func: v => window.orangeRecoilForce = v, raw: true },
+        { id: 'head-scale-slider', vId: 'head-scale-val', func: v => window.headScale = v, fix: 2 },
         { id: 'camera-distance-slider', vId: 'camera-distance-val', func: v => { window.cameraDistance = v; cameraRadius = v; }, fix: 1 },
         { id: 'camera-close-elev-slider', vId: 'camera-close-elev-val', func: v => window.cameraCloseStartElevation = v, fix: 0 },
         { id: 'drag-rotate-sensitivity-slider', vId: 'drag-rotate-sensitivity-val', func: v => window.dragRotateSensitivity = v, fix: 1 },
@@ -8995,9 +11322,15 @@ export function startGame(CharacterClass) {
     // here - this checkbox just flips the master on/off flag that gate
     // also checks, it doesn't touch style directly (the per-frame update
     // would immediately overwrite a direct set here anyway).
-    window.punchButtonEnabled = false;
+    window.punchButtonEnabled = true;
     const togglePunchBtnEl = document.getElementById('toggle-punch-btn');
-    if (togglePunchBtnEl) togglePunchBtnEl.addEventListener('change', e => { window.punchButtonEnabled = e.target.checked; });
+    if (togglePunchBtnEl) {
+        // Keep the checkbox showing the real state - it starts on now, and a
+        // box that reads unchecked while the button is visible is worse than
+        // no box at all.
+        togglePunchBtnEl.checked = window.punchButtonEnabled;
+        togglePunchBtnEl.addEventListener('change', e => { window.punchButtonEnabled = e.target.checked; });
+    }
     // Visualizes the two screen corners the look-drag pointerdown handler
     // (see lookPointerId above) deliberately ignores, so a thumb reaching
     // for the joystick/action buttons can't accidentally start rotating the
@@ -9746,7 +12079,7 @@ export function startGame(CharacterClass) {
         setCarryablesShading(enabled);
         char.setDynamicShading(enabled);
         network.remotes.forEach(avatar => { if (avatar.setDynamicShading) avatar.setDynamicShading(enabled); });
-        if (aiBot) aiBot.setDynamicShading(enabled);
+        aiBots.forEach(r => r.bot.setDynamicShading(enabled));
         if (window.sacks) window.sacks.forEach(s => { if (s.setDynamicShading) s.setDynamicShading(enabled); });
     }
     document.getElementById('toggle-phong-lambert').addEventListener('change', e => setPhongLambertEnabled(e.target.checked));
@@ -9779,6 +12112,15 @@ export function startGame(CharacterClass) {
         const v = parseFloat(e.target.value);
         renderPixelatedPass.depthEdgeStrength = v;
         document.getElementById('pixel-depth-edge-val').textContent = v.toFixed(2);
+    });
+
+    // How big a depth step counts as an edge, as a FRACTION of the distance to
+    // it - so one setting works at every range. The Strength slider above
+    // scales how dark the edge is drawn; this decides whether there is one.
+    document.getElementById('pixel-depth-sens-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.pixelDepthEdgeSensitivity = v;
+        document.getElementById('pixel-depth-sens-val').textContent = v.toFixed(3);
     });
 
     document.getElementById('toggle-ortho-camera').addEventListener('change', e => {
@@ -9943,6 +12285,17 @@ export function startGame(CharacterClass) {
         // Every water body's own uTime (defaultWaterBody's, the Water Test
         // level's pond, and any future one) - each carries its own
         // uWaterLevel etc, but they all still animate off the same clock.
+        // Panel globals -> triplanar uniforms. Cheap enough to copy every
+        // frame, and it means the sliders retune every treated block at once
+        // with no level rebuild - the same pattern the water sliders use.
+        _triGrassUniforms.uTriScale.value = window.triGrassScale;
+        _triGrassUniforms.uTriUp0.value = window.triGrassUpStart;
+        _triGrassUniforms.uTriUp1.value = window.triGrassUpEnd;
+        _triGrassUniforms.uTriSharp.value = window.triGrassSharpness;
+        // Before the uniform upload below, never after: uWaterLevel and
+        // uFoamLevel are both read straight off mesh.position.y, so moving the
+        // surface afterwards would leave the foam a frame behind it.
+        if (currentLevel === 'local_forest') updateForestLakeSurfaces();
         waterBodies.forEach(wb => {
             wb.uniforms.uTime.value = clock.elapsedTime;
             // These aren't part of the shared foam `uniforms` object (only
@@ -9979,6 +12332,13 @@ export function startGame(CharacterClass) {
             const halfZ = (g.boundingBox.max.y - g.boundingBox.min.y) * 0.5 * mesh.scale.y;
             foamSharedUniforms.uFoamMin.value[i].set(mesh.position.x - halfX, mesh.position.z - halfZ);
             foamSharedUniforms.uFoamMax.value[i].set(mesh.position.x + halfX, mesh.position.z + halfZ);
+            // Round water gets tested as a circle, not as its bounding box -
+            // see uFoamRadius. Read off the geometry rather than a flag on the
+            // mesh so an editor-added circle picks it up too. Scale is folded
+            // in the same way the half-extents above do it.
+            foamSharedUniforms.uFoamRadius.value[i] = (g.type === 'CircleGeometry' && g.parameters)
+                ? g.parameters.radius * Math.max(Math.abs(mesh.scale.x), Math.abs(mesh.scale.y))
+                : 0;
             foamSharedUniforms.uFoamLevel.value[i] = mesh.position.y;
             foamSharedUniforms.uFoamSpeed.value[i] = waterBody.uniforms.uWaveSpeed.value;
             foamSharedUniforms.uFoamAmp.value[i] = waterBody.uniforms.uWaveAmplitude.value;
@@ -10030,12 +12390,16 @@ export function startGame(CharacterClass) {
         } else if (window.playerStagger < window.playerStaggerMax) {
             window.playerStagger = Math.min(window.playerStaggerMax, window.playerStagger + window.playerStaggerRegenRate * delta);
         }
-        // Same regen tick as the player's own stagger pool above, for the
-        // AI bot's mirrored one (see window.aiBotStagger's own comment).
-        if (window.aiBotStaggerRegenCooldown > 0) {
-            window.aiBotStaggerRegenCooldown -= delta;
-        } else if (window.aiBotStagger < window.aiBotStaggerMax) {
-            window.aiBotStagger = Math.min(window.aiBotStaggerMax, window.aiBotStagger + window.aiBotStaggerRegenRate * delta);
+        // Same regen tick as the player's own stagger pool above, run per
+        // enemy - each carries its own pool (see window.aiBotStaggerMax).
+        for (let i = 0; i < aiBots.length; i++) {
+            const b = aiBots[i].bot;
+            if (b.staggerPool === undefined) b.staggerPool = window.aiBotStaggerMax;
+            if (b.staggerRegenCooldown > 0) {
+                b.staggerRegenCooldown -= delta;
+            } else if (b.staggerPool < window.aiBotStaggerMax) {
+                b.staggerPool = Math.min(window.aiBotStaggerMax, b.staggerPool + window.aiBotStaggerRegenRate * delta);
+            }
         }
 
         // Used to live inside Character.prototype.animate() in the HTML file,
@@ -10209,12 +12573,31 @@ export function startGame(CharacterClass) {
                     // detectMeleeHits already applies for a regular/charge
                     // punch landing on it (ClimbGame.html), applied directly
                     // instead of through sendPunchEvent since there's no
-                    // remote to send it to. This projectile only ever fires
-                    // from the local player's own charge attack, so unlike
-                    // the remotes check above there's no bystander-mirror
-                    // self-hit case to guard against here.
-                    if (!consumed && window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
-                        const botHitPos = window.aiBot.getHitReferencePoint();
+                    // remote to send it to.
+                    //
+                    // A projectile thrown BY a bot cannot hit any bot.
+                    //
+                    // The remotes branch above notes that this projectile only
+                    // ever comes from the local player - that stopped being
+                    // true when the red bot got a charge punch. RemoteAvatar
+                    // spawns the projectile from its hand on the mature-charge
+                    // frame exactly as it does for anyone else, and that start
+                    // point is inside the thrower's own hit radius, so it
+                    // knocked ITSELF down on the frame it punched. Exactly the
+                    // self-hit the remotes branch already guards against; it
+                    // just did not apply to bots until one of them could throw.
+                    //
+                    // Skipping the whole group rather than only the thrower,
+                    // because bots do not fight each other - aiBotPickVictim
+                    // only ever picks the player or a companion - and letting
+                    // one flatten its neighbours with a stray projectile would
+                    // contradict that. Its melee charge already carries the
+                    // damage; this projectile is the visual.
+                    const chargeFromBot = aiBots.some(r => r.bot.id === cp.ownerId);
+                    for (let bi = 0; bi < aiBots.length && !consumed && !chargeFromBot; bi++) {
+                        const bot = aiBots[bi].bot;
+                        if (!bot.isLoaded || bot.isRagdoll) continue;
+                        const botHitPos = bot.getHitReferencePoint();
                         if (botHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
                             if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
                             if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
@@ -10224,9 +12607,9 @@ export function startGame(CharacterClass) {
                             const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
                             const magnitudeForRagdoll = intensity === 'high' ? knockback : chargeForce;
                             const botVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
-                            window.aiBot.triggerHitFlash(strength);
-                            if (intensity === 'high') window.aiBot.initRagdoll(botVelocity, intensity);
-                            else window.aiBot.applyProceduralRecoil(botVelocity, intensity);
+                            bot.triggerHitFlash(strength);
+                            if (intensity === 'high') bot.initRagdoll(botVelocity, intensity);
+                            else bot.applyProceduralRecoil(botVelocity, intensity);
                             consumed = true;
                         }
                     }
@@ -11029,18 +13412,23 @@ export function startGame(CharacterClass) {
             // Same reaction pattern the charge-attack projectile's own
             // bot-hit check already uses elsewhere in this file (no
             // network event - the bot is local-only, nothing to broadcast).
-            if (window.aiBot && window.aiBot.isLoaded && !window.aiBot.isRagdoll) {
-                const botHitPos = window.aiBot.getHitReferencePoint();
+            let projectileHitBot = false;
+            for (let bi = 0; bi < aiBots.length; bi++) {
+                const bot = aiBots[bi].bot;
+                if (!bot.isLoaded || bot.isRagdoll) continue;
+                const botHitPos = bot.getHitReferencePoint();
                 if (botHitPos.distanceTo(p.mesh.position) < hitRadius) {
                     const flashStrengthByIntensity = { low: 0.5, medium: 0.9, medium_high: 1.4, high: 2.5 };
                     const hitStrength = flashStrengthByIntensity[p.intensity] || 2.5;
-                    window.aiBot.triggerHitFlash(hitStrength);
-                    if (p.intensity === 'high') window.aiBot.initRagdoll(p.velocity, p.intensity);
-                    else window.aiBot.applyProceduralRecoil(p.velocity, p.intensity);
+                    bot.triggerHitFlash(hitStrength);
+                    if (p.intensity === 'high') bot.initRagdoll(p.velocity, p.intensity);
+                    else bot.applyProceduralRecoil(p.velocity, p.intensity);
                     scene.remove(p.mesh); projectiles.splice(i, 1);
-                    continue;
+                    projectileHitBot = true;
+                    break;
                 }
             }
+            if (projectileHitBot) continue;
 
             let jarDestroyed = false;
             for (let c of carryables) {
@@ -11361,10 +13749,20 @@ export function startGame(CharacterClass) {
                         if (vHitPos.distanceTo(c.mesh.position) >= hitRadius + 1.0) return;
                         if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
                         if (window.spawnHitEffect) window.spawnHitEffect(c.mesh.position.clone());
-                        const intensity = hitForce >= 70 ? 'high' : 'medium_high';
+                        // A thrown object floors the AI bot outright, whatever
+                        // the force - taking a crate to the head should put it
+                        // down, not make it stumble. Everyone else keeps the
+                        // graded reaction, so a throw still has to be a big one
+                        // to ragdoll the companion or a remote player.
+                        const alwaysRagdoll = aiBots.some(r => r.bot === victim);
+                        const intensity = (alwaysRagdoll || hitForce >= 70) ? 'high' : 'medium_high';
                         const flashStrengthByIntensity = { medium: 0.9, medium_high: 1.4, high: 2.5 };
                         const strength = flashStrengthByIntensity[intensity] || 1.0;
                         const knockback = window.chargePunchKnockback !== undefined ? window.chargePunchKnockback : 15;
+                        // Ragdoll takes the knockback constant rather than the
+                        // raw throw force: the force number is tuned for a
+                        // stagger impulse, and feeding it straight into a limp
+                        // body flings it across the level.
                         const magnitudeForRagdoll = intensity === 'high' ? knockback : hitForce;
                         const vVelocity = impactDir.clone().multiplyScalar(magnitudeForRagdoll);
                         victim.triggerHitFlash(strength);
@@ -11372,8 +13770,8 @@ export function startGame(CharacterClass) {
                         else victim.applyProceduralRecoil(vVelocity, intensity);
                         consumed = true;
                     };
-                    if (!consumed) throwHit(window.aiBot);
-                    if (!consumed) throwHit(window.companion);
+                    for (let bi = 0; bi < aiBots.length && !consumed; bi++) throwHit(aiBots[bi].bot);
+                    for (let ci = 0; ci < companions.length && !consumed; ci++) throwHit(companions[ci].comp);
 
                     // A thrown jar shatters on any of these hits too, same
                     // as it already does hitting a wall in the collision
@@ -13041,15 +15439,30 @@ export function startGame(CharacterClass) {
         }
         // Before both consumers - the bot reads the trail to find where the
         // player left its level, the companion to retrace their route.
+        if (currentLevel === 'local_forest') applyForestFoam();
+        // Published for the companions' ledge-clearance test, which has to
+        // know whether the player is HOLDING a grip or merely standing near
+        // one - see hangSpotTaken.
+        window.playerIsLedgeGrabbing = isLedgeGrabbing || isClimbingUp;
         recordPlayerTrail(delta);
-        updateAiBot(delta);
-        updateCompanion(delta);
+        updateAiBots(delta);
+        updateCompanions(delta);
+        // After the companion has moved for this frame, so the crumb is where
+        // it actually ended up.
+        recordCompanionTrails(delta);
+        // After every avatar has had its mixer run for this frame, so nothing
+        // can overwrite it before it is drawn.
+        applyHeadScale();
         // Broadcasts under a fixed id ('ai-bot-1') so every connected client
         // renders the same bot, driven by whoever spawned it - not
         // synced/cleaned up if that person disconnects, it just stays put
         // wherever it last was on everyone else's screen (simple, matches
         // what was asked for; no ownership handoff or despawn-on-leave).
-        if (aiBot && network) network.sendAiBotState(aiBot.group.position, aiBot.group.quaternion, aiBot.stateName, delta);
+        // Only the first bot goes over the wire: the protocol has a single
+        // 'ai-bot-1' slot, and widening it is a server change. The second one
+        // is local-only until that happens.
+        const netBot = aiBots.length ? aiBots[0].bot : null;
+        if (netBot && network) network.sendAiBotState(netBot.group.position, netBot.group.quaternion, netBot.stateName, delta);
 
         let trackingPoint = _tempVec1;
         if (char.hips && (isClimbingUp || char.isRagdoll || char.isStandingUp)) char.hips.getWorldPosition(trackingPoint);
@@ -13359,6 +15772,17 @@ if (leftArrow) {
         const activeCamera = window.orthoCameraEnabled ? orthoCamera : camera;
         if (window.pixelEffectEnabled) {
             renderPixelatedPass.camera = activeCamera;
+            // Linearising depth needs the camera's own near/far, and which
+            // projection it is - read here rather than at setup because the
+            // ortho toggle can swap the camera at any time.
+            _pixelEdgeUniforms.uEdgeNear.value = activeCamera.near;
+            _pixelEdgeUniforms.uEdgeFar.value = activeCamera.far;
+            _pixelEdgeUniforms.uEdgeOrtho.value = activeCamera.isOrthographicCamera ? 1 : 0;
+            const sens = Math.max(0.002, window.pixelDepthEdgeSensitivity);
+            _pixelEdgeUniforms.uEdgeLo.value = sens;
+            // 2.5x gives the smoothstep a band to work in; too tight and the
+            // half-step quantisation below it turns into aliasing.
+            _pixelEdgeUniforms.uEdgeHi.value = sens * 2.5;
             composer.render();
         } else {
             renderer.render(scene, activeCamera);
