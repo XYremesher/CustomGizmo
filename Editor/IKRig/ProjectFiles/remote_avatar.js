@@ -768,7 +768,28 @@ export class RemoteAvatar {
             // rather than letting the standup crossfade paper over a real
             // height gap as an unnaturally slow float down.
             const nearFloor = !hipsP || (hipsP.pos.y - floorY) < 1.0;
-            if (this.ragdollTimer > this.ragdollMaxTime && (nearFloor || this.ragdollTimer > this.ragdollMaxTime + 5.0)) {
+            // knockedOutT holds it down. Set when a bot is put down twice in
+            // quick succession (see noteBotKnockdown in game_js.js), it keeps
+            // the ragdoll simulating instead of standing up - so it settles
+            // and STAYS in the pose it landed in for as long as it is out.
+            //
+            // Gated here rather than by cancelling the stand-up afterwards:
+            // beginStandUp snaps the group back under the hips and starts a
+            // crossfade, so anything that lets it start has already moved the
+            // character out of the pose it fell in.
+            const heldDown = this.knockedOutT > 0;
+            // A knocked-out body lies there for 30 seconds, and the verlet
+            // solver runs 20 iterations against every nearby collidable the
+            // whole time - for a pose that stopped changing after the first
+            // second. Once it has settled, freeze it: keep the particles
+            // exactly where they are and skip the sim entirely. The visual is
+            // identical (that is the point - it holds the pose it landed in)
+            // and the cost goes to zero.
+            if (heldDown && this.ragdollTimer > this.ragdollMaxTime + 1.0) {
+                if (this.mixer) this.mixer.update(delta);
+                return;
+            }
+            if (!heldDown && this.ragdollTimer > this.ragdollMaxTime && (nearFloor || this.ragdollTimer > this.ragdollMaxTime + 5.0)) {
                 this.beginStandUp(hipsP ? Math.max(0, hipsP.pos.y - 0.5) : 0);
             }
             if (this.mixer) this.mixer.update(delta);
@@ -942,7 +963,10 @@ export class RemoteAvatar {
         _ragdollRayOrigin.y += 0.5;
         _ragdollRaycaster.set(_ragdollRayOrigin, _ragdollDownVec);
         const hits = _ragdollRaycaster.intersectObjects(window.collidables || []);
-        return hits.length > 0 ? hits[0].point.y : 0;
+        // -Infinity, not 0, when there is nothing below: the solver clamps to
+        // this plane, and answering "the floor is at the world origin" for a
+        // body falling through open space snaps it back up to zero.
+        return hits.length > 0 ? hits[0].point.y : -Infinity;
     }
 
     // Positions the held carryable from this avatar's own hand bones every

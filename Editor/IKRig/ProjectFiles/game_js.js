@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { Sandbag } from './sandbag.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { MultiplayerClient } from './multiplayer.js';
@@ -10,6 +11,14 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// three.js ships this OFF, so every loader call goes to the network even for a
+// file already fetched. Every RemoteAvatar - the player's companions, the AI
+// bots, both story NPCs, the village quest-giver, every multiplayer remote -
+// builds its own FBXLoader and asks for the same StickMan.fbx, so without this
+// each one spawned mid-play stalls on a fresh download of a model already in
+// memory. That is the hitch when a companion joins.
+THREE.Cache.enabled = true;
 // LevelEditor is loaded lazily (see ensureLevelEditorLoaded below), NOT
 // imported statically here - a top-level import is fetched/parsed before
 // any game code runs at all, so every player paid that cost even though
@@ -122,6 +131,23 @@ export function startGame(CharacterClass) {
     // Ground normal fitted through the five ground-ray hit points (see the
     // bevel check in the ground scan).
     const _fitNormalScratch = new THREE.Vector3();
+    // How far apart the five ground-scan rays sample, and why it is not a
+    // constant.
+    //
+    // The plane fit exists to overrule an over-steep facet - a block edge, a
+    // bevel - by asking what the ground does either side of it. That only
+    // works while the samples reach PAST the feature: at the default 0.25 the
+    // span is 0.50, and a bevelled voxel mesh has edges 0.52 wide, so all five
+    // rays land inside one bevel, agree it is steep, and the correction never
+    // fires. Nothing to disagree with.
+    //
+    // A surface can therefore ask for a wider span via
+    // userData.groundSampleSpread. Read from the PREVIOUS frame's ground
+    // object rather than this one's, because the offsets have to exist before
+    // any ray is cast - one frame of lag crossing onto such a surface, which
+    // is not perceptible.
+    const GROUND_SAMPLE_SPREAD = 0.25;
+    let _groundSampleSpread = GROUND_SAMPLE_SPREAD;
     // The single-triangle normal the scan started from, kept so the ground-ray
     // debug view can show it next to the corrected one - seeing the raw facet
     // swing sideways on a block edge while the used normal stays put is the
@@ -926,6 +952,10 @@ export function startGame(CharacterClass) {
     // Collar tufts vary more in size than the scattered ones - a uniform ring
     // reads as a manufactured collar rather than as something growing there.
     window.grassTreeSizeMin = 0.45, window.grassTreeSizeMax = 1.75;
+    // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
+    // so this is a little past 45 degrees.
+    const GRASS_MIN_UP = 0.72;
+    const _grassHitNormal = new THREE.Vector3();
     function clearGrass() {
         grassMeshes.forEach(m => { scene.remove(m); m.dispose && m.dispose(); });
         grassMeshes.length = 0;
@@ -982,8 +1012,14 @@ export function startGame(CharacterClass) {
         // Tree bases to cluster around, when there are any. _forestPlacements
         // is the scatter's own list, so the grass follows wherever the trees
         // actually ended up rather than re-deriving it from the noise.
-        const treeSpots = (currentLevel === 'local_forest' && _forestPlacements && _forestPlacements.length)
-            ? _forestPlacements : null;
+        // Ground-level trees only. _forestPlacements also carries the ones
+        // standing on top of the frame wall, 11 units up, and a collar for
+        // those would be scattered at y=0 against the wall's foot.
+        let treeSpots = (currentLevel === 'local_forest' && _forestPlacements)
+            ? _forestPlacements.filter(p => !p.y) : null;
+        // An empty array is truthy, and would send every collar attempt into a
+        // read off index NaN.
+        if (treeSpots && !treeSpots.length) treeSpots = null;
         while (placed < total && attempts++ < maxAttempts) {
             let x, z;
             let collarTree = null;
@@ -1038,38 +1074,54 @@ export function startGame(CharacterClass) {
             _grassFrom.set(x, 60, z);
             _grassRay.set(_grassFrom, _grassDown);
             const hits = _grassRay.intersectObjects(blockers, true);
-            // No ground under it at all. On a level with a shared ground plane
-            // that never happens, but the forest is two islands over open
-            // space - and a miss was being treated as "clear ground", so tufts
-            // were being planted in mid-air off the edges and over the chasm.
-            if (!hits.length && !ground.visible) continue;
-            if (hits.length > 0) {
-                // Not an automatic reject anymore. The ray still has to start
-                // from a safely-high origin - some level pieces (the extra-
-                // tall first stair step, cubeSize*1.9) are themselves taller
-                // than a tuft, and starting the ray any lower would sometimes
-                // spawn it INSIDE that solid geometry, where a downward ray
-                // can't see the exit face and would falsely report "clear".
-                // What changes is what counts as blocking: the hit object's
-                // OWN bottom edge (its Box3), not just that something was hit
-                // at all. An overhang whose underside sits comfortably above
-                // maxGrassClearance leaves genuine open ground beneath it -
-                // exactly the "grows in shade under a bridge" case that a
-                // blanket "any hit rejects" was wrongly excluding everywhere.
-                // A block resting on the ground has min.y near 0, well under
-                // the clearance line, so it's still rejected exactly as
-                // before - this only opens up placement that was always
-                // physically valid to begin with.
-                // Trees are exempt from this test. Their collider is ONE
-                // merged mesh per tree - trunk plus canopy chunks - so its
-                // Box3 always starts at the trunk base whatever part the ray
-                // actually hit, and the test therefore rejected every point
-                // under a canopy. Which is precisely where grass belongs, and
-                // why the wooded areas had none. A trunk is thin; being under
-                // its branches is not being under an overhang.
-                if (!hits[0].object.userData.isTreeCollider && !hits[0].object.userData.isGroundSlab) {
-                    window.getObstacleBox(hits[0].object, _grassObstacleBox);
+
+            // Find the GROUND in that hit list, rather than assuming the first
+            // thing hit is it.
+            //
+            // A tree collider is canopy - the ray meets it metres above the
+            // floor. Treating it as the surface plants tufts in the branches,
+            // which is what "grass floating in the air" was: on a level whose
+            // ground is not at y=0, the old fallback of "hit a tree, so use 0"
+            // put them at an arbitrary height instead. Skipping straight past
+            // the canopy to whatever is under it is both simpler and right in
+            // every case - grass grows under a tree, at the height of the
+            // ground under that tree.
+            let groundHit = null;
+            for (let hi = 0; hi < hits.length; hi++) {
+                if (hits[hi].object.userData.isTreeCollider) continue;
+                groundHit = hits[hi];
+                break;
+            }
+            // Nothing to stand on. On a level with a shared ground plane that
+            // never happens; on one built out of islands over open space it is
+            // most of the area, and treating a miss as clear ground was
+            // planting tufts in mid-air off every edge.
+            if (!groundHit && !ground.visible) continue;
+            let placeY = 0;
+            if (groundHit) {
+                if (!groundHit.object.userData.isGroundSlab) {
+                    // Not an automatic reject. The ray still has to start from
+                    // a safely-high origin - some level pieces (the extra-tall
+                    // first stair step) are themselves taller than a tuft, and
+                    // starting any lower would spawn it INSIDE solid geometry,
+                    // where a downward ray cannot see the exit face and would
+                    // falsely report "clear". What counts as blocking is the
+                    // hit object's OWN bottom edge: an overhang whose underside
+                    // sits comfortably above maxGrassClearance leaves genuine
+                    // open ground beneath it, which a blanket "any hit rejects"
+                    // was wrongly excluding.
+                    window.getObstacleBox(groundHit.object, _grassObstacleBox);
                     if (_grassObstacleBox.min.y < maxGrassClearance) continue;
+                } else {
+                    placeY = groundHit.point.y;
+                    if (groundHit.face) {
+                        _grassHitNormal.copy(groundHit.face.normal)
+                            .transformDirection(groundHit.object.matrixWorld);
+                        // Nothing grows on a wall or the underside of an
+                        // overhang. Flat ground never trips this; a bevelled
+                        // voxel edge does, which is the point.
+                        if (_grassHitNormal.y < GRASS_MIN_UP) continue;
+                    }
                 }
             }
             const sizeLo = collarTree ? window.grassTreeSizeMin : 0.65;
@@ -1088,7 +1140,7 @@ export function startGame(CharacterClass) {
             // sink compensated a short tuft fine but was far too small once
             // Grass Height could scale a tuft up to 3x. Sinking by a
             // fraction of h instead keeps the fix correct at any height.
-            _grassPos.set(x, -h * window.grassBaseSink, z);
+            _grassPos.set(x, placeY - h * window.grassBaseSink, z);
             // Collar tufts turn to face the trunk they belong to, so the ring
             // reads as one thing wrapping the base rather than as scattered
             // blades that happen to be nearby. The tuft is a CROSS of two
@@ -1231,12 +1283,33 @@ export function startGame(CharacterClass) {
             _flowerFrom.set(x, 60, z);
             _flowerRay.set(_flowerFrom, _grassDown);
             const hits = _flowerRay.intersectObjects(blockers, true);
-            if (hits.length > 0) {
-                window.getObstacleBox(hits[0].object, _flowerObstacleBox);
-                if (_flowerObstacleBox.min.y < maxFlowerClearance) continue;
+            // Same shape as the grass scatter, and for the same reasons - see
+            // its comments. Skip canopies to find the actual ground, refuse a
+            // spot with nothing under it at all, and sit on the surface that
+            // was found rather than assuming the world's floor is y=0.
+            let fGround = null;
+            for (let hi = 0; hi < hits.length; hi++) {
+                if (hits[hi].object.userData.isTreeCollider) continue;
+                fGround = hits[hi];
+                break;
+            }
+            if (!fGround && !ground.visible) continue;
+            let flowerY = 0;
+            if (fGround) {
+                if (!fGround.object.userData.isGroundSlab) {
+                    window.getObstacleBox(fGround.object, _flowerObstacleBox);
+                    if (_flowerObstacleBox.min.y < maxFlowerClearance) continue;
+                } else {
+                    flowerY = fGround.point.y;
+                    if (fGround.face) {
+                        _grassHitNormal.copy(fGround.face.normal)
+                            .transformDirection(fGround.object.matrixWorld);
+                        if (_grassHitNormal.y < GRASS_MIN_UP) continue;
+                    }
+                }
             }
             const s = window.flowerSize * (0.8 + Math.random() * 0.5);
-            _flowerPos.set(x, 0, z);
+            _flowerPos.set(x, flowerY, z);
             _flowerQuat.setFromAxisAngle(_upVec, Math.random() * Math.PI * 2);
             _flowerScale.set(s, s, s);
             perTemplate[placed % 2].push(new THREE.Matrix4().compose(_flowerPos, _flowerQuat, _flowerScale));
@@ -1418,7 +1491,12 @@ export function startGame(CharacterClass) {
     // distance - they queue between it and the player, ordered by index (see
     // _compFollowDist). All three at one radius put them shoulder to shoulder
     // in a row behind you, which read as a wall rather than as a group.
-    const COMP_FOLLOW_DIST = 2.8;
+    // Widened from 2.8 once the sideways offsets were dropped: with everyone
+    // on the same line, the spacing between them IS this range divided by the
+    // roster, and 2.8 put three of them a metre apart - close enough that the
+    // separation push kept shuffling them. 4.0 gives 0.8 / 2.4 / 4.0, a queue
+    // you can see the order of.
+    const COMP_FOLLOW_DIST = 2.6;
     // Nearest any of them will stand. Above COMP_MIN_PLAYER_GAP (0.55), since
     // that guard freezes a companion outright and one parked permanently on
     // its own limit would never settle - but only just above it, so the lead
@@ -1545,7 +1623,18 @@ export function startGame(CharacterClass) {
     const COMP_LEAP_EDGE_FWD = 0.6;     // how far ahead to probe for "is there ground where I'm about to step"
     const COMP_LEAP_EDGE_DROP = 1.3;    // bigger than this counts as an edge, not a step/ramp (those keep gliding)
     const COMP_LEAP_MAX_DIST = 6.0;     // furthest the landing scan looks for solid footing
-    const COMP_LEAP_LANDING_BAND = 3.0; // how far BELOW launch height a landing may be
+    // How far BELOW launch height a landing may be.
+    //
+    // 3.2, not 3.0, and the 0.2 is the whole point. The forest's island edges
+    // are built at exactly 3.0 (see buildForestGroundBox - that number is
+    // chosen so the player can hang from them), so at 3.0 the test
+    // `c.y - ly > BAND` came down to 3.0 > 3.0: it passed only on an exact
+    // floating-point tie, and any dust in the ray hit rejected the drop. That
+    // is why a companion would not follow you into the river.
+    //
+    // The ceiling is COMP_CLIMB_MAX (3.4): never drop into somewhere you
+    // cannot climb back out of. 3.2 sits clear of both walls.
+    const COMP_LEAP_LANDING_BAND = 3.2;
     // How far ABOVE launch height a landing may be. Deliberately just under
     // the player's own jump apex: their jump is v0=10 against gravity 30
     // (see the jump code), so v0^2/2g = 1.67 units. The companion must never
@@ -1610,6 +1699,53 @@ export function startGame(CharacterClass) {
     // purpose - the spot itself moves constantly, so a tight radius means
     // never actually arriving.
     const COMP_ARRIVE_DEADZONE = 0.7;
+    // How fast a companion closes on its follow spot.
+    //
+    // This was a flat 7.5 - near the player's own full-tilt 8.0 - whatever the
+    // player was doing. Walking, that meant the companion crossed the gap at a
+    // sprint, overran into the arrive deadzone, stopped, and set off again the
+    // moment you took another step: a stutter, with the run clip flickering on
+    // and off over it. Matching your pace is what makes it read as walking
+    // WITH you rather than repeatedly catching up.
+    //
+    // The catch-up speed is still there for when it is genuinely behind -
+    // after a climb, a fight, or a fall - because a companion that can only
+    // ever match your speed can never close a gap it has already lost.
+    const COMP_SPOT_INTERVAL = 0.2;  // seconds a chosen stand-off tier is kept
+    const COMP_SPOT_MOVE = 1.2;      // ...unless the player moves this far
+    const COMP_PACE_MARGIN = 1.15;   // slightly faster than you, to close up
+    const COMP_MIN_PACE = 1.6;       // ...but never a crawl
+    const COMP_CATCHUP_SPEED = 7.5;  // the old flat value, now the ceiling
+    const COMP_CATCHUP_AT = 1.8;     // this far past its spot = catching up
+    function companionApproachSpeed(h) {
+        if (h > COMP_CATCHUP_AT) return COMP_CATCHUP_SPEED;
+        const ps = window._dbgActualSpeed || 0;
+        return Math.min(COMP_CATCHUP_SPEED, Math.max(COMP_MIN_PACE, ps * COMP_PACE_MARGIN));
+    }
+    // Ground height at a candidate follow spot, ignoring tree colliders.
+    //
+    // _compGroundList is `collidables`, and that includes tree canopies. A
+    // spot under a tree therefore reports the CANOPY as its ground - several
+    // metres up - and fails the "same level as the player" test, which pulls
+    // the stand-off in to the next fallback tier. As the player walks, canopy
+    // cover flickers on and off the ray, the accepted tier flips between 2.8
+    // and 1.4 frame to frame, and the companion's goal jumps back and forth by
+    // most of a metre. THAT is the follow jitter, and it is a forest problem
+    // specifically: there is a canopy over most of this level, so it happens
+    // constantly here and almost never on the block levels.
+    //
+    // Trees stay in _compGroundList - they still have to block walking, and
+    // the forward wall rays want them. They are only wrong as a FLOOR.
+    function compSpotGroundY(x, z, fromY) {
+        rayDown.set(_compSpotVec.set(x, fromY, z), _downVec);
+        const hits = rayDown.intersectObjects(_compGroundList, true);
+        for (let i = 0; i < hits.length; i++) {
+            if (hits[i].object.userData.isTreeCollider) continue;
+            return hits[i].point.y;
+        }
+        return -Infinity;
+    }
+    const _compSpotVec = new THREE.Vector3();
     // How long the companion stands and collects itself after a hit before it
     // is willing to go anywhere again.
     let _compRecoverT = 0;
@@ -1739,6 +1875,9 @@ export function startGame(CharacterClass) {
     // know where walking stops and climbing starts - it used to be a local
     // inside moveAiBotToward's ground-snap block.
     const AI_MAX_STEP_UP = 0.4;
+    // Matches the companions' own descent rate, so an agent walking off an
+    // edge drops at the same speed whichever kind it is.
+    const AI_FALL_SPEED = 16;
     // NOT a const, and neither are the _ai* registers further down: there is
     // more than one bot now, and rather than thread a bot handle through the
     // ~1200 lines of tuned chase/climb logic below (every line of which was
@@ -1964,6 +2103,10 @@ export function startGame(CharacterClass) {
             // Height and position have to stay consistent with each other.
             if (newY - pos.y <= AI_MAX_STEP_UP) ny = newY;
             else { nx = pos.x; nz = pos.z; blocked = true; }
+        } else {
+            // Nothing underneath. Holding the current height here is what lets
+            // a bot walk out over a drop and stand on nothing - it has to fall.
+            ny = pos.y - AI_FALL_SPEED * delta;
         }
         _tempVec3.set(dx, 0, dz);
         const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), _tempVec3);
@@ -2059,6 +2202,9 @@ export function startGame(CharacterClass) {
             const newY = groundHits[0].point.y;
             if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
             else { nextPos.x = pos.x; nextPos.z = pos.z; }
+        } else {
+            // See moveAiBotDirect - no ground means fall, not hover.
+            nextPos.y = pos.y - AI_FALL_SPEED * delta;
         }
 
         aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
@@ -2448,12 +2594,45 @@ export function startGame(CharacterClass) {
     // recoil/flash it drives alone - so a long combo can look like every one
     // of its hits landed without being worth the sum of them. See the
     // companions' full combo.
+    // ---- Knocked out ----
+    // Put a bot down twice in quick succession and it stops being a fight.
+    // It still stands up - the ragdoll's own recovery is untouched - but then
+    // it holds where it is, see-through, for a while: still on the field,
+    // visibly not a threat. Without this a bot you have beaten twice gets
+    // straight back on you, and nothing you do ever reads as winning.
+    //
+    // The second knockdown has to be RECENT to count. Two spread across a long
+    // fight are just a long fight; two inside a few seconds is being taken
+    // apart, which is the thing worth acknowledging.
+    const AI_KO_WINDOW = 14;   // a second knockdown within this many seconds
+    const AI_KO_TIME = 30;     // ...puts it out of the fight for this long
+    const AI_KO_OPACITY = 0.4;
+    function noteBotKnockdown(bot) {
+        const now = performance.now() / 1000;
+        if (bot._lastDownAt !== undefined && (now - bot._lastDownAt) < AI_KO_WINDOW) {
+            bot.knockedOutT = AI_KO_TIME;
+        }
+        bot._lastDownAt = now;
+    }
+    function setBotKnockedOutLook(bot, on) {
+        if (bot._koLook === on) return;
+        bot._koLook = on;
+        (bot.bodyMaterials || []).forEach(m => {
+            m.transparent = on;
+            m.opacity = on ? AI_KO_OPACITY : 1.0;
+            // A see-through body still writing depth hides whatever is behind
+            // it, which reads as a hole in the world rather than a faded body.
+            m.depthWrite = !on;
+            m.needsUpdate = true;
+        });
+    }
     window.staggerBot = function staggerBot(bot, velocity, intensity, flashStrength, poiseOverride) {
         if (!bot || !bot.isLoaded || bot.isRagdoll) return false;
         const staggerMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
         const regenDelay = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
         bot.triggerHitFlash(flashStrength);
         if (intensity === 'high') {
+            noteBotKnockdown(bot);
             bot.initRagdoll(velocity, intensity);
             bot.staggerPool = staggerMax;
             bot.staggerRegenCooldown = regenDelay;
@@ -2473,6 +2652,7 @@ export function startGame(CharacterClass) {
         bot.staggerRegenCooldown = regenDelay;
         if (bot.staggerPool <= 0) {
             bot.staggerPool = staggerMax;
+            noteBotKnockdown(bot);
             bot.initRagdoll(velocity, 'high');
             return true;
         }
@@ -2537,6 +2717,16 @@ export function startGame(CharacterClass) {
 
     function updateAiBot(delta) {
         if (!aiBot || !aiBot.isLoaded) return;
+        // Ticked BEFORE the ragdoll early-out below, or the clock would only
+        // run once it was already back on its feet - a bot spends most of a
+        // knockout lying down, and that time has to count.
+        if (aiBot.knockedOutT > 0) {
+            aiBot.knockedOutT -= delta;
+            setBotKnockedOutLook(aiBot, aiBot.knockedOutT > 0);
+            // Back on its feet: let a LATER knockout be announced as its own
+            // event rather than being swallowed by the first one's flag.
+            if (aiBot.knockedOutT <= 0) aiBot._koAnnounced = false;
+        }
         // A hit mid-climb drops it - being knocked off a wall should look
         // like being knocked off a wall, not like finishing the climb anyway.
         if (aiBot.isRagdoll || aiBot.isStandingUp) {
@@ -2544,6 +2734,18 @@ export function startGame(CharacterClass) {
             // Ragdoll drives the bones directly - a leftover model offset
             // would displace the whole ragdoll, so drop it outright.
             if (_aiClimbBlendT > 0 && aiBot.fbxModel) { aiBot.fbxModel.position.copy(_aiClimbModelRest); _aiClimbBlendT = 0; }
+            aiBot.update(delta);
+            return;
+        }
+        // Out of the fight but somehow already upright - it never got a chance
+        // to ragdoll, or the knockout landed as it was finishing a stand-up.
+        // It holds still rather than chasing. The normal case never reaches
+        // here: RemoteAvatar keeps a knocked-out bot lying in the pose it fell
+        // in (see knockedOutT there), so the ragdoll branch above owns it for
+        // the whole count.
+        if (aiBot.knockedOutT > 0) {
+            const kp = aiBot.group.position, kq = aiBot.group.quaternion;
+            aiBot.setNetworkState([kp.x, kp.y, kp.z], [kq.x, kq.y, kq.z, kq.w], 'idle', false);
             aiBot.update(delta);
             return;
         }
@@ -2889,16 +3091,14 @@ export function startGame(CharacterClass) {
     }
 
     function spawnAiBot() {
-        if (aiBots.length) return;
-        // Yellow, to tell it apart from the blue companion at a glance.
-        addAiBot({ id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] });
-        // The orange one. Same chase/climb brain, different attack: it throws
-        // the five-hit combo instead of a single punch (see AI_COMBO_*).
-        addAiBot({ id: 'ai-bot-2', color: 0xff7a1a, offset: [-3.5, 0, 3.5], combo: true });
-        // The red one - charge punch. Winds up visibly, then one knockdown
-        // blow (see AI_CHARGE_*). Spawned behind the other two so the three
-        // do not start life inside one another.
-        addAiBot({ id: 'ai-bot-3', color: 0xd42a2a, offset: [0, 0, -4.5], charge: true });
+        // The panel's own per-character checkboxes are the real control now;
+        // this button is a shortcut that ticks all three enemy ones.
+        AI_BOT_SPECS.forEach(sp => { window['spawn' + sp.key] = true; });
+        syncSpawnedAgents();
+        AI_BOT_SPECS.forEach(sp => {
+            const el = document.getElementById('spawn-' + sp.key);
+            if (el) el.checked = true;
+        });
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
@@ -2909,17 +3109,12 @@ export function startGame(CharacterClass) {
     }
 
     function despawnAiBot() {
-        if (!aiBots.length) return;
-        aiBots.forEach(rec => {
-            activateAiBot(rec);
-            disposeAiBotPathLines();
-            saveAiBot(rec);
-            rec.bot.dispose();
+        AI_BOT_SPECS.forEach(sp => {
+            window['spawn' + sp.key] = false;
+            const el = document.getElementById('spawn-' + sp.key);
+            if (el) el.checked = false;
         });
-        aiBots.length = 0;
-        aiBot = null;
-        window.aiBot = null;
-        window.aiBots = [];
+        syncSpawnedAgents();
 
         const spawnBtn = document.getElementById('ai-bot-spawn-btn');
         const despawnBtn = document.getElementById('ai-bot-despawn-btn');
@@ -2945,6 +3140,14 @@ export function startGame(CharacterClass) {
     // bots is free.
     const aiBots = [];
     window.aiBots = [];
+    // Where the NEXT bot added should appear, instead of the panel spawn's
+    // fixed offset from the player. One-shot, consumed and cleared by the
+    // first addAiBot that sees it - same pattern and same reasoning as
+    // _companionSpawnOverride. The panel offsets are a few units from the
+    // player, which is right for "give me something to hit" but wrong for a
+    // scripted arrival: an enemy that pops into existence at arm's length
+    // reads as a spawn, one that walks in from the treeline reads as a threat.
+    let _aiBotSpawnOverride = null;
     function addAiBot(opts) {
         const rec = {
             bot: new RemoteAvatar(scene, threeTone, opts.id),
@@ -2970,10 +3173,17 @@ export function startGame(CharacterClass) {
         };
         rec.bot.setColor(opts.color);
         const spawnPos = char.group.position;
-        rec.bot.group.position.copy(spawnPos).add(
-            new THREE.Vector3(opts.offset[0], opts.offset[1], opts.offset[2]));
-        rec.state.target.set(
-            spawnPos.x + opts.offset[0], spawnPos.y, spawnPos.z + opts.offset[2]);
+        if (_aiBotSpawnOverride) {
+            // Story spawns place the bot themselves - see _aiBotSpawnOverride.
+            rec.bot.group.position.copy(_aiBotSpawnOverride);
+            rec.state.target.copy(_aiBotSpawnOverride);
+            _aiBotSpawnOverride = null;
+        } else {
+            rec.bot.group.position.copy(spawnPos).add(
+                new THREE.Vector3(opts.offset[0], opts.offset[1], opts.offset[2]));
+            rec.state.target.set(
+                spawnPos.x + opts.offset[0], spawnPos.y, spawnPos.z + opts.offset[2]);
+        }
         rec.stuckAt.copy(rec.bot.group.position);
         aiBots.push(rec);
         // Every damage path in the game (melee, projectiles, thrown props)
@@ -3044,6 +3254,17 @@ export function startGame(CharacterClass) {
         companionStepLine.frustumCulled = false;
         scene.add(companionStepLine);
     }
+    // Counterpart of the above - the AI bot has had one of these since it
+    // could be despawned; the companion only needs one now that it can be too.
+    function disposeCompanionPathLines() {
+        [companionGoalLine, companionStepLine].forEach(line => {
+            if (!line) return;
+            scene.remove(line);
+            line.geometry.dispose();
+            line.material.dispose();
+        });
+        companionGoalLine = null; companionStepLine = null;
+    }
     function updateCompanionPathVisual(botPos, goalPos, stepPos) {
         if (!companionGoalLine || !companionStepLine) return;
         companionGoalLine.visible = window.aiBotPathVisible;
@@ -3074,11 +3295,87 @@ export function startGame(CharacterClass) {
     // _climbTmpQuat) stays shared - it is written and consumed inside one call.
     const companions = [];
     window.companions = [];
+
+    // ---- Companion ground marker ----
+    // The dot under each companion, the counterpart of the player's own arrow
+    // (see reconstructArrows in ClimbGame.html). Same two-mesh trick: one copy
+    // depth-tested and near-opaque, one drawn through everything at low
+    // opacity - so the marker stays findable when the companion is behind a
+    // tree or a block, which is exactly when you want to know where it is.
+    //
+    // Tinted to the companion's own colour rather than left white, since with
+    // three of them a row of identical dots says nothing about which is which.
+    let _companionDotTex = null;
+    const COMPANION_DOT_SIZE = 1.1;   // smaller than the player's 2x2 arrow
+    const COMPANION_DOT_LIFT = 0.05;  // off the ground, clear of z-fighting
+    function attachCompanionMarker(rec, color) {
+        const group = new THREE.Group();
+        rec.comp.group.add(group);
+        if (!_companionDotTex) {
+            // Local copy first, repo copy as the fallback - the same shape as
+            // the GLB loaders. The player's arrow can load straight from the
+            // repo because WhiteArrow.png is committed; WhiteDot.png was not,
+            // so a repo-only URL would 404 until it is pushed. It is copied
+            // into ProjectFiles (the served root) for that reason: the
+            // original sits one directory up, outside anything the static
+            // server will hand out.
+            const texLoad = new THREE.TextureLoader();
+            _companionDotTex = texLoad.load('WhiteDot.png', undefined, undefined, () => {
+                texLoad.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteDot.png',
+                    (t) => {
+                        _companionDotTex.image = t.image;
+                        _companionDotTex.needsUpdate = true;
+                    },
+                    undefined, (e) => console.error('WhiteDot.png load failed:', e));
+            });
+        }
+        const geo = new THREE.PlaneGeometry(COMPANION_DOT_SIZE, COMPANION_DOT_SIZE);
+        const mk = (opacity, depthTest, order) => {
+            const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                map: _companionDotTex,
+                color: color !== undefined ? color : 0xffffff,
+                transparent: true, opacity,
+                depthTest, depthWrite: false,
+                side: THREE.DoubleSide,
+            }));
+            m.rotation.x = -Math.PI / 2;
+            // ...and the same half-turn the player's own arrow applies (see
+            // playerArrowGroup in ClimbGame.html). Laying a plane flat with
+            // rotation.x alone leaves the texture pointing back down the
+            // character's -Z, so the marker reads as aimed behind them.
+            m.rotation.z = Math.PI;
+            m.position.y = COMPANION_DOT_LIFT;
+            m.renderOrder = order;
+            // Same trap the player's arrow documents: a plane this size riding
+            // on a character is a very reliable way to "hit a wall" that is
+            // actually a UI marker.
+            m.raycast = () => {};
+            group.add(m);
+            return m;
+        };
+        mk(0.22, false, 1);   // seen through geometry
+        mk(0.85, true, 2);    // the real one
+        // On the AVATAR, not the record: updateCompanion works through the
+        // active `companion` binding and has no handle on the record.
+        rec.comp.marker = group;
+    }
     // How likely a hit is to be answered, and how long the answer runs. The
     // blue one hits back only sometimes and short; the pale one always does,
     // and throws the full three.
     let _compRetaliateChance = 0.5;
     let _compPunchCount = 2;
+    // Where the NEXT companion added should appear, instead of the usual spot
+    // behind the player. Consumed and cleared by the first addCompanion that
+    // sees it. A one-shot module value rather than a field on the spec because
+    // the specs are shared constants describing what a companion IS, and this
+    // is a fact about one particular moment of one particular spawn.
+    //
+    // Used by the story swap: the stand-in you walk up to is destroyed and a
+    // real companion created, and without this the real one appears behind the
+    // player while the one you were looking at vanishes - so the character
+    // visibly teleports at the exact moment you meet it.
+    let _companionSpawnOverride = null;
+    let _companionSpawnYaw = null;
     function addCompanion(opts) {
         const rec = {
             comp: new RemoteAvatar(scene, threeTone, opts.id),
@@ -3115,6 +3412,9 @@ export function startGame(CharacterClass) {
             goalLine: null, stepLine: null,
         };
         if (opts.color !== undefined) rec.comp.setColor(opts.color);
+        // The blue one takes RemoteAvatar's default body colour, so the marker
+        // has to fall back to the same value rather than to white.
+        attachCompanionMarker(rec, opts.color !== undefined ? opts.color : 0x66aaff);
         // Spawn BEHIND the player, on ground, not on top of them. Copying the
         // player's position outright put the two in the same place, and the
         // companion then spent its first moments resolving an overlap it
@@ -3128,20 +3428,11 @@ export function startGame(CharacterClass) {
         _compBehindDir.normalize();
         companions.push(rec);
         window.companions = companions.map(r => r.comp);
-        // Re-spread the whole queue every time one joins, so the spacing is
-        // right whatever the roster ends up being rather than only for three.
-        // The LAST one keeps COMP_FOLLOW_DIST - that is the far end of the
-        // line - and the rest are stepped evenly in toward the player.
-        //
         // Before the spawn placement below, not after: that reads followDist
         // to decide where to stand, and a companion placed at the old value
         // would spend its first seconds walking to the spot it should have
         // started on.
-        for (let i = 0; i < companions.length; i++) {
-            companions[i].followDist = companions.length < 2
-                ? COMP_FOLLOW_DIST
-                : THREE.MathUtils.lerp(COMP_FOLLOW_NEAR, COMP_FOLLOW_DIST, i / (companions.length - 1));
-        }
+        respreadCompanions();
         const side = opts.sideOffset || 0;
         const sx = char.group.position.x + _compBehindDir.x * rec.followDist - _compBehindDir.z * side;
         const sz = char.group.position.z + _compBehindDir.z * rec.followDist + _compBehindDir.x * side;
@@ -3151,7 +3442,14 @@ export function startGame(CharacterClass) {
         rayDown.set(_tempVec1.set(sx, char.group.position.y + 3.0, sz), _downVec);
         const spawnHits = rayDown.intersectObjects(collidables, true);
         const sy = spawnHits.length ? spawnHits[0].point.y : char.group.position.y;
-        rec.comp.group.position.set(sx, sy, sz);
+        if (_companionSpawnOverride) {
+            rec.comp.group.position.copy(_companionSpawnOverride);
+            if (_companionSpawnYaw !== null) rec.comp.group.rotation.y = _companionSpawnYaw;
+            _companionSpawnOverride = null;
+            _companionSpawnYaw = null;
+        } else {
+            rec.comp.group.position.set(sx, sy, sz);
+        }
         rec.stuckAt.copy(rec.comp.group.position);
         // window.companion stays pointed at the first one - the thrown-object
         // hit path and the head-scale pass reference it by name.
@@ -3161,23 +3459,98 @@ export function startGame(CharacterClass) {
         saveCompanion(rec);
         return rec;
     }
-    function spawnCompanion() {
-        if (companions.length) return;
-        // Retaliation is near-certain now rather than a coin flip - they were
-        // shrugging off half the hits they took, which read as not noticing.
-        addCompanion({ id: 'companion', retaliateChance: 0.85, punchCount: 2, sideOffset: 0 });
+    // ---- Who can be in the world, one entry per character ----
+    // Each has its own panel checkbox, all of them off at startup, so a test
+    // session starts empty and you add exactly the characters you want to look
+    // at. `key` is both the flag name (window.spawn<Key>) and the checkbox id
+    // (spawn-<key>), so adding one here is the only edit needed.
+    //
+    // Retaliation is near-certain rather than a coin flip - at 0.5 they were
+    // shrugging off half the hits they took, which read as not noticing.
+    const COMPANION_SPECS = [
+        { key: 'CompBlue', id: 'companion', retaliateChance: 0.85, punchCount: 2, sideOffset: 0 },
         // Between the blue companion and the grey player - a paler, washed-out
         // blue, so the two read as a pair rather than as unrelated characters.
-        addCompanion({
-            id: 'companion-2', color: 0xa1c3ee,
-            retaliateChance: 1.0, punchCount: 3, fullCombo: true, sideOffset: 1.3,
-        });
+        { key: 'CompPale', id: 'companion-2', color: 0xa1c3ee,
+          retaliateChance: 1.0, punchCount: 3, fullCombo: true, sideOffset: 0 },
         // Dark blue - the heavy. One wound-up knockdown rather than a string.
-        addCompanion({
-            id: 'companion-3', color: 0x1b3fa0,
-            retaliateChance: 1.0, punchCount: 1, charge: true, sideOffset: -1.3,
+        { key: 'CompDark', id: 'companion-3', color: 0x1b3fa0,
+          retaliateChance: 1.0, punchCount: 1, charge: true, sideOffset: 0 },
+    ];
+    const AI_BOT_SPECS = [
+        { key: 'BotYellow', id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] },
+        // Orange throws the five-hit combo instead of a single punch.
+        { key: 'BotOrange', id: 'ai-bot-2', color: 0xff7a1a, offset: [-3.5, 0, 3.5], combo: true },
+        // Red winds up and throws one knockdown blow.
+        { key: 'BotRed', id: 'ai-bot-3', color: 0xd42a2a, offset: [0, 0, -4.5], charge: true },
+    ];
+    COMPANION_SPECS.concat(AI_BOT_SPECS).forEach(sp => { window['spawn' + sp.key] = false; });
+
+    function removeCompanion(rec) {
+        const i = companions.indexOf(rec);
+        if (i < 0) return;
+        // Its debug path lines live on the module bindings, so they can only
+        // be disposed while this record is the active one.
+        activateCompanion(rec);
+        disposeCompanionPathLines();
+        saveCompanion(rec);
+        if (rec.comp.marker && rec.comp.marker.parent) rec.comp.marker.parent.remove(rec.comp.marker);
+        rec.comp.dispose();
+        companions.splice(i, 1);
+        window.companions = companions.map(r => r.comp);
+        // window.companion names the first one for the thrown-object hit path
+        // and the head-scale pass; re-point it if that was the one removed.
+        if (companion === rec.comp) {
+            companion = companions.length ? companions[0].comp : null;
+            window.companion = companion;
+        }
+        respreadCompanions();
+    }
+
+    function removeAiBot(rec) {
+        const i = aiBots.indexOf(rec);
+        if (i < 0) return;
+        activateAiBot(rec);
+        disposeAiBotPathLines();
+        saveAiBot(rec);
+        rec.bot.dispose();
+        aiBots.splice(i, 1);
+        window.aiBots = aiBots.map(r => r.bot);
+        if (aiBot === rec.bot) {
+            aiBot = aiBots.length ? aiBots[0].bot : null;
+            window.aiBot = aiBot;
+        }
+    }
+
+    // Brings the world in line with the checkboxes. Cheap enough to call on
+    // every change; it only touches what actually differs.
+    function syncSpawnedAgents() {
+        COMPANION_SPECS.forEach(sp => {
+            const want = !!window['spawn' + sp.key];
+            const have = companions.find(r => r.comp.id === sp.id);
+            if (want && !have) addCompanion(sp);
+            else if (!want && have) removeCompanion(have);
+        });
+        AI_BOT_SPECS.forEach(sp => {
+            const want = !!window['spawn' + sp.key];
+            const have = aiBots.find(r => r.bot.id === sp.id);
+            if (want && !have) addAiBot(sp);
+            else if (!want && have) removeAiBot(have);
         });
     }
+    window.syncSpawnedAgents = syncSpawnedAgents;
+    // Re-spreads the follow queue over however many companions there are, so
+    // the spacing is right whatever the roster ends up being rather than only
+    // for three. The LAST one keeps COMP_FOLLOW_DIST - the far end of the line
+    // - and the rest are stepped evenly in toward the player.
+    function respreadCompanions() {
+        for (let i = 0; i < companions.length; i++) {
+            companions[i].followDist = companions.length < 2
+                ? COMP_FOLLOW_DIST
+                : THREE.MathUtils.lerp(COMP_FOLLOW_NEAR, COMP_FOLLOW_DIST, i / (companions.length - 1));
+        }
+    }
+
     function activateCompanion(rec) {
         companion = rec.comp;
         _compRetaliateChance = rec.retaliateChance; _compPunchCount = rec.punchCount;
@@ -3231,7 +3604,7 @@ export function startGame(CharacterClass) {
             companions.forEach(r => { r.comp.group.visible = false; });
             return;
         }
-        if (!companions.length) spawnCompanion();
+
         for (let i = 0; i < companions.length; i++) {
             activateCompanion(companions[i]);
             updateCompanion(delta);
@@ -3313,7 +3686,13 @@ export function startGame(CharacterClass) {
             if (hits[i].point.y <= ceiling) return hits[i].point.y;
         }
         // Everything here is overhead - nothing to stand on at this height.
-        return hits.length ? hits[hits.length - 1].point.y : fallbackY;
+        //
+        // -Infinity, not the fallback, when the ray finds nothing at all.
+        // Returning the companion's own height as "the ground" is what let it
+        // stand in mid-air: the follow code only descends when the ground
+        // reads BELOW it, and a fallback equal to its current height never
+        // does. Callers that want to hold position on a miss check for it.
+        return hits.length ? hits[hits.length - 1].point.y : -Infinity;
     }
 
     // Starts a climb-up leap onto whatever is blocking a step to
@@ -3788,6 +4167,13 @@ export function startGame(CharacterClass) {
         set(char);
         companions.forEach(r => set(r.comp));
         aiBots.forEach(r => set(r.bot));
+        // The two scripted NPCs are RemoteAvatars like everyone else, but they
+        // live in their own variables rather than in any of the lists above,
+        // so they were the only characters in the game still wearing a
+        // full-size head - which is very visible when you walk up to one and
+        // stand next to it during a conversation.
+        set(storyNpc);
+        set(villageNpcAvatar);
         if (window.multiplayerClient && window.multiplayerClient.remotes) {
             window.multiplayerClient.remotes.forEach(set);
         }
@@ -3855,6 +4241,10 @@ export function startGame(CharacterClass) {
         if (!companion) return;
         if (!companion.isLoaded) { companion.update(delta); return; }
         companion.group.visible = true;
+        // Hidden while ragdolled: the marker sits on the group, and ragdoll
+        // drives the BONES rather than the group, so the dot would sit at a
+        // stale spot on the ground with nobody standing on it.
+        if (companion.marker) companion.marker.visible = !companion.isRagdoll && !companion.isStandingUp;
         if (companion.isRagdoll || companion.isStandingUp) {
             // Ragdoll drives the bones directly - leaving a model offset in
             // place would displace the whole ragdoll. Drop it immediately.
@@ -3874,9 +4264,33 @@ export function startGame(CharacterClass) {
         // Ground-cast list for this frame's rays.
         _compGroundList.length = 0;
         for (let i = 0; i < collidables.length; i++) _compGroundList.push(collidables[i]);
-        _compGroundList.push(ground);
+        // ...and the shared ground plane ONLY on levels that actually stand on
+        // it. three.js raycasting ignores .visible (the same trap the player's
+        // UI arrow documents), so on a level that switches the plane off and
+        // builds real geometry instead - the forest's slabs, the voxel level -
+        // leaving it in here reports solid floor at y=0 for every ray.
+        //
+        // That is why a companion would not follow you into the river: the
+        // plane is 1000x1000 and sits at y=0, ABOVE the seabed at -3, so it is
+        // always the first hit. The edge probe found ground level with the
+        // companion's feet, concluded there was no drop at all, and the leap
+        // code never ran. The same false floor spans the void past the island
+        // edges, so nothing out there read as a cliff either.
+        if (ground.visible) _compGroundList.push(ground);
 
-        const p = char.group.position, q = char.group.quaternion;
+        // The story can send a companion somewhere other than the player's
+        // heel for a moment - walking over to the practice bag to show you how
+        // it is done. Everything below steers toward `p`, so redirecting it
+        // here reuses the entire follow path (ground snap, steering, walk/run
+        // animation, stuck watchdog) instead of duplicating a bespoke
+        // walk-to-a-point that would have to relearn all of it.
+        //
+        // Stored on the AVATAR rather than the record: updateCompanion reaches
+        // its record only through the context-switched module bindings, and
+        // objects hanging off the avatar are shared by reference, so this
+        // needs no activate/save plumbing. Same reasoning as rec.comp.marker.
+        const p = companion.followOverride || char.group.position;
+        const q = char.group.quaternion;
         const c = companion.group.position;
 
         // ---- Hit recovery ----
@@ -3996,6 +4410,15 @@ export function startGame(CharacterClass) {
             const prey = nearestBot(COMP_ATTACK_SEEK);
             if (prey) startAttack(prey);
         }
+        // A target handed over by the story (the practice bag). Checked after
+        // real enemies so a demonstration never takes priority over an actual
+        // fight, and range-gated the same way, so it starts swinging only once
+        // it has walked over rather than shadow-boxing on the way.
+        if (!_compPunchTarget && _compAttackCD <= 0 && canStartAttack && companion.demoTarget) {
+            if (c.distanceTo(companion.demoTarget.group.position) < COMP_PUNCH_RANGE) {
+                startAttack(companion.demoTarget);
+            }
+        }
         if (_compPunchTarget) {
             // Whoever it started swinging at, held for the whole combo - so it
             // does not pivot mid-string to face a bot that wandered closer.
@@ -4049,7 +4472,16 @@ export function startGame(CharacterClass) {
                         .multiplyScalar(chargeAction ? COMP_CHARGE_FORCE
                             : last ? COMP_PUNCH_FORCE * 1.7 : COMP_PUNCH_FORCE);
                     const hitPoint = tp.clone().setY(tp.y + 1.2);
-                    if (chargeAction) {
+                    if (target.sandbag) {
+                        // A practice bag, not a fighter - it has no poise pool
+                        // and nothing to stagger, so it takes the hit through
+                        // its own recoil path instead of staggerBot.
+                        // vel IS _tempVec2 (it is built in place above), so the
+                        // direction is taken from a clone rather than by
+                        // re-using the scratch vector underneath it.
+                        target.sandbag.applyHit(vel.clone().normalize(),
+                            COMP_PUNCH_FORCE * (last ? 1.7 : 1.0));
+                    } else if (chargeAction) {
                         // Knocks down outright, like every other charge punch
                         // in the game. Affordable because it is rare: a long
                         // wind-up, a long cooldown, and a companion cannot
@@ -4154,7 +4586,11 @@ export function startGame(CharacterClass) {
         if (window._compDebug) companionDebugReport(c, p);
 
         const gy = companionGroundY(c.x, c.z, c.y);
-        const playerElevated = isGrounded && !isLedgeGrabbing && !isClimbingUp && (p.y - gy) > 1.0;
+        // gy is the companion's OWN ground. With nothing under it that reads
+        // as -Infinity, which would make the player look infinitely elevated
+        // and send it climbing - when what it is actually doing is falling.
+        const playerElevated = gy > -Infinity && isGrounded && !isLedgeGrabbing
+            && !isClimbingUp && (p.y - gy) > 1.0;
 
         // ---- LEAP (a jump: across a gap, or up to catch a ledge) ----
         // Only ever a jump now. There used to be a second "mantle" arc here
@@ -4516,11 +4952,13 @@ export function startGame(CharacterClass) {
                 // can actually reach it now) just to immediately climb back
                 // up once it re-targeted the player next frame - a pointless
                 // round trip that read as falling for no reason.
-                _tempVec2.set(p.x + _compBehindDir.x * COMP_FOLLOW_DIST, p.y + 3.0, p.z + _compBehindDir.z * COMP_FOLLOW_DIST);
-                rayDown.set(_tempVec2, _downVec);
-                const behindGroundHits = rayDown.intersectObjects(_compGroundList, true);
-                const behindGroundY = behindGroundHits.length ? behindGroundHits[0].point.y : -Infinity;
-                if (p.y - behindGroundY > COMP_LEAP_EDGE_DROP) wantsBehind = false;
+                const behindGroundY = compSpotGroundY(
+                    p.x + _compBehindDir.x * COMP_FOLLOW_DIST,
+                    p.z + _compBehindDir.z * COMP_FOLLOW_DIST, p.y + 3.0);
+                // Absolute, for the same reason as the stand-off test below:
+                // "behind you" being 3 units UP a bank is no more usable than
+                // it being 3 units down a hole.
+                if (Math.abs(p.y - behindGroundY) > COMP_LEAP_EDGE_DROP) wantsBehind = false;
             }
         }
         if (wantsBehind) {
@@ -4538,19 +4976,46 @@ export function startGame(CharacterClass) {
         // in the air past the edge, so the companion either never arrived or
         // treated its own follow spot as a gap to leap. Closing in when the
         // space is tight is better than standing politely off a cliff.
-        let followDist = _compFollowDist;
+        // Closing right in when it has been sent to a specific thing: the
+        // point of the trip is to end up inside COMP_PUNCH_RANGE (1.9) of it,
+        // which the ordinary follow spacing would never do.
+        let followDist = companion.followOverride ? COMP_DEMO_STANDOFF : _compFollowDist;
         if (playerElevated && (p.y - c.y) < 1.0) followDist = 0.9; // up on the block with them: hug close anyway
+        // The tier search below costs up to four raycasts against every
+        // collidable in the level, per companion, per frame - and the forest
+        // now has a few hundred tree colliders in that list. Held for a beat
+        // instead of recomputed constantly: it is a choice between four fixed
+        // distances, and re-deciding it 60 times a second is both the bulk of
+        // the follow cost and what lets it flicker between two tiers as the
+        // ground under the spot changes. Re-run on a timer, or immediately if
+        // the player has actually moved somewhere different.
+        companion._spotT = (companion._spotT || 0) - delta;
+        const movedFar = !companion._spotAt ||
+            companion._spotAt.distanceToSquared(p) > COMP_SPOT_MOVE * COMP_SPOT_MOVE;
+        if (companion._spotT > 0 && !movedFar && companion._spotDist !== undefined) {
+            followDist = companion._spotDist;
+        } else {
         for (let attempt = 0; attempt < COMP_FOLLOW_FALLBACKS.length; attempt++) {
             const d = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
-            _tempVec2.set(p.x + dirx * d, p.y + 3.0, p.z + dirz * d);
-            rayDown.set(_tempVec2, _downVec);
-            const spotHits = rayDown.intersectObjects(_compGroundList, true);
-            const spotY = spotHits.length ? spotHits[0].point.y : -Infinity;
-            // Same level as the player, not the floor far below a ledge.
-            if (p.y - spotY <= COMP_LEAP_EDGE_DROP) { followDist = d; break; }
+            const spotY = compSpotGroundY(p.x + dirx * d, p.z + dirz * d, p.y + 3.0);
+            // Same level as the player - in BOTH directions. This test used to
+            // be one-sided (`p.y - spotY`), which only rejected a spot far
+            // BELOW the player and silently accepted one far above. That is
+            // why a companion would not follow you into the river: standing on
+            // the bank with you down in the water, the spot behind you
+            // projected straight back up onto the bank it was already on, so
+            // it had arrived - h was ~0, the edge/leap code never ran, and it
+            // watched you swim. With the absolute value the spot is rejected
+            // for being 3 units up, the fallbacks pull it in until it lands in
+            // the channel WITH you, and walking to it takes it over the lip.
+            if (Math.abs(p.y - spotY) <= COMP_LEAP_EDGE_DROP) { followDist = d; break; }
             // Nothing worked even at the closest fallback - keep the original
             // distance and let the ordinary edge/leap logic deal with it.
             if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) followDist = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
+        }
+            companion._spotT = COMP_SPOT_INTERVAL;
+            companion._spotDist = followDist;
+            companion._spotAt = (companion._spotAt || new THREE.Vector3()).copy(p);
         }
         let tgx = p.x + dirx * followDist, tgz = p.z + dirz * followDist;
 
@@ -4646,11 +5111,11 @@ export function startGame(CharacterClass) {
             if (Math.abs(p.y - c.y) < 1.0) {
                 steerDir = companionSteerDir(c, { x: tgx, z: tgz }, delta);
                 if (steerDir) {
-                    const s = Math.min(h, 7.5 * delta);
+                    const s = Math.min(h, companionApproachSpeed(h) * delta);
                     nx += steerDir.x * s; nz += steerDir.z * s;
                 }
             } else {
-                const s = Math.min(h, 7.5 * delta);
+                const s = Math.min(h, companionApproachSpeed(h) * delta);
                 nx += (toX / h) * s; nz += (toZ / h) * s;
             }
         }
@@ -4787,7 +5252,6 @@ export function startGame(CharacterClass) {
     if (aiBotDespawnBtn) aiBotDespawnBtn.addEventListener('pointerdown', despawnAiBot);
     // On by default, same as the companion. spawnAiBot also flips the panel's
     // own spawn/despawn buttons and status text, so the UI still matches.
-    spawnAiBot();
 
     // Companion: off by default, added from the panel. updateCompanion spawns
     // it lazily on the first enabled frame and just hides it when disabled.
@@ -4825,6 +5289,12 @@ export function startGame(CharacterClass) {
             const mesh = new THREE.Mesh(geom, shinyJarMat);
             mesh.castShadow = true; mesh.receiveShadow = true;
             jarTemplate = mesh;
+            // ...and any forest landing that asked for jars before now.
+            if (_pendingForestJars && currentLevel === 'local_forest') {
+                const q = _pendingForestJars;
+                _pendingForestJars = null;
+                spawnForestJars(q.x, q.y, q.z);
+            }
 
             // Used to call the full buildLevel() here whenever this (slow-
             // to-fetch) FBX finished loading after the level had already
@@ -5153,9 +5623,23 @@ export function startGame(CharacterClass) {
             });
         });
         if (pendingVillageLevelBuild && villageScene && mountainGeometry) { pendingVillageLevelBuild = false; buildVillageLevel(); }
+        // The voxel level stands trees on its authored surfaces, so it has the
+        // same dependency - rebuild it once the model is here.
+        if (currentLevel === 'local_voxel' && voxelLevelScene) buildVoxelLevel();
         // The forest level is built entirely out of this one model, so it has
         // nothing else to wait on - retry as soon as it lands.
-        if (pendingForestLevelBuild) { pendingForestLevelBuild = false; buildForestLevel(); }
+        if (pendingForestLevelBuild) {
+            pendingForestLevelBuild = false;
+            buildForestLevel();
+            // ...and re-scatter the ground cover. This retry calls the level
+            // builder directly rather than buildLevel, which is what normally
+            // runs the grass afterwards - so on a cold load the grass was
+            // scattered while _forestPlacements was still null, got no tree
+            // collars at all, and nothing ever ran it again. That is why the
+            // grass around the trunks kept not appearing.
+            if (window.rebuildGrass) window.rebuildGrass();
+            if (window.rebuildFlowers) window.rebuildFlowers();
+        }
     };
     villageTreeLoader.load('VillageModel/Tree.glb', onVillageTreeLoaded, undefined, () => {
         villageTreeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Tree.glb',
@@ -5181,6 +5665,92 @@ export function startGame(CharacterClass) {
     // y:[0,1] with the base on the origin plane and roughly unit radius, which
     // is exactly the frame the whitebox cones use, so a proxy's transform drops
     // straight onto it.
+    // ---- The exit gate ----
+    // LevelExit.glb, stood in the mouth of the forest's exit corridor. The
+    // model is a 3x3x3 built around its own centre, so standing it on the
+    // ground means lifting it by half its height - it is not authored with its
+    // feet at the origin.
+    const FOREST_EXIT_SCALE = 1.6;
+    const FOREST_EXIT_HALF_H = 1.5;   // from the GLB's own bounds
+    // The exit is UP, on top of the frame wall, reached by climbing the trees
+    // that line the exit corridor. That is the point of putting it there: the
+    // wall stops being scenery you are fenced in by and becomes the last thing
+    // you climb. A bridge carries the gate across the corridor's own gap,
+    // since the wall is cut away exactly where the corridor runs through it.
+    function forestFrameTopY() { return FOREST_BORDER_HEIGHT + FOREST_BORDER_CAP; }
+    const BRIDGE_SRC_LEN = 10.52;     // Bridge.glb's own x extent
+    let bridgeScene = null, _forestBridge = null;
+    let levelExitScene = null, _forestExitGate = null;
+    function placeForestExitGate() {
+        if (currentLevel !== 'local_forest') return;
+        const gz = forestSlabHalf();
+        const topY = forestFrameTopY();
+        // The bridge first - the gate stands ON it.
+        if (bridgeScene) {
+            if (_forestBridge && _forestBridge.parent) _forestBridge.parent.remove(_forestBridge);
+            _forestBridge = bridgeScene.clone(true);
+            // Stretched along x to span the corridor's opening with a little
+            // to spare, so both ends rest on wall rather than on air.
+            const span = (FOREST_ENTRY_W + FOREST_BORDER_BLOCK) / BRIDGE_SRC_LEN;
+            _forestBridge.scale.set(span, 1, 1);
+            _forestBridge.position.set(FOREST_EXIT_X, topY, gz);
+            _forestBridge.updateMatrixWorld(true);
+            levelGroup.add(_forestBridge);
+            // Walkable - this one IS collision, unlike the gate.
+            _forestBridge.traverse(o => { if (o.isMesh) collidables.push(o); });
+        }
+        if (!levelExitScene) return;
+        if (_forestExitGate && _forestExitGate.parent) _forestExitGate.parent.remove(_forestExitGate);
+        _forestExitGate = levelExitScene.clone(true);
+        _forestExitGate.scale.setScalar(FOREST_EXIT_SCALE);
+        _forestExitGate.position.set(
+            FOREST_EXIT_X, topY + FOREST_EXIT_HALF_H * FOREST_EXIT_SCALE, gz);
+        // Deliberately NOT a collidable: it is a doorway, and the star inside
+        // it is what ends the level. A solid gate would stop you reaching it.
+        levelGroup.add(_forestExitGate);
+    }
+    const bridgeLoader = new GLTFLoader();
+    const onBridgeLoaded = (gltf) => {
+        bridgeScene = gltf.scene;
+        bridgeScene.traverse(o => {
+            if (!o.isMesh) return;
+            o.castShadow = true; o.receiveShadow = true;
+            const src = Array.isArray(o.material) ? o.material[0] : o.material;
+            o.material = new THREE.MeshToonMaterial({
+                color: src && src.color ? src.color.clone() : new THREE.Color(0xffffff),
+                map: src && src.map ? src.map : null,
+                gradientMap: threeTone,
+            });
+        });
+        placeForestExitGate();
+    };
+    bridgeLoader.load('Bridge.glb', onBridgeLoaded, undefined, () => {
+        bridgeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Bridge.glb',
+            onBridgeLoaded, undefined, (e) => console.error('Bridge.glb load failed:', e));
+    });
+    const levelExitLoader = new GLTFLoader();
+    const onLevelExitLoaded = (gltf) => {
+        levelExitScene = gltf.scene;
+        // Same re-material every other imported prop gets, so it sits in the
+        // game's shading rather than looking like an import.
+        levelExitScene.traverse(o => {
+            if (!o.isMesh) return;
+            o.castShadow = true; o.receiveShadow = true;
+            const src = Array.isArray(o.material) ? o.material[0] : o.material;
+            o.material = new THREE.MeshToonMaterial({
+                color: src && src.color ? src.color.clone() : new THREE.Color(0xffffff),
+                map: src && src.map ? src.map : null,
+                gradientMap: threeTone,
+            });
+        });
+        // The forest may already have been built while this was downloading.
+        placeForestExitGate();
+    };
+    levelExitLoader.load('LevelExit.glb', onLevelExitLoaded, undefined, () => {
+        levelExitLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelExit.glb',
+            onLevelExitLoaded, undefined, (e) => console.error('LevelExit.glb load failed:', e));
+    });
+
     let mountainGeometry = null, mountainMaterial = null;
     // Where the whitebox cones stood, read off Village.glb the first time the
     // village is built and kept because that read is destructive - see the
@@ -6920,6 +7490,14 @@ export function startGame(CharacterClass) {
         { text: 'Listen to me.', icon: null },
         { text: 'My apprentice went into the forest yesterday and still hasn\'t returned.', icon: null },
         { text: 'He didn\'t even take his compass with him.', icon: 'compass' },
+        // The compass is the only navigation the game has, and nothing else
+        // tells you how to read it - so the character who hands it over is
+        // the right place to say which end matters. The needle's yellow
+        // really is the pointing end (Compass.glb material 0, #e7d610); the
+        // line would be worse than useless if it named a colour that was not
+        // actually there.
+        { text: 'Take mine. Its yellow end always turns toward wherever you need to go.', icon: 'compass' },
+        { text: 'Walk the way the yellow points, and you will not lose your way.', icon: 'compass' },
         { text: 'If you can find him, could you bring him back to the village?', icon: null },
         { text: 'Please, please bring him back.', icon: null },
     ];
@@ -6931,42 +7509,288 @@ export function startGame(CharacterClass) {
     const VILLAGE_TYPEWRITER_FAST_MULT = 3; // while tap/hold-forwarding
     const VILLAGE_NPC_TALK_RADIUS = 2.5;
 
-    // Small canvas speech-bubble sprite (rounded rect + tail), always
-    // facing the camera like makeTextSprite's labels - raycast disabled
-    // for the same reason those are: without it, this bubble (a child of
-    // the NPC, which IS a collidable) could be the closest hit instead of
-    // the NPC's actual body when a ray sweeps past its height.
-    function createSpeechBubbleSprite(text) {
-        const canvas = document.createElement('canvas');
-        canvas.width = 256; canvas.height = 128;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'rgba(15,15,20,0.92)';
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-        ctx.lineWidth = 4;
-        const r = 20, w = 236, h = 84, x = 10, y = 10;
-        ctx.beginPath();
-        ctx.moveTo(x + r, y);
-        ctx.arcTo(x + w, y, x + w, y + h, r);
-        ctx.arcTo(x + w, y + h, x, y + h, r);
-        ctx.arcTo(x, y + h, x, y, r);
-        ctx.arcTo(x, y, x + w, y, r);
-        ctx.closePath();
-        ctx.fill(); ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(canvas.width / 2 - 14, y + h);
-        ctx.lineTo(canvas.width / 2, y + h + 20);
-        ctx.lineTo(canvas.width / 2 + 14, y + h);
-        ctx.closePath();
-        ctx.fill(); ctx.stroke();
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 40px sans-serif';
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(text, canvas.width / 2, y + h / 2);
-        const texture = new THREE.CanvasTexture(canvas);
-        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false }));
-        sprite.scale.set(2.0, 1.0, 1);
-        sprite.raycast = () => {};
-        return sprite;
+    // ---- Speech bubbles ----
+    // Screen-space HTML, not 3D sprites. A sprite is sized in WORLD units, so
+    // the same bubble is a wall of text up close and unreadable from across a
+    // clearing; sizing it in pixels makes it legible from anywhere, which for
+    // something whose whole job is to be read is the only behaviour that makes
+    // sense. It also drops a per-bubble canvas, texture and draw call.
+    //
+    // Each label is an element plus the Object3D it hangs over; the transform
+    // is recomputed every frame in updateWorldLabels.
+    const _worldLabels = [];
+    const _labelProj = new THREE.Vector3();
+
+    // ---- Naming a control inside a line ----
+    // Write {punch} in a bubble and it comes out as a little copy of the PUNCH
+    // button, in the button's own colour. Telling someone to "tap PUNCH" only
+    // works if they already know which one that is; showing the thing they
+    // have to press does not depend on reading the label off it first.
+    //
+    // Colours are taken from the real controls in ClimbGame.html - if one is
+    // restyled there, match it here or the copy stops being recognisable.
+    const LABEL_BUTTONS = {
+        punch: { label: 'PUNCH', bg: 'rgba(200, 50, 50, 0.85)' },
+        jump:  { label: 'JUMP',  bg: 'rgba(100, 255, 100, 0.6)' },
+        carry: { label: 'CARRY', bg: 'rgba(255, 50, 150, 0.8)' },
+        drop:  { label: 'DROP',  bg: 'rgba(150, 150, 150, 0.85)' },
+        throw: { label: 'THROW', bg: 'rgba(255, 50, 50, 0.85)' },
+        hold:  { label: 'HOLD',  bg: 'rgba(50, 150, 255, 0.8)' },
+        // Not a button of its own - it is the hint that appears on the left
+        // stick while you are hanging (#ledge-hint-climb), so it borrows that
+        // element's red rather than inventing a colour.
+        climb: { label: 'CLIMB', bg: 'rgba(255, 0, 0, 0.8)' },
+    };
+    // Icons a line can embed, resolved at RENDER time rather than looked up
+    // once: compassIconDataUrl is generated from Compass.glb after it loads,
+    // so a line written before then would otherwise bake in `undefined`.
+    const LABEL_ICONS = {
+        compass: () => window.compassIconDataUrl || null,
+        player: () => window.playerIconDataUrl || null,
+    };
+    // Splits a line into text, chip and icon segments ONCE, so the bubbles and
+    // the dialogue typewriter cannot disagree about what a line contains.
+    function labelSegments(text) {
+        return String(text).split(/(\{[a-z]+\})/i).filter(p => p !== '').map(part => {
+            const m = /^\{([a-z]+)\}$/i.exec(part);
+            const key = m ? m[1].toLowerCase() : null;
+            if (key && LABEL_ICONS[key]) {
+                // Costs one character of reveal - it appears as a unit, and
+                // charging it for a word nobody can read would stall the
+                // typewriter on nothing.
+                return { icon: LABEL_ICONS[key], len: 1 };
+            }
+            const spec = m ? LABEL_BUTTONS[key] : null;
+            // A chip costs its LABEL's length. The typewriter counts
+            // characters, and charging it for the '{punch}' token instead
+            // would make the reveal pause for a length nobody can see.
+            return spec ? { chip: spec, len: spec.label.length }
+                        : { text: part, len: part.length };
+        });
+    }
+    function labelPlainLength(text) {
+        return labelSegments(text).reduce((n, s) => n + s.len, 0);
+    }
+    function makeButtonChip(spec) {
+        const chip = document.createElement('span');
+        chip.className = 'wl-btn';
+        chip.style.background = spec.bg;
+        chip.textContent = spec.label;
+        return chip;
+    }
+    // Renders the first `shown` characters of a line (all of it when `shown`
+    // is undefined). Built node by node rather than with innerHTML: the only
+    // markup here is a chip this function creates itself, so a line containing
+    // < or & stays text, exactly as written.
+    function renderTypedText(el, text, shown) {
+        el.textContent = '';
+        let left = (shown === undefined) ? Infinity : shown;
+        const segs = labelSegments(text);
+        for (let i = 0; i < segs.length && left > 0; i++) {
+            const seg = segs[i];
+            if (seg.icon) {
+                const url = seg.icon();
+                // Not ready yet (the model it is generated from is still
+                // loading): skip it rather than drawing a broken image.
+                if (url) {
+                    const img = document.createElement('img');
+                    img.className = 'wl-icon';
+                    img.src = url;
+                    el.appendChild(img);
+                }
+                left -= seg.len;
+            } else if (seg.chip) {
+                // All or nothing - half a button is not a thing. It waits
+                // until the reveal has paid for the whole label.
+                if (left < seg.len) break;
+                el.appendChild(makeButtonChip(seg.chip));
+                left -= seg.len;
+            } else {
+                const take = Math.min(seg.len, left);
+                el.appendChild(document.createTextNode(seg.text.slice(0, take)));
+                left -= take;
+            }
+        }
+    }
+    function fillLabelText(box, text) { renderTypedText(box, text); }
+    // What a bubble should actually hang off. Given an avatar it returns the
+    // VISUAL model, not the root group.
+    //
+    // A climb ends by snapping the root to the ledge target while the model is
+    // offset back to hide it (see the isClimbingUp transition and the same
+    // note in recordPlayerTrail). A label on the root therefore jumps at that
+    // frame - the character glides up smoothly and its speech bubble
+    // teleports. The model carries the compensation, so following it gives the
+    // smooth climb-out the player actually sees.
+    // Resolved EVERY FRAME rather than once at creation: fbxModel is null
+    // until the FBX finishes loading, and the village's 'Hey!' is made in the
+    // same breath as its avatar - captured once, it would be stuck on the root
+    // for that character's whole life.
+    function labelAnchor(owner) {
+        if (!owner) return null;
+        return owner.fbxModel || owner.group || owner;
+    }
+    function labelRoot(owner) {
+        if (!owner) return null;
+        return owner.group || owner;
+    }
+    function makeWorldLabel(text, target, offsetY) {
+        const host = document.getElementById('world-labels');
+        if (!host || !target) return null;
+        const el = document.createElement('div');
+        el.className = 'world-label';
+        const box = document.createElement('div');
+        box.className = 'wl-box';
+        fillLabelText(box, text);
+        const tail = document.createElement('div');
+        tail.className = 'wl-tail';
+        el.appendChild(box); el.appendChild(tail);
+        host.appendChild(el);
+        const rec = {
+            el, owner: target,
+            offsetY: offsetY === undefined ? window.bubbleAnchorY : offsetY,
+            visible: true,
+        };
+        _worldLabels.push(rec);
+        return rec;
+    }
+    function removeWorldLabel(rec) {
+        if (!rec) return;
+        const i = _worldLabels.indexOf(rec);
+        if (i !== -1) _worldLabels.splice(i, 1);
+        if (rec.el && rec.el.parentNode) rec.el.parentNode.removeChild(rec.el);
+    }
+    // How close, in screen pixels, a bubble may come to the player before it
+    // is pushed clear. A bubble is drawn at the SPEAKER's head, and a speaker
+    // standing between you and the camera puts its head exactly where you are
+    // - so the line ends up pasted over the character you are controlling.
+    const _playerScreen = { x: 0, y: 0, valid: false };
+    // The compass is a real object floating in front of the camera, not a HUD
+    // panel, so where it lands on screen changes with the camera pitch - the
+    // only honest way to stay off it is to project it and look.
+    const _compassScreen = { x: 0, y: 0, valid: false };
+    // Room kept between a bubble and the screen edge. The top clamp uses the
+    // box's own measured height rather than a constant, because the bubble is
+    // anchored by its TAIL and its body extends upward from that point.
+    // Live-tunable from the panel's "Speech Bubbles" category. Read per frame
+    // rather than captured, so dragging a slider moves the bubble that is on
+    // screen right now instead of only the next one.
+    window.bubbleBottomMargin = 152;   // clearance from the bottom edge
+    // ...and a hard floor as a FRACTION of screen height. Bubbles stay in the
+    // top THIRD: everything below it is either your own character, the
+    // compass, or the controls under your thumbs, and a line drifting down
+    // there competes with whatever you are actually doing. Kept as a fraction
+    // rather than pixels so it holds on any screen shape.
+    window.bubbleMaxYFrac = 0.38;
+    window.bubbleSideMargin = 24;     // ...and from the left/right edges
+    window.bubbleCompassGap = 92;     // how far under the needle it hangs
+    window.bubbleCompassKeepW = 110;  // how wide the compass counts as
+    window.bubblePlayerKeepW = 130;   // ...and the player
+    window.bubblePlayerKeepH = 150;
+    window.bubbleAnchorY = 2.35;      // metres above the speaker's origin
+    // Measured once and cached: offsetHeight forces a layout, and doing that
+    // per label per frame is a real cost for a box whose size only changes
+    // when its text does - which is never, since a new line makes a new label.
+    function labelHeight(rec) {
+        if (!rec._h) rec._h = rec.el.offsetHeight || 60;
+        return rec._h;
+    }
+    // The element is translate(-50%), so it straddles x - clamping x alone
+    // still left half the bubble off the side of the screen.
+    function labelHalfWidth(rec) {
+        if (!rec._hw) rec._hw = (rec.el.offsetWidth || 200) * 0.5;
+        return rec._hw;
+    }
+    function projectKeepout(obj, out, view, lift) {
+        out.valid = false;
+        if (!obj || !obj.parent || obj.visible === false) return;
+        obj.getWorldPosition(_labelProj);
+        _labelProj.y += lift || 0;
+        _labelProj.project(view);
+        if (_labelProj.z > 1) return;
+        out.x = (_labelProj.x * 0.5 + 0.5) * window.innerWidth;
+        out.y = (-_labelProj.y * 0.5 + 0.5) * window.innerHeight;
+        out.valid = true;
+    }
+    function updateWorldLabels(cam) {
+        const view = cam || camera;
+        // The player's own head, once per frame, to push bubbles off it.
+        projectKeepout(char && char.group, _playerScreen, view, window.bubbleAnchorY);
+        projectKeepout(compassMesh, _compassScreen, view, 0);
+        // The lowest a bubble's bottom edge may sit. The tighter of the two
+        // limits wins, so the fraction can never be overridden by a small
+        // pixel margin or the other way round.
+        const maxY = Math.min(window.innerHeight - window.bubbleBottomMargin,
+                              window.innerHeight * window.bubbleMaxYFrac);
+        for (let i = _worldLabels.length - 1; i >= 0; i--) {
+            const rec = _worldLabels[i];
+            // A label outlives nothing: if its speaker has been disposed and
+            // taken out of the scene, the label goes with it rather than
+            // sticking to the last place that character stood.
+            // Liveness is judged on the ROOT, not the anchor: the model stays
+            // parented to its group after the group leaves the scene, so
+            // testing the model would never notice the speaker was gone.
+            const root = labelRoot(rec.owner);
+            if (!root || !root.parent) { removeWorldLabel(rec); continue; }
+            if (!rec.visible) { rec.el.style.display = 'none'; continue; }
+            labelAnchor(rec.owner).getWorldPosition(_labelProj);
+            _labelProj.y += rec.offsetY;
+            _labelProj.project(view);
+            // z > 1 is behind the near plane. Without this test the projection
+            // flips sign and the bubble appears mirrored on the opposite side
+            // of the screen when you turn your back on whoever is talking.
+            // BEHIND the camera. The projection flips sign there, so the raw
+            // result would put the bubble mirrored on the wrong side of the
+            // screen. It used to be hidden outright - which is why a line
+            // vanished mid-sentence whenever you swung the camera past the
+            // speaker, or when a climb carried them out of shot. Pinned to the
+            // bottom edge instead, on the correct side: still readable, and
+            // still roughly pointing at where the speaker actually is.
+            const behind = _labelProj.z > 1;
+            rec.el.style.display = 'flex';
+            let x = (_labelProj.x * 0.5 + 0.5) * window.innerWidth;
+            let y = (-_labelProj.y * 0.5 + 0.5) * window.innerHeight;
+            if (behind) {
+                x = window.innerWidth * (_labelProj.x < 0 ? 0.78 : 0.22);
+                y = maxY;
+            }
+            // Lifted clear of the player rather than hidden or moved sideways:
+            // the tail has to keep pointing down at whoever is speaking, so
+            // the only direction that does not break that is up. Sideways
+            // would leave the tail aimed at empty ground; hiding it would drop
+            // the line exactly when the two of you are closest, which is when
+            // you are most likely to be reading it.
+            if (_playerScreen.valid &&
+                Math.abs(x - _playerScreen.x) < window.bubblePlayerKeepW &&
+                y > _playerScreen.y - window.bubblePlayerKeepH) {
+                y = _playerScreen.y - window.bubblePlayerKeepH;
+            }
+            // ...and clear of the compass, but the other way: pushed DOWN so
+            // the bubble hangs under the needle rather than being lifted over
+            // it. Lifting was wrong - it drove the line up into the top of the
+            // screen to get past something that sits near the middle of it.
+            //
+            // The element is transformed translate(-50%,-100%), so `y` is its
+            // BOTTOM edge and the box occupies [y - h, y]. Clearing the
+            // compass therefore means putting y a full box-height below it,
+            // not just a few pixels.
+            if (_compassScreen.valid &&
+                Math.abs(x - _compassScreen.x) < window.bubbleCompassKeepW) {
+                const h = labelHeight(rec);
+                y = Math.max(y, _compassScreen.y + window.bubbleCompassGap + h);
+            }
+            // -50%/-100% puts the TAIL on the anchor point, so the bubble sits
+            // above the head rather than centred on it.
+            // Kept inside the viewport. A speaker at the edge of the screen
+            // otherwise pushes its bubble half off it, which reads as the line
+            // having disappeared even though it is still there.
+            const halfW = labelHalfWidth(rec);
+            const sideM = window.bubbleSideMargin;
+            x = Math.min(Math.max(x, halfW + sideM), window.innerWidth - halfW - sideM);
+            y = Math.min(Math.max(y, labelHeight(rec) + 8), maxY);
+            rec.el.style.transform =
+                'translate(-50%, -100%) translate(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px)';
+        }
     }
 
     // Simplified port of DungeonGame.html's sageToasts/addSageToast -
@@ -7253,6 +8077,1362 @@ export function startGame(CharacterClass) {
     }
     document.querySelectorAll('.viewer-cat-btn').forEach(b => b.addEventListener('click', () => setViewerCategory(b.dataset.cat)));
 
+    // ---- Voxel level ----
+    // Geometry authored in voxel_roundcube_pro.html and exported with its
+    // "Export GLB" button. One merged, bevelled, vertex-coloured mesh.
+    //
+    // The mesh carries NO UVs - the voxel builder writes position, normal and
+    // colour and nothing else - so this cannot be textured the ordinary way at
+    // all. The triplanar shader is what makes it possible: it projects the
+    // ground texture from world space, needs no uv, and reads the authored
+    // vertex colours as the rock/earth tint underneath the grass.
+    let voxelLevelScene = null;
+    let pendingVoxelLevelBuild = false;
+    const VOXEL_LEVEL_URL = 'VoxelLevels/level.glb';
+    // The tool's voxel is 2.0 across; the game's block is 3.0, and everything
+    // that traverses the world is tuned to that - a 3.0 step is exactly what
+    // the ledge grab and the AI climb are built around. 1.5 makes one authored
+    // voxel one game block, so a shape drawn in the tool is climbable by
+    // construction rather than by luck.
+    const VOXEL_LEVEL_SCALE = 1.5;
+    // Trees scattered over the authored surfaces.
+    const VOXEL_TREE_TRIES = 400;
+    const VOXEL_TREE_MAX_PLATFORM = 7;    // sparse - it is the play space
+    const VOXEL_TREE_MAX_GROUND = 40;     // the wood around it
+    const VOXEL_TREE_MIN_GAP = 3.2;   // between trunks
+    const _voxelTreeNormal = new THREE.Vector3();
+    // Past the bevel's own width (0.35 x VOXEL_LEVEL_SCALE), so the outer
+    // ground rays always land on flat surface either side of a rounded edge.
+    const VOXEL_GROUND_SPREAD = 0.5;
+    const VOXEL_SPAWN_SAMPLES = 12;   // grid resolution when looking for a spawn
+    const BOUNCE_TREE_TINT = 0.18;    // how far toward yellow - a hint, not a colour
+    // Launch speed off a springy surface. The player's own jump is 10, giving
+    // an apex of 1.67 against gravity 30; 22 gives 8.1, so a bounce clears
+    // roughly five times what a jump does.
+    window.bounceTreeSpeed = 22;
+    let voxelLevelMat = null;
+    // Terrain that sits under the platform. Its own model rather than the
+    // shared grass plane, because the platform is meant to be an island in
+    // open space - see the ground.visible = false in buildVoxelLevel.
+    let voxelGroundScene = null;
+    let voxelGroundMat = null;
+    // Everything scattered ON the authored level - its trees, and the ground
+    // cover. Hidden while the camera is inside the mesh: the interior renders
+    // black, but grass and trunks are separate objects with their own
+    // materials, so they carried on drawing and left blades and branches
+    // floating in an otherwise empty black volume.
+    //
+    // Hidden rather than blackened because it is free, and against a black
+    // interior the result is identical.
+    let _voxelDecor = [];
+    const VOXEL_GROUND_URL = 'VoxelLevels/levelGround.glb';
+    // Where the terrain sits relative to the platform's LOWEST point.
+    //
+    // NEGATIVE, so the terrain's top surface is slightly above that point and
+    // the structure's base is buried in it - the shape now extends a long way
+    // down, and something that reaches for the ground should meet it rather
+    // than stop short above it. Burying it also avoids the coplanar faces a
+    // flush fit would produce across the whole footprint, which z-fight.
+    const VOXEL_GROUND_DROP = -1.5;
+    // Where the lowest point of the assembled level sits. Above zero on
+    // purpose - see the lift in buildVoxelLevel.
+    const VOXEL_LEVEL_BASE = 1.0;
+    const voxelLevelLoader = new GLTFLoader();
+    function loadVoxelGround() {
+        voxelLevelLoader.load(VOXEL_GROUND_URL, (gltf) => {
+            voxelGroundScene = gltf.scene;
+            if (currentLevel === 'local_voxel') buildVoxelLevel();
+        }, undefined, () => {
+            console.warn(VOXEL_GROUND_URL + ' not found - the platform will have nothing under it');
+            voxelGroundScene = false;
+        });
+    }
+
+    function loadVoxelLevel() {
+        voxelLevelLoader.load(VOXEL_LEVEL_URL, (gltf) => {
+            voxelLevelScene = gltf.scene;
+            if (pendingVoxelLevelBuild) {
+                pendingVoxelLevelBuild = false;
+                buildVoxelLevel();
+                // ...and the ground cover with it. This retry calls the level
+                // builder directly rather than buildLevel, which is what
+                // normally runs the scatters afterwards - so without this the
+                // grass would be the one scattered before the geometry
+                // existed, i.e. none of it on the structure.
+                if (window.rebuildGrass) window.rebuildGrass();
+                if (window.rebuildFlowers) window.rebuildFlowers();
+            }
+        }, undefined, () => {
+            // Expected until a level has been exported - this is an authoring
+            // pipeline, not a shipped asset, so a miss is not an error.
+            console.warn(VOXEL_LEVEL_URL + ' not found - export one from voxel_roundcube_pro.html');
+            voxelLevelScene = false;   // false = tried and missing, vs null = not tried
+            if (pendingVoxelLevelBuild) { pendingVoxelLevelBuild = false; buildVoxelLevel(); }
+        });
+    }
+
+    function buildVoxelLevel() {
+        while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
+        shooters.forEach(sh => scene.remove(sh.mesh)); shooters.length = 0;
+        projectiles.forEach(pr => scene.remove(pr.mesh)); projectiles.length = 0;
+        carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
+        carryables.length = 0;
+        nextCarryNetId = 0;
+        debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
+        collidables.length = 0;
+        _voxelDecor = [];
+        window._cubesLoaded = true;
+        // NO shared ground plane. The platform is an island in open space and
+        // walking off it is meant to drop you - what you land on is the
+        // terrain model below (see VOXEL_GROUND_DROP), not an infinite floor.
+        ground.visible = false;
+        star.visible = false;
+        if (voxelGroundScene === null) loadVoxelGround();
+
+        if (voxelLevelScene === null || voxelLevelScene === false) {
+            // Nothing to stand on yet - the geometry is still downloading, or
+            // was never exported. Leave the shared plane in as a temporary
+            // floor (hidden, but collidable) so the character waits somewhere
+            // instead of accelerating downward through empty space for the
+            // whole load. Removed by the real build the moment it runs.
+            collidables.push(ground);
+            if (voxelLevelScene === null) { pendingVoxelLevelBuild = true; loadVoxelLevel(); }
+            return;
+        }
+
+        if (!voxelLevelMat) {
+            // DOUBLE-SIDED, and this is a collision decision rather than a
+            // visual one. Mesh.raycast honours material.side, so a front-side
+            // material means any triangle whose winding came out reversed is
+            // invisible to every ray - and you fall straight through it. The
+            // voxel tool previews with DoubleSide, so nothing there ever
+            // reveals an inconsistent winding; exporting as front-side is what
+            // turned that into a hole in the floor.
+            //
+            // The usual objection to double-sided collision - a ray inside a
+            // solid reporting the far inner wall - does not bite here: the
+            // ground scan starts above the surface, so the first hit is the
+            // top face either way.
+            voxelLevelMat = new THREE.MeshToonMaterial({
+                gradientMap: threeTone, side: THREE.DoubleSide,
+            });
+            applyTriplanarGrass(voxelLevelMat, { vertexMask: true });
+            // AFTER the grass, so the two onBeforeCompile handlers chain in
+            // the same order makeLevelOccluder uses. Applied to the shared
+            // material directly rather than through makeLevelOccluder, which
+            // clones - and a clone does not carry an onBeforeCompile, so the
+            // triplanar projection would be lost.
+            makeDitherable(voxelLevelMat);
+        }
+        const root = voxelLevelScene.clone(true);
+        root.scale.setScalar(VOXEL_LEVEL_SCALE);
+        root.updateMatrixWorld(true);
+        // The MESH is the collision surface - no box stand-in. Standing on the
+        // real geometry is the point: a lattice collider fills the corners the
+        // bevel cuts away, so you end up walking on invisible sharp edges up
+        // to half a unit out from what you can see.
+        //
+        // What made the bevel unwalkable was not the mesh, it was the ground
+        // scan sampling narrower than the bevel is wide - see
+        // groundSampleSpread below.
+        root.traverse(o => {
+            if (!o.isMesh) return;
+            o.material = voxelLevelMat;
+            o.castShadow = true;
+            o.receiveShadow = true;
+            // Wide enough for the five ground rays to straddle a bevel and
+            // reach the flat either side, so the plane fit can overrule the
+            // rounded facet instead of agreeing with it.
+            o.userData.groundSampleSpread = VOXEL_GROUND_SPREAD;
+            // Exempt from the bounding-box clearance tests: the level is ONE
+            // merged mesh, so its Box3 is the entire structure, and every
+            // box-based check (ledge clearance, carry drop spots, grass
+            // placement) would read it as a single solid brick. Raycasts -
+            // what ground, wall and ledge detection actually use - are
+            // unaffected.
+            o.userData.softObstacle = true;
+            // ...and it IS the ground here, which is what lets the grass and
+            // tree scatters stand things on it. See isGroundSlab.
+            o.userData.isGroundSlab = true;
+            collidables.push(o);
+            // Dissolve when it stands between the camera and the player, like
+            // the level blocks everywhere else - but tested by RAYCAST, not by
+            // bounding box. The box is the whole structure, so the box test
+            // would report the camera as permanently inside it and the level
+            // would sit dithered all the time. See ditherByRay.
+            o.userData.ditherByRay = true;
+            ditherOccluders.push(o);
+        });
+        levelGroup.add(root);
+
+        // Terrain underneath. Positioned from the platform's own bounds rather
+        // than a fixed coordinate, so it stays centred under whatever shape
+        // was authored.
+        const pb = new THREE.Box3().setFromObject(root);
+        let groundRoot = null;
+        if (voxelGroundScene) {
+            groundRoot = voxelGroundScene.clone(true);
+            groundRoot.updateMatrixWorld(true);
+            const gb = new THREE.Box3().setFromObject(groundRoot);
+            groundRoot.position.set(
+                (pb.min.x + pb.max.x) * 0.5 - (gb.min.x + gb.max.x) * 0.5,
+                pb.min.y - VOXEL_GROUND_DROP - gb.max.y,
+                (pb.min.z + pb.max.z) * 0.5 - (gb.min.z + gb.max.z) * 0.5);
+            if (!voxelGroundMat) {
+                voxelGroundMat = new THREE.MeshToonMaterial({ color: 0x8fa06a, gradientMap: threeTone });
+                applyTriplanarGrass(voxelGroundMat);
+            }
+            groundRoot.traverse(o => {
+                if (!o.isMesh) return;
+                o.material = voxelGroundMat;
+                o.receiveShadow = true;
+                o.castShadow = false;
+                o.userData.softObstacle = true;
+                o.userData.isGroundSlab = true;
+                collidables.push(o);
+            });
+            groundRoot.updateMatrixWorld(true);
+            levelGroup.add(groundRoot);
+        }
+
+        // Lift the whole thing clear of the origin, so y=0 sits UNDER the
+        // level rather than through it.
+        //
+        // Worth doing beyond the tidiness: y=0 is the value half this codebase
+        // reaches for when a ground query comes back empty, and every one of
+        // those is a bug that only shows itself when the level actually
+        // occupies that height. Keeping the world above zero means a stray
+        // "floor at 0" puts something below the map, where it is obvious,
+        // instead of leaving it standing convincingly in mid-air.
+        //
+        // Measured from the assembled result rather than hardcoded, so it
+        // still lands correctly whatever shape was authored and however deep
+        // the terrain under it is.
+        const whole = new THREE.Box3().setFromObject(root);
+        if (groundRoot) whole.union(new THREE.Box3().setFromObject(groundRoot));
+        const lift = VOXEL_LEVEL_BASE - whole.min.y;
+        root.position.y += lift;
+        root.updateMatrixWorld(true);
+        if (groundRoot) {
+            groundRoot.position.y += lift;
+            groundRoot.updateMatrixWorld(true);
+        }
+
+        // Re-measured after the lift, since these are compared against world
+        // positions: the exclusion footprint below, and the bounce tree's
+        // placement just here.
+        const pbLifted = new THREE.Box3().setFromObject(root);
+
+        // One springy tree on the terrain, off to the side of the structure so
+        // there is room to drop onto it from above.
+        if (groundRoot) {
+            const gbNow = new THREE.Box3().setFromObject(groundRoot);
+            const bx = THREE.MathUtils.lerp(pbLifted.max.x, gbNow.max.x, 0.5);
+            rayDown.set(_tempVec1.set(bx, gbNow.max.y + 5, 0), _downVec);
+            const bHits = rayDown.intersectObject(groundRoot, true);
+            if (bHits.length) spawnBounceTree(bx, bHits[0].point.y, 0, window.forestMaxScale);
+        }
+
+        // A few on the platform, the rest on the terrain around it - the
+        // platform is the thing you traverse, and crowding it with trunks
+        // makes it unreadable.
+        scatterVoxelTrees(root, VOXEL_TREE_MAX_PLATFORM, null);
+        if (groundRoot) scatterVoxelTrees(groundRoot, VOXEL_TREE_MAX_GROUND, pbLifted);
+
+        // Spawn on a surface that is actually THERE. The bounding-box centre
+        // is not a floor - an authored shape is as likely to be a ring, an
+        // arch or a tower with an open middle, and dropping in over the hole
+        // reads exactly like falling through the level. So: sample the
+        // footprint, keep hits flat enough to stand on, and take the one
+        // nearest the middle.
+        const bounds = new THREE.Box3().setFromObject(root);
+        const cx = (bounds.min.x + bounds.max.x) * 0.5, cz = (bounds.min.z + bounds.max.z) * 0.5;
+        let best = null, bestD = Infinity;
+        for (let gx = 0; gx <= VOXEL_SPAWN_SAMPLES; gx++) {
+            for (let gz = 0; gz <= VOXEL_SPAWN_SAMPLES; gz++) {
+                const sx = THREE.MathUtils.lerp(bounds.min.x, bounds.max.x, gx / VOXEL_SPAWN_SAMPLES);
+                const sz = THREE.MathUtils.lerp(bounds.min.z, bounds.max.z, gz / VOXEL_SPAWN_SAMPLES);
+                rayDown.set(_tempVec1.set(sx, bounds.max.y + 5, sz), _downVec);
+                const hits = rayDown.intersectObject(root, true);
+                if (!hits.length || !hits[0].face) continue;
+                _voxelTreeNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+                if (_voxelTreeNormal.y < GRASS_MIN_UP) continue;
+                const d = Math.hypot(sx - cx, sz - cz);
+                if (d < bestD) { bestD = d; best = hits[0].point.clone(); }
+            }
+        }
+        if (best) char.group.position.set(best.x, best.y + 1.0, best.z);
+        else char.group.position.set(cx, bounds.max.y + 2.0, cz);
+        // The spawn is a teleport, not a landing - see resetPlayerMomentum.
+        if (window.resetPlayerMomentum) window.resetPlayerMomentum();
+        char.group.rotation.y = 0;
+        window.compassTarget = null;
+    }
+
+    // Drops trees onto the authored geometry: fire rays down over its
+    // footprint, keep the ones that land on a surface flat enough to stand a
+    // trunk on, and space them out.
+    //
+    // Raycast rather than anything cleverer because the shape is arbitrary -
+    // there is no grid to walk and no list of "top faces", just a mesh. This is
+    // the same technique the grass scatter uses, and it inherits the same
+    // rule: a bevelled edge is not a floor.
+    // A tree you bounce off. Same model as any other, with two differences.
+    //
+    // Its MATERIALS are cloned. treeModel.clone(true) shares materials by
+    // reference, so tinting the clone would tint every tree in the level -
+    // this one is meant to be the odd one out, and being able to spot it is
+    // the whole point of colouring it.
+    //
+    // Its colliders carry bounceSpeed, which the landing code reads instead of
+    // grounding the character (see the landing branch). Only the canopy is
+    // marked: bouncing off the trunk you walked into would be nonsense.
+    function spawnBounceTree(x, y, z, scale) {
+        const tree = spawnStandaloneTree(x, z, Math.random() * Math.PI * 2, scale, y);
+        if (!tree) return null;
+        _voxelDecor.push(tree);
+        const yellow = new THREE.Color(0xffe066);
+        tree.traverse(o => {
+            if (!o.isMesh) return;
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            const tinted = mats.map(m => {
+                const c = m.clone();
+                // A LITTLE. At 0.18 it reads as a different tree rather than
+                // as a yellow one, which is what was asked for.
+                c.color = m.color.clone().lerp(yellow, BOUNCE_TREE_TINT);
+                return c;
+            });
+            o.material = Array.isArray(o.material) ? tinted : tinted[0];
+        });
+        // The colliders are separate meshes spawnStandaloneTree pushed into
+        // collidables - find them by the flag it set.
+        collidables.forEach(c => {
+            if (!c.userData.isTreeCollider) return;
+            const d = Math.hypot(c.position.x - x, c.position.z - z);
+            if (d > 0.01) return;
+            c.userData.bounceSpeed = window.bounceTreeSpeed;
+        });
+        return tree;
+    }
+
+    // `avoid` is a Box3 whose XZ footprint is kept clear - used to stop the
+    // terrain's trees growing up through the platform standing over it.
+    function scatterVoxelTrees(root, budget, avoid) {
+        if (!treeModel) return;
+        const box = new THREE.Box3().setFromObject(root);
+        const placed = [];
+        for (let i = 0; i < VOXEL_TREE_TRIES && placed.length < budget; i++) {
+            const x = THREE.MathUtils.lerp(box.min.x, box.max.x, Math.random());
+            const z = THREE.MathUtils.lerp(box.min.z, box.max.z, Math.random());
+            if (avoid && x > avoid.min.x - VOXEL_TREE_MIN_GAP && x < avoid.max.x + VOXEL_TREE_MIN_GAP
+                && z > avoid.min.z - VOXEL_TREE_MIN_GAP && z < avoid.max.z + VOXEL_TREE_MIN_GAP) continue;
+            rayDown.set(_tempVec1.set(x, box.max.y + 5, z), _downVec);
+            const hits = rayDown.intersectObject(root, true);
+            if (!hits.length || !hits[0].face) continue;
+            _voxelTreeNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
+            if (_voxelTreeNormal.y < GRASS_MIN_UP) continue;
+            const p = hits[0].point;
+            let tooClose = false;
+            for (let k = 0; k < placed.length; k++) {
+                if (placed[k].distanceTo(p) < VOXEL_TREE_MIN_GAP) { tooClose = true; break; }
+            }
+            if (tooClose) continue;
+            const scale = THREE.MathUtils.lerp(window.forestMinScale, window.forestMaxScale, Math.random());
+            const tree = spawnStandaloneTree(p.x, p.z, Math.random() * Math.PI * 2, scale, p.y);
+            if (tree) { placed.push(p.clone()); _voxelDecor.push(tree); }
+        }
+    }
+
+    // ---- Scripted progression ----
+    // Village goal -> forest -> meet the first companion -> a fight that
+    // teaches the combo -> the second companion across the water.
+    //
+    // A tiny explicit stage machine rather than anything cleverer: there are
+    // three beats, each with one trigger, and the whole thing has to be
+    // readable next to the level that hosts it. Exactly one enemy is scripted,
+    // the weakest, and only once you have a companion - everything else in the
+    // forest is something you tick on yourself from the panel.
+    const VILLAGE_GOAL_INSET = 0.12;   // how far back from the level edge
+    const VILLAGE_GOAL_SEARCH = 6;     // grid radius when looking for ground there
+    const VILLAGE_GOAL_STEP = 3;       // ...and its spacing
+    // How close counts as "arrived". Matches VILLAGE_NPC_TALK_RADIUS, so
+    // being noticed happens at the same range wherever you meet someone -
+    // at the old 4.5 the conversation opened from most of a clearing away,
+    // before you had really walked up to anyone.
+    const STORY_REACH = 2.5;
+    const STORY_GOAL_REACH = 2.6;      // ...and for picking up the diamond
+    let storyStage = 'none';
+    let storyNpc = null;               // the character currently being walked to
+    let storyBubble = null;
+    // The bot the first fight's coaching is about, so the story can notice
+    // when that particular one is finished rather than any bot anywhere.
+    let storyFightBot = null;
+    // The bubble over the RECRUITED companion, kept apart from the NPC's own:
+    // the two are on screen at different moments and are cleared by different
+    // events, so one handle for both would drop whichever was set last.
+    let storyCompanionBubble = null;
+    let storyGreetT = 0;
+    const STORY_GREET_TIME = 2.2;      // how long the greeting stays up
+    // ('Hey! You found me!' now opens SECOND_DIALOGUE_LINES instead of
+    // floating over the NPC's head - the greeting and the lesson are one
+    // conversation, so they belong in one box.)
+    // Along the route from the spawn - far enough to clear the corridor, so
+    // the meeting happens out in the clearing rather than in the passage,
+    // where there is no room to walk round anyone.
+    const STORY_FIRST_OFFSET = 22;
+    // The companion and the bag stand SIDE BY SIDE, straddling the middle of
+    // the path rather than one of them being pushed off into the trees. Half
+    // the gap between them, so the pair stays centred on the route whatever
+    // this is set to.
+    const STORY_PAIR_HALF = 1.8;
+    // Radius kept clear of trees around that spot. Generous on purpose: the
+    // trunk exclusion alone is not enough, because a canopy is a couple of
+    // units wide and overhangs from trees standing outside the band - which
+    // is how the bag ended up under branches on a patch with no trunk in it.
+    const STORY_MEET_CLEAR = 10;
+    // Where that meeting happens. Derived from the same constants the spawn
+    // is, NOT from _forestSpawnPoint - the tree scatter needs it while it is
+    // deciding what to plant, which is long before the player is placed.
+    function forestMeetPoint() {
+        const [z0, z1] = forestCorridorZ(-1);
+        return { x: FOREST_ENTRY_X, z: (z0 + z1) * 0.5 + STORY_FIRST_OFFSET };
+    }
+    // ...and where the SECOND one waits, on the far island. It gets a clearing
+    // of its own for the same reason the first does, and more so: that scene
+    // is a cinematic with a charge punch thrown across it, and a charge punch
+    // thrown inside a thicket is a charge punch nobody can see.
+    function forestMeetPoint2() {
+        return { x: (FOREST_GAP_X + FOREST_GAP_W * 0.5 + forestSlabHalf()) * 0.5, z: 0 };
+    }
+    const _forestSpawnPoint = new THREE.Vector3();
+
+    // A practice bag at the start.
+    //
+    // MOVES the bag the Character constructor already made rather than adding
+    // a second one: that default is built at (5, 0, 8) long before any level
+    // exists, so building another here would leave a stray bag sitting at the
+    // world origin's height in whatever level is loaded. Reuse also sidesteps
+    // paying for a second FBX load of the same model.
+    //
+    // A Sandbag's collider and hitbox helper are scene siblings placed from
+    // the constructor's position, not children of its group, so all three have
+    // to be moved together or the visible bag and the thing you can actually
+    // punch drift apart. The collider is re-registered because buildLevel()
+    // rebuilds `collidables` from scratch and drops it.
+    // Ground height at a point, ignoring everything that is not really ground.
+    //
+    // Tree colliders are why this exists. A canopy IS a collidable, so in a
+    // wood the first thing a downward ray meets is a leaf mass several metres
+    // up - and taking hits[0] puts whatever is being placed on top of the
+    // tree. The grass scatter already walks past them for the same reason.
+    //
+    // Sandbag colliders are skipped for a second, sneakier reason: the bag
+    // being placed is itself in `collidables`, so a re-place would read its
+    // own collider as the floor and step it 2.4 further into the air each
+    // time it ran.
+    function storyGroundY(x, z, fallback) {
+        rayDown.set(_tempVec1.set(x, 200, z), _downVec);
+        const hits = rayDown.intersectObjects(collidables, true);
+        for (let i = 0; i < hits.length; i++) {
+            const ud = hits[i].object.userData;
+            if (ud.isTreeCollider || ud.isSandbagCollider) continue;
+            return hits[i].point.y;
+        }
+        return fallback === undefined ? 0 : fallback;
+    }
+    let _forestSandbag = null;
+    function placeSandbag(bag, x, z) {
+        const y = storyGroundY(x, z);
+        bag.group.position.set(x, y, z);
+        if (bag.colliderMesh) {
+            bag.colliderMesh.position.set(x, y + 1.2, z);
+            bag.colliderMesh.updateMatrixWorld(true);
+            if (!collidables.includes(bag.colliderMesh)) collidables.push(bag.colliderMesh);
+        }
+        if (bag.hitboxHelper) bag.hitboxHelper.position.set(x, y + 1.2, z);
+        return bag;
+    }
+    function spawnForestSandbag(x, z) {
+        if (!window.sacks) window.sacks = [];
+        // Only the visible FBX is loaded async, and it hangs off the group -
+        // the collider and the hitbox helper are both built synchronously in
+        // the constructor, so everything placeSandbag touches exists already.
+        _forestSandbag = window.sacks[0] || null;
+        if (!_forestSandbag) {
+            _forestSandbag = new Sandbag(scene, new THREE.Vector3(x, 0, z),
+                collidables, debugHelpers, threeTone);
+            window.sacks.push(_forestSandbag);
+        }
+        return placeSandbag(_forestSandbag, x, z);
+    }
+    function clearForestSandbag() {
+        // Only drops the reference - the bag itself is the shared default one
+        // and is re-placed by the next level that wants it.
+        _forestSandbag = null;
+    }
+    // The one scripted conversation in the forest. Same shape as
+    // VILLAGE_DIALOGUE_LINES ({ text, icon }) because it goes through the same
+    // box - see startDialogue.
+    const FOREST_DIALOGUE_LINES = [
+        { text: 'You found me! I knew someone would come.', icon: null },
+        { text: 'Before we go anywhere, you need to pass my test.', icon: null },
+        { text: 'Tap {punch} over and over, and hit that sandbag.', icon: null },
+        { text: 'Watch me first. Then it is your turn.', icon: null },
+    ];
+    // The second companion's lesson: the charge punch. Paced so the throw the
+    // NPC performs lands on the line that describes it - the demonstration
+    // loop underneath (updateStoryNpcPerformance) runs on its own clock, so
+    // these two lines are the ones that must be up long enough to see one.
+    const SECOND_DIALOGUE_LINES = [
+        { text: 'Hey! You found me!', icon: null },
+        { text: 'You have the quick punches. Now the heavy one.', icon: null },
+        { text: 'Hold {punch} down and it charges up - see it building?', icon: null },
+        { text: 'The longer you hold, the more it fills.', icon: null },
+        { text: 'Then let go, and it throws. Watch this.', icon: null },
+        { text: 'Anything it lands on goes down flat.', icon: null },
+        { text: 'Keep your guard up - we have company coming.', icon: null },
+    ];
+    // Kept to two short lines each - the bubble sizes itself to its text, so a
+    // long sentence becomes a billboard wider than the character wearing it.
+    const STORY_COMBO_LINE = 'Your test: tap {punch}\nover and over, hit the bag!';
+    const STORY_DEMO_LINE = 'Like this! Now you try.';
+    const STORY_DONE_LINE = 'That is it! Together\nwe are much stronger.';
+    const COMP_DEMO_STANDOFF = 1.4;    // close enough to be inside COMP_PUNCH_RANGE
+    const STORY_DEMO_SWINGS = 2;       // how many strings it throws before stepping aside
+    const STORY_DEMO_TIMEOUT = 14;     // ...and the give-up if it never gets there
+    const STORY_TEST_HITS = 5;         // player hits on the bag that count as a pass
+    const STORY_FIRST_ENEMY_DIST = 16; // far enough that it walks in, not pops in
+    let storyDemoSwings = 0;
+    let storyDemoWasSwinging = false;
+    let storyDemoT = 0;
+    let storyTestFrom = 0;             // bagHitCount when the test was set
+
+    function storyClearNpc() {
+        removeWorldLabel(storyBubble);
+        storyBubble = null;
+        if (storyNpc) { storyNpc.dispose(); storyNpc = null; }
+    }
+
+    function storyReset() {
+        storyClearNpc();
+        clearForestSandbag();
+        removeWorldLabel(storyCompanionBubble);
+        storyCompanionBubble = null;
+        storyGreetT = 0;
+        storyDemoSwings = 0;
+        storyDemoWasSwinging = false;
+        storyDemoT = 0;
+        storyTestFrom = 0;
+        storyFightBot = null;
+        _forestTopReached = false;
+        coachStep = -1;
+        coachT = 0;
+        coachPraised = false;
+        coachOutroT = 0;
+        // Any companion still under a story override has to be handed back to
+        // the player, or it spends the next level walking at a bag that no
+        // longer exists.
+        companions.forEach(r => {
+            r.comp.followOverride = null; r.comp.demoTarget = null; r.comp._riverTeaching = false;
+        });
+        removeWorldLabel(_riverBubble); _riverBubble = null;
+        // Everyone the story hands out goes away again, so re-entering the
+        // forest replays it from the top instead of starting you with the
+        // rewards of a run you have already done - the stand-in NPC would be
+        // stood next to the companion it is supposed to become. This does
+        // override the panel checkboxes for these three specifically; they are
+        // the story's to give, and it gives them back within a minute.
+        ['CompBlue', 'CompPale', 'CompDark', 'BotYellow', 'BotOrange', 'BotRed'].forEach(key => {
+            window['spawn' + key] = false;
+            const el = document.getElementById('spawn-' + key);
+            if (el) el.checked = false;
+        });
+        syncSpawnedAgents();
+    }
+
+    // Drops a stand-in character at a spot on the ground. A RemoteAvatar, the
+    // same class the companions and bots use - not a bespoke marker - so it
+    // idles and reads as a person from the first frame. Replaced by the real
+    // companion once recruited.
+    function storySpawnNpc(id, color, x, z, bubbleText) {
+        const y = storyGroundY(x, z);
+        const npc = new RemoteAvatar(scene, threeTone, id);
+        npc.setColor(color);
+        npc.group.position.set(x, y, z);
+        if (bubbleText) {
+            storyBubble = makeWorldLabel(bubbleText, npc);
+        }
+        return npc;
+    }
+
+    // Like storySpawnNpc, but at an exact height instead of on whatever the
+    // ground ray finds. The frame wall's top is a known number and the ray
+    // would just as happily report the forest floor 12 units below it.
+    // Steps up onto the frame wall, at the end of the exit corridor.
+    //
+    // One 3.0 cube per step - the same block Level 1 is built from, and the
+    // same rise as the island edges, which is the height the player's
+    // jump-and-grab is actually tuned for (a grip sits 1.85 below its lip, a
+    // jump apexes at 1.67). Climbing trees was the intended route up, but a
+    // tree's climbable height depends on where its collider happens to sit;
+    // these do not, so the way out is guaranteed to exist.
+    const FOREST_STEP_SIZE = 3.0;
+    // The stairs do not climb all the way to the wall - they open onto a
+    // PLATFORM level with the frame top, and that platform runs on to the
+    // bridge and the gate. It gives the climb somewhere to arrive: a landing
+    // wide enough to stand and look around on, with the jars on it, rather
+    // than a last step straight onto a one-block-wide wall.
+    const FOREST_PLATFORM_W = 12;    // matches the corridor's own width
+    const FOREST_PLATFORM_Z0 = 52;   // south edge, where the stairs meet it
+    // Runs all the way out to the bridge rather than stopping short of the
+    // wall - the fight up here needs room to back off and throw across, and a
+    // narrow ledge turned it into a shoving match at the edge of a drop.
+    const FOREST_PLATFORM_Z1 = 68;
+    // Dead centre of the exit corridor - the first thing in front of you when
+    // you arrive, rather than off to one side where it can be walked past
+    // without ever being noticed. It blocks the ground-level way out through
+    // the wall, which is fine: the exit is up top now, so there is nothing
+    // through there to walk to.
+    //
+    // A FUNCTION, not `const FOREST_STEP_X = FOREST_EXIT_X`. That version ran
+    // at module-init time, and FOREST_EXIT_X is declared ~1500 lines further
+    // down - so it threw "cannot access before initialization" and took the
+    // whole of startGame with it, which is what left the game on its loading
+    // screen forever. node --check cannot see this; only running it can.
+    function forestStepX() { return FOREST_EXIT_X; }
+    // A platform up at canopy height in the middle of the wood. There are no
+    // stairs to it on purpose - the trees around it ARE the route, which is
+    // what makes it the place to teach a move you only need once you are up
+    // somewhere. Its own trees are planted in pass 1 (see the ring in the
+    // scatter) so they are part of the wood rather than a ladder bolted on.
+    const FOREST_CANOPY_Y = 8.5;     // just under the border wall's 11.8
+    const FOREST_CANOPY_R = 5.0;     // half-width of the platform
+    function forestCanopyPoint() {
+        // Near island, off the main line so it reads as somewhere you go out
+        // of your way for rather than something on the route.
+        return { x: -12, z: 6 };
+    }
+    function buildForestCanopyPlatform() {
+        const c = forestCanopyPoint();
+        const mat = _forestBorderMat ||
+            new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
+        const deck = new THREE.Mesh(
+            new THREE.BoxGeometry(FOREST_CANOPY_R * 2, 0.8, FOREST_CANOPY_R * 2), mat);
+        deck.position.set(c.x, FOREST_CANOPY_Y - 0.4, c.z);
+        deck.castShadow = true; deck.receiveShadow = true;
+        deck.updateMatrixWorld(true);
+        levelGroup.add(deck);
+        collidables.push(deck);
+        return c;
+    }
+
+    function buildForestExitSteps() {
+        const top = forestFrameTopY();
+        const mat = _forestBorderMat ||
+            new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
+        const put = (w, h, d, cx, cz) => {
+            const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+            box.position.set(cx, h * 0.5, cz);
+            box.castShadow = true; box.receiveShadow = true;
+            box.updateMatrixWorld(true);
+            levelGroup.add(box);
+            collidables.push(box);
+        };
+        // The landing, level with the frame top.
+        const pz = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
+        put(FOREST_PLATFORM_W, top, FOREST_PLATFORM_Z1 - FOREST_PLATFORM_Z0, forestStepX(), pz);
+        // ...and the stairs up to it, marching south from its edge. Each rise
+        // is one 3.0 cube - the same block Level 1 is built from, and the same
+        // height as the island edges, which is what the player's jump-and-grab
+        // is tuned for (a grip sits 1.85 below its lip, a jump apexes 1.67).
+        // The last rise onto the platform is whatever is left, and is smaller,
+        // so the climb never ends on the hardest step.
+        // ceil, not floor. With floor this came out at two steps (3 and 6)
+        // and then a 5.8 jump onto the landing - nearly twice COMP_CLIMB_MAX
+        // (3.4) and well past anything the player can grab, so the stairs
+        // ended at a wall you could not get over.
+        const steps = Math.max(1, Math.ceil(top / FOREST_STEP_SIZE) - 1);
+        for (let i = 0; i < steps; i++) {
+            const h = (i + 1) * FOREST_STEP_SIZE;
+            put(FOREST_STEP_SIZE, h, FOREST_STEP_SIZE, forestStepX(),
+                FOREST_PLATFORM_Z0 - (steps - i) * FOREST_STEP_SIZE);
+        }
+        // The jars, 3x3 on the landing - one of them holds the star key.
+        spawnForestJars(forestStepX() - 1.3, top, pz - 1.3);
+    }
+
+    function storySpawnNpcAt(id, color, x, y, z) {
+        const npc = new RemoteAvatar(scene, threeTone, id);
+        npc.setColor(color);
+        npc.group.position.set(x, y, z);
+        return npc;
+    }
+    // A short row of jars, one of them holding the star key. Reuses the stairs
+    // level's own jar contract exactly - isCarryable/isJar/containsKey, with
+    // destroyJarCarryable spawning the key when the right one shatters - so
+    // the carry lesson is taught on the real prop rather than a stand-in.
+    // Remembered so a build that happened before Jar.glb finished loading can
+    // still get its jars - the forest is usually built long before that model
+    // arrives, which is why the landing was bare.
+    let _pendingForestJars = null;
+    function spawnForestJars(x, y, z) {
+        if (!jarTemplate) { _pendingForestJars = { x, y, z }; return; }
+        for (let i = 0; i < 9; i++) {
+            const r = Math.floor(i / 3), c = i % 3;
+            const jarMesh = jarTemplate.clone();
+            jarMesh.position.set(x + c * 1.3, y + 0.5, z + r * 1.3);
+            jarMesh.userData.isCarryable = true;
+            jarMesh.userData.isJar = true;
+            // The middle of the nine. Hidden rather than obvious on purpose -
+            // finding it means breaking into the grid, which is the whole
+            // point of teaching carry and throw right next to it.
+            if (i === 4) jarMesh.userData.containsKey = true;
+            levelGroup.add(jarMesh);
+            collidables.push(jarMesh);
+            const carryJar = {
+                mesh: jarMesh, velocity: new THREE.Vector3(),
+                isCarried: false, wasThrown: false, netId: nextCarryNetId++,
+            };
+            carryables.push(carryJar);
+            addCarryableDebugHelper(carryJar);
+        }
+    }
+
+    function startForestStory() {
+        storyReset();
+        // Standing right at the spawn, a few steps along the route - close
+        // enough that it is the first thing you see rather than something to
+        // go looking for. Walking up to it is what makes it join.
+        // Both of them in the clearing past the corridor mouth, side by side
+        // and straddling the middle of the path - the companion on the left of
+        // the route, the bag on the right, so you walk up between them and
+        // neither is standing in the trees. forestMeetPoint is the same value
+        // the tree scatter cleared around, so this cannot drift out of the
+        // clearing it was given.
+        const meet = forestMeetPoint();
+        storyNpc = storySpawnNpc('story-companion-1', storySpecColor('CompBlue'),
+            meet.x - STORY_PAIR_HALF, meet.z, null);
+        spawnForestSandbag(meet.x + STORY_PAIR_HALF, meet.z);
+        storyStage = 'toFirst';
+        // The POSITION, not the object: the needle calls lookAt on this value
+        // directly, and Object3D.lookAt(obj) reads it as (x, y, z) with y and z
+        // undefined - the quaternion goes NaN and the compass stops drawing
+        // altogether. A Vector3 also tracks its owner for free, by reference.
+        window.compassTarget = storyNpc ? storyNpc.group.position : null;
+    }
+
+    // Attaches a bubble over a character's head and keeps a handle on it, so
+    // the line follows whoever is speaking rather than sitting at a fixed
+    // point in the world. Any previous one on that slot is removed first.
+    //
+    // `target` is the AVATAR, not its group - makeWorldLabel needs the avatar
+    // to find its visual model, which is what stays smooth through a climb.
+    function storySay(target, text, slot) {
+        const prev = slot === 'npc' ? storyBubble : storyCompanionBubble;
+        removeWorldLabel(prev);
+        const bubble = (text && target) ? makeWorldLabel(text, target) : null;
+        if (slot === 'npc') storyBubble = bubble; else storyCompanionBubble = bubble;
+    }
+
+    // The colour a stand-in should wear: the one its companion actually is.
+    //
+    // These were hardcoded, and swapping which companion teaches which lesson
+    // left the NPC dark blue and its recruit pale - the character visibly
+    // changed colour the moment you spoke to it. Read from the spec and it
+    // cannot drift again, whoever ends up teaching what.
+    function storySpecColor(key) {
+        const spec = COMPANION_SPECS.find(sp => sp.key === key);
+        return (spec && spec.color !== undefined) ? spec.color : 0x66aaff;
+    }
+    // The real companion behind a spec, once it has been recruited.
+    function storyCompanionOf(key) {
+        const spec = COMPANION_SPECS.find(sp => sp.key === key);
+        const rec = spec && companions.find(r => r.comp.id === spec.id);
+        return rec ? rec.comp : null;
+    }
+
+    // `at`/`yaw` hand the new companion the stand-in's exact spot, so the swap
+    // is invisible - see _companionSpawnOverride.
+    function storyRecruit(key, at, yaw) {
+        if (at) {
+            _companionSpawnOverride = at.clone();
+            _companionSpawnYaw = (yaw === undefined) ? null : yaw;
+        }
+        window['spawn' + key] = true;
+        const box = document.getElementById('spawn-' + key);
+        if (box) box.checked = true;
+        syncSpawnedAgents();
+        // Cleared even if nothing consumed it (the companion was already
+        // spawned, say) - a stale override would misplace the next one.
+        _companionSpawnOverride = null;
+        _companionSpawnYaw = null;
+        return storyCompanionOf(key);
+    }
+
+    // Ticks a bot's spawn checkbox, placing it `dist` away along the route
+    // (+Z, the way the level runs) so it walks in rather than appearing on
+    // top of you. Ground-snapped, because the forest is not flat.
+    function storySpawnBot(key, dist) {
+        const sx = char.group.position.x;
+        const sz = char.group.position.z + dist;
+        _aiBotSpawnOverride = new THREE.Vector3(
+            sx, storyGroundY(sx, sz, char.group.position.y), sz);
+        window['spawn' + key] = true;
+        const box = document.getElementById('spawn-' + key);
+        if (box) box.checked = true;
+        syncSpawnedAgents();
+        _aiBotSpawnOverride = null;
+    }
+
+    // ---- Teaching the climb ----
+    // Fall in the river together and the companion does not stand about
+    // waiting to be led out: it walks to the bank on the side the compass is
+    // pointing and pulls itself up, which demonstrates the whole move at the
+    // moment you need it.
+    //
+    // No new climbing code. It reuses followOverride - the companion's own
+    // climb logic already fires when its destination is up a rise it can
+    // manage (3.0 here, inside COMP_CLIMB_MAX 3.4), so all this does is give
+    // it somewhere to be that happens to be on top of a wall.
+    const STORY_BANK_STEP = 2.5;      // how far past the lip to aim for
+    const STORY_OUT_OF_WATER = 1.0;   // above the lip by this = climbed out
+    const STORY_RIVER_LINE = 'Come on! {jump} to the\nledge and climb up!';
+    const _riverExit = new THREE.Vector3();
+    // Its OWN bubble handle rather than the story's 'companion' slot: the two
+    // are driven by different things and cleared at different moments, and
+    // sharing one would let a story beat ending mid-swim take this line down
+    // while it is still the thing you need to read.
+    let _riverBubble = null;
+    function updateRiverLesson() {
+        const comp = storyCompanionOf('CompBlue');
+        // Only once it is actually following you - during the punch lesson it
+        // is standing at the bag under a followOverride of its own, and two
+        // systems writing that field would fight every frame.
+        if (!comp || storyStage === 'none' || storyStage === 'toFirst' ||
+            storyStage === 'briefing' || storyStage === 'brief' ||
+            storyStage === 'demo' || storyStage === 'test') {
+            return;
+        }
+        const c = comp.group.position;
+        const inWater = c.y < FOREST_RIVER_Y;
+        const playerOut = char.group.position.y > FOREST_RIVER_Y + STORY_OUT_OF_WATER;
+        // The LINE and the CLIMB end on different events, deliberately.
+        //
+        // The instruction comes down when YOU are out, not when the companion
+        // is. It climbs out in a couple of seconds and the whole point is that
+        // you are still down there watching - taking the prompt away the
+        // instant the demonstration finished left you in the water with
+        // nothing on screen telling you what to do about it.
+        if (_riverBubble && playerOut) {
+            removeWorldLabel(_riverBubble);
+            _riverBubble = null;
+            // Up and over. The compass is the only navigation this game has,
+            // and climbing out of the river is exactly the moment you have
+            // lost your bearings - so the reminder comes with the icon rather
+            // than naming a thing you would then have to go and find.
+            const outComp = storyCompanionOf('CompBlue') || comp;
+            if (outComp) storySay(outComp, STORY_LEDGE_LINE, 'companion');
+        }
+        if (!comp._riverTeaching) {
+            // Both of you, not just the companion: it leading the way out of
+            // water you are not in would read as it wandering off.
+            if (!inWater || playerOut) return;
+            comp._riverTeaching = true;
+            removeWorldLabel(_riverBubble);
+            _riverBubble = makeWorldLabel(STORY_RIVER_LINE, comp);
+        } else if (c.y > FOREST_RIVER_Y + STORY_OUT_OF_WATER) {
+            // Up and out - the climb is done, so hand its feet back to the
+            // follow logic. The bubble is left alone here; it belongs to the
+            // test above.
+            comp._riverTeaching = false;
+            comp.followOverride = null;
+            return;
+        }
+        // Which bank: the one the compass is sending you toward. The chasm is
+        // a strip along Z, so the side is decided entirely by x.
+        const tx = window.compassTarget ? window.compassTarget.x : char.group.position.x;
+        const east = tx > FOREST_GAP_X;
+        _riverExit.set(
+            east ? FOREST_GAP_X + FOREST_GAP_W * 0.5 + STORY_BANK_STEP
+                 : FOREST_GAP_X - FOREST_GAP_W * 0.5 - STORY_BANK_STEP,
+            0, c.z);
+        comp.followOverride = _riverExit;
+    }
+
+    // The forest NPC winds up and throws a charge punch WHILE it talks, on a
+    // loop, so the move is on screen during the conversation rather than only
+    // described in it. It costs nothing - the dialogue holds the camera on the
+    // two of you anyway, and a character standing perfectly still through four
+    // lines is the thing that makes a scene read as a menu.
+    const STORY_NPC_PAUSE = 1.6;   // beat between throws, so it is not a drum
+    // Unlike the companions' own charge, this one is held for the clip's FULL
+    // duration on purpose. RemoteAvatar only counts a charge as mature - and
+    // only then spawns the projectile on the swing - once the hold clip has
+    // run to its last frame (see chargeEffect.isMature). The companions cut it
+    // short precisely to avoid that; here the flying punch IS the lesson, so
+    // it has to be allowed to finish. The margin covers frame-time jitter.
+    const STORY_NPC_HOLD_MARGIN = 0.2;
+    let storyNpcActT = 0;
+    const _npcFaceTalk = new THREE.Quaternion();
+    const _npcFaceThrow = new THREE.Quaternion();
+    const _npcFaceEuler = new THREE.Euler();
+    function updateStoryNpcPerformance(delta) {
+        storyNpcActT += delta;
+        const holdAct = storyNpc.actions && storyNpc.actions['punch_charge_hold'];
+        const holdDur = (holdAct ? holdAct.getClip().duration : 1.2) + STORY_NPC_HOLD_MARGIN;
+        // The swing runs its FULL clip, not COMP_CHARGE_SWING. RemoteAvatar
+        // spawns the charge projectile a third of the way into
+        // punch_charge_punch, and cutting the state at a fixed 0.5s could end
+        // it before that frame was ever reached - which is a wind-up followed
+        // by nothing, exactly the "it cannot do a charge attack" symptom.
+        const swingAct = storyNpc.actions && storyNpc.actions['punch_charge_punch'];
+        const swingDur = swingAct ? swingAct.getClip().duration : COMP_CHARGE_SWING;
+        const cycle = holdDur + swingDur + STORY_NPC_PAUSE;
+        const t = storyNpcActT % cycle;
+        const winding = t < holdDur;
+        const swinging = !winding && t < holdDur + swingDur;
+        const anim = winding ? 'punch_charge_hold' : swinging ? 'punch_charge_punch' : 'idle';
+
+        // Where it is pointing. It talks to YOU and throws at NOTHING: the
+        // projectile leaves the hand along the avatar's forward, so if it
+        // stayed facing you while it released, the demonstration would be a
+        // charged punch to your face.
+        //
+        // A quarter turn rather than straight away from you, so the throw
+        // crosses the shot instead of going over its own shoulder - you can
+        // see the whole move, and it still travels into open ground.
+        const c = storyNpc.group.position;
+        const toPlayerYaw = Math.atan2(char.group.position.x - c.x, char.group.position.z - c.z);
+        _npcFaceEuler.set(0, toPlayerYaw, 0);
+        _npcFaceTalk.setFromEuler(_npcFaceEuler);
+        _npcFaceEuler.set(0, toPlayerYaw + Math.PI * 0.5, 0);
+        _npcFaceThrow.setFromEuler(_npcFaceEuler);
+        // Turning is eased rather than snapped - it has a whole hold clip to
+        // come round in, and snapping mid-sentence reads as a glitch.
+        const want = (winding || swinging) ? _npcFaceThrow : _npcFaceTalk;
+        storyNpc.group.quaternion.slerp(want, Math.min(1, delta * 6));
+
+        // setNetworkState is how every RemoteAvatar in the game is animated,
+        // and passing the same position each frame is what keeps it standing
+        // still rather than reading the delta as walking.
+        const q = storyNpc.group.quaternion;
+        storyNpc.setNetworkState([c.x, c.y, c.z], [q.x, q.y, q.z, q.w], anim, false);
+        storyNpc.update(delta);
+    }
+
+    // ---- The first companion coaches the first fight ----
+    // Bubbles over its head while you actually fight, not another cutscene:
+    // the whole value of this beat is that you are holding the controls when
+    // the advice arrives.
+    const COACH_LINES = [
+        'Use the combo to knock him out!\nTap {punch} - keep tapping!',
+        'Walk INTO him while you swing -\nthe combo lands harder moving forward.',
+    ];
+    const COACH_PRAISE = 'Like that. Perfect!';
+    let _forestTopReached = false;
+    const STORY_TOP_LINE = 'We made it up! The way out\nis right there - careful, he is not alone.';
+    const STORY_SURROUNDED_LINE = 'They have us surrounded -\nput them down, fast!';
+    const STORY_LEDGE_LINE = 'Good climb! {compass} Check the\ncompass for the way on.';
+    const STORY_ROUTE_LINE = 'Follow the compass - someone\nelse is out here. This way!';
+    const COACH_FINISH = 'He is done - he cannot follow us now.\nCome on, back to our route!';
+    // Where the third companion waits: on top of the frame wall, along from
+    // the bridge, so getting to it IS the climb it is about to talk about.
+    const STORY_CLIMB_HINT = 'The trees by the gate go all the way up.\nClimb them - the wall top is walkable!';
+    const STORY_CARRY_LINE = 'Grab a jar with {carry},\nthen {throw} it at them!';
+    const COACH_LINE_TIME = 5.5;   // how long each coaching line stays up
+    const COACH_STEP_GAP = 7.0;    // ...and the wait before the next one
+    let coachStep = -1;        // -1 = not coaching; else the line on screen
+    let coachT = 0;            // time spent on that line
+    let coachCombosAt = 0;     // comboLandedCount when the fight started
+    let coachPraised = false;
+    let coachOutroT = 0;       // seconds the sign-off line has left on screen
+    function startFightCoach() {
+        coachStep = 0; coachT = 0; coachPraised = false;
+        // Baselined rather than read absolutely, so combos you threw at the
+        // practice bag earlier do not count as passing this one.
+        coachCombosAt = window.comboLandedCount || 0;
+        const comp = storyCompanionOf('CompBlue');
+        if (comp) storySay(comp, COACH_LINES[0], 'companion');
+    }
+    function updateFightCoach(delta) {
+        // Silent through the cinematics - see the note where briefingSecond
+        // starts. Checked here as well as there, because the coach runs on its
+        // own timers and would otherwise post its next line mid-scene.
+        if (storyStage === 'briefingSecond' || storyStage === 'briefing') return;
+        // The sign-off line, on its own timer.
+        //
+        // It used to be set and then never taken down: coachFinish sets
+        // coachStep to -1, and the early-out below meant nothing ever ran
+        // again to clear it - so "he cannot follow us now" stayed on screen
+        // while he got up and walked back over. It also comes down the instant
+        // he DOES get back up, because at that point it is simply not true.
+        if (coachOutroT > 0) {
+            coachOutroT -= delta;
+            const backUp = storyFightBot && !(storyFightBot.knockedOutT > 0);
+            if (coachOutroT <= 0 || backUp) {
+                coachOutroT = 0;
+                storySay(null, null, 'companion');
+            }
+        }
+        if (coachStep < 0) return;
+        const comp = storyCompanionOf('CompBlue');
+        if (!comp) return;
+        // Praise the moment it lands, interrupting whatever tip was up.
+        // Congratulating you several seconds after the thing you did reads as
+        // the game not having noticed.
+        if (!coachPraised && (window.comboLandedCount || 0) > coachCombosAt) {
+            coachPraised = true;
+            coachT = 0;
+            storySay(comp, COACH_PRAISE, 'companion');
+            addNotificationToast('Combo landed!', window.playerIconDataUrl);
+            return;
+        }
+        coachT += delta;
+        if (coachPraised) {
+            // Praise, then get out of the way - the fight is still going on.
+            if (coachT > COACH_LINE_TIME) { storySay(null, null, 'companion'); coachStep = -1; }
+            return;
+        }
+        if (coachT > COACH_STEP_GAP) {
+            coachT = 0;
+            coachStep++;
+            if (coachStep >= COACH_LINES.length) {
+                storySay(null, null, 'companion');
+                coachStep = -1;
+                return;
+            }
+            storySay(comp, COACH_LINES[coachStep], 'companion');
+        } else if (coachT > COACH_LINE_TIME && storyCompanionBubble) {
+            // Down between tips, so there is a gap rather than a wall of text.
+            storySay(null, null, 'companion');
+        }
+    }
+    // Said once the bot it was talking about is actually out of the fight.
+    function coachFinish() {
+        const comp = storyCompanionOf('CompBlue');
+        if (comp) storySay(comp, COACH_FINISH, 'companion');
+        coachStep = -1;
+        coachT = 0;
+        coachOutroT = COACH_LINE_TIME;
+    }
+
+    // SKIP does not just close the conversation - during the forest's opening
+    // it skips the whole TUTORIAL. Someone replaying the level, or working on
+    // what comes after it, should not have to punch a sandbag five times to
+    // get past a lesson they already know.
+    //
+    // It hands over what the tutorial would have given you rather than simply
+    // jumping the stage: you still end up with the companion at your back and
+    // the compass pointing at the next beat, so the level is in the state the
+    // story expects - just without the homework.
+    window.storySkipTutorial = function storySkipTutorial() {
+        if (currentLevel !== 'local_forest') return false;
+        const skippable = ['toFirst', 'briefing', 'brief', 'demo', 'test'];
+        if (skippable.indexOf(storyStage) < 0) return false;
+        storySay(null, null, 'companion');
+        storyClearNpc();
+        const comp = storyCompanionOf('CompBlue') || storyRecruit('CompBlue');
+        if (comp) { comp.followOverride = null; comp.demoTarget = null; }
+        // The ONLY thing skipped is hitting the bag. Everything the test would
+        // have handed over still happens - the companion joins, the enemy
+        // arrives, and the fight coaching runs - because those are the story,
+        // not the homework. Skipping straight past them left the level empty
+        // and the next beat unexplained.
+        if (comp) storySay(comp, STORY_DONE_LINE, 'companion');
+        storySpawnBot('BotYellow', STORY_FIRST_ENEMY_DIST);
+        storyFightBot = aiBots.length ? aiBots[aiBots.length - 1].bot : null;
+        startFightCoach();
+        storyGreetT = STORY_GREET_TIME;
+        storyStage = 'intro';
+        return true;
+    };
+
+    // Puts a bot AT a spot, whether or not it already exists. The plain spawn
+    // path only ever adds one that is missing, and by the top of the stairs
+    // the yellow and orange are already in the level - somewhere far below,
+    // very likely knocked out. Moving them is the only way to stage a fight up
+    // here without duplicating characters the player has already met.
+    function storyPlaceBot(key, x, y, z) {
+        const spec = AI_BOT_SPECS.find(sp => sp.key === key);
+        if (!spec) return;
+        const rec = aiBots.find(r => r.bot.id === spec.id);
+        if (rec) {
+            rec.bot.group.position.set(x, y, z);
+            rec.state.target.set(x, y, z);
+            rec.stuckAt.set(x, y, z);
+            // Back on their feet for this one - a fight staged with two bodies
+            // already lying down is not a fight.
+            rec.bot.knockedOutT = 0;
+            rec.bot._lastDownAt = undefined;
+            rec.bot._koAnnounced = false;
+            setBotKnockedOutLook(rec.bot, false);
+            return;
+        }
+        _aiBotSpawnOverride = new THREE.Vector3(x, y, z);
+        window['spawn' + key] = true;
+        const el = document.getElementById('spawn-' + key);
+        if (el) el.checked = true;
+        syncSpawnedAgents();
+        _aiBotSpawnOverride = null;
+    }
+
+    function updateForestStory(delta) {
+        if (currentLevel !== 'local_forest' || storyStage === 'none') return;
+        updateFightCoach(delta);
+        // The bot the coaching was about has been put down twice and is out.
+        // Saying so is what turns "it stopped chasing me" into "I won that".
+        if (storyFightBot && storyFightBot.knockedOutT > 0 && !storyFightBot._koAnnounced) {
+            storyFightBot._koAnnounced = true;
+            coachFinish();
+            addNotificationToast('Knocked out!', window.playerIconDataUrl);
+        }
+        if (storyNpc) {
+            if (storyStage === 'briefingSecond') updateStoryNpcPerformance(delta);
+            else storyNpc.update(delta);
+        }
+        const p = char.group.position;
+        if (storyGreetT > 0) storyGreetT -= delta;
+
+        if (storyStage === 'toFirst') {
+            if (!storyNpc || p.distanceTo(storyNpc.group.position) > STORY_REACH) return;
+            // The proper dialogue box, not a speech bubble: this is the one
+            // moment that sets the whole lesson up, and it earns the same
+            // tap-to-continue framing the village quest-giver gets. Everything
+            // after it is bubbles, so play is never interrupted twice.
+            storyStage = 'briefing';
+            window.compassTarget = null;
+            startDialogue(FOREST_DIALOGUE_LINES, storyNpc, () => { storyStage = 'brief'; });
+            return;
+        }
+
+        // Talking. The dialogue's own callback moves this on, so there is
+        // nothing to do per-frame except not fall through to another stage.
+        if (storyStage === 'briefing') return;
+
+        // Said its piece, now it goes and does it. It does NOT fall in behind
+        // you yet - it walks straight to the bag and starts hitting it, and
+        // only joins once you have passed the test yourself. A move you have
+        // been shown is worth more than one you have been described.
+        if (storyStage === 'brief') {
+            const comp = storyCompanionOf('CompBlue');
+            // No bag to demonstrate on: skip the demonstration AND the test
+            // rather than setting a test that cannot be passed. Waiting on
+            // hits against a bag that does not exist would stall the story
+            // permanently, with nothing on screen to say why.
+            if (!_forestSandbag) { storyGreetT = 0; storyStage = 'intro'; return; }
+            // Swapped for the real companion only now, at the stand-in's exact
+            // spot - and immediately sent to the bag rather than to the player.
+            if (!comp) {
+                if (!storyNpc) { storyGreetT = 0; storyStage = 'intro'; return; }
+                const at = storyNpc.group.position.clone();
+                const yaw = storyNpc.group.rotation.y;
+                storyClearNpc();
+                storyRecruit('CompBlue', at, yaw);
+            }
+            const c2 = storyCompanionOf('CompBlue');
+            if (!c2) { storyGreetT = 0; storyStage = 'intro'; return; }
+            storySay(c2, STORY_DEMO_LINE, 'companion');
+            c2.followOverride = _forestSandbag.group.position;
+            c2.demoTarget = { group: _forestSandbag.group, isLoaded: true,
+                              isRagdoll: false, sandbag: _forestSandbag };
+            storyDemoSwings = 0;
+            storyDemoWasSwinging = false;
+            storyDemoT = 0;
+            storyStage = 'demo';
+            return;
+        }
+
+        if (storyStage === 'demo') {
+            const comp = storyCompanionOf('CompBlue');
+            // Same reasoning as above - no one to set the test, so skip it.
+            if (!comp) { storyGreetT = 0; storyStage = 'intro'; return; }
+            storyDemoT += delta;
+            // A string is counted on the swinging -> not-swinging EDGE. Reading
+            // the cooldown instead would be unreliable: it is set when the
+            // attack starts and can expire before a long combo clip finishes,
+            // so the "done" frame is not guaranteed to have any left to see.
+            const rec = companions.find(r => r.comp === comp);
+            const swinging = !!(rec && rec.punchTarget);
+            if (storyDemoWasSwinging && !swinging) storyDemoSwings++;
+            storyDemoWasSwinging = swinging;
+            // The timeout is the safety net, not the plan: if it cannot reach
+            // the bag at all (something in the way, knocked off course) the
+            // demonstration has to end anyway rather than stranding the story.
+            if (storyDemoSwings < STORY_DEMO_SWINGS && storyDemoT < STORY_DEMO_TIMEOUT) return;
+            // It stops hitting the bag but STAYS there - demoTarget is cleared
+            // while followOverride is not. Falling in behind you here would
+            // make the reward for passing the test arrive before the test, and
+            // it would be in your way at the bag you are about to punch.
+            comp.demoTarget = null;
+            storySay(comp, STORY_COMBO_LINE, 'companion');
+            storyTestFrom = window.bagHitCount || 0;
+            storyStage = 'test';
+            return;
+        }
+
+        if (storyStage === 'test') {
+            // Waits on the thing itself - punches that actually land on the
+            // bag - rather than on a timer. A test you can pass by standing
+            // still is not a test.
+            if ((window.bagHitCount || 0) - storyTestFrom < STORY_TEST_HITS) return;
+            const comp = storyCompanionOf('CompBlue');
+            // Passed: NOW it joins you. Releasing the override is the moment
+            // it becomes your companion rather than a teacher stood by a bag.
+            if (comp) {
+                comp.followOverride = null;
+                comp.demoTarget = null;
+                storySay(comp, STORY_DONE_LINE, 'companion');
+            }
+            // ...and the first real enemy arrives the moment you stop being
+            // alone. Deliberately one, and the weakest of the three: the combo
+            // you have just been taught is exactly enough for it, which is
+            // what makes the lesson feel like it was for something.
+            storySpawnBot('BotYellow', STORY_FIRST_ENEMY_DIST);
+            // The companion talks you through the fight it just walked you
+            // into - see updateFightCoach.
+            storyFightBot = aiBots.length ? aiBots[aiBots.length - 1].bot : null;
+            startFightCoach();
+            storyGreetT = STORY_GREET_TIME;
+            storyStage = 'intro';
+            return;
+        }
+
+        if (storyStage === 'intro') {
+            // Praise comes down after a beat. Taking it down matters: a line
+            // left up permanently stops being a prompt and becomes scenery.
+            if (storyGreetT > 0) return;
+            storySay(null, null, 'companion');
+            // Only now does the compass get a target - the second companion,
+            // waiting across the water on the far island.
+            // Same function the scatter cleared around, so the NPC cannot end
+            // up standing just outside its own clearing.
+            const m2 = forestMeetPoint2();
+            storyNpc = storySpawnNpc('story-companion-2', storySpecColor('CompDark'), m2.x, m2.z, null);
+            storyStage = 'toSecond';
+            window.compassTarget = storyNpc ? storyNpc.group.position : null;
+            // Said as the needle swings, so the compass is explained at the
+            // moment it starts pointing somewhere new rather than left to be
+            // noticed. This is the gap between beats - without a line here the
+            // level goes quiet exactly when you have the furthest to walk.
+            const cLead = storyCompanionOf('CompBlue');
+            if (cLead) storySay(cLead, STORY_ROUTE_LINE, 'companion');
+            storyGreetT = STORY_GREET_TIME;
+            return;
+        }
+
+        if (storyStage === 'toSecond') {
+            if (!storyNpc || p.distanceTo(storyNpc.group.position) > STORY_REACH) return;
+            // The charge-punch lesson, and the second cinematic in the level.
+            // It gets the demonstration rather than the first NPC because by
+            // now you have the combo and a companion - a heavier move is
+            // something to graduate to, not the thing you open with.
+            storyStage = 'briefingSecond';
+            window.compassTarget = null;
+            storyNpcActT = 0;
+            // The companion walking with you shuts up for this. Someone else
+            // is doing the talking, in a framed shot, and a second bubble
+            // floating over your shoulder through it reads as two people
+            // talking over each other. Anything the coach still had queued
+            // goes with it.
+            storySay(null, null, 'companion');
+            coachStep = -1; coachT = 0; coachOutroT = 0;
+            startDialogue(SECOND_DIALOGUE_LINES, storyNpc, () => { storyStage = 'recruitSecond'; });
+            return;
+        }
+
+        // Talking and demonstrating - the dialogue's callback moves this on.
+        if (storyStage === 'briefingSecond') return;
+
+        if (storyStage === 'recruitSecond') {
+            const at = storyNpc ? storyNpc.group.position.clone() : null;
+            const yaw = storyNpc ? storyNpc.group.rotation.y : undefined;
+            storyClearNpc();
+            storyRecruit('CompDark', at, yaw);
+            // ...and the fight it just warned you about. Two this time, and
+            // the orange one throws the full combo - a real test of the move
+            // you have just been shown, with two companions at your back to
+            // make it a fair one.
+            storySpawnBot('BotYellow', STORY_FIRST_ENEMY_DIST);
+            storySpawnBot('BotOrange', -STORY_FIRST_ENEMY_DIST);
+            // The last one waits up on the frame wall by the exit, with the
+            // jars. The compass points at it rather than at the diamond, so
+            // the route up is something you are sent to rather than something
+            // you have to notice.
+            // On the landing at the top of the stairs, beside the jars -
+            // getting to it IS the climb it is about to talk about, and the
+            // jars are right there for the carry lesson that follows.
+            storyNpc = storySpawnNpcAt('story-companion-3', storySpecColor('CompPale'),
+                FOREST_EXIT_X + 4.0, forestFrameTopY(),
+                (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5);
+            const comp1 = storyCompanionOf('CompBlue');
+            if (comp1) storySay(comp1, STORY_CLIMB_HINT, 'companion');
+            // The heavy one, waiting on the landing at the top of the stairs.
+            // Placed absolutely, not relative to the player - storySpawnBot
+            // offsets from wherever you are standing, and you are still on the
+            // forest floor when this runs, twelve metres below it.
+            _aiBotSpawnOverride = new THREE.Vector3(
+                FOREST_EXIT_X - 4.0, forestFrameTopY(),
+                (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5);
+            window.spawnBotRed = true;
+            const rb = document.getElementById('spawn-BotRed');
+            if (rb) rb.checked = true;
+            syncSpawnedAgents();
+            _aiBotSpawnOverride = null;
+            // Surrounded, and the lead companion says so - the scene has just
+            // ended and two enemies walked in, so this is the line that turns
+            // a cutscene ending into a fight starting.
+            const lead2 = storyCompanionOf('CompBlue');
+            if (lead2) storySay(lead2, STORY_SURROUNDED_LINE, 'companion');
+            storyStage = 'toThird';
+            window.compassTarget = storyNpc ? storyNpc.group.position : null;
+            return;
+        }
+
+        // Reaching the top of the stairs. Said once, on arrival, by whoever is
+        // leading - the climb is the longest stretch of the level without a
+        // line, and getting up it deserves acknowledging.
+        if (storyStage === 'toThird' && !_forestTopReached &&
+            p.y > forestFrameTopY() - 2.0 &&
+            Math.abs(p.x - FOREST_EXIT_X) < FOREST_PLATFORM_W &&
+            p.z > FOREST_PLATFORM_Z0 - 4) {
+            _forestTopReached = true;
+            const lead = storyCompanionOf('CompBlue');
+            if (lead) storySay(lead, STORY_TOP_LINE, 'companion');
+            // The landing is the last fight. Both of them, either side of the
+            // stairs you just came up, so arriving is walking into it.
+            const tz = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
+            storyPlaceBot('BotYellow', FOREST_EXIT_X - 4.5, forestFrameTopY(), tz + 2.5);
+            storyPlaceBot('BotOrange', FOREST_EXIT_X + 4.5, forestFrameTopY(), tz + 2.5);
+        }
+
+        if (storyStage === 'toThird') {
+            if (!storyNpc || p.distanceTo(storyNpc.group.position) > STORY_REACH) return;
+            const at = storyNpc.group.position.clone();
+            const yaw = storyNpc.group.rotation.y;
+            storyClearNpc();
+            const c3 = storyRecruit('CompPale', at, yaw);
+            // The carry lesson is a bubble, not a cinematic: you are standing
+            // on a wall next to a row of jars, and the thing to do about that
+            // is obvious the moment someone names the button.
+            if (c3) storySay(c3, STORY_CARRY_LINE, 'companion');
+            storyStage = 'done';
+            window.compassTarget = star.visible ? star.position : null;
+        }
+    }
+
+    // Reaching the village's diamond moves you on. Checked here rather than in
+    // the village builder because it is a per-frame test, and this keeps the
+    // whole progression in one place.
+    function updateVillageGoal() {
+        if (currentLevel !== 'local_village' || !star.visible) return;
+        if (char.group.position.distanceTo(star.position) > STORY_GOAL_REACH) return;
+        star.visible = false;
+        currentLevel = 'local_forest';
+        const sel = document.getElementById('level-select');
+        if (sel) sel.value = currentLevel;
+        buildLevel();
+    }
+
     function buildForestLevel() {
         if (!treeModel) { pendingForestLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
@@ -7269,11 +9449,12 @@ export function startGame(CharacterClass) {
         window._cubesLoaded = true;
         // A slab under the forest instead of the shared 1000x1000 plane, so
         // the world visibly ENDS at the treeline with void beyond it rather
-        // than running off flat to the horizon. The border walls (Pass 3a) sit
-        // well inside the slab's edge, so the drop is something you see, never
-        // something you can walk off.
+        // than running off flat to the horizon. The frame wall (Pass 3a) stands
+        // along that edge, and the sea fills everything outside it.
         ground.visible = false;
-        star.visible = false;
+        // The star is the level's GOAL here, not scenery to be hidden - it is
+        // placed and shown at the end of this build, once the slab extents it
+        // is positioned from are known.
         buildForestGroundBox();
 
         // ---- Pass 1: decide where trees go (no geometry built yet) ----
@@ -7287,6 +9468,9 @@ export function startGame(CharacterClass) {
         // leaving lakes with trunks standing in the middle of them.
         const lakes = pickForestLakes(half, noiseScale);
         const placements = [];
+        const meet = forestMeetPoint();
+        const meet2 = forestMeetPoint2();
+        const _canopyPt = forestCanopyPoint();
         for (let xi = 0; xi < grid; xi++) {
             for (let zi = 0; zi < grid; zi++) {
                 const x = -half + xi * step;
@@ -7301,8 +9485,28 @@ export function startGame(CharacterClass) {
                 const px = x + offX, pz = z + offZ;
                 // Keep the spawn pocket open.
                 if (Math.hypot(px, pz) < window.forestClearingRadius) continue;
+                // ...and a proper clearing where you meet the first companion,
+                // so the pair of them stand on open ground rather than in a
+                // gap between two trunks with branches over their heads.
+                if (Math.hypot(px - meet.x, pz - meet.z) < STORY_MEET_CLEAR) continue;
+                if (Math.hypot(px - meet2.x, pz - meet2.z) < STORY_MEET_CLEAR) continue;
+                // ...and the canopy platform's own footprint stays clear, so
+                // its ring below is the only thing standing there.
+                if (Math.hypot(px - _canopyPt.x, pz - _canopyPt.z) < FOREST_CANOPY_R + 0.5) continue;
                 // ...and nothing standing over the chasm.
                 if (Math.abs(px - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + FOREST_GAP_CLEAR) continue;
+                // ...and the entrance corridor stays a corridor. A tree in it
+                // would be exactly the thing the corridor exists to avoid: the
+                // camera, which sits behind the player and therefore INSIDE
+                // this passage, buried in foliage on the very first frame.
+                // Reaches a little past the corridor's mouth so you step out
+                // into a clearing rather than straight into a trunk.
+                if (Math.abs(px - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
+                    pz < -forestSlabHalf() + FOREST_ENTRY_LEN + FOREST_SPAWN_CLEAR_ENOUGH) continue;
+                // Same for the exit, so the goal diamond is not standing in a
+                // canopy and the last stretch reads as a way out.
+                if (Math.abs(px - FOREST_EXIT_X) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
+                    pz > forestSlabHalf() - FOREST_ENTRY_LEN - FOREST_SPAWN_CLEAR_ENOUGH) continue;
                 // ...and keep the lakes clear, with a bank around them.
                 let inLake = false;
                 for (let L = 0; L < lakes.length; L++) {
@@ -7331,6 +9535,86 @@ export function startGame(CharacterClass) {
                 placements.push({ x: px, z: pz, scale, rotY: forestHash01(px, pz) * Math.PI * 2 });
             }
         }
+
+        // Trees along the top of the frame wall (pass 3a builds the wall
+        // itself). Placed HERE rather than with the wall, because pass 2 turns
+        // `placements` into the instanced meshes and anything added after that
+        // would simply never be drawn.
+        forestBorderLayout((bx, bz) => {
+            const h1 = forestHash01(bx * 1.7, bz * 2.9);
+            if (h1 <= FOREST_BORDER_TREE_ODDS) return;
+            placements.push({
+                x: bx + (forestHash01(bz * 3.1, bx * 1.3) - 0.5) * FOREST_BORDER_BLOCK * 0.5,
+                z: bz + (forestHash01(bx * 5.7, bz * 0.9) - 0.5) * FOREST_BORDER_BLOCK * 0.5,
+                y: FOREST_BORDER_HEIGHT + FOREST_BORDER_CAP,
+                scale: THREE.MathUtils.lerp(window.forestMinScale, window.forestMaxScale, h1),
+                rotY: h1 * Math.PI * 2,
+            });
+        });
+
+        // The ENTRANCE corridor's walls, made of trees rather than stone -
+        // planted here, with the rest of pass 1, because pass 2 turns
+        // `placements` into the instanced meshes and anything added later
+        // would simply never be drawn.
+        //
+        // Two dense rows down either side. Spacing is well under a canopy
+        // width so they close into a continuous avenue rather than reading as
+        // a line of lollipops with daylight between them.
+        //
+        // `rows` is how many trunks deep each side is. One row leaves gaps you
+        // can see daylight - and the level - through; stacking two or three
+        // staggered rows is what turns a line of trees into a wall of wood.
+        const corridorTreeRows = (cx, dir, gap, rows) => {
+            const [z0, z1] = forestCorridorZ(dir);
+            const [wLo, wHi] = forestCorridorWallX(cx);
+            const n = Math.max(1, Math.round((z1 - z0) / gap));
+            for (let i = 0; i <= n; i++) {
+                const baseZ = z0 + (z1 - z0) * (i / n);
+                for (let r = 0; r < rows; r++) {
+                    // Rows step OUTWARD from the corridor, so the passage keeps
+                    // its width however many are stacked - they thicken the
+                    // wall behind the first trunks rather than closing the way
+                    // through.
+                    [wLo - r * gap * 0.8, wHi + r * gap * 0.8].forEach(px => {
+                        const h = forestHash01(px * 2.3 + r, baseZ * 1.9 - r);
+                        placements.push({
+                            noCollide: true,
+                            // Jittered off the line, or ruler-straight rows of
+                            // identical trunks read as a fence, not a wood. The
+                            // half-gap stagger on odd rows stops the rows
+                            // lining up into visible columns.
+                            x: px + (forestHash01(baseZ * 1.1, px * 3.7) - 0.5) * 1.6,
+                            z: baseZ + (h - 0.5) * 1.2 + (r % 2) * gap * 0.5,
+                            scale: THREE.MathUtils.lerp(window.forestMinScale, window.forestMaxScale, h),
+                            rotY: h * Math.PI * 2,
+                        });
+                    });
+                }
+            }
+        };
+        // The ring of trees around the canopy platform - its staircase. Dense,
+        // because a gap in it is a way up that skips the climb entirely.
+        {
+            const cp = forestCanopyPoint();
+            const ring = 12;
+            for (let i = 0; i < ring; i++) {
+                const a = (i / ring) * Math.PI * 2;
+                const px = cp.x + Math.cos(a) * (FOREST_CANOPY_R + 1.2);
+                const pz = cp.z + Math.sin(a) * (FOREST_CANOPY_R + 1.2);
+                const hh = forestHash01(px * 1.7, pz * 2.3);
+                placements.push({
+                    x: px, z: pz,
+                    // Biggest trees in the wood - they have to reach the deck.
+                    scale: window.forestMaxScale,
+                    rotY: hh * Math.PI * 2,
+                });
+            }
+        }
+        corridorTreeRows(FOREST_ENTRY_X, -1, 3.2, 2);
+        // The exit is tighter and deeper - it is the last thing you walk
+        // through, and it should close the wood behind you rather than let you
+        // see out over the sea on the way.
+        corridorTreeRows(FOREST_EXIT_X, 1, 1.9, 3);
 
         // No border ring of trees any more. It existed because the scatter is
         // pure noise, and noise has no notion of an edge, so the wood thinned
@@ -7450,6 +9734,16 @@ export function startGame(CharacterClass) {
                 // free because it is instanced; the collision would not be.
                 // Four boxes also make a better barrier than a row of trunks,
                 // which has gaps to squeeze between.
+                // Decorative trees get NO collider at all.
+                //
+                // Every collider here joins `collidables`, and that array is
+                // walked by every raycast in the game - the player's ground
+                // and wall probes, each companion's and bot's, the ragdoll
+                // broad phase, the dither occluder tests. The corridor walls
+                // and the canopy ring add ~190 trees whose collision is
+                // already done by the invisible barrier boxes standing in
+                // them, so each one was pure per-frame cost for nothing.
+                if (p.noCollide) return;
                 const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
                 col.position.set(p.x, p.y || 0, p.z);
                 col.rotation.y = p.rotY;
@@ -7479,6 +9773,16 @@ export function startGame(CharacterClass) {
             // height, the disc's radius and the foam band all come from one
             // number. A non-zero value here would add a SECOND, independent
             // bob on top of it.
+            // Back to 0.14, the value this shipped with. Widening it to chase
+            // a thicker ring on the shore was the wrong lever: foamDepth is
+            // ONE number shared by the shore and by everything standing in
+            // the water, and a character's sides are vertical so they hit the
+            // shader's facing floor - at 0.30 the band on a character is 0.36
+            // tall, a fifth of their height, which is the waist-high white
+            // that turned up in the lake. The shore and the characters cannot
+            // be tuned apart through this number; if the ring ever needs to be
+            // thicker it needs its own material scale (see opts.objScale in
+            // applyShorelineFoam), not a bigger body depth.
             waterLevel: FOREST_LAKE_Y, waveSpeed: FOREST_LAKE_WAVE_SPEED, waveAmplitude: 0, foamDepth: 0.14,
             textureSize: 40, colorNear: 0x4fc6e8, colorFar: 0x14618c,
         });
@@ -7562,13 +9866,30 @@ export function startGame(CharacterClass) {
                 // Wet line where the bank enters the water.
                 applyShorelineFoam(forestLakeRimMaterial);
             }
-            const rim = new THREE.Mesh(
-                new THREE.TorusGeometry(L.r + FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE_SEGS, FOREST_LAKE_RIM_SEGS),
-                forestLakeRimMaterial);
+            // The squash is baked into the GEOMETRY, not applied as an object
+            // scale. Same final shape, but it has to be done this way because
+            // of the foam.
+            //
+            // The foam shader builds its world normal as
+            // mat3(modelMatrix) * objectNormal, which is only correct under a
+            // uniform scale. Scaling the object by (1, 1, 0.29) squashed the
+            // very component that becomes world UP - a normal needs the
+            // INVERSE TRANSPOSE, (1, 1, 3.45), so the vertical part came out
+            // about 12x too small. It collapsed to the shader's 0.25 facing
+            // floor, and since the band width is divided by facing, the ring
+            // came out roughly four times too wide and its thickness stopped
+            // tracking the slope at all - which is why it read as fine from
+            // one angle and wrong from another.
+            //
+            // BufferGeometry.applyMatrix4 (what .scale() uses) transforms the
+            // normal attribute by the proper normal matrix, so baking it gives
+            // correct normals and leaves the mesh at identity scale.
+            const rimGeo = new THREE.TorusGeometry(
+                L.r + FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE,
+                FOREST_LAKE_RIM_TUBE_SEGS, FOREST_LAKE_RIM_SEGS);
+            rimGeo.scale(1, 1, FOREST_LAKE_RIM_FLATTEN);
+            const rim = new THREE.Mesh(rimGeo, forestLakeRimMaterial);
             rim.rotation.x = -Math.PI / 2;    // torus is authored in XY; lay it flat
-            // Squash applied on world Y. Done after the rotation, so this is
-            // the torus's own tube axis - see FOREST_LAKE_RIM_FLATTEN.
-            rim.scale.set(1, 1, FOREST_LAKE_RIM_FLATTEN);
             // Sunk below the ground plane rather than centred on it, so less
             // of the bank stands proud - a low mound at the water's edge
             // instead of a ring you have to climb. Sinking also shortens the
@@ -7634,6 +9955,12 @@ export function startGame(CharacterClass) {
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
             mk(new THREE.BoxGeometry(step, FOREST_BORDER_CAP, step), _forestBorderCapMat,
                 top + FOREST_BORDER_CAP * 0.5);
+            // Neither corridor gets stone walls - both are walled with trees,
+            // planted back in pass 1 (corridorTreeRows). Stone reads as the
+            // edge of the world, which is wrong at both ends: you arrive
+            // through the wood and you leave through it. Their invisible
+            // collision barriers are still built below, so the passages are
+            // solid whichever way you lean on them.
             // Collision is a few long boxes rather than one per block: an
             // InstancedMesh reports ONE bounding box for the whole ring, which
             // every box-based test in the game would read as the entire level
@@ -7642,13 +9969,45 @@ export function startGame(CharacterClass) {
             const bh = forestSlabHalf();
             const gapLo = FOREST_GAP_X - FOREST_GAP_W * 0.5 - step;
             const gapHi = FOREST_GAP_X + FOREST_GAP_W * 0.5 + step;
+            const entryLo = FOREST_ENTRY_X - FOREST_ENTRY_W * 0.5;
+            const entryHi = FOREST_ENTRY_X + FOREST_ENTRY_W * 0.5;
             const segs = [];
+            // The collision wall has to have the same holes the VISIBLE wall
+            // has, or you get stopped by nothing in the middle of an opening.
+            // Built by subtracting each hole from the full span rather than by
+            // hand-listing the pieces, so the -Z side (two holes) and the +Z
+            // side (one) cannot drift apart.
+            const spanMinus = (spans, lo, hi) => {
+                const out = [];
+                spans.forEach(([a, b]) => {
+                    if (hi <= a || lo >= b) { out.push([a, b]); return; }
+                    if (lo > a) out.push([a, lo]);
+                    if (hi < b) out.push([hi, b]);
+                });
+                return out;
+            };
+            const exitLo = FOREST_EXIT_X - FOREST_ENTRY_W * 0.5;
+            const exitHi = FOREST_EXIT_X + FOREST_ENTRY_W * 0.5;
             [bh, -bh].forEach(bz => {
-                // Split around the strait, on the two sides it crosses.
-                segs.push([(-bh + gapLo) * 0.5, bz, gapLo + bh, step]);
-                segs.push([(gapHi + bh) * 0.5, bz, bh - gapHi, step]);
+                let spans = spanMinus([[-bh, bh]], gapLo, gapHi);
+                spans = bz < 0 ? spanMinus(spans, entryLo, entryHi)
+                               : spanMinus(spans, exitLo, exitHi);
+                spans.forEach(([a, b]) => segs.push([(a + b) * 0.5, bz, b - a, step]));
             });
             [bh, -bh].forEach(bx => segs.push([bx, 0, step, bh * 2]));
+            // Both corridors' side walls. The exit's are the stone boxes built
+            // above; the entrance's are the tree rows, which are individually
+            // collidable but have gaps you could squeeze through - so both get
+            // the same solid barrier, and in the entrance's case it is an
+            // invisible one standing in the trees. Being stopped by a wall of
+            // trunks reads fine; walking out between two of them into open sea
+            // does not.
+            [[FOREST_ENTRY_X, -1], [FOREST_EXIT_X, 1]].forEach(([cx, dir]) => {
+                const [z0, z1] = forestCorridorZ(dir);
+                forestCorridorWallX(cx).forEach(wx => {
+                    segs.push([wx, (z0 + z1) * 0.5, step, z1 - z0]);
+                });
+            });
             segs.forEach(([cx, cz, sx, sz]) => {
                 if (sx <= 0.01 || sz <= 0.01) return;
                 const w = new THREE.Mesh(new THREE.BoxGeometry(sx, top + FOREST_BORDER_CAP, sz),
@@ -7710,10 +10069,70 @@ export function startGame(CharacterClass) {
         // trunk - see the tree ring in rebuildGrass.
         _forestPlacements = placements;
 
-        char.group.position.set(0, 2.0, 0);
+        // You start at one end of the level and cross to the other: spawn on
+        // the near edge of the first island, with the exit diamond on the far
+        // edge of the second, past the strait. The compass points at it, so
+        // the crossing is the route rather than something to be found.
+        // Spawn in a CLEARING near the west edge, not just at a coordinate on
+        // it. The scatter plants a tree wherever its noise is above
+        // forestTreeThreshold, and a fixed point lands wherever it happens to
+        // land - which on this seed is in among the trunks, with the view
+        // blocked from the first frame.
+        //
+        // Searched against the trees that were ACTUALLY placed rather than by
+        // re-reading the noise: the scatter jitters each tree within its cell
+        // and rejects some for lakes and the chasm, so the placements are the
+        // only honest answer to "is anything standing here".
+        // Halfway down the entrance corridor. No clearing search any more -
+        // the corridor IS the clearing, carved rather than found, so there is
+        // nothing to hunt for and nowhere else the start could sensibly be.
+        {
+            const [cz0, cz1] = forestCorridorZ(-1);
+            const sx = FOREST_ENTRY_X;
+            // The corridor's true midpoint, which now sits just OUTSIDE the
+            // frame wall - so the first thing you do is walk in through the
+            // opening rather than start already past it.
+            const sz = (cz0 + cz1) * 0.5;
+            char.group.position.set(sx, 2.0, sz);
+            _forestSpawnPoint.set(sx, 2.0, sz);
+        }
+        // Facing the ROUTE, up the corridor and into the wood. rotation.y
+        // turns +Z, so 0 IS +Z - the direction of travel, with the corridor
+        // mouth and the camera behind you.
         char.group.rotation.y = 0;
-        window.compassTarget = null;
-        console.log(`Forest: ${placements.length} trees, ${sources.length} draw calls (instanced), collision ${treeCollisionGeo ? treeCollisionGeo.getAttribute('position').count / 3 : 0} tris/tree.`);
+        // Puts the follow-cam behind the player rather than wherever it was
+        // left. Without this you can start looking at your own face, which at
+        // a corridor spawn also means looking straight into the end wall.
+        if (window.faceCameraAlongPlayer) window.faceCameraAlongPlayer();
+        if (window.resetPlayerMomentum) window.resetPlayerMomentum();
+        star.visible = true;
+        // In the mouth of the EXIT corridor, which is across the river - so
+        // the compass sends you over the water on the way to it. Same spot as
+        // the gate, so walking through the doorway IS taking the diamond
+        // rather than two separate things to find.
+        // On the bridge, on top of the frame - so finishing the level means
+        // climbing out of the wood rather than walking out of it.
+        star.position.set(FOREST_EXIT_X, forestFrameTopY() + 1.6, forestSlabHalf());
+        buildForestExitSteps();
+        buildForestCanopyPlatform();
+        placeForestExitGate();
+        levelGroup.add(star);
+        window.compassTarget = star.position;
+        // ...and the compass is immediately re-pointed at the first companion
+        // by the story, which owns it from here.
+        startForestStory();
+        // The two numbers that decide raycast cost in this level: how many
+        // objects every ray has to walk, and how many triangles each tree
+        // contributes when one is hit. collidables is scanned by the player,
+        // every companion and bot, the ragdoll broad phase and the dither
+        // probes - so its length multiplies straight into the frame time.
+        const treeTris = treeCollisionGeo ? treeCollisionGeo.getAttribute('position').count / 3 : 0;
+        const treeCols = collidables.filter(o => o.userData && o.userData.isTreeCollider).length;
+        console.log(`Forest: ${placements.length} trees, ${sources.length} draw calls (instanced), ` +
+            `collision ${treeTris} tris/tree.
+` +
+            `  collidables: ${collidables.length} total, ${treeCols} of them tree colliders ` +
+            `(~${(treeCols * treeTris).toLocaleString()} tris a single ray may test).`);
     }
 
     // Paints the clearing mask from the forest's own spawn noise: 1 where the
@@ -7764,8 +10183,10 @@ export function startGame(CharacterClass) {
     const FOREST_LAKE_Y = 0.30;
     // Tree-free margin around each lake. Has to clear the whole bank, not just
     // the water: the torus reaches its full half-width out from L.r, so a
-    // smaller margin plants trees on the outer slope, half-sunk in it.
-    const FOREST_LAKE_BANK = 4.8;
+    // smaller margin plants trees on the outer slope, half-sunk in it. Follows
+    // the bank's outer foot, which is now 5.09 out - raising the crest widened
+    // the tube, and this has to be re-derived whenever that changes.
+    const FOREST_LAKE_BANK = 5.4;
     const FOREST_LAKE_RIM_COLOR = 0xa08154;   // shared by the bank and the bed
     const FOREST_LAKE_BED_Y = 0.02;           // clear of a z-fight with the ground
     const FOREST_LAKE_BED_OVERLAP = 0.25;     // past the bank's foot, tucked under it
@@ -7803,9 +10224,21 @@ export function startGame(CharacterClass) {
     // the crest height buys walk-up margin. Sinking it steepens the foot -
     // the exposed face starts further up the ellipse - which is why the tube
     // got wider when the sink went in.
-    const FOREST_LAKE_RIM_TUBE = 2.4;      // horizontal half-width of the bank
-    const FOREST_LAKE_RIM_FLATTEN = 0.29;  // vertical squash -> tube half-height 0.70
-    const FOREST_LAKE_RIM_SINK = 0.28;     // tube centre below ground -> crest 0.42 proud
+    // Raised: the crest now stands 0.60 above the ground rather than 0.42.
+    //
+    // The three numbers had to move together. Simply sinking the torus less
+    // does raise the crest, but it makes the walk-up much STEEPER, because the
+    // exposed face then starts nearer the ellipse's equator - and an ellipse
+    // is vertical at its equator. At the old proportions, lifting the crest to
+    // 0.58 that way puts the outer foot at 59 degrees, well past the ~39.6
+    // slide threshold, so you would slide straight back off it.
+    //
+    // Solved instead for a foot of ~35 degrees at the wanted crest height,
+    // which is what fixes the flatten at 0.55 and pushes the tube out to 2.85:
+    // a taller bank has to be a wider one.
+    const FOREST_LAKE_RIM_TUBE = 2.85;     // horizontal half-width of the bank
+    const FOREST_LAKE_RIM_FLATTEN = 0.55;  // vertical squash -> tube half-height 1.57
+    const FOREST_LAKE_RIM_SINK = 0.97;     // tube centre below ground -> crest 0.60 proud
     const FOREST_LAKE_RIM_SEGS = 30;       // around the ring
     const FOREST_LAKE_RIM_TUBE_SEGS = 8;   // around the cross-section
     let forestLakeRimMaterial = null;
@@ -7929,10 +10362,6 @@ export function startGame(CharacterClass) {
     // pull up. Deeper and they would live in the river.
     const FOREST_RIVER_BED_Y = -3.0;
     const FOREST_RIVER_Y = -2.3;    // 0.7 of water to wade in at the bottom
-    // The bed is cut slightly WIDER than the channel so its side faces end up
-    // buried inside the land masses. Flush would put two solid faces in the
-    // same plane down the whole length of the river, which z-fights.
-    const FOREST_RIVER_BED_OVERLAP = 0.06;
     // Matches the Water Test sea's own plane, so the horizon reads the same.
     const FOREST_SEA_SIZE = 256;
     // The frame. Height is set to match a large tree so the wall reads as the
@@ -7940,6 +10369,77 @@ export function startGame(CharacterClass) {
     const FOREST_BORDER_HEIGHT = 11;
     const FOREST_BORDER_BLOCK = 6;     // one block's footprint along the edge
     const FOREST_BORDER_CAP = 0.8;     // the earth-and-grass layer on top
+    // Hash threshold, so roughly half the caps get a tree - a tree on every
+    // one reads as a hedge, on none as a kerb.
+    const FOREST_BORDER_TREE_ODDS = 0.45;
+    // ---- The way in ----
+    // The route runs -Z to +Z, and it starts in a corridor cut through the -Z
+    // frame wall. Two things this fixes at once: the camera sits BEHIND the
+    // player, and at the old edge spawn that put it inside the 11-high wall
+    // (the "stuck in the mountains" view); and arriving down a corridor reads
+    // as having come from somewhere, which an edge spawn never did.
+    //
+    // The corridor runs INWARD (into the slab) rather than out into the sea -
+    // there is no ground outside the frame, so an outward corridor would need
+    // a platform built under it for the sake of a few metres of approach.
+    //
+    // x is the middle of the -X island: the chasm occupies x 14.5..21.5, so
+    // anything near it would open onto water instead of ground.
+    // x and width are chosen to land ON the wall's own 6-unit block grid,
+    // which runs -64 + 6k: the two blocks at -28 and -22 are the ones dropped,
+    // so the visible hole is exactly [-31, -19]. Matching the collision hole
+    // to that is what stops you walking a metre into a block that is still
+    // standing there, and it puts the corridor's side walls flush against the
+    // blocks that flank the opening rather than a metre inside them.
+    const FOREST_ENTRY_X = -25;
+    const FOREST_ENTRY_W = 12;     // = 2 blocks; wide enough for the follow-cam
+    const FOREST_ENTRY_LEN = 18;   // how far the corridor reaches inward
+    // The way out - same shape as the entrance, but on the FAR side of the
+    // river, so crossing is the price of leaving rather than an optional
+    // detour. The chasm occupies x 14.5..21.5, and this sits in the middle of
+    // the east island with its tongue (x 29..53) well clear of the water.
+    //
+    // 41, not a round 42, because it has to land between two wall blocks the
+    // way the entrance does: block centres run -64 + 6k, so a midpoint is
+    // -61 + 6k, and k=17 gives 41. That drops the blocks at 38 and 44 and
+    // leaves a hole of exactly [35, 47] - visible and collision agreeing.
+    const FOREST_EXIT_X = 41;
+    // How far each corridor reaches OUTWARD, past the frame wall - and the
+    // reason the sea is not in them. A ground tongue is built under this
+    // stretch (see buildForestGroundBox); its top is at y=0, well above the
+    // water at FOREST_RIVER_Y, so looking back down a corridor shows a path
+    // leading away rather than the corridor opening straight onto open sea.
+    const FOREST_ENTRY_APPROACH = 20;
+    // Half-width of that tongue. A full block wider than the opening on each
+    // side to carry the corridor's own walls, plus 3 more for the trunk rows:
+    // the corridor is walled with trees stacked OUTWARD (corridorTreeRows), so
+    // the deepest row of the exit's three sits ~3 units past the wall line and
+    // is jittered up to 0.8 further. At the old width the outermost trunks
+    // stood just off the edge of the ground, over open sea.
+    const FOREST_ENTRY_TONGUE_HALF = FOREST_ENTRY_W * 0.5 + FOREST_BORDER_BLOCK + 3;
+    // Clear of the frame wall, so neither the spawn nor the goal is buried in
+    // it - the wall's inner face is at the slab edge.
+    const FOREST_SPAWN_INSET = 10;
+    // How much elbow room counts as a clearing. A tree canopy is a couple of
+    // units across, so 5 is a gap you can stand in and see out of. The spawn
+    // no longer searches for one (the corridor is carved, not found) - this
+    // is now how far past the corridor's mouth the trees are kept back.
+    const FOREST_SPAWN_CLEAR_ENOUGH = 5;
+    // The centre-x of a corridor's two side walls. One definition, because the
+    // visible wall, its collision box and the tree rows all have to agree on
+    // where the sides of the passage are - three separate `x - w/2 - step/2`
+    // expressions is exactly how they drift apart.
+    function forestCorridorWallX(cx) {
+        const s = FOREST_ENTRY_W * 0.5 + FOREST_BORDER_BLOCK * 0.5;
+        return [cx - s, cx + s];
+    }
+    // ...and its extent along z. dir -1 is the entrance (-Z), +1 the exit.
+    function forestCorridorZ(dir) {
+        const bh = forestSlabHalf();
+        return dir < 0
+            ? [-bh - FOREST_ENTRY_APPROACH, -bh + FOREST_ENTRY_LEN]
+            : [bh - FOREST_ENTRY_LEN, bh + FOREST_ENTRY_APPROACH];
+    }
     let _forestBorderMat = null, _forestBorderCapMat = null;
     // Walks every block position along the four edges, skipping the stretch
     // the strait runs out through. Shared so the trees planted on top (pass 1)
@@ -7956,6 +10456,10 @@ export function startGame(CharacterClass) {
                 // The sea has to continue past the islands rather than be
                 // dammed by the frame.
                 if (Math.abs(bx - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + step) continue;
+                // ...and the two corridors are cut out of the -Z wall (side 1,
+                // the way in) and the +Z wall (side 0, the way out).
+                if (side === 1 && Math.abs(bx - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5) continue;
+                if (side === 0 && Math.abs(bx - FOREST_EXIT_X) < FOREST_ENTRY_W * 0.5) continue;
                 cb(bx, bz);
             }
         }
@@ -7980,6 +10484,16 @@ export function startGame(CharacterClass) {
             [FOREST_GAP_X + FOREST_GAP_W * 0.5, half],
         ];
         spans.forEach(([x0, x1]) => buildForestSlab(x0, x1, -half, half));
+        // The two corridor approaches, reaching out past the frame wall. These
+        // are what keep the sea out of the corridors: without them each
+        // corridor is a hole in a wall with open water immediately behind it,
+        // so the way you came in is a cliff edge over the sea. Same top height
+        // as the rest of the land, so it is one continuous walk in.
+        [[FOREST_ENTRY_X, -1], [FOREST_EXIT_X, 1]].forEach(([cx, dir]) => {
+            const z0 = dir < 0 ? -half - FOREST_ENTRY_APPROACH : half;
+            const z1 = dir < 0 ? -half : half + FOREST_ENTRY_APPROACH;
+            buildForestSlab(cx - FOREST_ENTRY_TONGUE_HALF, cx + FOREST_ENTRY_TONGUE_HALF, z0, z1);
+        });
         // The SEABED - one floor under the whole sea, not just under the
         // channel. It is what makes falling off an island survivable rather
         // than a bottomless drop, and it puts the strait and the open water on
@@ -8109,8 +10623,19 @@ export function startGame(CharacterClass) {
     function updateForestLakeSurfaces() {
         if (!_forestLakeMeshes.length) return;
         const wave = Math.sin(clock.elapsedTime * FOREST_LAKE_WAVE_SPEED) * FOREST_LAKE_WAVE_AMP;
-        const y = FOREST_LAKE_Y + wave;
         for (let i = 0; i < _forestLakeMeshes.length; i++) {
+            const e = _forestLakeMeshes[i];
+            if (e.baseY === undefined) e.baseY = FOREST_LAKE_Y;
+            // Re-anchor if anything ELSE moved the mesh since we last set it -
+            // which is the editor gizmo. This function writes position.y every
+            // frame, so a drag was being stamped back over instantly and the
+            // water simply would not move. Comparing against what we last
+            // wrote (rather than against baseY) separates "the user dragged
+            // it" from "the wave moved it", and shifts the base by the drag so
+            // the wave carries on around the new height.
+            if (e.lastSetY !== undefined && Math.abs(e.mesh.position.y - e.lastSetY) > 1e-4) {
+                e.baseY += e.mesh.position.y - e.lastSetY;
+            }
             // Height ONLY. The radius used to be re-fitted to the bank every
             // frame as well, which was both unnecessary and the source of a
             // visible gap: the disc's edge and the foam band were two separate
@@ -8119,7 +10644,8 @@ export function startGame(CharacterClass) {
             // them. Sized once for the top of the wave (see fillR), the disc
             // always reaches past the contact ring and the bank hides the
             // rest, so there is nothing left to disagree about.
-            _forestLakeMeshes[i].mesh.position.y = y;
+            e.mesh.position.y = e.baseY + wave;
+            e.lastSetY = e.mesh.position.y;
         }
     }
 
@@ -8356,8 +10882,56 @@ export function startGame(CharacterClass) {
         // just above the first path block stands in for now.
         char.group.position.set(0, 4.5, -6);
         char.group.rotation.y = Math.PI;
-        // window.compassTarget is already reset to null by buildLevel()'s
-        // shared per-level reset above - re-armed once the quest is given.
+        if (window.resetPlayerMomentum) window.resetPlayerMomentum();
+
+        // Finish diamond, at the far end of the village from the spawn.
+        //
+        // Placed by measuring rather than by a hardcoded coordinate: the
+        // whitebox is a first-pass proxy and its extents move whenever it is
+        // re-exported. Take the ground bounds, walk out along whichever axis
+        // is longer, and drop the star onto whatever is actually under that
+        // point - so it lands ON the level rather than hanging over it.
+        {
+            const vb = new THREE.Box3().setFromObject(villageScene);
+            const sp = char.group.position;
+            // FURTHEST FROM THE SPAWN, not the longest axis of the box.
+            //
+            // The village is 167 wide and 160 deep, so "longest axis" picks X
+            // - but the spawn sits in the middle of X and at one END of Z, and
+            // the level runs 153 units away in -Z against 84 sideways. Keying
+            // on the span put the goal off to the side of the start instead of
+            // at the far end of the walk.
+            const cand = [
+                { d: vb.max.x - sp.x, x: vb.max.x, z: sp.z },
+                { d: sp.x - vb.min.x, x: vb.min.x, z: sp.z },
+                { d: vb.max.z - sp.z, x: sp.x, z: vb.max.z },
+                { d: sp.z - vb.min.z, x: sp.x, z: vb.min.z },
+            ].sort((a, b) => b.d - a.d)[0];
+            const far = new THREE.Vector3(cand.x, 0, cand.z).lerp(sp, VILLAGE_GOAL_INSET);
+            // The far edge of a bounding box is rarely walkable - it is as
+            // likely to be the lip of a drop or the inside of a wall - so
+            // search around it for somewhere with real ground, nearest first.
+            let best = null, bestD = Infinity;
+            for (let gx = -VILLAGE_GOAL_SEARCH; gx <= VILLAGE_GOAL_SEARCH; gx++) {
+                for (let gz = -VILLAGE_GOAL_SEARCH; gz <= VILLAGE_GOAL_SEARCH; gz++) {
+                    const sx = far.x + gx * VILLAGE_GOAL_STEP;
+                    const sz = far.z + gz * VILLAGE_GOAL_STEP;
+                    rayDown.set(_tempVec1.set(sx, vb.max.y + 20, sz), _downVec);
+                    const gh = rayDown.intersectObjects(collidables, true);
+                    if (!gh.length || !gh[0].face) continue;
+                    _grassHitNormal.copy(gh[0].face.normal).transformDirection(gh[0].object.matrixWorld);
+                    if (_grassHitNormal.y < GRASS_MIN_UP) continue;
+                    const d = Math.hypot(sx - far.x, sz - far.z);
+                    if (d < bestD) { bestD = d; best = gh[0].point.clone(); }
+                }
+            }
+            if (best) star.position.set(best.x, best.y + 1.6, best.z);
+            else star.position.set(far.x, vb.max.y + 1.6, far.z);
+            star.visible = true;
+            levelGroup.add(star);
+            window.compassTarget = star.position;
+            console.log('Village goal at', star.position.toArray().map(v => v.toFixed(1)).join(', '));
+        }
 
         // NPC - a RemoteAvatar (idle-animated player-model clone), same
         // class aiBot/companion use, not a bespoke placeholder mesh. Not
@@ -8391,9 +10965,10 @@ export function startGame(CharacterClass) {
         const npcToPlayer = new THREE.Vector3(npcSpawnRef.x - npcX, 0, npcSpawnRef.z - npcZ);
         villageNpcAvatar.group.rotation.y = Math.atan2(npcToPlayer.x, npcToPlayer.z);
 
-        villageNpcBubble = createSpeechBubbleSprite('Hey!');
-        villageNpcBubble.position.set(0, 3.1, 0);
-        villageNpcAvatar.group.add(villageNpcBubble);
+        // .visible on the record still works the way it did on the sprite -
+        // updateWorldLabels reads it - so the existing hide-on-dialogue-start
+        // call needs no change.
+        villageNpcBubble = makeWorldLabel('Hey!', villageNpcAvatar);
         villageQuestGiven = false;
         villageDialogueActive = false;
 
@@ -8452,9 +11027,17 @@ export function startGame(CharacterClass) {
     // an icon that isn't ready yet (e.g. CompassObject.glb still loading) -
     // see loadCompassObject, kicked off proactively in buildVillageLevel
     // so it's normally ready well before the player reaches this line.
+    // Which conversation is on screen. This box started out hard-wired to the
+    // village quest-giver; the forest needs the same box, the same typewriter
+    // and the same two-shot for its own NPC, so the lines, the speaker and
+    // what happens at the end are parameters now. The defaults keep every
+    // existing village call site behaving exactly as before.
+    let activeDialogueLines = VILLAGE_DIALOGUE_LINES;
+    let activeDialogueSpeaker = null;
+    let activeDialogueOnEnd = null;
     function updateDialogueIconForCurrentLine() {
         if (!dialogueIconEl) return;
-        const iconKey = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex].icon;
+        const iconKey = activeDialogueLines[villageDialogueLineIndex].icon;
         const url = iconKey ? dialogueIconUrlFor(iconKey) : null;
         if (url) {
             dialogueIconEl.src = url;
@@ -8467,6 +11050,13 @@ export function startGame(CharacterClass) {
         } else { dialogueIconEl.style.display = 'none'; }
     }
     function startVillageDialogue() {
+        startDialogue(VILLAGE_DIALOGUE_LINES, villageNpcAvatar, null);
+    }
+    function startDialogue(lines, speaker, onEnd) {
+        if (!speaker || !lines || !lines.length) return;
+        activeDialogueLines = lines;
+        activeDialogueSpeaker = speaker;
+        activeDialogueOnEnd = onEnd || null;
         villageDialogueActive = true;
         window.dialogueInputLocked = true;
         villageDialogueLineIndex = 0;
@@ -8491,10 +11081,10 @@ export function startGame(CharacterClass) {
         // whatever facing they walked in with is both stiller and closer to
         // what actually happens. Only the NPC turns (they're the one being
         // addressed, and they're far enough away for it to read as natural).
-        const toNpc = new THREE.Vector3().subVectors(villageNpcAvatar.group.position, char.group.position);
+        const toNpc = new THREE.Vector3().subVectors(speaker.group.position, char.group.position);
         toNpc.y = 0;
         toNpc.normalize();
-        villageNpcAvatar.group.rotation.y = Math.atan2(-toNpc.x, -toNpc.z);
+        speaker.group.rotation.y = Math.atan2(-toNpc.x, -toNpc.z);
         // Held for the whole conversation (re-applied every frame in the
         // dialogue camera block in animate) - capturing it once isn't
         // enough, since several later systems write to char.group.quaternion
@@ -8513,7 +11103,7 @@ export function startGame(CharacterClass) {
         // from. Wrapped in a re-runnable function so the panel slider can
         // recompute the framing live, mid-conversation.
         window._recomputeDialogueCam = () => {
-            if (!villageNpcAvatar) return;
+            if (!activeDialogueSpeaker) return;
             const zoom = window.dialogueCamZoom || 0.35;
             const horiz = cameraRadius * Math.sin(cameraPhi) * zoom;
             const height = (cameraRadius * Math.cos(cameraPhi) + 1.5) * zoom;
@@ -8522,7 +11112,7 @@ export function startGame(CharacterClass) {
                 .addScaledVector(side, horiz * 0.6)
                 .add(new THREE.Vector3(0, height, 0));
             window._dialogueCamTarget = new THREE.Vector3()
-                .lerpVectors(char.group.position, villageNpcAvatar.group.position, 0.5)
+                .lerpVectors(char.group.position, activeDialogueSpeaker.group.position, 0.5)
                 .add(new THREE.Vector3(0, 1.5, 0));
         };
         window._recomputeDialogueCam();
@@ -8538,17 +11128,21 @@ export function startGame(CharacterClass) {
         if (villageTypewriterDone) return;
         const rate = VILLAGE_TYPEWRITER_CPS * (villageDialogueFastForward ? VILLAGE_TYPEWRITER_FAST_MULT : 1);
         villageTypewriterProgress += rate * delta;
-        const line = VILLAGE_DIALOGUE_LINES[villageDialogueLineIndex].text;
-        const shown = Math.min(line.length, Math.floor(villageTypewriterProgress));
-        if (dialogueTextEl) dialogueTextEl.textContent = line.slice(0, shown);
-        if (shown >= line.length) {
+        const line = activeDialogueLines[villageDialogueLineIndex].text;
+        // Measured in VISIBLE characters: a {punch} token is 7 characters of
+        // source but 5 of text, and counting the source would leave the line
+        // "finished" two characters before it looks finished.
+        const full = labelPlainLength(line);
+        const shown = Math.min(full, Math.floor(villageTypewriterProgress));
+        if (dialogueTextEl) renderTypedText(dialogueTextEl, line, shown);
+        if (shown >= full) {
             villageTypewriterDone = true;
             if (dialogueContinueEl) dialogueContinueEl.style.display = 'inline-block';
         }
     }
     function advanceVillageDialogueLine() {
         villageDialogueLineIndex++;
-        if (villageDialogueLineIndex >= VILLAGE_DIALOGUE_LINES.length) {
+        if (villageDialogueLineIndex >= activeDialogueLines.length) {
             endVillageDialogue();
         } else {
             villageTypewriterProgress = 0;
@@ -8599,7 +11193,15 @@ export function startGame(CharacterClass) {
         window._dialogueCamLookNow = null;
         window._dialogueFacingQuat = null;
         window._recomputeDialogueCam = null;
-        if (!villageQuestGiven) {
+        // The quest, the toast and the compass hand-off belong to the VILLAGE
+        // conversation specifically - now that this box is shared, they have
+        // to be gated on who was actually speaking, or finishing the forest
+        // NPC's lines would hand out the village quest as well.
+        const wasVillage = activeDialogueSpeaker === villageNpcAvatar;
+        const onEnd = activeDialogueOnEnd;
+        activeDialogueSpeaker = null;
+        activeDialogueOnEnd = null;
+        if (wasVillage && !villageQuestGiven) {
             villageQuestGiven = true;
             // window.playerIconDataUrl only exists once the Viewer has been
             // opened at least once (lazy-loaded) - undefined is fine here,
@@ -8607,10 +11209,33 @@ export function startGame(CharacterClass) {
             addNotificationToast('New Quest: The Lost Apprentice', window.playerIconDataUrl);
             if (window.villageForestEntrance) window.compassTarget = window.villageForestEntrance;
         }
+        // Read and cleared BEFORE calling it: the callback is what starts the
+        // next story beat, and it must not be looking at this conversation's
+        // leftovers if it opens another one.
+        if (onEnd) onEnd();
     }
     // Same handlers on the box AND on the full-screen catcher behind it, so
     // a tap anywhere on the screen advances/fast-forwards - the box itself
     // is a small target, especially on a phone.
+    // Skip - ends the conversation outright rather than advancing a line.
+    // Runs endVillageDialogue, so the camera hand-back, the input unlock and
+    // whatever the conversation was supposed to trigger all still happen; the
+    // only thing skipped is the reading.
+    const dialogueSkipEl = document.getElementById('dialogue-skip');
+    if (dialogueSkipEl) {
+        dialogueSkipEl.addEventListener('pointerdown', (e) => {
+            // Both, and in this order: the box and the full-screen catcher sit
+            // under this button and would otherwise treat the same press as
+            // "advance one line" as well.
+            e.preventDefault(); e.stopPropagation();
+            if (villageDialogueActive) endVillageDialogue();
+            // ...and, in the forest's opening, the tutorial with it. Called
+            // AFTER endVillageDialogue on purpose: that runs the dialogue's
+            // own onEnd callback, which advances the story a stage, and this
+            // has to have the last word on where it lands.
+            if (window.storySkipTutorial) window.storySkipTutorial();
+        });
+    }
     const stopFastForward = () => { villageDialogueFastForward = false; };
     const onDialogueTapDown = (e) => {
         e.preventDefault();
@@ -8885,12 +11510,14 @@ export function startGame(CharacterClass) {
     // instanced (unlike the forest) - a handful of standalone trees don't
     // need InstancedMesh's draw-call savings, and a plain clone keeps each
     // one an independent, individually-placed Object3D.
-    function spawnStandaloneTree(x, z, rotY = 0, scale = 1) {
+    function spawnStandaloneTree(x, z, rotY = 0, scale = 1, y = 0) {
         if (!treeModel) return null;
         const tree = treeModel.clone(true);
         tree.rotation.y = rotY;
         tree.scale.setScalar(scale);
-        tree.position.set(x, 0, z);
+        // y, not a hardcoded 0: authored voxel geometry has surfaces at every
+        // height, and a tree belongs on the one it was placed on.
+        tree.position.set(x, y, z);
         // Box3.setFromObject below reads c.parent.matrixWorld as-is rather
         // than recomputing it (Box3.expandByObject calls
         // object.updateWorldMatrix(false, false) - updateParents=false), and
@@ -8971,6 +11598,24 @@ export function startGame(CharacterClass) {
     window.triGrassUpStart = 0.35;  // normal.y where earth starts turning to grass
     window.triGrassUpEnd = 0.72;    // ...and where it is fully grass
     window.triGrassSharpness = 4.0; // how hard the three projections cut over
+    // How much an authored VERTEX COLOUR overrides the built-in side tint.
+    // 1 = the mesh's own colours are the rock/earth, 0 = ignore them entirely.
+    window.triGrassVColor = 1.0;
+    // How much darker a downward-facing surface is than a vertical one.
+    window.triGrassUnderMul = 0.55;
+    // The earth colour on sides and undersides.
+    //
+    // Started from the old Soil.glb prop, recovered from the asset rather than
+    // eyeballed: baseColorFactor 0.155/0.051/0.005, lifted 30% toward white by
+    // the loader (SOIL_LIGHTEN). Those are LINEAR values and a hex literal is
+    // read as sRGB, so that worked out to 0xab9d96 - hue 20 degrees, a warm
+    // orange-brown.
+    //
+    // Rotated to hue 320 at the same lightness and the same low saturation:
+    // dry earth rather than wet, which reads cooler and slightly mauve instead
+    // of orange. Kept dusty on purpose - pushing the saturation is what turns
+    // it from soil into terracotta.
+    window.triGrassSideTint = 0xab96a4;
     const _triGrassUniforms = {
         uTriMap: { value: groundTex },
         uTriScale: { value: window.triGrassScale },
@@ -8980,16 +11625,37 @@ export function startGame(CharacterClass) {
         // Sides are the same grass texture pushed toward earth rather than a
         // second texture - one sampler, and the two always match in scale and
         // pattern, which is what makes the transition read as one surface.
-        uTriSideTint: { value: new THREE.Color(0x9c7b4e) },
+        // Earth on every side and underside. Set from window.triGrassSideTint
+        // each frame, so this initial value only covers the first frames.
+        uTriSideTint: { value: new THREE.Color(0xab96a4) },
         uTriTopTint: { value: new THREE.Color(0xffffff) },
+        uTriVColor: { value: 1.0 },
+        uTriUnderMul: { value: 0.55 },
     };
-    function applyTriplanarGrass(material) {
+    // opts.vertexMask makes the mesh's own COLOR attribute stand in for the
+    // side tint - so a shape authored in the voxel tool carries its material
+    // regions (rock here, earth there) in its vertex colours, and the grass is
+    // still projected over the top of all of it. Without it the shader uses
+    // the one global tint pair, which is all a level of identical blocks needs.
+    function applyTriplanarGrass(material, opts) {
         if (!material || material.userData.hasTriplanarGrass) return;
         material.userData.hasTriplanarGrass = true;
+        const vertexMask = !!(opts && opts.vertexMask);
+        // Per material, not in the shared uniform block: "the camera is inside
+        // this mesh" is a property of one object, and blackening every
+        // triplanar surface in the level because the camera entered one of
+        // them would be wrong.
+        const insideUniform = { value: 0 };
+        material.userData.triInsideUniform = insideUniform;
+        // three only declares vColor when the material asks for it, and the
+        // shader below reads it - so this is not optional, it is what makes
+        // the varying exist.
+        if (vertexMask) material.vertexColors = true;
         const prev = material.onBeforeCompile;
         material.onBeforeCompile = (shader, renderer) => {
             if (prev) prev(shader, renderer);
             Object.assign(shader.uniforms, _triGrassUniforms);
+            shader.uniforms.uTriInside = insideUniform;
             shader.vertexShader = shader.vertexShader
                 .replace('#include <common>', `#include <common>
                     varying vec3 vTriWorld;
@@ -9007,9 +11673,17 @@ export function startGame(CharacterClass) {
                     varying vec3 vTriWorld;
                     varying vec3 vTriNormal;
                     uniform sampler2D uTriMap;
-                    uniform float uTriScale, uTriUp0, uTriUp1, uTriSharp;
+                    uniform float uTriScale, uTriUp0, uTriUp1, uTriSharp, uTriVColor, uTriUnderMul;
+                    uniform float uTriInside;
                     uniform vec3 uTriSideTint, uTriTopTint;`)
-                .replace('#include <map_fragment>', `#include <map_fragment>
+                // Anchored on <color_fragment> in the vertex-mask case and
+                // REPLACING it, not adding to it: that chunk multiplies
+                // diffuseColor by vColor, and this consumes vColor itself. Left
+                // in place the authored colour would be applied twice, once as
+                // a tint and once as a multiply, and every surface would come
+                // out muddy.
+                .replace(vertexMask ? '#include <color_fragment>' : '#include <map_fragment>',
+                    `${vertexMask ? '' : '#include <map_fragment>'}
                     {
                         vec3 triN = normalize(vTriNormal);
                         // Blend weights from the normal, sharpened so the
@@ -9027,14 +11701,42 @@ export function startGame(CharacterClass) {
                         // faces (normal.y < 0) never qualify, so the bottom of
                         // an overhang stays earth.
                         float triUp = smoothstep(uTriUp0, uTriUp1, triN.y);
-                        diffuseColor.rgb = triCol * mix(uTriSideTint, uTriTopTint, triUp);
+                        // Sides and undersides are EARTH. The authored vertex
+                        // colour varies how light or dark that earth is, but
+                        // not its hue - taking the colour wholesale (which is
+                        // what this did at first) painted walls in whatever
+                        // the voxel tool used to distinguish faces from edges
+                        // from corners, which is grey and blue and nothing
+                        // like soil. Luminance keeps the regions readable
+                        // while everything stays earth-coloured.
+                        vec3 triSide = uTriSideTint;
+                        ${vertexMask ? `float vcLum = dot(vColor, vec3(0.299, 0.587, 0.114));
+                        triSide *= mix(1.0, 0.55 + vcLum * 0.9, uTriVColor);` : ''}
+                        // Undersides darker still. Nothing lights the bottom
+                        // of an overhang, and leaving it the same value as a
+                        // wall is what makes a floating block read as flat.
+                        float triDown = smoothstep(-0.15, -0.75, triN.y);
+                        triSide *= mix(1.0, uTriUnderMul, triDown);
+                        diffuseColor.rgb = triCol * mix(triSide, uTriTopTint, triUp);
+                        // Black when you are inside this mesh.
+                        //
+                        // TWO conditions, because a back face is not the whole
+                        // story. Standing inside the structure you are looking
+                        // DOWN at the floor you are on - a front face, fully
+                        // lit, still grass - so the backface rule alone left a
+                        // bright green floor in the middle of an otherwise
+                        // black interior. uTriInside is set per mesh from the
+                        // same parity test the dither uses, and blacks out the
+                        // whole surface for as long as the camera is in it.
+                        if (!gl_FrontFacing || uTriInside > 0.5) diffuseColor.rgb = vec3(0.0);
                     }`);
         };
         // onBeforeCompile is not part of three's program cache key, so without
         // this a treated material could share a compiled program with an
         // untreated one.
         const prevKey = material.customProgramCacheKey;
-        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|triGrass';
+        material.customProgramCacheKey = () =>
+            (prevKey ? prevKey.call(material) : '') + (vertexMask ? '|triGrassVC' : '|triGrass');
         material.needsUpdate = true;
     }
 
@@ -9570,6 +12272,9 @@ export function startGame(CharacterClass) {
         // levels, and the proximity check kept comparing against its last
         // position forever.
         if (villageNpcAvatar) { villageNpcAvatar.dispose(); villageNpcAvatar = null; }
+        // The bubble is a DOM element now, not a child of the avatar, so
+        // disposing the avatar no longer takes it with it.
+        removeWorldLabel(villageNpcBubble); villageNpcBubble = null;
         villageDialogueActive = false;
         window.dialogueInputLocked = false;
         window.compassTarget = null;
@@ -9585,6 +12290,7 @@ export function startGame(CharacterClass) {
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else if (currentLevel === "local_village") buildVillageLevel();
         else if (currentLevel === "local_forest") buildForestLevel();
+        else if (currentLevel === "local_voxel") buildVoxelLevel();
         else {
             try {
                 if (currentLevel.endsWith('.js')) {
@@ -9618,7 +12324,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_voxel">Voxel (authored)</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -9687,7 +12393,10 @@ export function startGame(CharacterClass) {
     // Radius of the see-through hole, in FRAMEBUFFER pixels (gl_FragCoord is
     // in framebuffer space, so this is compared against a drawing-buffer size,
     // not CSS pixels - they differ by devicePixelRatio on a phone).
-    window.ditherHoleRadius = 200;
+    // 320, not 200: at 200 the hole is barely wider than the character on a
+    // phone, so what you get is a peephole rather than a view - you can tell
+    // something is being cut away but not what you are doing inside it.
+    window.ditherHoleRadius = 320;
     // Where the fade from clear to solid happens, as a fraction of the radius.
     // A hard cutoff draws an obvious circle outline on the block.
     window.ditherHoleFeather = 0.50;
@@ -9698,6 +12407,11 @@ export function startGame(CharacterClass) {
     // the hole is also what lets this work on instanced trees at all (see
     // ditherAlwaysOnMats).
     window.ditherHoleEnabled = true;
+    // Whether an authored level mesh dissolves once the camera is INSIDE it.
+    // On by default - unlike dissolving it whenever it merely occludes you
+    // (which removes the whole structure, ground included), this only fires
+    // when the view is buried in solid geometry and there is nothing to lose.
+    window.voxelDitherEnabled = true;
     // Shared by every dithering material - one object each, assigned into all
     // their shaders, so the per-frame update writes them once.
     const _ditherScreenUniform = { value: new THREE.Vector2(0, 0) };
@@ -9783,6 +12497,9 @@ export function startGame(CharacterClass) {
     // expensive at 193 trees.
     const ditherProbeSpheres = [];
     const _ditherRay = new THREE.Raycaster();
+    // Separate from _ditherRay because that one carries a `far` clamped to the
+    // camera-player distance, and the inside test has to see the whole mesh.
+    const _ditherInsideRay = new THREE.Raycaster();
     const _ditherDir = new THREE.Vector3();
     const _ditherRight = new THREE.Vector3();
     const _ditherUp = new THREE.Vector3();
@@ -9890,6 +12607,36 @@ export function startGame(CharacterClass) {
             // cheaper than walking 12 triangles.
             for (let i = 0; i < ditherOccluders.length; i++) {
                 const obj = ditherOccluders[i];
+                // An authored level is ONE mesh, so dissolving it because it
+                // happens to stand between camera and player takes out the
+                // whole structure - the ground included. What is worth
+                // dissolving is the case where the camera has ended up INSIDE
+                // it and you can see nothing at all.
+                //
+                // Inside-ness by parity: a ray from the camera crosses a
+                // closed surface an odd number of times if it started inside
+                // it. The material is double-sided, so back faces report and
+                // the count is honest. One ray, one mesh, once a frame.
+                if (obj.userData.ditherByRay) {
+                    _ditherInsideRay.set(cam.position, _upVec);
+                    const inside = _ditherInsideRay.intersectObject(obj, true).length % 2 === 1;
+                    // Blacking out the interior is not the same thing as
+                    // dissolving it, so it happens either way - the toggle
+                    // only governs whether a hole is punched through as well.
+                    const iu = obj.material && obj.material.userData.triInsideUniform;
+                    if (iu) iu.value = inside ? 1 : 0;
+                    // The scatter has its own materials and would otherwise
+                    // keep drawing inside the blacked-out volume. grassMeshes
+                    // and flowerMeshes are rebuilt per level, so this reaches
+                    // whatever is currently scattered.
+                    for (let g = 0; g < grassMeshes.length; g++) grassMeshes[g].visible = !inside;
+                    for (let g = 0; g < flowerMeshes.length; g++) flowerMeshes[g].visible = !inside;
+                    for (let g = 0; g < _voxelDecor.length; g++) _voxelDecor[g].visible = !inside;
+                    if (inside && window.voxelDitherEnabled) {
+                        obj.userData._ditherHold = window.ditherHoldTime;
+                    }
+                    continue;
+                }
                 getObstacleBox(obj, _ditherBox);
                 // Camera inside the block counts as covering: intersectBox
                 // would hand back the far exit point, which can sit past the
@@ -10587,6 +13334,18 @@ export function startGame(CharacterClass) {
     window.cameraCloseStartAngle = 0.7;
     window.cameraMinCloseDistance = 5.0;
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
+    // Clears whatever fall the character had accumulated. Level builders call
+    // it after placing the spawn, because a build can happen DURING a fall:
+    // a level whose geometry loads asynchronously has no collidables at all
+    // for its first frames, so the character drops the whole time, and then
+    // gets teleported to the spawn still carrying that speed. The landing
+    // check (yVelocity < -22) then fires on arrival and ragdolls them - which
+    // is the "starts the game already ragdolled" case, repeated once per
+    // asynchronous asset because each one rebuilds the level.
+    window.resetPlayerMomentum = () => {
+        yVelocity = 0;
+        jumpMomentum.set(0, 0, 0);
+    };
 
     // The stick sticking - walking off in one direction until you drag it that
     // way and let go, and never releasing at all on mobile - was this only
@@ -11091,7 +13850,19 @@ export function startGame(CharacterClass) {
     const endLookDrag = e => { if (e.pointerId === lookPointerId) lookPointerId = null; };
     window.addEventListener('pointerup', endLookDrag);
     window.addEventListener('pointercancel', endLookDrag);
-    document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { cameraTheta = char.group.rotation.y + Math.PI; cameraPhi = Math.PI/3; });
+    // Swing the follow-cam directly behind the player, looking the way they
+    // face. +PI because cameraTheta is the direction from the player TO the
+    // camera, which is the opposite of where they are looking.
+    //
+    // Exposed on window so a level build can use it: cameraTheta persists
+    // across level changes (nothing ever reset it), so an arriving player
+    // could be looked at from the front, or - at the forest's corridor spawn -
+    // from inside the wall they just walked in through.
+    window.faceCameraAlongPlayer = () => {
+        cameraTheta = char.group.rotation.y + Math.PI;
+        cameraPhi = Math.PI / 3;
+    };
+    document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { window.faceCameraAlongPlayer(); });
 
     const clock = new THREE.Clock();
     const rayDown = new THREE.Raycaster(), rayFwd = new THREE.Raycaster(), xrayRaycaster = new THREE.Raycaster();
@@ -11148,6 +13919,16 @@ export function startGame(CharacterClass) {
         { id: 'shadow-range-slider', vId: 'shadow-range-val', func: v => { window.shadowRange = v; applyShadowRange(); }, fix: 0, raw: true },
         { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
+        // Speech-bubble placement. Same slider table as everything else, so
+        // they persist and reset exactly like the rest of the panel.
+        { id: 'bubble-bottom-slider', vId: 'bubble-bottom-val', func: v => window.bubbleBottomMargin = v, fix: 0 },
+        { id: 'bubble-maxy-slider', vId: 'bubble-maxy-val', func: v => window.bubbleMaxYFrac = v, fix: 2 },
+        { id: 'bubble-side-slider', vId: 'bubble-side-val', func: v => window.bubbleSideMargin = v, fix: 0 },
+        { id: 'bubble-compass-gap-slider', vId: 'bubble-compass-gap-val', func: v => window.bubbleCompassGap = v, fix: 0 },
+        { id: 'bubble-compass-w-slider', vId: 'bubble-compass-w-val', func: v => window.bubbleCompassKeepW = v, fix: 0 },
+        { id: 'bubble-player-w-slider', vId: 'bubble-player-w-val', func: v => window.bubblePlayerKeepW = v, fix: 0 },
+        { id: 'bubble-player-h-slider', vId: 'bubble-player-h-val', func: v => window.bubblePlayerKeepH = v, fix: 0 },
+        { id: 'bubble-anchor-slider', vId: 'bubble-anchor-val', func: v => window.bubbleAnchorY = v, fix: 2 },
         { id: 'dither-hole-feather-slider', vId: 'dither-hole-feather-val', func: v => window.ditherHoleFeather = v, fix: 2 },
         { id: 'dither-depth-fade-slider', vId: 'dither-depth-fade-val', func: v => window.ditherDepthFade = v, fix: 1 },
         { id: 'dither-fade-speed-slider', vId: 'dither-fade-speed-val', func: v => window.ditherFadeSpeed = v, fix: 1 },
@@ -11214,6 +13995,24 @@ export function startGame(CharacterClass) {
         // that array, so it can't live in it).
         if (window.sacks) window.sacks.forEach(s => { if (s.hitboxHelper) s.hitboxHelper.visible = checked; });
     });
+    // One listener per character. Spawning happens next to the player, so a
+    // box ticked mid-session drops that character right where you are looking.
+    COMPANION_SPECS.concat(AI_BOT_SPECS).forEach(sp => {
+        const el = document.getElementById('spawn-' + sp.key);
+        if (!el) return;
+        window['spawn' + sp.key] = el.checked;
+        el.addEventListener('change', e => {
+            window['spawn' + sp.key] = e.target.checked;
+            syncSpawnedAgents();
+        });
+    });
+    syncSpawnedAgents();
+
+    const voxelDitherToggleEl = document.getElementById('toggle-voxel-dither');
+    if (voxelDitherToggleEl) {
+        window.voxelDitherEnabled = voxelDitherToggleEl.checked;
+        voxelDitherToggleEl.addEventListener('change', e => { window.voxelDitherEnabled = e.target.checked; });
+    }
     const ditherHoleToggleEl = document.getElementById('toggle-dither-hole');
     if (ditherHoleToggleEl) ditherHoleToggleEl.addEventListener('change', e => { window.ditherHoleEnabled = e.target.checked; });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
@@ -12292,6 +15091,9 @@ export function startGame(CharacterClass) {
         _triGrassUniforms.uTriUp0.value = window.triGrassUpStart;
         _triGrassUniforms.uTriUp1.value = window.triGrassUpEnd;
         _triGrassUniforms.uTriSharp.value = window.triGrassSharpness;
+        _triGrassUniforms.uTriVColor.value = window.triGrassVColor;
+        _triGrassUniforms.uTriUnderMul.value = window.triGrassUnderMul;
+        _triGrassUniforms.uTriSideTint.value.set(window.triGrassSideTint);
         // Before the uniform upload below, never after: uWaterLevel and
         // uFoamLevel are both read straight off mesh.position.y, so moving the
         // surface afterwards would leave the foam a frame behind it.
@@ -12670,6 +15472,15 @@ export function startGame(CharacterClass) {
         window.isHitRecoveryStepActive = hitRecoveryStepActive;
 
         let floorY = 0;
+        // Whether the ground scan found anything AT ALL this frame.
+        //
+        // floorY defaults to 0, and the landing branch below compares against
+        // it unconditionally - so with nothing underfoot the character was
+        // snapped to y=0 and stood there in mid-air. Harmless while every
+        // level had a ground plane at 0; wrong the moment one does not, which
+        // is any level you are meant to be able to fall out of. "No ground
+        // found" is not the same as "ground at zero".
+        let hasFloor = true;
         let isSliding = false;
         // Reset every frame here (unlike isSliding, this one's declared
         // outside this function so the movement-input block further down
@@ -12702,11 +15513,19 @@ export function startGame(CharacterClass) {
             if (dH.length > 0) {
                 floorY = dH[0].point.y;
                 groundNormal.copy(dH[0].face.normal).transformDirection(dH[0].object.matrixWorld);
+            } else {
+                // Nothing below. The ragdoll solver clamps its particles to
+                // this plane, so leaving floorY at its default 0 while falling
+                // through open space snaps every particle back up to zero -
+                // which reads as the body being flung upward out of the fall.
+                floorY = -Infinity;
+                hasFloor = false;
             }
         } else {
+            const sp = _groundSampleSpread;
             const rayOffsets = [
-                new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.25, 0, 0), new THREE.Vector3(-0.25, 0, 0),
-                new THREE.Vector3(0, 0, 0.25), new THREE.Vector3(0, 0, -0.25)
+                new THREE.Vector3(0, 0, 0), new THREE.Vector3(sp, 0, 0), new THREE.Vector3(-sp, 0, 0),
+                new THREE.Vector3(0, 0, sp), new THREE.Vector3(0, 0, -sp)
             ];
             let hitAnything = false;
             let highestY = -Infinity;
@@ -12961,6 +15780,9 @@ export function startGame(CharacterClass) {
                 }
             }
             lastGroundObject = groundHitObject;
+            // Carried to next frame - see _groundSampleSpread.
+            _groundSampleSpread = (groundHitObject && groundHitObject.userData
+                && groundHitObject.userData.groundSampleSpread) || GROUND_SAMPLE_SPREAD;
             _dbgGroundNormalOut.copy(groundNormal);
             updateGroundRayDbg(rayOffsets, sampleY, _facetNormalBeforeFit, groundNormal);
 
@@ -13242,7 +16064,7 @@ export function startGame(CharacterClass) {
                         }
                     }
                 }
-            } else { floorY = 0; steepGroundTimer = 0; }
+            } else { floorY = 0; hasFloor = false; steepGroundTimer = 0; }
         }
         // Friction: decay any leftover slide speed back to zero once no
         // longer sliding (instead of the old instant stop), and remember
@@ -13696,6 +16518,28 @@ export function startGame(CharacterClass) {
                     const impactDir = _tempVec3.copy(incomingVelocity).normalize();
                     let consumed = false;
 
+                    // AI bots, first. This path knew about sandbags and remote
+                    // players but not about bots - so a thrown jar sailed
+                    // straight through the things the level actually asks you
+                    // to throw it at. Routed through staggerBot like every
+                    // other hit, so the poise pool and the knockdown rule are
+                    // the same ones punching obeys.
+                    for (let bi = 0; bi < aiBots.length; bi++) {
+                        const b = aiBots[bi].bot;
+                        if (!b.isLoaded || b.isRagdoll) continue;
+                        if (b.getHitReferencePoint(_tempVec2).distanceTo(c.mesh.position) < hitRadius + 1.0) {
+                            const vel = _tempVec1.copy(impactDir).multiplyScalar(hitForce);
+                            // 'medium_high' - a thrown jar is worth more than a
+                            // jab and less than a charge punch, which puts a
+                            // couple of them inside the same 100-point pool a
+                            // combo works through.
+                            window.staggerBot(b, vel, 'medium_high', 1.4);
+                            if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
+                            consumed = true;
+                            break;
+                        }
+                    }
+
                     if (window.sacks) {
                         for (const sack of window.sacks) {
                             if (sack.checkHit(c.mesh.position, hitRadius)) {
@@ -13821,7 +16665,12 @@ export function startGame(CharacterClass) {
             // generous absolute cap so a bad floor read can't ragdoll forever.
             const nearFloor = !ragdollHipsP || (ragdollHipsP.pos.y - floorY) < 1.0;
             if (char.ragdollTimer > char.ragdollMaxTime && (nearFloor || char.ragdollTimer > char.ragdollMaxTime + 5.0)) {
-                char.beginStandUp(ragdollHipsP ? Math.max(0, ragdollHipsP.pos.y - 0.5) : 0);
+                // No Math.max(0, ...) here any more. Clamping the standup
+                // height to the world origin assumed the ground could never be
+                // below it - on a level lifted clear of zero that is simply
+                // wrong, and on one you can fall out of it teleports the body
+                // to y=0 instead of leaving it where it fell.
+                char.beginStandUp(ragdollHipsP ? ragdollHipsP.pos.y - 0.5 : char.group.position.y);
                 if (network) network.sendStandupEvent(char.group.position, char.group.quaternion);
                 yVelocity = 0; jumpMomentum.set(0, 0, 0); isGrounded = true;
             }
@@ -15182,7 +18031,7 @@ export function startGame(CharacterClass) {
             // right on the wrong side of that jitter and get silently
             // snapped back onto the slope before ever leaving it, without
             // this exemption.
-            if (yVelocity > 0 || char.group.position.y + yVelocity*delta > floorY + 0.01) {
+            if (yVelocity > 0 || !hasFloor || char.group.position.y + yVelocity*delta > floorY + 0.01) {
                 yVelocity -= 30*delta;
                 if (yVelocity > 0) {
                     const headOrigin = _tempVec3.copy(char.group.position).setY(char.group.position.y + 1.7);
@@ -15208,6 +18057,16 @@ export function startGame(CharacterClass) {
                 // the exact original instant snap - bumpSpeedBlend is 0
                 // there, so this is a no-op everywhere except the bump
                 // fields.
+                // Springy surfaces launch instead of landing, and the check
+                // sits BEFORE the fall-damage ragdoll below on purpose: the
+                // whole appeal is dropping onto one from a height, and being
+                // knocked out on arrival would defeat it.
+                if (lastGroundObject && lastGroundObject.userData.bounceSpeed) {
+                    char.group.position.y = floorY;
+                    yVelocity = lastGroundObject.userData.bounceSpeed;
+                    isGrounded = false;
+                    wasGrounded = false;   // not a landing, so no landing anim
+                } else {
                 char.group.position.y = floorY; isGrounded = true;
                 if (!wasGrounded) {
                     if (yVelocity < -22 && !char.isRagdoll) {
@@ -15224,7 +18083,12 @@ export function startGame(CharacterClass) {
                         initialLandingTimer = landingTimer;
                     } else { landingTimer = 0; initialLandingTimer = 0; }
                 }
+                // Inside the landing branch, not after it: this is what stops
+                // a grounded character accumulating fall speed, and running it
+                // on a bounce frame would wipe the launch velocity that was
+                // just set.
                 if (!char.isRagdoll) { yVelocity = 0; jumpMomentum.set(0,0,0); }
+                }
             }
 
             // Run only now that position.y is fully finalized for this
@@ -15444,6 +18308,9 @@ export function startGame(CharacterClass) {
         // know whether the player is HOLDING a grip or merely standing near
         // one - see hangSpotTaken.
         window.playerIsLedgeGrabbing = isLedgeGrabbing || isClimbingUp;
+        updateVillageGoal();
+        updateForestStory(delta);
+        updateRiverLesson();
         recordPlayerTrail(delta);
         updateAiBots(delta);
         updateCompanions(delta);
@@ -15770,6 +18637,11 @@ if (leftArrow) {
 
 
         const activeCamera = window.orthoCameraEnabled ? orthoCamera : camera;
+        // Here, at the very end of the frame: every character has already been
+        // moved by now, so a bubble cannot be a frame behind the head it
+        // belongs to. Projected through the camera actually being rendered,
+        // which is not always `camera` - the ortho toggle swaps it.
+        updateWorldLabels(activeCamera);
         if (window.pixelEffectEnabled) {
             renderPixelatedPass.camera = activeCamera;
             // Linearising depth needs the camera's own near/far, and which

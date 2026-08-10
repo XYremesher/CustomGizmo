@@ -13,8 +13,73 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Climb Game</title>
     <style>
+        /* touch-action is NOT an inherited property - putting it on body does
+           nothing for the canvas or the buttons, each element needs its own.
+           Without it on the canvas, tapping punch fast enough to combo reads
+           as a double-tap the moment a finger lands slightly off the button,
+           and the browser zooms the page in. */
+        html { touch-action: none; -webkit-text-size-adjust: 100%; }
         body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
-        #gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        #gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; touch-action: none; }
+
+        /* Speech bubbles, as screen-space HTML. Below the dialogue box (200)
+           and its tap catcher (199), above the game. pointer-events:none on
+           the layer so a bubble over a control never eats the tap. */
+        #world-labels { position: absolute; inset: 0; z-index: 150; pointer-events: none; overflow: hidden; }
+        .world-label { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
+        .world-label .wl-box {
+            background: rgba(15, 15, 20, 0.92);
+            border: 2px solid rgba(255, 255, 255, 0.6);
+            border-radius: 10px;
+            color: #fff;
+            font-family: sans-serif;
+            font-weight: bold;
+            font-size: 16px;
+            line-height: 1.35;
+            padding: 8px 14px;
+            text-align: center;
+            /* pre-line, so the '
+' the story lines are written with become
+               real line breaks and long ones still wrap on their own. */
+            white-space: pre-line;
+            max-width: 40vw;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+        }
+        /* An on-screen button drawn inline in a bubble or the dialogue box.
+           Same fill and white rim as the real control, so "tap this" points at
+           something recognisable by sight rather than by reading a name.
+           Deliberately NOT scoped to .world-label - the dialogue uses it too. */
+        .wl-btn {
+            display: inline-block;
+            vertical-align: middle;
+            border: 2px solid rgba(255, 255, 255, 0.75);
+            border-radius: 999px;
+            padding: 0.1em 0.6em;
+            margin: 0 0.15em;
+            font-size: 0.82em;
+            letter-spacing: 0.03em;
+            color: #fff;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+            white-space: nowrap;
+        }
+        /* An icon embedded in a line - the compass, mostly. Sized in em so it
+           tracks the bubble's font, and the white outline is the same trick
+           the dialogue box's icon uses, so it reads against a dark bubble. */
+        .wl-icon {
+            height: 1.5em; width: auto;
+            vertical-align: middle;
+            margin: 0 0.2em;
+            filter: drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff)
+                    drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff);
+        }
+        /* The tail, as a CSS triangle. Pulled up 1px so the border of the box
+           above it does not show a seam across the join. */
+        .world-label .wl-tail {
+            width: 0; height: 0; margin-top: -1px;
+            border-left: 9px solid transparent;
+            border-right: 9px solid transparent;
+            border-top: 12px solid rgba(255, 255, 255, 0.6);
+        }
         
         /* Above the dialogue box (200) and its full-screen tap catcher (199)
            on purpose: the panel has to stay reachable DURING a conversation,
@@ -279,6 +344,12 @@
          game_js.js prepends here and auto-fades each one after a few
          seconds. -->
     <div id="notif-toasts" style="position:absolute; top:16px; right:16px; z-index:150; display:flex; flex-direction:column; gap:6px; align-items:flex-end; pointer-events:none; max-width:260px;"></div>
+    <!-- Speech bubbles. HTML rather than 3D sprites so the text is a fixed
+         number of PIXELS: a sprite is measured in world units, so it grew and
+         shrank with camera distance and was unreadable from anywhere but a
+         couple of metres away. Positioned per frame by projecting the
+         speaker's head - see updateWorldLabels in game_js.js. -->
+    <div id="world-labels"></div>
 
     <!-- Village NPC dialogue box - old-game-style typewriter text, tap to
          advance once the ▼ "continue" marker shows (see
@@ -301,6 +372,11 @@
             <img id="dialogue-icon" style="display:none; height:40px; width:auto; flex:0 0 auto; filter: drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff) drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff);">
             <div style="flex:1 1 auto; min-width:0;"><span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span></div>
         </div>
+        <!-- Skip. Ends the conversation AND, in the forest's opening, the
+             tutorial with it - for replaying a level, and for not punching a
+             sandbag five times on every reload. Its own pointerdown stops the
+             box's advance handler from also firing. -->
+        <div id="dialogue-skip" style="position:absolute; right:10px; bottom:6px; padding:3px 12px; font-size:12px; font-family:monospace; font-weight:bold; letter-spacing:0.08em; color:rgba(255,255,255,0.75); background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.3); border-radius:5px; cursor:pointer; touch-action:none; user-select:none;">SKIP &#187;</div>
         <!-- Downward-pointing tail, same shape/idea as the in-world "Hey!"
              speech bubble's own tail (createSpeechBubbleSprite) so this
              screen-space panel reads as pointing at the NPC too. Two nested
@@ -486,6 +562,27 @@
                 </div>
             </div>
 
+            <div class="category">
+                <div class="category-header">Speech Bubbles</div>
+                <div class="category-content">
+                    <label>Bottom Margin: <span id="bubble-bottom-val">152</span>px</label><br>
+                    <input type="range" id="bubble-bottom-slider" min="0" max="400" step="4" value="152" style="width: 100%;"><br>
+                    <label>Lowest Point (screen fraction): <span id="bubble-maxy-val">0.38</span></label><br>
+                    <input type="range" id="bubble-maxy-slider" min="0.15" max="1.00" step="0.01" value="0.38" style="width: 100%;"><br>
+                    <label>Side Margin: <span id="bubble-side-val">24</span>px</label><br>
+                    <input type="range" id="bubble-side-slider" min="0" max="200" step="4" value="24" style="width: 100%;"><br>
+                    <label>Gap Under Compass: <span id="bubble-compass-gap-val">92</span>px</label><br>
+                    <input type="range" id="bubble-compass-gap-slider" min="0" max="200" step="2" value="92" style="width: 100%;"><br>
+                    <label>Compass Keep-Out Width: <span id="bubble-compass-w-val">110</span>px</label><br>
+                    <input type="range" id="bubble-compass-w-slider" min="0" max="400" step="10" value="110" style="width: 100%;"><br>
+                    <label>Player Keep-Out Width: <span id="bubble-player-w-val">130</span>px</label><br>
+                    <input type="range" id="bubble-player-w-slider" min="0" max="400" step="10" value="130" style="width: 100%;"><br>
+                    <label>Player Keep-Out Height: <span id="bubble-player-h-val">150</span>px</label><br>
+                    <input type="range" id="bubble-player-h-slider" min="0" max="400" step="10" value="150" style="width: 100%;"><br>
+                    <label>Height Above Head: <span id="bubble-anchor-val">2.35</span></label><br>
+                    <input type="range" id="bubble-anchor-slider" min="0.5" max="5.0" step="0.05" value="2.35" style="width: 100%;"><br>
+                </div>
+            </div>
             <div class="category">
                 <div class="category-header">Camera</div>
                 <div class="category-content">
@@ -872,6 +969,29 @@
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
         import { RagdollPhysics } from './ragdoll_physics.js';
         import { LegIK } from './leg_ik.js';
+
+        // ---- Mobile: stop the page zooming while you play ----
+        // The viewport meta already says user-scalable=no, but iOS Safari has
+        // deliberately ignored that since iOS 10, so it cannot be relied on.
+        // touch-action (above) covers double-tap-to-zoom; these cover the
+        // pinch gestures Safari raises instead of plain touch events.
+        ['gesturestart', 'gesturechange', 'gestureend'].forEach(evt => {
+            document.addEventListener(evt, (e) => e.preventDefault(), { passive: false });
+        });
+        // Belt and braces for the double tap itself. Scoped to touches that
+        // are NOT on a control: preventDefault on a touchend suppresses the
+        // synthetic click that follows, which would break every button that
+        // listens for one. The canvas has no click handlers.
+        {
+            let lastTouchEnd = 0;
+            document.addEventListener('touchend', (e) => {
+                const now = Date.now();
+                if (now - lastTouchEnd < 350 && e.target && e.target.id === 'gameCanvas') {
+                    e.preventDefault();
+                }
+                lastTouchEnd = now;
+            }, { passive: false });
+        }
 
         const originalRender = THREE.WebGLRenderer.prototype.render;
         THREE.WebGLRenderer.prototype.render = function(scene, camera) {
@@ -1406,6 +1526,10 @@
                     if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) {
                         if (sack.checkHit(hitCenter, hitRadius)) {
                             sack.applyHit(fwdDir, forceMagnitude);
+                            // Counted here rather than inferred from the punch
+                            // state, so the forest's practice test only counts
+                            // punches that actually CONNECT with the bag.
+                            window.bagHitCount = (window.bagHitCount || 0) + 1;
                             if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                             if (createHitEffectCallback) {
                                 const sackCenter = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
@@ -1474,6 +1598,14 @@
                         // same rule, and two copies of that arithmetic would
                         // drift apart the first time either was retuned.
                         window.staggerBot(bot, velocity, intensity, strength);
+                        // Counted so the forest tutorial can react to the
+                        // player actually pulling a combo off. The LAST blow
+                        // of the string is the one that counts - it is the
+                        // only hit that proves the whole combo connected
+                        // rather than the first jab of one that was abandoned.
+                        if (isFinalComboBlow) {
+                            window.comboLandedCount = (window.comboLandedCount || 0) + 1;
+                        }
                     }
                 }
             }

@@ -6,6 +6,14 @@ import * as THREE from 'three';
 // handles). Cut/cap/flip aren't exposed as 3D handles here either in the
 // original tool - those are checkbox/number-input controls in a 2D panel
 // there (see level_editor.js's buildShapePropsPanel, which mirrors that).
+// Distance at which a handle draws at its authored size; past this it grows to
+// keep the same apparent size on screen. 14 matches Gizmo.js so the two sets of
+// handles stay the same size as each other.
+const SHAPE_HANDLE_REF = 14;
+// ...and a floor, so handles do not collapse when the camera is right on top
+// of the shape.
+const SHAPE_HANDLE_MIN = 0.4;
+
 export class ShapeGizmo {
     constructor(camera, domElement) {
         this.camera = camera;
@@ -114,6 +122,17 @@ export class ShapeGizmo {
             let worldPos = localVec.applyMatrix4(targetMesh.matrixWorld);
             mesh.position.copy(worldPos);
             mesh.quaternion.copy(targetMesh.quaternion);
+            // Constant apparent size, the way the move/rotate/scale gizmo
+            // already does it. These handles had a fixed world size, so they
+            // shrank with distance like anything else - a few metres back they
+            // were a couple of pixels across and effectively unclickable, and
+            // the pick radius shrinks with them because the raycast tests the
+            // handle's own geometry.
+            //
+            // Only the HANDLE scales. Its position stays where the shape's
+            // parameters put it, because that is what the handle means.
+            const d = this.camera.position.distanceTo(worldPos);
+            mesh.scale.setScalar(Math.max(d / SHAPE_HANDLE_REF, SHAPE_HANDLE_MIN));
         });
     }
     pointerDown(e, raycaster, camera) {

@@ -414,6 +414,22 @@ export const RagdollPhysics = {
     updateRagdoll(delta, collidables, floorY) {
         if (!this.isRagdoll) return;
         this.ragdollTimer += delta;
+        // Callers that do not track a floor at all still get the old
+        // world-origin behaviour rather than falling forever.
+        const ragdollFloor = (typeof floorY === 'number') ? floorY : 0;
+        // The head's collider follows the head-size slider. Its radius is
+        // baked when the rig is built, but window.headScale is applied every
+        // frame to the head BONE - so a scaled-up head kept colliding with a
+        // default-sized sphere and sank into the floor and through walls.
+        // Read each frame rather than at initRagdoll, so dragging the slider
+        // while something is lying there updates it too. baseRadius is stashed
+        // on first use so repeated scaling compounds off the original, not off
+        // last frame's result.
+        const headP = this.getParticle('head');
+        if (headP) {
+            if (headP.baseRadius === undefined) headP.baseRadius = headP.radius;
+            headP.radius = headP.baseRadius * (window.headScale !== undefined ? window.headScale : 1);
+        }
         // Matches the known-stable reference build ("ClimbGame_better ragdoll.html"):
         // a light, uniform damping and no velocity/displacement clamp at all.
         // Today's attempts to fix "falls from height look floaty" by
@@ -454,6 +470,21 @@ export const RagdollPhysics = {
                 _candidateCount++;
                 continue;
             }
+            // softObstacle means "my bounding box is not my shape" - it is set
+            // on trees, the lake banks and whole authored level meshes. The
+            // narrow phase below resolves a penetration by pushing the
+            // particle out along the box's SMALLEST overlap axis, which is
+            // meaningless for those: for a level exported as one mesh the box
+            // is the entire structure, so a body falling anywhere inside its
+            // footprint gets shoved to the nearest outer face - tens of units
+            // straight up if that happens to be the top. That is the "flung
+            // into the air while falling" case.
+            //
+            // The rest of the game already refuses to trust these boxes (see
+            // isVerticalSpaceClear); the ragdoll was the one place still doing
+            // it. Landing is unaffected - that comes from floorY, which is a
+            // real raycast against the actual surface.
+            if (obj.userData && obj.userData.softObstacle) continue;
             // Written straight into the candidate's own box so a rejected
             // object costs nothing beyond the one getObstacleBox call, and an
             // accepted one is already cached for the 300 inner iterations.
@@ -486,8 +517,15 @@ export const RagdollPhysics = {
             this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0);
 
             this.ragdollParticles.forEach(p => {
-                    if (p.pos.y < p.radius) {
-                        p.pos.y = p.radius;
+                    // floorY, not 0. This clamp is what stops a ragdoll
+                    // sinking, and it was hardcoded to the world origin - so a
+                    // body falling through open space had every particle
+                    // snapped back up to y=0, which reads as being flung
+                    // upward out of the fall. -Infinity (no ground anywhere
+                    // below) makes the comparison false and the body simply
+                    // keeps falling, which is the point.
+                    if (p.pos.y < ragdollFloor + p.radius) {
+                        p.pos.y = ragdollFloor + p.radius;
                         // Absorb the vertical velocity on landing instead of just
                         // repositioning: oldPos.y still reflected the pre-landing
                         // (falling) height, so next frame's implicit velocity

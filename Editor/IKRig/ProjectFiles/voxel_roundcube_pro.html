@@ -1,0 +1,1711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voxel RoundCube Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+    <!-- Classic script, not a module, to match the three r128 build above.
+         The game loads r160, but glTF 2.0 is glTF 2.0 - an r128 export reads
+         back fine there. -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Fira+Code:wght@500&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0b0f19; user-select: none; -webkit-user-select: none; touch-action: none; overflow: hidden; margin: 0; }
+        .font-mono-custom { font-family: 'Fira Code', monospace; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.3); }
+        ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 999px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+        .glass-panel { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #38bdf8; cursor: pointer; transition: transform 0.1s ease; }
+        input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+        input[type="checkbox"] { accent-color: #38bdf8; }
+    </style>
+</head>
+<body class="text-slate-100">
+
+    <header id="main-header" class="absolute top-3 left-3 z-30 flex items-center gap-2 cursor-pointer transition-transform hover:scale-105" onclick="toggleSidebar()">
+        <div class="glass-panel p-2 rounded-xl shadow-xl flex items-center gap-2 border border-sky-500/20 pointer-events-auto">
+            <div class="w-6 h-6 rounded bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-sky-500/30">
+                <svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-[10px] font-extrabold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-300">RoundCube Pro</h1>
+                <p class="text-[7.5px] text-slate-400 font-medium">Modular Voxel Fuser</p>
+            </div>
+        </div>
+    </header>
+
+    <aside id="sidebar-panel" class="absolute top-16 left-3 bottom-3 w-64 glass-panel rounded-xl shadow-2xl z-20 flex flex-col transition-transform duration-300 border border-slate-800 -translate-x-[calc(100%+24px)]">
+        <div class="flex-1 overflow-y-auto p-3 space-y-3.5">
+            <div>
+                <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider mb-1.5 block">Operation Mode</label>
+                <div class="grid grid-cols-2 gap-1.5">
+                    <button id="tool-add" class="py-2 px-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-[10px] font-bold transition-all border border-sky-400/30 flex items-center justify-center gap-1.5 shadow-lg shadow-sky-600/20">
+                        <span class="w-1.5 h-1.5 rounded-full bg-white animate-pulse"></span> Add
+                    </button>
+                    <button id="tool-remove" class="py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold transition-all border border-slate-700/50 flex items-center justify-center gap-1.5">
+                        <span class="w-1.5 h-1.5 rounded-full bg-transparent border border-rose-500"></span> Remove
+                    </button>
+                </div>
+            </div>
+
+            <div class="space-y-2.5 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80">
+                <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider block">Geometry Settings</label>
+                <div>
+                    <div class="flex justify-between text-[10px] mb-1">
+                        <span class="text-slate-300 font-medium">Bevel Radius</span>
+                        <span id="radius-val" class="text-sky-400 font-mono-custom font-semibold">0.35</span>
+                    </div>
+                    <input id="radius-slider" type="range" min="0.05" max="0.9" step="0.01" value="0.35" class="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-sky-500">
+                </div>
+                <div>
+                    <div class="flex justify-between text-[10px] mb-1">
+                        <span class="text-slate-300 font-medium">Bevel Detail</span>
+                        <span id="detail-val" class="text-sky-400 font-mono-custom font-semibold">2 (Medium)</span>
+                    </div>
+                    <input id="detail-slider" type="range" min="1" max="3" step="1" value="2" class="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-sky-500">
+                </div>
+                <div>
+                    <div class="flex justify-between text-[10px] mb-1">
+                        <span class="text-slate-300 font-medium">Explode Effect</span>
+                        <span id="explode-val" class="text-sky-400 font-mono-custom font-semibold">0.00</span>
+                    </div>
+                    <input id="explode-slider" type="range" min="0.00" max="1.00" step="0.02" value="0.00" class="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-sky-500">
+                </div>
+            </div>
+
+            <div class="space-y-1.5 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80">
+                <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider block">Visualization</label>
+                <label class="flex items-center justify-between cursor-pointer py-1 px-0.5 hover:bg-slate-800/30 rounded transition-colors">
+                    <span class="text-[10px] text-slate-300">Union Colors</span>
+                    <input id="color-mode-toggle" type="checkbox" checked class="w-3 h-3 rounded border-slate-700 text-sky-500 bg-slate-800 cursor-pointer">
+                </label>
+                <label class="flex items-center justify-between cursor-pointer py-1 px-0.5 hover:bg-slate-800/30 rounded transition-colors">
+                    <span class="text-[10px] text-slate-300">Wireframe Mode</span>
+                    <input id="wireframe-mode-toggle" type="checkbox" checked class="w-3 h-3 rounded border-slate-700 text-sky-500 bg-slate-800 cursor-pointer">
+                </label>
+                <label class="flex items-center justify-between cursor-pointer py-1 px-0.5 hover:bg-slate-800/30 rounded transition-colors">
+                    <span class="text-[10px] text-slate-300">Show Grid Plane</span>
+                    <input id="grid-mode-toggle" type="checkbox" checked class="w-3 h-3 rounded border-slate-700 text-sky-500 bg-slate-800 cursor-pointer">
+                </label>
+                <label class="flex items-center justify-between cursor-pointer py-1 px-0.5 hover:bg-slate-800/30 rounded transition-colors">
+                    <span class="text-[10px] text-slate-300">Subdiv Vertices</span>
+                    <input id="subdiv-vertex-toggle" type="checkbox" checked class="w-3 h-3 rounded border-slate-700 text-sky-500 bg-slate-800 cursor-pointer">
+                </label>
+            </div>
+
+            <div id="aesthetic-legend" class="space-y-1.5 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80 transition-opacity duration-300">
+                <div class="flex items-center justify-between mb-1">
+                    <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider block">Aesthetic Legend</label>
+                    <span class="text-[7.5px] text-sky-400 font-bold uppercase tracking-wider" title="Invert Radius">Inv Rad</span>
+                </div>
+                <div class="grid grid-cols-2 gap-1 text-[9px] font-bold">
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-rose-500 shadow-md shadow-rose-500/30"></span><span class="text-slate-300 text-[7.5px]">Convex</span></div>
+                        <input type="checkbox" onchange="toggleInvert('corner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-orange-500 shadow-md shadow-orange-500/30"></span><span class="text-slate-300 text-[7.5px]">Inner</span></div>
+                        <input type="checkbox" onchange="toggleInvert('innerCorner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-cyan-500 shadow-md shadow-cyan-500/30"></span><span class="text-slate-300 text-[7.5px]">Crease</span></div>
+                        <input type="checkbox" onchange="toggleInvert('creaseCorner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-purple-500 shadow-md shadow-purple-500/30"></span><span class="text-slate-300 text-[7.5px]">Valleys</span></div>
+                        <input type="checkbox" onchange="toggleInvert('concaveCorner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-blue-500 shadow-md shadow-blue-500/30"></span><span class="text-slate-300 text-[7.5px]">Saddles</span></div>
+                        <input type="checkbox" onchange="toggleInvert('saddleConcaveCorner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-green-400 shadow-md shadow-green-400/30"></span><span class="text-slate-300 text-[7.5px]">C. Saddles</span></div>
+                        <input type="checkbox" onchange="toggleInvert('complexSaddle', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-fuchsia-500 shadow-md shadow-fuchsia-500/30"></span><span class="text-slate-300 text-[7.5px]">Extrusion</span></div>
+                        <input type="checkbox" onchange="toggleInvert('extrusionCorner', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-violet-500 shadow-md shadow-violet-500/30"></span><span class="text-slate-300 text-[7.5px]">3-Way</span></div>
+                        <input type="checkbox" onchange="toggleInvert('threeWay', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-emerald-500 shadow-md shadow-emerald-500/30"></span><span class="text-slate-300 text-[7.5px]">Edges</span></div>
+                        <input type="checkbox" onchange="toggleInvert('edge', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-lime-400 shadow-md shadow-lime-400/30"></span><span class="text-slate-300 text-[7.5px]">C. Edges</span></div>
+                        <input type="checkbox" checked onchange="toggleInvert('concaveEdge', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-900/60 p-1.5 rounded border border-slate-800/30">
+                        <div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded bg-amber-500 shadow-md shadow-amber-500/30"></span><span class="text-slate-300 text-[7.5px]">Faces</span></div>
+                        <input type="checkbox" onchange="toggleInvert('face', this.checked)" class="w-2.5 h-2.5 rounded cursor-pointer">
+                    </div>
+                </div>
+            </div>
+
+            <div class="space-y-1.5">
+                <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider block">Presets</label>
+                <div class="grid grid-cols-1 gap-1">
+                    <button class="w-full py-1.5 px-2 bg-slate-800/60 hover:bg-slate-700 text-left rounded border border-slate-700/30 text-[9.5px] font-semibold flex items-center justify-between" onclick="loadStructuralPreset('arch')">
+                        <span>Classic Arch</span><span class="text-[8px] text-slate-500 font-mono">ARCH</span>
+                    </button>
+                    <button class="w-full py-1.5 px-2 bg-slate-800/60 hover:bg-slate-700 text-left rounded border border-slate-700/30 text-[9.5px] font-semibold flex items-center justify-between" onclick="loadStructuralPreset('ring')">
+                        <span>Floating Ring</span><span class="text-[8px] text-slate-500 font-mono">RING</span>
+                    </button>
+                    <button class="w-full py-1.5 px-2 bg-slate-800/60 hover:bg-slate-700 text-left rounded border border-slate-700/30 text-[9.5px] font-semibold flex items-center justify-between" onclick="loadStructuralPreset('helix')">
+                        <span>Double Helix</span><span class="text-[8px] text-slate-500 font-mono">HLX</span>
+                    </button>
+                    <button class="w-full py-1.5 px-2 bg-slate-800/60 hover:bg-slate-700 text-left rounded border border-slate-700/30 text-[9.5px] font-semibold flex items-center justify-between" onclick="loadStructuralPreset('sphere')">
+                        <span>Micro Sphere</span><span class="text-[8px] text-slate-500 font-mono">SPHR</span>
+                    </button>
+                    <button class="w-full py-1.5 px-2 bg-slate-800/60 hover:bg-slate-700 text-left rounded border border-slate-700/30 text-[9.5px] font-semibold flex items-center justify-between" onclick="loadStructuralPreset('ship')">
+                        <span>Spaceship</span><span class="text-[8px] text-slate-500 font-mono font-bold">SHIP</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="space-y-1.5 bg-slate-950/40 p-2.5 rounded-lg border border-amber-500/30">
+                <div class="flex items-center justify-between">
+                    <label class="text-[8px] text-slate-400 font-extrabold uppercase tracking-wider block">Vertex Editor</label>
+                    <span id="vertex-edit-count" class="text-[7.5px] text-amber-400 font-mono">0 selected</span>
+                </div>
+                <button id="btn-edit-mode" class="w-full py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[9.5px] font-bold border border-slate-700/40">Edit Mode: OFF</button>
+                <p class="text-[7.5px] text-slate-500 leading-tight">Click a point to select it, then drag the arrows on it to move freely, or nudge with the buttons below. Select exactly 2 points to pull them together/apart symmetrically.</p>
+                <div class="grid grid-cols-2 gap-1">
+                    <button id="btn-gizmo-move" class="py-1.5 bg-amber-600 text-white rounded text-[9px] font-bold border border-amber-400/40">Move</button>
+                    <button id="btn-gizmo-symscale" class="py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold border border-slate-700/40 disabled:opacity-30 disabled:cursor-not-allowed" disabled>Sym Scale (2pt)</button>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[8px] text-slate-400 shrink-0">Step</span>
+                    <input id="vertex-step" type="number" value="0.01" step="0.01" class="w-full bg-slate-900 text-sky-400 text-[9px] px-1.5 py-1 rounded border border-slate-800 font-mono-custom">
+                </div>
+                <div class="grid grid-cols-3 gap-1">
+                    <button onclick="nudgeSelected(-1,0,0)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">X-</button>
+                    <button onclick="nudgeSelected(1,0,0)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">X+</button>
+                    <span></span>
+                    <button onclick="nudgeSelected(0,-1,0)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">Y-</button>
+                    <button onclick="nudgeSelected(0,1,0)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">Y+</button>
+                    <span></span>
+                    <button onclick="nudgeSelected(0,0,-1)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">Z-</button>
+                    <button onclick="nudgeSelected(0,0,1)" class="py-1 bg-slate-800 hover:bg-slate-700 rounded text-[9px] font-bold">Z+</button>
+                    <span></span>
+                </div>
+                <button onclick="symmetrizeSelection()" class="w-full py-1.5 bg-emerald-800 hover:bg-emerald-700 text-emerald-100 rounded text-[9px] font-bold border border-emerald-500/30">Symmetrize Selection</button>
+                <p class="text-[7.5px] text-slate-500 leading-tight">Select 2 points in order (1st, 2nd) — buttons below move the 1st onto the 2nd.</p>
+                <div class="grid grid-cols-4 gap-1">
+                    <button onclick="alignFirstToSecond('x')" class="py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold">X</button>
+                    <button onclick="alignFirstToSecond('y')" class="py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold">Y</button>
+                    <button onclick="alignFirstToSecond('z')" class="py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold">Z</button>
+                    <button onclick="alignFirstToSecond('all')" class="py-1.5 bg-amber-800 hover:bg-amber-700 text-amber-100 rounded text-[9px] font-bold">All</button>
+                </div>
+                <div class="grid grid-cols-2 gap-1">
+                    <button onclick="copyVertexSelection()" class="py-1.5 bg-sky-700 hover:bg-sky-600 text-white rounded text-[9px] font-bold">Copy Selection</button>
+                    <button onclick="clearVertexSelection()" class="py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[9px] font-bold">Clear Sel.</button>
+                </div>
+                <button onclick="resetVertexOverrides()" class="w-full py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 rounded text-[9px] font-bold border border-rose-500/20">Reset All Overrides</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-1.5">
+                <button id="btn-undo" class="py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-lg text-[9px] font-bold border border-slate-700/40">Clear Scene</button>
+                <button id="btn-recenter" class="py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded-lg text-[9px] font-bold border border-slate-700/40" onclick="recenterCamera()">Reset Camera</button>
+            </div>
+        </div>
+
+        <div class="shrink-0 p-2.5 bg-slate-950 border-t border-slate-800 rounded-b-xl">
+            <div class="flex items-center justify-between mb-1">
+                <span class="text-[8px] text-slate-400 uppercase tracking-widest font-extrabold">Active Stats</span>
+                <span id="mesh-perf-tier" class="text-[7.5px] bg-emerald-950/80 text-emerald-400 px-1 rounded font-bold border border-emerald-500/20">STABLE</span>
+            </div>
+            <div class="grid grid-cols-2 gap-1.5 text-[9px]">
+                <div class="bg-slate-900/80 p-1 rounded border border-slate-800/60 flex items-center justify-between">
+                    <span class="text-slate-400">Voxels:</span><strong id="stat-voxels" class="text-white font-mono-custom font-semibold">0</strong>
+                </div>
+                <div class="bg-slate-900/80 p-1 rounded border border-slate-800/60 flex items-center justify-between">
+                    <span class="text-slate-400">Tris:</span><strong id="stat-tris" class="text-white font-mono-custom font-semibold">0</strong>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <div class="absolute top-3 right-3 z-20 flex items-center gap-1.5">
+        <button id="btn-snapshot" class="py-2 px-3 bg-slate-900/95 hover:bg-slate-800 text-white rounded-lg text-[10px] font-bold border border-slate-700/50 flex items-center gap-1.5 shadow-lg hover:border-sky-500/50">
+            <svg class="w-3.5 h-3.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812-1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><circle cx="12" cy="13" r="3" stroke-width="2"/></svg> Snapshot
+        </button>
+        <button id="btn-glb" class="py-2 px-3 bg-slate-900/95 hover:bg-slate-800 text-white rounded-lg text-[10px] font-bold border border-slate-700/50 flex items-center gap-1.5 shadow-lg hover:border-emerald-500/50">
+            <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg> Export GLB
+        </button>
+        <button id="btn-code" class="py-2 px-3 bg-slate-900/95 hover:bg-slate-800 text-white rounded-lg text-[10px] font-bold border border-slate-700/50 flex items-center gap-1.5 shadow-lg hover:border-indigo-500/50">
+            <svg class="w-3.5 h-3.5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg> Blueprint
+        </button>
+    </div>
+
+    <div id="json-modal" class="hidden absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3">
+        <div class="glass-panel w-full max-w-sm rounded-xl p-4 space-y-3 shadow-2xl border border-slate-700">
+            <div class="flex items-center justify-between">
+                <h3 class="text-[11px] font-bold uppercase tracking-wider text-white">Voxel JSON Blueprint</h3>
+                <button onclick="toggleJsonModal(false)" class="text-slate-400 hover:text-white text-base font-bold">&times;</button>
+            </div>
+            <textarea id="json-textarea" class="w-full h-36 bg-slate-900/90 text-sky-400 border border-slate-800 rounded-lg p-2 text-[10px] font-mono-custom focus:outline-none focus:border-sky-500"></textarea>
+            <div class="flex items-center justify-end gap-1.5">
+                <button onclick="copyBlueprintCode()" class="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-bold">Copy</button>
+                <button onclick="loadBlueprintCode()" class="py-1.5 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-[10px] font-bold">Import</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="hidden md:block absolute bottom-3 right-3 glass-panel p-3 rounded-xl border border-slate-800 max-w-[200px] shadow-2xl pointer-events-none space-y-1">
+        <div class="text-[9px] font-bold text-white uppercase tracking-wider flex items-center gap-1"><span class="w-1.5 h-1.5 bg-sky-400 rounded-full animate-ping"></span> Controls</div>
+        <ul class="text-[8.5px] text-slate-400 space-y-0.5 font-medium">
+            <li><span class="text-sky-400">•</span> <strong>Tap/Click</strong>: Place Voxel</li>
+            <li><span class="text-sky-400">•</span> <strong>Drag Mouse</strong>: Orbit Camera</li>
+            <li><span class="text-sky-400">•</span> <strong>Scroll Wheel</strong>: Zoom</li>
+        </ul>
+    </div>
+
+    <div id="toast-container" class="absolute bottom-3 left-3 md:left-auto md:right-3 z-50 flex flex-col gap-1.5 pointer-events-none"></div>
+    <div id="flash-overlay" class="absolute inset-0 bg-white z-50 opacity-0 pointer-events-none transition-opacity duration-300"></div>
+
+    <script>
+        const elStatVoxels = document.getElementById('stat-voxels');
+        const elStatTris = document.getElementById('stat-tris');
+        const elPerfTier = document.getElementById('mesh-perf-tier');
+        const elRadiusVal = document.getElementById('radius-val');
+        const elExplodeVal = document.getElementById('explode-val');
+        const elDetailVal = document.getElementById('detail-val');
+        const elAestheticLegend = document.getElementById('aesthetic-legend');
+        const sidebarPanel = document.getElementById('sidebar-panel');
+        const toolAddBtn = document.getElementById('tool-add');
+        const toolRemoveBtn = document.getElementById('tool-remove');
+
+        let isSidebarOpen = false;
+
+        function toggleSidebar() {
+            isSidebarOpen = !isSidebarOpen;
+            sidebarPanel.style.transform = isSidebarOpen ? 'translateX(0)' : 'translateX(calc(-100% - 24px))';
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            const isErr = type === 'error';
+            toast.className = `p-2.5 rounded-lg shadow-lg text-[9.5px] font-semibold border backdrop-blur transition-all duration-300 transform translate-y-2 opacity-0 pointer-events-auto flex items-center gap-2 ${isErr ? 'bg-rose-950/95 border-rose-500/30 text-rose-200' : 'bg-emerald-950/95 border-emerald-500/30 text-emerald-200'}`;
+            toast.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${isErr ? 'bg-rose-500' : 'bg-emerald-500'}"></span><span>${message}</span>`;
+            container.appendChild(toast);
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => toast.classList.remove('translate-y-2', 'opacity-0'));
+            });
+            setTimeout(() => {
+                toast.classList.add('translate-y-2', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 2500);
+        }
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0a0e17);
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(5, 5, 7);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxDistance = 30;
+        controls.minDistance = 2;
+        controls.target.set(-0.5, 0.5, 0.5);
+
+        const gizmoAnchor = new THREE.Object3D();
+        scene.add(gizmoAnchor);
+        const transformControls = new THREE.TransformControls(camera, renderer.domElement);
+        transformControls.setMode('translate');
+        transformControls.setSize(0.85);
+        transformControls.visible = false;
+        transformControls.enabled = false;
+        scene.add(transformControls);
+
+        let suppressNextVertexClick = false;
+        let isGizmoDragging = false;
+        let gizmoMode = 'translate';
+        let gizmoDragMode = null;
+        let gizmoDragAnchorStart = null;
+        let gizmoDragStartPositions = null;
+
+        function getCurrentVertexPos(key) {
+            const raw = getBasePos(key);
+            if (!raw) return null;
+            const p = vertexOverrides.get(key) || raw;
+            return new THREE.Vector3(p.x, p.y, p.z);
+        }
+
+        function setGizmoModeStyles() {
+            const btnMove = document.getElementById('btn-gizmo-move');
+            const btnSym = document.getElementById('btn-gizmo-symscale');
+            if (!btnMove || !btnSym) return;
+            btnMove.className = 'py-1.5 rounded text-[9px] font-bold border ' + (gizmoMode === 'translate'
+                ? 'bg-amber-600 text-white border-amber-400/40'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/40');
+            btnSym.disabled = selectedVertexKeys.size !== 2;
+            btnSym.className = 'py-1.5 rounded text-[9px] font-bold border disabled:opacity-30 disabled:cursor-not-allowed ' + (gizmoMode === 'symScale'
+                ? 'bg-amber-600 text-white border-amber-400/40'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/40');
+        }
+
+        function setGizmoMode(mode) {
+            if (mode === 'symScale' && selectedVertexKeys.size !== 2) return;
+            gizmoMode = mode;
+            updateGizmoAnchor();
+        }
+        document.getElementById('btn-gizmo-move').addEventListener('click', () => setGizmoMode('translate'));
+        document.getElementById('btn-gizmo-symscale').addEventListener('click', () => setGizmoMode('symScale'));
+
+        transformControls.addEventListener('dragging-changed', (event) => {
+            controls.enabled = !event.value;
+            isGizmoDragging = event.value;
+            if (event.value) {
+                suppressNextVertexClick = true;
+                gizmoDragMode = gizmoMode;
+                gizmoDragAnchorStart = gizmoAnchor.position.clone();
+                gizmoDragStartPositions = new Map();
+                selectedVertexKeys.forEach(key => {
+                    const p = getCurrentVertexPos(key);
+                    if (p) gizmoDragStartPositions.set(key, p);
+                });
+            } else {
+                if (gizmoDragMode === 'symScale') gizmoAnchor.scale.set(1, 1, 1);
+                gizmoDragMode = null;
+                gizmoDragAnchorStart = null;
+                gizmoDragStartPositions = null;
+            }
+        });
+
+        transformControls.addEventListener('objectChange', () => {
+            if (!gizmoDragStartPositions || !gizmoDragAnchorStart) return;
+            if (gizmoDragMode === 'symScale') {
+                const midpoint = gizmoDragAnchorStart;
+                const scaleFactor = Math.max(0.001, gizmoAnchor.scale.x);
+                gizmoDragStartPositions.forEach((startPos, key) => {
+                    const offset = startPos.clone().sub(midpoint).multiplyScalar(scaleFactor);
+                    const newPos = midpoint.clone().add(offset);
+                    vertexOverrides.set(key, { x: newPos.x, y: newPos.y, z: newPos.z });
+                });
+            } else {
+                const delta = gizmoAnchor.position.clone().sub(gizmoDragAnchorStart);
+                gizmoDragStartPositions.forEach((startPos, key) => {
+                    vertexOverrides.set(key, { x: startPos.x + delta.x, y: startPos.y + delta.y, z: startPos.z + delta.z });
+                });
+            }
+            rebuildAssembly();
+        });
+
+        function updateGizmoAnchor() {
+            if (gizmoMode === 'symScale' && selectedVertexKeys.size !== 2) gizmoMode = 'translate';
+            setGizmoModeStyles();
+
+            if (!editVertexMode || selectedVertexKeys.size === 0) {
+                transformControls.visible = false;
+                transformControls.enabled = false;
+                transformControls.detach();
+                return;
+            }
+
+            if (gizmoMode === 'symScale' && selectedVertexKeys.size === 2) {
+                const keys = Array.from(selectedVertexKeys);
+                const pA = getCurrentVertexPos(keys[0]), pB = getCurrentVertexPos(keys[1]);
+                if (!pA || !pB) { transformControls.visible = false; transformControls.enabled = false; transformControls.detach(); return; }
+                gizmoAnchor.position.copy(pA.clone().add(pB).multiplyScalar(0.5));
+                const dir = pB.clone().sub(pA);
+                if (dir.lengthSq() < 1e-8) dir.set(1, 0, 0); else dir.normalize();
+                gizmoAnchor.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+                if (!isGizmoDragging) gizmoAnchor.scale.set(1, 1, 1);
+                transformControls.setMode('scale');
+                transformControls.showX = true;
+                transformControls.showY = false;
+                transformControls.showZ = false;
+                transformControls.visible = true;
+                transformControls.enabled = true;
+                transformControls.attach(gizmoAnchor);
+                return;
+            }
+
+            const centroid = new THREE.Vector3();
+            let count = 0;
+            selectedVertexKeys.forEach(key => {
+                const p = getCurrentVertexPos(key);
+                if (!p) return;
+                centroid.add(p);
+                count++;
+            });
+            if (count === 0) {
+                transformControls.visible = false;
+                transformControls.enabled = false;
+                transformControls.detach();
+                return;
+            }
+            centroid.divideScalar(count);
+            gizmoAnchor.position.copy(centroid);
+            gizmoAnchor.quaternion.identity();
+            transformControls.setMode('translate');
+            transformControls.showX = true;
+            transformControls.showY = true;
+            transformControls.showZ = true;
+            transformControls.visible = true;
+            transformControls.enabled = true;
+            transformControls.attach(gizmoAnchor);
+        }
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.45));
+        
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.1);
+        dirLight1.position.set(12, 22, 16);
+        dirLight1.castShadow = true;
+        dirLight1.shadow.mapSize.width = 1024;
+        dirLight1.shadow.mapSize.height = 1024;
+        dirLight1.shadow.bias = -0.0003;
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0x38bdf8, 0.6);
+        dirLight2.position.set(-12, -8, -12);
+        scene.add(dirLight2);
+
+        const gridHelper = new THREE.GridHelper(16, 32, 0x1e293b, 0x0f172a);
+        gridHelper.position.y = -1.01;
+        scene.add(gridHelper);
+
+        let bevelRadius = 0.35, explodeFactor = 0.0, showWireframe = true, colorByModularType = true, bevelDetail = 2, currentTool = 'add', showSubdivVertices = true;
+        const cubeSize = 2.0;
+        const voxels = new Map();
+        let mainMesh = null, wireMesh = null, subdivVertexMesh = null, triangleToVoxel = [];
+        const assemblyGroup = new THREE.Group();
+        scene.add(assemblyGroup);
+
+        let editVertexMode = false;
+        const selectedVertexKeys = new Set();
+        const vertexOverrides = new Map();
+        let originalVertexPositions = new Map();
+        let autoVertexOverrides = new Map();
+        let vertexPickMesh = null, vertexHighlightMesh = null;
+        function vertKey(x, y, z) { return `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`; }
+        function getBasePos(key) { return autoVertexOverrides.get(key) || originalVertexPositions.get(key); }
+
+        const shapeInvertConfig = {
+            corner: false, innerCorner: false, creaseCorner: false,
+            concaveCorner: false, saddleConcaveCorner: false,
+            complexSaddle: false, extrusionCorner: false,
+            threeWay: false, edge: false, concaveEdge: true, face: false
+        };
+
+        window.toggleInvert = function(type, isChecked) {
+            shapeInvertConfig[type] = isChecked;
+            rebuildAssembly();
+        };
+
+        const guideGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+        const guideMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.22, depthWrite: false });
+        const guideMesh = new THREE.Mesh(guideGeo, guideMat);
+        const guideEdges = new THREE.LineSegments(new THREE.EdgesGeometry(guideGeo), new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2 }));
+        guideMesh.add(guideEdges);
+        guideMesh.visible = false;
+        scene.add(guideMesh);
+
+        const colors = { 
+            corner: new THREE.Color(0xf43f5e),
+            innerCorner: new THREE.Color(0xf97316),
+            creaseCorner: new THREE.Color(0x06b6d4),
+            concaveCorner: new THREE.Color(0xa855f7),
+            saddleConcaveCorner: new THREE.Color(0x3b82f6),
+            complexSaddle: new THREE.Color(0x4ade80),
+            extrusionCorner: new THREE.Color(0xd946ef),
+            threeWay: new THREE.Color(0x8b5cf6),
+            edge: new THREE.Color(0x10b981),
+            concaveEdge: new THREE.Color(0xa3e635),
+            face: new THREE.Color(0xf59e0b),
+            unified: new THREE.Color(0xe2e8f0) 
+        };
+        const DIRS = [new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0), new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1)];
+
+        function hasVoxel(x, y, z) { return voxels.has(`${x},${y},${z}`); }
+
+        function boundaryPointKey(p) { return `${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}`; }
+        function boundaryEdgeKey(A, B) {
+            const ka = boundaryPointKey(A), kb = boundaryPointKey(B);
+            return ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        }
+
+        function cacheAllMidpoints(profile, boundaryCache) {
+            function recurse(lo, hi) {
+                if (hi - lo <= 1) return;
+                const mid = (lo + hi) / 2;
+                boundaryCache.set(boundaryEdgeKey(profile[lo], profile[hi]), profile[mid]);
+                recurse(lo, mid);
+                recurse(mid, hi);
+            }
+            recurse(0, profile.length - 1);
+        }
+
+        function getManhattanDist(v1, v2) {
+            return Math.abs(v1.x - v2.x) + Math.abs(v1.y - v2.y) + Math.abs(v1.z - v2.z);
+        }
+
+        const MIRROR_PLANE_CANDIDATES = [
+            [1, 0, 0], [0, 1, 0], [0, 0, 1],
+            [1, -1, 0], [1, 1, 0],
+            [1, 0, -1], [1, 0, 1],
+            [0, 1, -1], [0, 1, 1]
+        ].map(([x, y, z]) => new THREE.Vector3(x, y, z).normalize());
+
+        function reflectAboutPlane(p, c, n) {
+            const d = p.clone().sub(c).dot(n);
+            return p.clone().sub(n.clone().multiplyScalar(2 * d));
+        }
+
+        function detectMirrorPlane(points) {
+            const centroid = new THREE.Vector3();
+            points.forEach(p => centroid.add(p));
+            centroid.divideScalar(points.length);
+
+            let bestN = null, bestErr = Infinity, bestMatch = null;
+            MIRROR_PLANE_CANDIDATES.forEach(n => {
+                const reflected = points.map(p => reflectAboutPlane(p, centroid, n));
+                const match = new Array(points.length).fill(-1);
+                let err = 0;
+                for (let i = 0; i < reflected.length; i++) {
+                    let bd = Infinity, bj = -1;
+                    for (let j = 0; j < points.length; j++) {
+                        const d = reflected[i].distanceToSquared(points[j]);
+                        if (d < bd) { bd = d; bj = j; }
+                    }
+                    match[i] = bj;
+                    err += bd;
+                }
+                if (err < bestErr) { bestErr = err; bestN = n; bestMatch = match; }
+            });
+
+            const spread = points.reduce((s, p) => s + p.distanceToSquared(centroid), 0) / points.length || 1;
+            if (bestErr / points.length > spread * 0.05) return null;
+
+            const cleanMatch = bestMatch.map((j, i) => (bestMatch[j] === i) ? j : i);
+            return { centroid, normal: bestN, match: cleanMatch };
+        }
+
+        function applyMirrorPlane(points, plane) {
+            const { centroid, normal, match } = plane;
+            const result = points.slice();
+            const handled = new Array(points.length).fill(false);
+            for (let i = 0; i < points.length; i++) {
+                if (handled[i]) continue;
+                const j = match[i];
+                if (j === i) {
+                    result[i] = points[i].clone().add(reflectAboutPlane(points[i], centroid, normal)).multiplyScalar(0.5);
+                    handled[i] = true;
+                } else {
+                    const symI = points[i].clone().add(reflectAboutPlane(points[j], centroid, normal)).multiplyScalar(0.5);
+                    const symJ = reflectAboutPlane(symI, centroid, normal);
+                    result[i] = symI;
+                    result[j] = symJ;
+                    handled[i] = true;
+                    handled[j] = true;
+                }
+            }
+            return result;
+        }
+
+        function symmetrizePointSet(points) {
+            if (points.length < 2) return points;
+            const plane = detectMirrorPlane(points);
+            if (!plane) return points;
+            return applyMirrorPlane(points, plane);
+        }
+
+        function smoothMin(a, b, k) {
+            if (k <= 0.00001) return Math.min(a, b);
+            const h = Math.max(k - Math.abs(a - b), 0.0) / k;
+            return Math.min(a, b) - h * h * k * 0.25;
+        }
+
+        function projectToSDF(p, voxelCores, smoothK = 0) {
+            const getSDF = (px, py, pz) => {
+                let minDist = Infinity;
+                for (let i = 0; i < voxelCores.length; i++) {
+                    const core = voxelCores[i];
+                    let dx = 0;
+                    if (px < core.cx - core.nx) dx = (core.cx - core.nx) - px;
+                    else if (px > core.cx + core.px) dx = px - (core.cx + core.px);
+
+                    let dy = 0;
+                    if (py < core.cy - core.ny) dy = (core.cy - core.ny) - py;
+                    else if (py > core.cy + core.py) dy = py - (core.cy + core.py);
+
+                    let dz = 0;
+                    if (pz < core.cz - core.nz) dz = (core.cz - core.nz) - pz;
+                    else if (pz > core.cz + core.pz) dz = pz - (core.cz + core.pz);
+
+                    const outDist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+                    let dx_in = Math.max(px - (core.cx + core.px), (core.cx - core.nx) - px);
+                    let dy_in = Math.max(py - (core.cy + core.py), (core.cy - core.ny) - py);
+                    let dz_in = Math.max(pz - (core.cz + core.pz), (core.cz - core.nz) - pz);
+                    const inDist = Math.min(Math.max(dx_in, dy_in, dz_in), 0);
+
+                    const d = outDist + inDist;
+                    if (i === 0) minDist = d;
+                    else if (smoothK > 0) minDist = smoothMin(minDist, d, smoothK);
+                    else if (d < minDist) minDist = d;
+                }
+                return minDist;
+            };
+
+            let px = p.x, py = p.y, pz = p.z;
+            const eps = 0.001;
+            const damping = 0.5;
+            for (let iter = 0; iter < 12; iter++) {
+                const d = getSDF(px, py, pz);
+                if (d === Infinity) break;
+                const error = d - bevelRadius;
+                if (Math.abs(error) < 0.00001) break;
+                const dx = getSDF(px + eps, py, pz) - d;
+                const dy = getSDF(px, py + eps, pz) - d;
+                const dz = getSDF(px, py, pz + eps) - d;
+                const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+                px -= (dx/len) * error * damping;
+                py -= (dy/len) * error * damping;
+                pz -= (dz/len) * error * damping;
+            }
+            return new THREE.Vector3(px, py, pz);
+        }
+
+        function subdivideTriangle(A, B, C, depth, builder, color, vx, vy, vz, normal, voxelCores, plane, isInverted, boundaryCache, radialBias, smoothK) {
+            if (depth === 0) {
+                let fA = A, fB = B, fC = C;
+                if (isInverted && plane && plane.normal.lengthSq() > 0.001) {
+                    const refA = new THREE.Vector3(); plane.projectPoint(A, refA); fA = refA.clone().multiplyScalar(2).sub(A);
+                    const refB = new THREE.Vector3(); plane.projectPoint(B, refB); fB = refB.clone().multiplyScalar(2).sub(B);
+                    const refC = new THREE.Vector3(); plane.projectPoint(C, refC); fC = refC.clone().multiplyScalar(2).sub(C);
+                }
+                addPolygon(builder, [fA, fB, fC], color, vx, vy, vz, normal);
+                return;
+            }
+            const pullFactor = radialBias !== undefined ? radialBias : 1;
+            const midOf = (P, Q, pull) => {
+                if (boundaryCache) {
+                    const cached = boundaryCache.get(boundaryEdgeKey(P, Q));
+                    if (cached) return cached;
+                }
+                const flat = P.clone().add(Q).multiplyScalar(0.5);
+                if (pull >= 1) return projectToSDF(flat, voxelCores, smoothK);
+                const proj = projectToSDF(flat, voxelCores, smoothK);
+                return flat.lerp(proj, pull);
+            };
+            const AB = midOf(A, B, pullFactor);
+            const BC = midOf(B, C, 1);
+            const CA = midOf(C, A, pullFactor);
+
+            subdivideTriangle(A, AB, CA, depth - 1, builder, color, vx, vy, vz, normal, voxelCores, plane, isInverted, boundaryCache, radialBias, smoothK);
+            subdivideTriangle(B, BC, AB, depth - 1, builder, color, vx, vy, vz, normal, voxelCores, plane, isInverted, boundaryCache, radialBias, smoothK);
+            subdivideTriangle(C, CA, BC, depth - 1, builder, color, vx, vy, vz, normal, voxelCores, plane, isInverted, boundaryCache, radialBias, smoothK);
+            subdivideTriangle(AB, BC, CA, depth - 1, builder, color, vx, vy, vz, normal, voxelCores, plane, isInverted, boundaryCache, radialBias, smoothK);
+        }
+
+        function getFaceVertex(x, y, z, D, U, V) {
+            if (!hasVoxel(x, y, z) || hasVoxel(x + D.x, y + D.y, z + D.z)) return null;
+            const bU = hasVoxel(x + U.x, y + U.y, z + U.z), bV = hasVoxel(x + V.x, y + V.y, z + V.z);
+            const bUD = hasVoxel(x + U.x + D.x, y + U.y + D.y, z + U.z + D.z), bVD = hasVoxel(x + V.x + D.x, y + V.y + D.y, z + V.z + D.z);
+            const bUV = hasVoxel(x + U.x + V.x, y + U.y + V.y, z + U.z + V.z);
+            const bUVD = hasVoxel(x + U.x + V.x + D.x, y + U.y + V.y + D.y, z + U.z + V.z + D.z);
+
+            let shiftU = !(bU && !bUD) ? bevelRadius : 0;
+            let shiftV = !(bV && !bVD) ? bevelRadius : 0;
+
+            if (bU && bV && !bUV) { shiftU = bevelRadius; shiftV = bevelRadius; }
+            if (bU && !bV && bUV && !bUD) { shiftU = -bevelRadius; shiftV = bevelRadius; }
+            if (!bU && bV && bUV && !bVD) { shiftU = bevelRadius; shiftV = -bevelRadius; }
+            if (bUVD && !bUD && !bVD && bUV && (bU || bV)) { shiftU = bevelRadius; shiftV = bevelRadius; }
+            if (bVD && bU && !bUD && !bUVD && (bV || bUVD)) { shiftU = -bevelRadius; shiftV = bevelRadius; }
+            else if (bUD && bV && !bVD && !bUVD && (bU || bUVD)) { shiftU = bevelRadius; shiftV = -bevelRadius; }
+
+            let isSaddleCorner = false;
+            const cx = x + (D.x + U.x + V.x) / 2;
+            const cy = y + (D.y + U.y + V.y) / 2;
+            const cz = z + (D.z + U.z + V.z) / 2;
+
+            const localVoxels = [];
+            for (let dx of [-0.5, 0.5]) {
+                for (let dy of [-0.5, 0.5]) {
+                    for (let dz of [-0.5, 0.5]) {
+                        const sx = Math.floor(cx + dx);
+                        const sy = Math.floor(cy + dy);
+                        const sz = Math.floor(cz + dz);
+                        if (hasVoxel(sx, sy, sz)) {
+                            localVoxels.push({ x: sx, y: sy, z: sz, key: `${sx},${sy},${sz}` });
+                        }
+                    }
+                }
+            }
+
+            const visited = new Set();
+            const comp = [];
+            const queue = [ { x: x, y: y, z: z, key: `${x},${y},${z}` } ];
+            visited.add(`${x},${y},${z}`);
+
+            while (queue.length > 0) {
+                const curr = queue.shift();
+                comp.push(curr);
+                localVoxels.forEach(other => {
+                    if (!visited.has(other.key) && areConnected(curr, other, cx, cy, cz)) {
+                        visited.add(other.key);
+                        queue.push(other);
+                    }
+                });
+            }
+
+            if (comp.length === 4) {
+                let hasDiag = false;
+                for (let i = 0; i < comp.length; i++) {
+                    for (let j = i + 1; j < comp.length; j++) {
+                        if (getManhattanDist(comp[i], comp[j]) === 3) {
+                            hasDiag = true;
+                            break;
+                        }
+                    }
+                    if (hasDiag) break;
+                }
+                if (hasDiag) {
+                    isSaddleCorner = true;
+                }
+            }
+
+            if (isSaddleCorner) {
+                if (bU && !bUD) shiftU = 0;
+                if (bV && !bVD) shiftV = 0;
+            }
+
+            const half = cubeSize / 2;
+            return new THREE.Vector3(x * cubeSize, y * cubeSize, z * cubeSize)
+                .add(D.clone().multiplyScalar(half)).add(U.clone().multiplyScalar(half - shiftU)).add(V.clone().multiplyScalar(half - shiftV));
+        }
+
+        function addPolygon(builder, pts, baseColor, vx, vy, vz, referenceNormal = null) {
+            if (pts.length < 3) return;
+            let normal = new THREE.Vector3();
+            for (let i = 0; i < pts.length; i++) {
+                const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+                normal.x += (p1.y - p2.y) * (p1.z + p2.z); 
+                normal.y += (p1.z - p2.z) * (p1.x + p2.x); 
+                normal.z += (p1.x - p2.x) * (p1.y + p2.y);
+            }
+            if (normal.lengthSq() < 0.0001) {
+                if (referenceNormal) normal.copy(referenceNormal);
+                else normal.set(0, 1, 0);
+            } else {
+                normal.normalize();
+            }
+            
+            if (referenceNormal && normal.dot(referenceNormal) < 0) { pts.reverse(); normal.negate(); }
+
+            const offset = normal.clone().multiplyScalar(explodeFactor * 0.45);
+            const shiftedPts = pts.map(p => p.clone().add(offset));
+
+            for (let i = 0; i < shiftedPts.length; i++) {
+                const wa = shiftedPts[i], wb = shiftedPts[(i + 1) % shiftedPts.length];
+                builder.wireVerts.push(wa.x, wa.y, wa.z, wb.x, wb.y, wb.z);
+            }
+
+            for (let i = 1; i < shiftedPts.length - 1; i++) {
+                const p1 = shiftedPts[0], p2 = shiftedPts[i], p3 = shiftedPts[i + 1], startIdx = builder.vertexCount;
+                builder.vertices.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z);
+                builder.normals.push(normal.x, normal.y, normal.z, normal.x, normal.y, normal.z, normal.x, normal.y, normal.z);
+                builder.colors.push(baseColor.r, baseColor.g, baseColor.b, baseColor.r, baseColor.g, baseColor.b, baseColor.r, baseColor.g, baseColor.b);
+                builder.indices.push(startIdx, startIdx + 1, startIdx + 2);
+                builder.vertexCount += 3;
+                builder.triangleToVoxel.push({ x: vx, y: vy, z: vz });
+            }
+        }
+
+        function buildSpherifiedCornerCap(builder, sphereCenter, R, axisD, axisU, axisV, gridN, color, vx, vy, vz, referenceNormal, boundaryCache, voxelCores, smoothK, dPt, uPt, vPt) {
+            function bisectPoint(A, B, frac) {
+                if (frac <= 0) return A;
+                if (frac >= 1) return B;
+                if (Math.abs(frac - 0.5) < 1e-9) {
+                    const cached = boundaryCache && boundaryCache.get(boundaryEdgeKey(A, B));
+                    if (cached) return cached;
+                    return projectToSDF(A.clone().add(B).multiplyScalar(0.5), voxelCores, smoothK);
+                }
+                const mid = bisectPoint(A, B, 0.5);
+                if (frac < 0.5) return bisectPoint(A, mid, frac * 2);
+                return bisectPoint(mid, B, (frac - 0.5) * 2);
+            }
+            function samplePatch(fixedAxis, uAxis, vAxis, anchorPt, uEndPt, vEndPt) {
+                const grid = [];
+                for (let i = 0; i < gridN; i++) {
+                    const row = [];
+                    const u = i / (gridN - 1);
+                    for (let j = 0; j < gridN; j++) {
+                        const v = j / (gridN - 1);
+                        if (anchorPt && uEndPt && vEndPt && (i === 0 || j === 0) && !(i === 0 && j === 0)) {
+                            row.push(j === 0 ? bisectPoint(anchorPt, uEndPt, u * 0.5) : bisectPoint(anchorPt, vEndPt, v * 0.5));
+                            continue;
+                        }
+                        if (anchorPt && i === 0 && j === 0) { row.push(anchorPt); continue; }
+                        const Vx = uAxis.x * u + vAxis.x * v + fixedAxis.x;
+                        const Vy = uAxis.y * u + vAxis.y * v + fixedAxis.y;
+                        const Vz = uAxis.z * u + vAxis.z * v + fixedAxis.z;
+                        const len = Math.sqrt(Vx * Vx + Vy * Vy + Vz * Vz) || 1;
+                        row.push(new THREE.Vector3(sphereCenter.x + R * Vx / len, sphereCenter.y + R * Vy / len, sphereCenter.z + R * Vz / len));
+                    }
+                    grid.push(row);
+                }
+                return grid;
+            }
+            function emitGrid(grid) {
+                for (let i = 0; i < gridN - 1; i++) {
+                    for (let j = 0; j < gridN - 1; j++) {
+                        const p00 = grid[i][j], p10 = grid[i + 1][j], p11 = grid[i + 1][j + 1], p01 = grid[i][j + 1];
+                        addPolygon(builder, [p00, p10, p11, p01], color, vx, vy, vz, referenceNormal);
+                    }
+                }
+            }
+            emitGrid(samplePatch(axisV, axisD, axisU, vPt, dPt, uPt));
+            emitGrid(samplePatch(axisD, axisU, axisV, dPt, uPt, vPt));
+            emitGrid(samplePatch(axisU, axisV, axisD, uPt, vPt, dPt));
+        }
+
+        function areConnected(u, v, cx, cy, cz) {
+            if (Math.abs(u.x - v.x) + Math.abs(u.y - v.y) + Math.abs(u.z - v.z) !== 1) return false;
+            const eps = 1e-5;
+            for (let dy of [-0.5, 0.5]) {
+                const y_val = Math.round(cy + dy);
+                if (Math.abs(u.y - y_val) < 0.1 && Math.abs(v.y - y_val) < 0.1) {
+                    const v00 = hasVoxel(cx - 0.5, y_val, cz - 0.5), v11 = hasVoxel(cx + 0.5, y_val, cz + 0.5);
+                    const v10 = hasVoxel(cx + 0.5, y_val, cz - 0.5), v01 = hasVoxel(cx - 0.5, y_val, cz + 0.5);
+                    if (v00 && v11 && !v10 && !v01) if (Math.sign(u.x - cx + u.z - cz + eps) !== Math.sign(v.x - cx + v.z - cz + eps)) return false;
+                    if (v10 && v01 && !v00 && !v11) if (Math.sign(u.x - cx - (u.z - cz) + eps) !== Math.sign(v.x - cx - (v.z - cz) + eps)) return false;
+                }
+            }
+            for (let dz of [-0.5, 0.5]) {
+                const z_val = Math.round(cz + dz);
+                if (Math.abs(u.z - z_val) < 0.1 && Math.abs(v.z - z_val) < 0.1) {
+                    const v00 = hasVoxel(cx - 0.5, cy - 0.5, z_val), v11 = hasVoxel(cx + 0.5, cy + 0.5, z_val);
+                    const v10 = hasVoxel(cx + 0.5, cy - 0.5, z_val), v01 = hasVoxel(cx - 0.5, cy + 0.5, z_val);
+                    if (v00 && v11 && !v10 && !v01) if (Math.sign(u.x - cx + u.y - cy + eps) !== Math.sign(v.x - cx + v.y - cy + eps)) return false;
+                    if (v10 && v01 && !v00 && !v11) if (Math.sign(u.x - cx - (u.y - cy) + eps) !== Math.sign(v.x - cx - (v.y - cy) + eps)) return false;
+                }
+            }
+            for (let dx of [-0.5, 0.5]) {
+                const x_val = Math.round(cx + dx);
+                if (Math.abs(u.x - x_val) < 0.1 && Math.abs(v.x - x_val) < 0.1) {
+                    const v00 = hasVoxel(x_val, cy - 0.5, cz - 0.5), v11 = hasVoxel(x_val, cy + 0.5, cz + 0.5);
+                    const v10 = hasVoxel(x_val, cy + 0.5, cz - 0.5), v01 = hasVoxel(x_val, cy - 0.5, cz + 0.5);
+                    if (v00 && v11 && !v10 && !v01) if (Math.sign(u.y - cy + u.z - cz + eps) !== Math.sign(v.y - cy + v.z - cz + eps)) return false;
+                    if (v10 && v01 && !v00 && !v11) if (Math.sign(u.y - cy - (u.z - cz) + eps) !== Math.sign(v.y - cy - (v.z - cz) + eps)) return false;
+                }
+            }
+            return true;
+        }
+
+        function rebuildAssembly() {
+            if (mainMesh) { assemblyGroup.remove(mainMesh); mainMesh.geometry.dispose(); mainMesh = null; }
+            if (wireMesh) { assemblyGroup.remove(wireMesh); wireMesh.geometry.dispose(); wireMesh = null; }
+            if (subdivVertexMesh) { assemblyGroup.remove(subdivVertexMesh); subdivVertexMesh.geometry.dispose(); subdivVertexMesh = null; }
+            if (vertexPickMesh) { assemblyGroup.remove(vertexPickMesh); vertexPickMesh.geometry.dispose(); vertexPickMesh = null; }
+            if (vertexHighlightMesh) { assemblyGroup.remove(vertexHighlightMesh); vertexHighlightMesh.geometry.dispose(); vertexHighlightMesh = null; }
+
+            const builder = { vertices: [], normals: [], colors: [], indices: [], vertexCount: 0, triangleToVoxel: [], wireVerts: [], subdivVerts: [] };
+            const emittedEdges = new Set(), emittedCorners = new Set();
+            const boundaryCache = new Map();
+            const edgeConcaveMap = new Map();
+            autoVertexOverrides = new Map();
+
+            const colFace = colorByModularType ? colors.face : colors.unified;
+            const colEdge = colorByModularType ? colors.edge : colors.unified;
+            const colConcaveEdge = colorByModularType ? colors.concaveEdge : colors.unified;
+            const colCorner = colorByModularType ? colors.corner : colors.unified;
+            const colConcaveCorner = colorByModularType ? colors.concaveCorner : colors.unified;
+            const colSaddleConcaveCorner = colorByModularType ? colors.saddleConcaveCorner : colors.unified;
+            const colComplexSaddle = colorByModularType ? colors.complexSaddle : colors.unified;
+            const colExtrusionCorner = colorByModularType ? colors.extrusionCorner : colors.unified;
+            const colInnerCorner = colorByModularType ? colors.innerCorner : colors.unified;
+            const colCreaseCorner = colorByModularType ? colors.creaseCorner : colors.unified;
+            const colThreeWay = colorByModularType ? colors.threeWay : colors.unified;
+
+            const voxelCoreMap = new Map();
+            const voxelCores = Array.from(voxels.keys()).map(key => {
+                const [vx, vy, vz] = key.split(',').map(Number);
+                const S = cubeSize;
+                const B = S / 2 - bevelRadius;
+                const core = {
+                    cx: vx * S, cy: vy * S, cz: vz * S,
+                    px: hasVoxel(vx + 1, vy, vz) ? S / 2 : B,
+                    nx: hasVoxel(vx - 1, vy, vz) ? S / 2 : B,
+                    py: hasVoxel(vx, vy + 1, vz) ? S / 2 : B,
+                    ny: hasVoxel(vx, vy - 1, vz) ? S / 2 : B,
+                    pz: hasVoxel(vx, vy, vz + 1) ? S / 2 : B,
+                    nz: hasVoxel(vx, vy, vz - 1) ? S / 2 : B
+                };
+                voxelCoreMap.set(key, core);
+                return core;
+            });
+
+            voxels.forEach((val, key) => {
+                const [vx, vy, vz] = key.split(',').map(Number);
+                DIRS.forEach(D => {
+                    if (hasVoxel(vx + D.x, vy + D.y, vz + D.z)) return;
+                    let U = new THREE.Vector3();
+                    if (Math.abs(D.x) > 0.5) U.set(0, 1, 0); else if (Math.abs(D.y) > 0.5) U.set(0, 0, 1); else U.set(1, 0, 0);
+                    const V = new THREE.Vector3().crossVectors(D, U).round();
+
+                    const p1 = getFaceVertex(vx, vy, vz, D, U, V), p2 = getFaceVertex(vx, vy, vz, D, U.clone().negate(), V);
+                    const p3 = getFaceVertex(vx, vy, vz, D, U.clone().negate(), V.clone().negate()), p4 = getFaceVertex(vx, vy, vz, D, U, V.clone().negate());
+                    
+                    addPolygon(builder, [p1, p2, p3, p4], colFace, vx, vy, vz);
+
+                    [U, V, U.clone().negate(), V.clone().negate()].forEach(E => {
+                        const bE = hasVoxel(vx + E.x, vy + E.y, vz + E.z), bED = hasVoxel(vx + E.x + D.x, vy + E.y + D.y, vz + E.z + D.z);
+                        let isConcave = false;
+                        if (!bE) {} else if (bE && bED) isConcave = true; else return;
+
+                        let edgeKey = `${vx},${vy},${vz}_${D.x},${D.y},${D.z}`;
+                        let f2 = isConcave ? `${vx + E.x + D.x},${vy + E.y + D.y},${vz + E.z + D.z}_${-E.x},${-E.y},${-E.z}` : `${vx},${vy},${vz}_${E.x},${E.y},${E.z}`;
+                        edgeKey = [edgeKey, f2].sort().join('||');
+                        
+                        if (emittedEdges.has(edgeKey)) return;
+                        emittedEdges.add(edgeKey);
+
+                        const axis = new THREE.Vector3().crossVectors(D, E).round();
+                        const p1a = getFaceVertex(vx, vy, vz, D, E, axis), p1b = getFaceVertex(vx, vy, vz, D, E, axis.clone().negate());
+                        let p2a, p2b;
+                        if (!isConcave) {
+                            p2a = getFaceVertex(vx, vy, vz, E, D, axis.clone().negate()); p2b = getFaceVertex(vx, vy, vz, E, D, axis);
+                        } else {
+                            p2a = getFaceVertex(vx + E.x + D.x, vy + E.y + D.y, vz + E.z + D.z, E.clone().negate(), D.clone().negate(), axis.clone().negate());
+                            p2b = getFaceVertex(vx + E.x + D.x, vy + E.y + D.y, vz + E.z + D.z, E.clone().negate(), D.clone().negate(), axis);
+                        }
+                        
+                        if (p1a && p1b && p2a && p2b) {
+                            const segments = Math.pow(2, bevelDetail - 1);
+                            edgeConcaveMap.set(boundaryEdgeKey(p1a, p2b), isConcave);
+                            edgeConcaveMap.set(boundaryEdgeKey(p1b, p2a), isConcave);
+                            const isInvertedEdge = isConcave ? shapeInvertConfig.concaveEdge : shapeInvertConfig.edge;
+                            const currentEdgeCol = isConcave ? colConcaveEdge : colEdge;
+                            const edgePlane = new THREE.Plane().setFromCoplanarPoints(p1a, p2b, p1b);
+
+                            if (segments > 1 && explodeFactor === 0) {
+                                const profileA = [p1a];
+                                const profileB = [p1b];
+                                for (let i = 1; i < segments; i++) {
+                                    const t = i / segments;
+                                    const flatA = p1a.clone().lerp(p2b, t);
+                                    const flatB = p1b.clone().lerp(p2a, t);
+                                    const flatMid = flatA.clone().lerp(flatB, 0.5);
+                                    const projMid = projectToSDF(flatMid, voxelCores);
+                                    const offset = projMid.clone().sub(flatMid);
+                                    profileA.push(flatA.clone().add(offset));
+                                    profileB.push(flatB.clone().add(offset));
+                                }
+                                profileA.push(p2b);
+                                profileB.push(p2a);
+
+                                if (isInvertedEdge && edgePlane && edgePlane.normal.lengthSq() > 0.001) {
+                                    const reflect = (p) => {
+                                        const ref = new THREE.Vector3();
+                                        edgePlane.projectPoint(p, ref);
+                                        return ref.clone().multiplyScalar(2).sub(p);
+                                    };
+                                    for (let i = 0; i < profileA.length; i++) { profileA[i] = reflect(profileA[i]); profileB[i] = reflect(profileB[i]); }
+                                }
+
+                                for (let i = 1; i < segments; i++) {
+                                    builder.subdivVerts.push(profileA[i].x, profileA[i].y, profileA[i].z);
+                                    builder.subdivVerts.push(profileB[i].x, profileB[i].y, profileB[i].z);
+                                }
+
+                                cacheAllMidpoints(profileA, boundaryCache);
+                                cacheAllMidpoints(profileB, boundaryCache);
+
+                                for (let i = 0; i < segments; i++) {
+                                    addPolygon(builder, [profileA[i], profileB[i], profileB[i + 1], profileA[i + 1]], currentEdgeCol, vx, vy, vz);
+                                }
+                            } else {
+                                addPolygon(builder, [p1a, p1b, p2a, p2b], currentEdgeCol, vx, vy, vz);
+                            }
+                        }
+                    });
+                });
+            });
+
+            const corners = new Set();
+            voxels.forEach((val, key) => {
+                const [vx, vy, vz] = key.split(',').map(Number);
+                for (let dx of [-0.5, 0.5]) for (let dy of [-0.5, 0.5]) for (let dz of [-0.5, 0.5]) corners.add(`${vx+dx},${vy+dy},${vz+dz}`);
+            });
+
+            corners.forEach(cornerKey => {
+                const [cx, cy, cz] = cornerKey.split(',').map(Number), presentVoxels = [];
+                for (let dx of [-0.5, 0.5]) for (let dy of [-0.5, 0.5]) for (let dz of [-0.5, 0.5]) {
+                    const sx = Math.floor(cx + dx), sy = Math.floor(cy + dy), sz = Math.floor(cz + dz);
+                    if (hasVoxel(sx, sy, sz)) presentVoxels.push({ x: sx, y: sy, z: sz, key: `${sx},${sy},${sz}` });
+                }
+
+                const visited = new Set(), components = [];
+                presentVoxels.forEach(node => {
+                    if (visited.has(node.key)) return;
+                    const comp = [], queue = [node];
+                    visited.add(node.key);
+                    while (queue.length > 0) {
+                        const curr = queue.shift();
+                        comp.push(curr);
+                        presentVoxels.forEach(other => {
+                            if (!visited.has(other.key) && areConnected(curr, other, cx, cy, cz)) { visited.add(other.key); queue.push(other); }
+                        });
+                    }
+                    components.push(comp);
+                });
+
+                components.forEach(comp => {
+                    const uniqueCornerKey = `${cx},${cy},${cz}[${comp.map(v => v.key).sort().join('|')}]`;
+                    if (emittedCorners.has(uniqueCornerKey)) return;
+                    emittedCorners.add(uniqueCornerKey);
+
+                    const compCores = comp.map(m => voxelCoreMap.get(m.key));
+
+                    let cornerPts = [];
+                    comp.forEach(member => {
+                        const cD = new THREE.Vector3(Math.sign(cx - member.x), 0, 0), cU = new THREE.Vector3(0, Math.sign(cy - member.y), 0), cV = new THREE.Vector3(0, 0, Math.sign(cz - member.z));
+                        [[cD, cU, cV], [cU, cD, cV], [cV, cD, cU]].forEach(([nD, nU, nV]) => {
+                            const pt = getFaceVertex(member.x, member.y, member.z, nD, nU, nV);
+                            if (pt) {
+                                pt.voxel = member;
+                                pt.fc = new THREE.Vector3(member.x + nD.x*0.5, member.y + nD.y*0.5, member.z + nD.z*0.5);
+                                cornerPts.push(pt); 
+                            }
+                        });
+                    });
+
+                    if (cornerPts.length >= 3) {
+                        const uniquePts = [];
+                        for (let i = 0; i < cornerPts.length; i++) {
+                            let isDuplicate = false;
+                            for (let j = 0; j < uniquePts.length; j++) {
+                                if (cornerPts[i].distanceToSquared(uniquePts[j]) < 0.0001) { isDuplicate = true; break; }
+                            }
+                            if (!isDuplicate) uniquePts.push(cornerPts[i]);
+                        }
+                        cornerPts = uniquePts;
+                    }
+
+                    if (cornerPts.length >= 3) {
+                        let center = new THREE.Vector3();
+                        cornerPts.forEach(p => center.add(p));
+                        center.divideScalar(cornerPts.length);
+
+                        const voxelCentroid = new THREE.Vector3();
+                        comp.forEach(m => voxelCentroid.add(new THREE.Vector3(m.x, m.y, m.z).multiplyScalar(cubeSize)));
+                        voxelCentroid.multiplyScalar(1 / comp.length);
+
+                        let averageDir = new THREE.Vector3();
+                        cornerPts.forEach(p => averageDir.add(p.clone().sub(voxelCentroid)));
+                        averageDir.normalize();
+                        if (averageDir.lengthSq() < 0.001) averageDir = center.clone().sub(voxelCentroid).normalize();
+                        if (averageDir.lengthSq() < 0.001) averageDir.set(0, 1, 0);
+
+                        const up = Math.abs(averageDir.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+                        const right = new THREE.Vector3().crossVectors(up, averageDir).normalize();
+                        const forward = new THREE.Vector3().crossVectors(averageDir, right).normalize();
+
+                        cornerPts.sort((a, b) => {
+                            const va = a.clone().sub(center);
+                            const vb = b.clone().sub(center);
+                            return Math.atan2(va.dot(forward), va.dot(right)) - Math.atan2(vb.dot(forward), vb.dot(right));
+                        });
+
+                        if (cornerPts.length === 4) {
+                            let maxDist = -1, maxI = 0, maxJ = 1;
+                            for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) {
+                                const d = cornerPts[i].distanceTo(cornerPts[j]);
+                                if (d > maxDist) { maxDist = d; maxI = i; maxJ = j; }
+                            }
+                            const others = [0, 1, 2, 3].filter(k => k !== maxI && k !== maxJ);
+                            cornerPts = [cornerPts[others[0]], cornerPts[maxI], cornerPts[others[1]], cornerPts[maxJ]];
+                        }
+
+                        let hasDiag = false;
+                        for (let i = 0; i < comp.length; i++) {
+                            for (let j = i + 1; j < comp.length; j++) {
+                                if (getManhattanDist(comp[i], comp[j]) === 3) {
+                                    hasDiag = true;
+                                    break;
+                                }
+                            }
+                            if (hasDiag) break;
+                        }
+
+                        let isExtrusionCorner = false;
+                        if (hasDiag && comp.length === 5) {
+                            let maxNeighborsInCluster = 0;
+                            for (let i = 0; i < comp.length; i++) {
+                                let localNeighbors = 0;
+                                for (let j = 0; j < comp.length; j++) {
+                                    if (i !== j && getManhattanDist(comp[i], comp[j]) === 1) {
+                                        localNeighbors++;
+                                    }
+                                }
+                                if (localNeighbors > maxNeighborsInCluster) {
+                                    maxNeighborsInCluster = localNeighbors;
+                                }
+                            }
+                            if (maxNeighborsInCluster >= 3) {
+                                isExtrusionCorner = true;
+                            }
+                        }
+
+                        let activeCol;
+                        let activeKey = 'corner';
+                        if (hasDiag) {
+                            if (comp.length === 5) {
+                                if (isExtrusionCorner) { activeCol = colExtrusionCorner; activeKey = 'extrusionCorner'; } 
+                                else { activeCol = colComplexSaddle; activeKey = 'complexSaddle'; }
+                            } else if (comp.length === 4) { activeCol = colSaddleConcaveCorner; activeKey = 'saddleConcaveCorner'; } 
+                            else { activeCol = colConcaveCorner; activeKey = 'concaveCorner'; }
+                        } else {
+                            if (comp.length === 4) { activeCol = colThreeWay; activeKey = 'threeWay'; }
+                            else if (comp.length === 3) { activeCol = colInnerCorner; activeKey = 'innerCorner'; }
+                            else if (comp.length === 2) { activeCol = colCreaseCorner; activeKey = 'creaseCorner'; }
+                            else { activeCol = colCorner; activeKey = 'corner'; }
+                        }
+
+                        const isInverted = shapeInvertConfig[activeKey];
+                        const cornerSmoothK = (activeKey === 'complexSaddle') ? bevelRadius * 1.1 : 0;
+
+                        if (bevelDetail > 1 && explodeFactor === 0) {
+                            const subdivisionDepth = bevelDetail - 1;
+                            if (activeKey === 'corner' && cornerPts.length === 3) {
+                                const cornerMember = comp[0];
+                                const axisD = new THREE.Vector3(Math.sign(cx - cornerMember.x), 0, 0);
+                                const axisU = new THREE.Vector3(0, Math.sign(cy - cornerMember.y), 0);
+                                const axisV = new THREE.Vector3(0, 0, Math.sign(cz - cornerMember.z));
+                                const memberWorld = new THREE.Vector3(cornerMember.x, cornerMember.y, cornerMember.z).multiplyScalar(cubeSize);
+                                const Bshrunk = cubeSize / 2 - bevelRadius;
+                                const sphereCenter = memberWorld.clone()
+                                    .add(axisD.clone().multiplyScalar(Bshrunk))
+                                    .add(axisU.clone().multiplyScalar(Bshrunk))
+                                    .add(axisV.clone().multiplyScalar(Bshrunk));
+                                const gridN = Math.pow(2, Math.max(0, subdivisionDepth - 1)) + 1;
+                                const dPt = getFaceVertex(cornerMember.x, cornerMember.y, cornerMember.z, axisD, axisU, axisV);
+                                const uPt = getFaceVertex(cornerMember.x, cornerMember.y, cornerMember.z, axisU, axisD, axisV);
+                                const vPt = getFaceVertex(cornerMember.x, cornerMember.y, cornerMember.z, axisV, axisD, axisU);
+                                buildSpherifiedCornerCap(builder, sphereCenter, bevelRadius, axisD, axisU, axisV, gridN, activeCol, cornerMember.x, cornerMember.y, cornerMember.z, averageDir, boundaryCache, compCores, cornerSmoothK, dPt, uPt, vPt);
+                            } else if (activeKey === 'innerCorner' || activeKey === 'extrusionCorner' || cornerPts.length >= 5) {
+                                const projCenterN = center.clone();
+                                const n = cornerPts.length;
+                                const bcMidN = [];
+                                for (let i = 0; i < n; i++) {
+                                    const A = cornerPts[i], B = cornerPts[(i + 1) % n];
+                                    const cachedMid = boundaryCache.get(boundaryEdgeKey(A, B));
+                                    const mid = cachedMid || A.clone().add(B).multiplyScalar(0.5);
+                                    bcMidN.push(mid);
+                                }
+                                for (let i = 0; i < n; i++) {
+                                    const bcPrev = bcMidN[(i - 1 + n) % n];
+                                    const bcNext = bcMidN[i];
+                                    addPolygon(builder, [bcPrev, cornerPts[i], bcNext, projCenterN], activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir);
+                                }
+                            } else if (cornerPts.length === 3) {
+                                const plane = new THREE.Plane().setFromCoplanarPoints(cornerPts[0], cornerPts[1], cornerPts[2]);
+                                subdivideTriangle(cornerPts[0], cornerPts[1], cornerPts[2], subdivisionDepth, builder, activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir, compCores, plane, isInverted, boundaryCache, undefined, cornerSmoothK);
+                            } else if (cornerPts.length === 4) {
+                                const sharedPlane4 = new THREE.Plane().setFromNormalAndCoplanarPoint(averageDir.clone(), center);
+                                subdivideTriangle(cornerPts[0], cornerPts[1], cornerPts[2], subdivisionDepth, builder, activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir, compCores, sharedPlane4, isInverted, boundaryCache, undefined, cornerSmoothK);
+                                subdivideTriangle(cornerPts[0], cornerPts[2], cornerPts[3], subdivisionDepth, builder, activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir, compCores, sharedPlane4, isInverted, boundaryCache, undefined, cornerSmoothK);
+                            }
+                        } else {
+                            if (cornerPts.length === 3) {
+                                addPolygon(builder, [cornerPts[0], cornerPts[1], cornerPts[2]], activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir);
+                            } else if (cornerPts.length === 4) {
+                                addPolygon(builder, [cornerPts[0], cornerPts[1], cornerPts[2], cornerPts[3]], activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir);
+                            } else {
+                                const projCenter = center.clone();
+                                for (let i = 0; i < cornerPts.length; i++) {
+                                    addPolygon(builder, [projCenter, cornerPts[i], cornerPts[(i + 1) % cornerPts.length]], activeCol, comp[0].x, comp[0].y, comp[0].z, averageDir);
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+
+            triangleToVoxel = builder.triangleToVoxel;
+            updateStats(voxels.size, builder.indices.length / 3);
+
+            originalVertexPositions = new Map();
+            const vertCountForOverride = builder.vertices.length / 3;
+            for (let i = 0; i < vertCountForOverride; i++) {
+                const ox = builder.vertices[i * 3], oy = builder.vertices[i * 3 + 1], oz = builder.vertices[i * 3 + 2];
+                const key = vertKey(ox, oy, oz);
+                if (!originalVertexPositions.has(key)) originalVertexPositions.set(key, { x: ox, y: oy, z: oz });
+                const ov = vertexOverrides.get(key) || autoVertexOverrides.get(key);
+                if (ov) {
+                    builder.vertices[i * 3] = ov.x;
+                    builder.vertices[i * 3 + 1] = ov.y;
+                    builder.vertices[i * 3 + 2] = ov.z;
+                }
+            }
+
+            if (vertexOverrides.size > 0 || autoVertexOverrides.size > 0) {
+                const wireVertCount = builder.wireVerts.length / 3;
+                for (let i = 0; i < wireVertCount; i++) {
+                    const ox = builder.wireVerts[i * 3], oy = builder.wireVerts[i * 3 + 1], oz = builder.wireVerts[i * 3 + 2];
+                    const key = vertKey(ox, oy, oz);
+                    const ov = vertexOverrides.get(key) || autoVertexOverrides.get(key);
+                    if (ov) {
+                        builder.wireVerts[i * 3] = ov.x;
+                        builder.wireVerts[i * 3 + 1] = ov.y;
+                        builder.wireVerts[i * 3 + 2] = ov.z;
+                    }
+                }
+            }
+
+            if (editVertexMode) {
+                const pickPositions = [], pickKeys = [];
+                originalVertexPositions.forEach((rawPos, key) => {
+                    const ov = vertexOverrides.get(key) || autoVertexOverrides.get(key);
+                    const p = ov || rawPos;
+                    pickPositions.push(p.x, p.y, p.z);
+                    pickKeys.push(key);
+                });
+                const pickGeo = new THREE.BufferGeometry();
+                pickGeo.setAttribute('position', new THREE.Float32BufferAttribute(pickPositions, 3));
+                vertexPickMesh = new THREE.Points(pickGeo, new THREE.PointsMaterial({ size: 7, sizeAttenuation: false, color: 0xffaa00, transparent: true, opacity: 0.85, depthTest: false }));
+                vertexPickMesh.renderOrder = 998;
+                vertexPickMesh.userData.keys = pickKeys;
+                assemblyGroup.add(vertexPickMesh);
+
+                if (selectedVertexKeys.size > 0) {
+                    const selPositions = [];
+                    selectedVertexKeys.forEach(key => {
+                        const raw = getBasePos(key);
+                        if (!raw) return;
+                        const p = vertexOverrides.get(key) || raw;
+                        selPositions.push(p.x, p.y, p.z);
+                    });
+                    if (selPositions.length > 0) {
+                        const selGeo = new THREE.BufferGeometry();
+                        selGeo.setAttribute('position', new THREE.Float32BufferAttribute(selPositions, 3));
+                        vertexHighlightMesh = new THREE.Points(selGeo, new THREE.PointsMaterial({ size: 10, sizeAttenuation: false, color: 0xff2255, transparent: true, opacity: 1, depthTest: false }));
+                        vertexHighlightMesh.renderOrder = 999;
+                        assemblyGroup.add(vertexHighlightMesh);
+                    }
+                }
+            }
+
+            if (builder.vertices.length > 0) {
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.Float32BufferAttribute(builder.vertices, 3));
+
+                if (bevelDetail === 1) {
+                    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(builder.normals, 3));
+                } else {
+                    const vertCount = builder.vertices.length / 3;
+                    const posKey = (i) => `${builder.vertices[i*3].toFixed(2)},${builder.vertices[i*3+1].toFixed(2)},${builder.vertices[i*3+2].toFixed(2)}`;
+                    const posGroups = new Map();
+                    for (let i = 0; i < vertCount; i++) {
+                        const key = posKey(i);
+                        let list = posGroups.get(key);
+                        if (!list) { list = []; posGroups.set(key, list); }
+                        list.push(i);
+                    }
+                    const smoothThreshold = Math.cos(88 * Math.PI / 180);
+                    const smoothNormals = new Float32Array(builder.normals.length);
+                    posGroups.forEach(indices => {
+                        for (const i of indices) {
+                            const nx0 = builder.normals[i*3], ny0 = builder.normals[i*3+1], nz0 = builder.normals[i*3+2];
+                            let sx = 0, sy = 0, sz = 0;
+                            for (const j of indices) {
+                                const nx1 = builder.normals[j*3], ny1 = builder.normals[j*3+1], nz1 = builder.normals[j*3+2];
+                                if (nx0*nx1 + ny0*ny1 + nz0*nz1 >= smoothThreshold) { sx += nx1; sy += ny1; sz += nz1; }
+                            }
+                            const len = Math.sqrt(sx*sx + sy*sy + sz*sz) || 1;
+                            smoothNormals[i*3] = sx / len; smoothNormals[i*3+1] = sy / len; smoothNormals[i*3+2] = sz / len;
+                        }
+                    });
+                    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(smoothNormals, 3));
+                }
+
+                geometry.setAttribute('color', new THREE.Float32BufferAttribute(builder.colors, 3));
+                geometry.setIndex(builder.indices);
+
+                mainMesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+                    vertexColors: true,
+                    side: THREE.DoubleSide,
+                    flatShading: bevelDetail === 1,
+                    roughness: 0.8,
+                    metalness: 0.0,
+                    polygonOffset: true,
+                    polygonOffsetFactor: 1,
+                    polygonOffsetUnits: 1
+                }));
+                mainMesh.castShadow = true; mainMesh.receiveShadow = true;
+                assemblyGroup.add(mainMesh);
+                if (showWireframe && builder.wireVerts.length > 0) {
+                    const wireGeo = new THREE.BufferGeometry();
+                    wireGeo.setAttribute('position', new THREE.Float32BufferAttribute(builder.wireVerts, 3));
+                    wireMesh = new THREE.LineSegments(wireGeo, new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
+                    wireMesh.renderOrder = 1;
+                    assemblyGroup.add(wireMesh);
+                }
+                if (showSubdivVertices && builder.subdivVerts.length > 0) {
+                    const subdivGeo = new THREE.BufferGeometry();
+                    subdivGeo.setAttribute('position', new THREE.Float32BufferAttribute(builder.subdivVerts, 3));
+                    subdivVertexMesh = new THREE.Points(subdivGeo, new THREE.PointsMaterial({ color: 0xff00ff, size: 0.09, sizeAttenuation: true, depthTest: false }));
+                    subdivVertexMesh.renderOrder = 999;
+                    assemblyGroup.add(subdivVertexMesh);
+                }
+            }
+
+            updateGizmoAnchor();
+        }
+
+        function updateStats(vc, tc) {
+            elStatVoxels.textContent = vc; elStatTris.textContent = tc;
+            if (tc < 1000) { elPerfTier.textContent = 'STABLE (LIGHT)'; elPerfTier.className = 'text-[7.5px] bg-emerald-950/80 text-emerald-400 px-1 rounded font-bold border border-emerald-500/20'; } 
+            else if (tc < 15000) { elPerfTier.textContent = 'STABLE (BALANCED)'; elPerfTier.className = 'text-[7.5px] bg-sky-950/80 text-sky-400 px-1 rounded font-bold border border-sky-500/20'; } 
+            else { elPerfTier.textContent = 'COMPLEX'; elPerfTier.className = 'text-[7.5px] bg-amber-950/80 text-amber-400 px-1 rounded font-bold border border-amber-500/20'; }
+        }
+
+        const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+        function getRaycastResult(event) {
+            if (event.target.closest('aside') || event.target.closest('button') || event.target.closest('#json-modal') || event.target.closest('header')) return null;
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1; mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            if (!mainMesh) {
+                const intersectionPoint = new THREE.Vector3();
+                if (raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 1), intersectionPoint)) {
+                    const gx = Math.round(intersectionPoint.x / cubeSize), gz = Math.round(intersectionPoint.z / cubeSize);
+                    if (Math.abs(gx) < 8 && Math.abs(gz) < 8) return { voxel: { x: gx, y: 0, z: gz }, normal: new THREE.Vector3(0, 0, 0), isBasePlane: true };
+                }
+                return null;
+            }
+
+            const intersects = raycaster.intersectObject(mainMesh);
+            if (intersects.length > 0) {
+                const hit = intersects[0], voxelCoord = triangleToVoxel[hit.faceIndex];
+                if (voxelCoord) {
+                    const worldNormal = hit.face.normal.clone();
+                    if (explodeFactor > 0) worldNormal.copy(DIRS.slice().sort((a, b) => b.dot(worldNormal) - a.dot(worldNormal))[0]);
+                    return { voxel: voxelCoord, normal: new THREE.Vector3(Math.round(worldNormal.x), Math.round(worldNormal.y), Math.round(worldNormal.z)), isBasePlane: false };
+                }
+            }
+            return null;
+        }
+
+        window.addEventListener('pointermove', e => {
+            if (editVertexMode) { guideMesh.visible = false; return; }
+            const hitResult = getRaycastResult(e);
+            if (hitResult && currentTool === 'add') {
+                guideMesh.position.set((hitResult.isBasePlane ? hitResult.voxel.x : hitResult.voxel.x + hitResult.normal.x) * cubeSize, (hitResult.isBasePlane ? hitResult.voxel.y : hitResult.voxel.y + hitResult.normal.y) * cubeSize, (hitResult.isBasePlane ? hitResult.voxel.z : hitResult.voxel.z + hitResult.normal.z) * cubeSize);
+                guideMesh.visible = true;
+            } else if (hitResult && currentTool === 'remove' && !hitResult.isBasePlane) {
+                guideMesh.position.set(hitResult.voxel.x * cubeSize, hitResult.voxel.y * cubeSize, hitResult.voxel.z * cubeSize);
+                guideMesh.visible = true;
+            } else { guideMesh.visible = false; }
+        });
+
+        let ptrDown = { x: 0, y: 0, t: 0 };
+        window.addEventListener('pointerdown', e => { ptrDown = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+        window.addEventListener('pointerup', e => {
+            if (suppressNextVertexClick) { suppressNextVertexClick = false; return; }
+            if (e.target.closest('aside') || e.target.closest('button') || e.target.closest('#json-modal') || e.target.closest('header')) return;
+            if (Math.sqrt(Math.pow(e.clientX - ptrDown.x, 2) + Math.pow(e.clientY - ptrDown.y, 2)) < 6 && Date.now() - ptrDown.t < 300) {
+                if (editVertexMode) { handleVertexPick(e); return; }
+                const hitResult = getRaycastResult(e);
+                if (hitResult) {
+                    if (currentTool === 'add') voxels.set(`${hitResult.isBasePlane ? hitResult.voxel.x : hitResult.voxel.x + hitResult.normal.x},${hitResult.isBasePlane ? hitResult.voxel.y : hitResult.voxel.y + hitResult.normal.y},${hitResult.isBasePlane ? hitResult.voxel.z : hitResult.voxel.z + hitResult.normal.z}`, true);
+                    else if (!hitResult.isBasePlane) voxels.delete(`${hitResult.voxel.x},${hitResult.voxel.y},${hitResult.voxel.z}`);
+                    if (vertexOverrides.size > 0) { vertexOverrides.clear(); selectedVertexKeys.clear(); updateVertexEditUI(); }
+                    rebuildAssembly(); guideMesh.visible = false;
+                }
+            }
+        });
+
+        function handleVertexPick(e) {
+            if (!vertexPickMesh) return;
+            const rect = renderer.domElement.getBoundingClientRect();
+            const positions = vertexPickMesh.geometry.attributes.position.array;
+            const keys = vertexPickMesh.userData.keys;
+            const pxThreshold = 18;
+            const proj = new THREE.Vector3();
+            let bestDist = Infinity, bestIdx = -1;
+            for (let i = 0; i < keys.length; i++) {
+                proj.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                proj.project(camera);
+                if (proj.z < -1 || proj.z > 1) continue;
+                const sx = (proj.x + 1) / 2 * rect.width + rect.left;
+                const sy = (1 - proj.y) / 2 * rect.height + rect.top;
+                const d = Math.hypot(sx - e.clientX, sy - e.clientY);
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            if (bestIdx !== -1 && bestDist <= pxThreshold) {
+                const key = keys[bestIdx];
+                if (selectedVertexKeys.has(key)) selectedVertexKeys.delete(key);
+                else selectedVertexKeys.add(key);
+                updateVertexEditUI();
+                rebuildAssembly();
+            }
+        }
+
+        function updateVertexEditUI() {
+            document.getElementById('vertex-edit-count').textContent = selectedVertexKeys.size + ' selected';
+        }
+
+        function nudgeSelected(dx, dy, dz) {
+            const step = parseFloat(document.getElementById('vertex-step').value) || 0.01;
+            selectedVertexKeys.forEach(key => {
+                const raw = getBasePos(key);
+                if (!raw) return;
+                const curr = vertexOverrides.get(key) || raw;
+                vertexOverrides.set(key, { x: curr.x + dx * step, y: curr.y + dy * step, z: curr.z + dz * step });
+            });
+            rebuildAssembly();
+        }
+
+        function copyVertexSelection() {
+            const data = Array.from(selectedVertexKeys).map(key => {
+                const raw = getBasePos(key);
+                const curr = vertexOverrides.get(key) || raw;
+                return {
+                    original: raw ? [raw.x, raw.y, raw.z] : null,
+                    current: curr ? [curr.x, curr.y, curr.z] : null
+                };
+            });
+            const text = JSON.stringify(data, null, 2);
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            showToast('Vertex selection copied!');
+        }
+
+        function symmetrizeSelection() {
+            const validKeys = [], origs = [], currs = [];
+            selectedVertexKeys.forEach(key => {
+                const raw = getBasePos(key);
+                if (!raw) return;
+                validKeys.push(key);
+                origs.push(new THREE.Vector3(raw.x, raw.y, raw.z));
+                const curr = vertexOverrides.get(key) || raw;
+                currs.push(new THREE.Vector3(curr.x, curr.y, curr.z));
+            });
+            if (validKeys.length < 2) { showToast('Select at least 2 points to symmetrize.'); return; }
+
+            const plane = detectMirrorPlane(origs);
+            if (!plane) { showToast('No clear mirror symmetry detected in this selection.'); return; }
+
+            const symmetrized = applyMirrorPlane(currs, plane);
+            validKeys.forEach((key, i) => {
+                vertexOverrides.set(key, { x: symmetrized[i].x, y: symmetrized[i].y, z: symmetrized[i].z });
+            });
+
+            rebuildAssembly();
+            showToast('Selection symmetrized!');
+        }
+
+        function alignFirstToSecond(axis) {
+            const keys = Array.from(selectedVertexKeys);
+            if (keys.length !== 2) { showToast('Select exactly 2 points (in order) to align.'); return; }
+            const [keyA, keyB] = keys;
+            const rawA = getBasePos(keyA), rawB = getBasePos(keyB);
+            if (!rawA || !rawB) return;
+            const currA = vertexOverrides.get(keyA) || rawA;
+            const currB = vertexOverrides.get(keyB) || rawB;
+            const updated = { x: currA.x, y: currA.y, z: currA.z };
+            if (axis === 'all') {
+                updated.x = currB.x; updated.y = currB.y; updated.z = currB.z;
+            } else {
+                updated[axis] = currB[axis];
+            }
+            vertexOverrides.set(keyA, updated);
+            rebuildAssembly();
+            showToast('1st vertex aligned to 2nd (' + axis.toUpperCase() + ').');
+        }
+
+        function clearVertexSelection() {
+            selectedVertexKeys.clear();
+            updateVertexEditUI();
+            rebuildAssembly();
+        }
+
+        function resetVertexOverrides() {
+            vertexOverrides.clear();
+            selectedVertexKeys.clear();
+            updateVertexEditUI();
+            rebuildAssembly();
+            showToast('Vertex overrides reset!');
+        }
+
+        document.getElementById('btn-edit-mode').addEventListener('click', () => {
+            editVertexMode = !editVertexMode;
+            const btn = document.getElementById('btn-edit-mode');
+            btn.textContent = 'Edit Mode: ' + (editVertexMode ? 'ON' : 'OFF');
+            btn.className = editVertexMode
+                ? 'w-full py-1.5 px-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-[9.5px] font-bold border border-amber-400/40'
+                : 'w-full py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[9.5px] font-bold border border-slate-700/40';
+
+            [toolAddBtn, toolRemoveBtn].forEach(b => {
+                b.disabled = editVertexMode;
+                b.classList.toggle('opacity-40', editVertexMode);
+                b.classList.toggle('pointer-events-none', editVertexMode);
+                b.classList.toggle('cursor-not-allowed', editVertexMode);
+            });
+            if (editVertexMode) guideMesh.visible = false;
+
+            rebuildAssembly();
+        });
+
+        function recenterCamera() {
+            controls.reset();
+            if (voxels.size > 0) {
+                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+                voxels.forEach((val, key) => { const [x, y, z] = key.split(',').map(Number); minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); });
+                const cx = (minX + maxX) / 2 * cubeSize, cy = (minY + maxY) / 2 * cubeSize, cz = (minZ + maxZ) / 2 * cubeSize;
+                controls.target.set(cx, cy, cz); camera.position.set(cx + 6, cy + 6, cz + 8);
+            } else { camera.position.set(5, 5, 7); controls.target.set(-0.5, 0.5, 0.5); }
+        }
+
+        function loadStructuralPreset(presetKey) {
+            voxels.clear();
+            if (presetKey === 'arch') { for (let x = -2; x <= 2; x++) voxels.set(`${x},2,0`, true); ['-2,0,0', '-2,1,0', '2,0,0', '2,1,0'].forEach(k => voxels.set(k, true)); } 
+            else if (presetKey === 'ring') { for (let t = 0; t < Math.PI * 2; t += Math.PI / 6) voxels.set(`${Math.round(Math.cos(t) * 2.5)},0,${Math.round(Math.sin(t) * 2.5)}`, true); } 
+            else if (presetKey === 'helix') { for (let y = -2; y <= 3; y++) { [y*0.8, y*0.8+Math.PI].forEach(t => { const x = Math.round(Math.cos(t)*1.5), z = Math.round(Math.sin(t)*1.5); voxels.set(`${x},${y},${z}`, true); voxels.set(`${x},${y-1},${z}`, true); }); } } 
+            else if (presetKey === 'sphere') { for (let x = -2; x <= 2; x++) for (let y = -2; y <= 2; y++) for (let z = -2; z <= 2; z++) if (Math.sqrt(x*x+y*y+z*z) <= 2.1) voxels.set(`${x},${y},${z}`, true); } 
+            else if (presetKey === 'ship') { ['0,0,3','0,0,2','0,0,1','0,0,0','0,0,-1','1,0,1','-1,0,1','2,0,0','-2,0,0','3,-1,-1','-3,-1,-1','0,1,-1','0,2,-1'].forEach(k => voxels.set(k, true)); }
+            rebuildAssembly(); recenterCamera(); showToast(`${presetKey.toUpperCase()} preset loaded!`);
+        }
+
+        function toggleJsonModal(show) {
+            const modal = document.getElementById('json-modal');
+            if (show) { 
+                const voxelList = Array.from(voxels.keys()).map(k => k.split(',').map(Number));
+                const formattedVoxels = voxelList.length === 0 ? "[]" : "[\n    " + voxelList.map(v => `[${v.join(', ')}]`).join(',\n    ') + "\n  ]";
+                const jsonStr = `{\n  "metadata": {\n    "author": "RoundCube Pro User",\n    "version": "2.1"\n  },\n  "bevelRadius": ${bevelRadius},\n  "voxels": ${formattedVoxels}\n}`;
+                document.getElementById('json-textarea').value = jsonStr;
+                modal.classList.remove('hidden'); 
+            } 
+            else { modal.classList.add('hidden'); }
+        }
+
+        function copyBlueprintCode() { document.getElementById('json-textarea').select(); document.execCommand('copy'); showToast("Blueprint copied to clipboard!"); }
+        
+        function loadBlueprintCode() {
+            try {
+                const parsed = JSON.parse(document.getElementById('json-textarea').value);
+                if (parsed && Array.isArray(parsed.voxels)) {
+                    voxels.clear(); parsed.voxels.forEach(([x, y, z]) => voxels.set(`${x},${y},${z}`, true));
+                    if (typeof parsed.bevelRadius === 'number') { bevelRadius = parsed.bevelRadius; document.getElementById('radius-slider').value = bevelRadius; elRadiusVal.textContent = bevelRadius.toFixed(2); }
+                    rebuildAssembly(); toggleJsonModal(false); showToast("Blueprint imported successfully!");
+                } else showToast('Invalid JSON.', 'error');
+            } catch(e) { showToast('Parsing failed.', 'error'); }
+        }
+
+        // Exports the built shape as a .glb for the game to load as level
+        // geometry. Only the assembled mesh goes out - the wireframe, the
+        // guide cube and the vertex-edit point clouds are editor furniture and
+        // would arrive as stray geometry in the level.
+        //
+        // Vertex colours ride along in the COLOR_0 attribute, which is what
+        // the game's triplanar shader uses to tell one authored region from
+        // another (see applyTriplanarGrass's vertexMask).
+        document.getElementById('btn-glb').addEventListener('click', () => {
+            if (!mainMesh) { showToast('Nothing to export.', 'error'); return; }
+            if (typeof THREE.GLTFExporter === 'undefined') {
+                showToast('GLTFExporter did not load.', 'error');
+                return;
+            }
+            // A fresh mesh rather than the live one: the exporter walks the
+            // object it is given, and mainMesh sits in assemblyGroup alongside
+            // everything above. Cloning the geometry by reference is enough -
+            // nothing here mutates it.
+            const out = new THREE.Mesh(mainMesh.geometry, new THREE.MeshStandardMaterial({
+                vertexColors: true,
+                // DoubleSide, matching the editor preview. Front-side was
+                // the obvious choice and it was wrong: Mesh.raycast honours
+                // material.side, so any triangle whose winding came out
+                // reversed becomes invisible to every ray in the game and the
+                // player drops through the floor. The editor never shows that
+                // because it previews double-sided.
+                side: THREE.DoubleSide,
+                roughness: 1.0, metalness: 0.0,
+            }));
+            out.name = 'VoxelLevel';
+            new THREE.GLTFExporter().parse(out, (result) => {
+                const blob = new Blob([result], { type: 'model/gltf-binary' });
+                const a = document.createElement('a');
+                a.download = `voxel-level-${Date.now()}.glb`;
+                a.href = URL.createObjectURL(blob);
+                a.click();
+                URL.revokeObjectURL(a.href);
+                showToast('GLB exported - drop it in ProjectFiles/VoxelLevels/');
+            }, { binary: true });
+        });
+
+        document.getElementById('btn-snapshot').addEventListener('click', () => {
+            const f = document.getElementById('flash-overlay'); f.classList.remove('opacity-0'); f.classList.add('opacity-100'); setTimeout(() => { f.classList.remove('opacity-100'); f.classList.add('opacity-0'); }, 150);
+            guideMesh.visible = false; renderer.render(scene, camera);
+            const l = document.createElement('a'); l.download = `roundcube-voxel-creation-${Date.now()}.png`; l.href = renderer.domElement.toDataURL('image/png'); l.click();
+            showToast("Snapshot saved successfully!");
+        });
+
+        toolAddBtn.addEventListener('click', () => { currentTool = 'add'; toolAddBtn.className = 'py-2 px-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-[10px] font-bold transition-all border border-sky-400/30 flex items-center justify-center gap-1.5 shadow-lg shadow-sky-600/20'; toolRemoveBtn.className = 'py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold transition-all border border-slate-700/50 flex items-center justify-center gap-1.5'; guideMat.color.setHex(0x38bdf8); guideEdges.material.color.setHex(0x38bdf8); });
+        toolRemoveBtn.addEventListener('click', () => { currentTool = 'remove'; toolRemoveBtn.className = 'py-2 px-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-[10px] font-bold transition-all border border-rose-400/30 flex items-center justify-center gap-1.5 shadow-lg shadow-rose-600/20'; toolAddBtn.className = 'py-2 px-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold transition-all border border-slate-700/50 flex items-center justify-center gap-1.5'; guideMat.color.setHex(0xf43f5e); guideEdges.material.color.setHex(0xf43f5e); });
+
+        document.getElementById('radius-slider').addEventListener('input', e => { bevelRadius = parseFloat(e.target.value); elRadiusVal.textContent = bevelRadius.toFixed(2); if (vertexOverrides.size > 0) { vertexOverrides.clear(); selectedVertexKeys.clear(); updateVertexEditUI(); } rebuildAssembly(); });
+        document.getElementById('explode-slider').addEventListener('input', e => { explodeFactor = parseFloat(e.target.value); elExplodeVal.textContent = explodeFactor.toFixed(2); rebuildAssembly(); });
+        document.getElementById('detail-slider').addEventListener('input', e => {
+            bevelDetail = parseInt(e.target.value);
+            const detailLabels = ["1 (Low)", "2 (Medium)", "3 (High)"];
+            elDetailVal.textContent = detailLabels[bevelDetail - 1];
+            if (vertexOverrides.size > 0) { vertexOverrides.clear(); selectedVertexKeys.clear(); updateVertexEditUI(); showToast('Bevel detail changed — vertex overrides cleared.'); }
+            rebuildAssembly();
+        });
+        document.getElementById('color-mode-toggle').addEventListener('change', e => { colorByModularType = e.target.checked; rebuildAssembly(); });
+        document.getElementById('wireframe-mode-toggle').addEventListener('change', e => { showWireframe = e.target.checked; rebuildAssembly(); });
+        document.getElementById('grid-mode-toggle').addEventListener('change', e => { gridHelper.visible = e.target.checked; });
+        document.getElementById('subdiv-vertex-toggle').addEventListener('change', e => { showSubdivVertices = e.target.checked; rebuildAssembly(); });
+        document.getElementById('btn-undo').addEventListener('click', () => { voxels.clear(); vertexOverrides.clear(); selectedVertexKeys.clear(); updateVertexEditUI(); rebuildAssembly(); guideMesh.visible = false; showToast("Scene cleared!"); });
+        document.getElementById('btn-code').addEventListener('click', () => toggleJsonModal(true));
+        
+        window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+
+        function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
+        window.onload = function() {
+            voxels.set('1,0,1', true);
+            voxels.set('0,0,1', true);
+            voxels.set('0,0,2', true);
+            voxels.set('1,1,1', true);
+            voxels.set('0,1,2', true);
+            bevelRadius = 0.35;
+            document.getElementById('radius-slider').value = 0.35;
+            elRadiusVal.textContent = "0.35";
+            rebuildAssembly(); recenterCamera(); animate(); showToast("Default structure loaded!");
+        };
+    </script>
+</body>
+</html>
