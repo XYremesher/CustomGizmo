@@ -3468,7 +3468,13 @@ export function startGame(CharacterClass) {
     // Retaliation is near-certain rather than a coin flip - at 0.5 they were
     // shrugging off half the hits they took, which read as not noticing.
     const COMPANION_SPECS = [
-        { key: 'CompBlue', id: 'companion', retaliateChance: 0.85, punchCount: 2, sideOffset: 0 },
+        // fullCombo, like the pale one: it is the companion you spend the
+        // whole level with, and the move it TAUGHT you is the one it should be
+        // seen throwing. Costs no extra damage - COMP_PUNCH_TOTAL_POISE is
+        // split across however many hits the string has, so this is a longer,
+        // better-looking attack rather than a stronger one.
+        { key: 'CompBlue', id: 'companion', retaliateChance: 0.85,
+          punchCount: 3, fullCombo: true, sideOffset: 0 },
         // Between the blue companion and the grey player - a paler, washed-out
         // blue, so the two read as a pair rather than as unrelated characters.
         { key: 'CompPale', id: 'companion-2', color: 0xa1c3ee,
@@ -5685,19 +5691,14 @@ export function startGame(CharacterClass) {
         if (currentLevel !== 'local_forest') return;
         const gz = forestSlabHalf();
         const topY = forestFrameTopY();
-        // The bridge first - the gate stands ON it.
-        if (bridgeScene) {
-            if (_forestBridge && _forestBridge.parent) _forestBridge.parent.remove(_forestBridge);
-            _forestBridge = bridgeScene.clone(true);
-            // Stretched along x to span the corridor's opening with a little
-            // to spare, so both ends rest on wall rather than on air.
-            const span = (FOREST_ENTRY_W + FOREST_BORDER_BLOCK) / BRIDGE_SRC_LEN;
-            _forestBridge.scale.set(span, 1, 1);
-            _forestBridge.position.set(FOREST_EXIT_X, topY, gz);
-            _forestBridge.updateMatrixWorld(true);
-            levelGroup.add(_forestBridge);
-            // Walkable - this one IS collision, unlike the gate.
-            _forestBridge.traverse(o => { if (o.isMesh) collidables.push(o); });
+        // No bridge any more. It existed to carry the gate across the hole
+        // the corridor cuts in the frame wall - but the landing now runs from
+        // z 52 straight out to 78, right through that opening, so the bridge
+        // was an extra mesh buried inside a floor that already spanned the
+        // gap. Dropping it removes the object and its collidables with it.
+        if (_forestBridge && _forestBridge.parent) {
+            _forestBridge.parent.remove(_forestBridge);
+            _forestBridge = null;
         }
         if (!levelExitScene) return;
         if (_forestExitGate && _forestExitGate.parent) _forestExitGate.parent.remove(_forestExitGate);
@@ -7497,7 +7498,7 @@ export function startGame(CharacterClass) {
         // line would be worse than useless if it named a colour that was not
         // actually there.
         { text: 'Take mine. Its yellow end always turns toward wherever you need to go.', icon: 'compass' },
-        { text: 'Walk the way the yellow points, and you will not lose your way.', icon: 'compass' },
+        { text: 'Walk the way the yellow points, and you will not lose your way. Turn until it lines up ahead of you.', icon: 'compass' },
         { text: 'If you can find him, could you bring him back to the village?', icon: null },
         { text: 'Please, please bring him back.', icon: null },
     ];
@@ -8624,6 +8625,7 @@ export function startGame(CharacterClass) {
         storyDemoT = 0;
         storyTestFrom = 0;
         storyFightBot = null;
+        storyFightT = 0;
         _forestTopReached = false;
         coachStep = -1;
         coachT = 0;
@@ -8723,6 +8725,22 @@ export function startGame(CharacterClass) {
         deck.updateMatrixWorld(true);
         levelGroup.add(deck);
         collidables.push(deck);
+        // ...and a way up that does not depend on treetop-to-treetop jumps.
+        // The trees ring it for the look, but their climbable height is
+        // whatever their collider happens to be, and the gaps between them
+        // turned out to be further than a jump - so the platform was simply
+        // unreachable. These are three blocks stepping up its south side, each
+        // a 3.0 rise like every other climb in the level.
+        const stepN = Math.max(1, Math.round(FOREST_CANOPY_Y / 3.0));
+        for (let i = 0; i < stepN; i++) {
+            const h = Math.min(FOREST_CANOPY_Y, (i + 1) * 3.0);
+            const b = new THREE.Mesh(new THREE.BoxGeometry(3.0, h, 3.0), mat);
+            b.position.set(c.x, h * 0.5, c.z - FOREST_CANOPY_R - (stepN - i) * 3.0 + 1.5);
+            b.castShadow = true; b.receiveShadow = true;
+            b.updateMatrixWorld(true);
+            levelGroup.add(b);
+            collidables.push(b);
+        }
         return c;
     }
 
@@ -8757,8 +8775,11 @@ export function startGame(CharacterClass) {
             put(FOREST_STEP_SIZE, h, FOREST_STEP_SIZE, forestStepX(),
                 FOREST_PLATFORM_Z0 - (steps - i) * FOREST_STEP_SIZE);
         }
-        // The jars, 3x3 on the landing - one of them holds the star key.
-        spawnForestJars(forestStepX() - 1.3, top, pz - 1.3);
+        // Laid out in front of where the carry teacher stands, not merely
+        // somewhere on the landing - the lesson is "grab one of these", and
+        // that only reads if they are the thing you are looking at while it
+        // is said.
+        spawnForestJars(FOREST_EXIT_X + 1.4, top, pz - 1.0);
     }
 
     function storySpawnNpcAt(id, color, x, y, z) {
@@ -8775,18 +8796,26 @@ export function startGame(CharacterClass) {
     // still get its jars - the forest is usually built long before that model
     // arrives, which is why the landing was bare.
     let _pendingForestJars = null;
+    const FOREST_JAR_COLS = 3, FOREST_JAR_ROWS = 2;   // 6, in front of the teacher
     function spawnForestJars(x, y, z) {
         if (!jarTemplate) { _pendingForestJars = { x, y, z }; return; }
-        for (let i = 0; i < 9; i++) {
-            const r = Math.floor(i / 3), c = i % 3;
+        const n = FOREST_JAR_COLS * FOREST_JAR_ROWS;
+        for (let i = 0; i < n; i++) {
+            const r = Math.floor(i / FOREST_JAR_COLS), c = i % FOREST_JAR_COLS;
             const jarMesh = jarTemplate.clone();
-            jarMesh.position.set(x + c * 1.3, y + 0.5, z + r * 1.3);
+            // +1.0, not +0.5. The carryable's collision box is a fixed
+            // 1x1x1, so at +0.5 the jar's underside sat exactly on the deck -
+            // an equality the physics loses by an epsilon, and a jar that
+            // starts a hair inside the floor falls through it and shatters on
+            // the forest floor twelve metres below. Starting clear of the
+            // surface lets it settle onto it instead.
+            jarMesh.position.set(x + c * 1.3, y + 1.0, z + r * 1.3);
             jarMesh.userData.isCarryable = true;
             jarMesh.userData.isJar = true;
             // The middle of the nine. Hidden rather than obvious on purpose -
             // finding it means breaking into the grid, which is the whole
             // point of teaching carry and throw right next to it.
-            if (i === 4) jarMesh.userData.containsKey = true;
+            if (i === Math.floor(n / 2)) jarMesh.userData.containsKey = true;
             levelGroup.add(jarMesh);
             collidables.push(jarMesh);
             const carryJar = {
@@ -8796,6 +8825,7 @@ export function startGame(CharacterClass) {
             carryables.push(carryJar);
             addCarryableDebugHelper(carryJar);
         }
+        console.log(`Forest jars: ${n} placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
     }
 
     function startForestStory() {
@@ -9030,10 +9060,16 @@ export function startGame(CharacterClass) {
     ];
     const COACH_PRAISE = 'Like that. Perfect!';
     let _forestTopReached = false;
+    let storyFightT = 0;               // how long the first fight has run
+    const STORY_FIGHT_TIMEOUT = 75;    // ...before the story moves on regardless
     const STORY_TOP_LINE = 'We made it up! The way out\nis right there - careful, he is not alone.';
     const STORY_SURROUNDED_LINE = 'They have us surrounded -\nput them down, fast!';
     const STORY_LEDGE_LINE = 'Good climb! {compass} Check the\ncompass for the way on.';
-    const STORY_ROUTE_LINE = 'Follow the compass - someone\nelse is out here. This way!';
+    // Every line that names the compass shows it. The needle is a 3D object
+    // floating in the world, and reading which way it points often means
+    // turning the camera - so the word alone sends you looking for a thing you
+    // may not currently be able to see. The icon says which thing to look for.
+    const STORY_ROUTE_LINE = 'Follow the {compass} - turn to line\nit up. Someone else is out here!';
     const COACH_FINISH = 'He is done - he cannot follow us now.\nCome on, back to our route!';
     // Where the third companion waits: on top of the frame wall, along from
     // the bridge, so getting to it IS the climb it is about to talk about.
@@ -9301,6 +9337,19 @@ export function startGame(CharacterClass) {
             // Praise comes down after a beat. Taking it down matters: a line
             // left up permanently stops being a prompt and becomes scenery.
             if (storyGreetT > 0) return;
+            // ...and then WAIT for the fight to be over before moving the
+            // story on. This used to run 2.2s after the enemy spawned, which
+            // is while it is still walking in from sixteen metres away - so
+            // "follow the compass, this way" arrived in the middle of the
+            // fight starting, telling you to leave exactly as something turned
+            // up to stop you. The beat is not finished until he is.
+            //
+            // The timeout is the escape hatch, not the plan: if he falls off
+            // the level, or wanders somewhere unreachable, the story still has
+            // to continue rather than waiting for a knockout that never comes.
+            storyFightT += delta;
+            const beaten = !storyFightBot || storyFightBot.knockedOutT > 0;
+            if (!beaten && storyFightT < STORY_FIGHT_TIMEOUT) return;
             storySay(null, null, 'companion');
             // Only now does the compass get a target - the second companion,
             // waiting across the water on the far island.
@@ -9599,8 +9648,8 @@ export function startGame(CharacterClass) {
             const ring = 12;
             for (let i = 0; i < ring; i++) {
                 const a = (i / ring) * Math.PI * 2;
-                const px = cp.x + Math.cos(a) * (FOREST_CANOPY_R + 1.2);
-                const pz = cp.z + Math.sin(a) * (FOREST_CANOPY_R + 1.2);
+                const px = cp.x + Math.cos(a) * (FOREST_CANOPY_R + 0.6);
+                const pz = cp.z + Math.sin(a) * (FOREST_CANOPY_R + 0.6);
                 const hh = forestHash01(px * 1.7, pz * 2.3);
                 placements.push({
                     x: px, z: pz,
@@ -9611,10 +9660,9 @@ export function startGame(CharacterClass) {
             }
         }
         corridorTreeRows(FOREST_ENTRY_X, -1, 3.2, 2);
-        // The exit is tighter and deeper - it is the last thing you walk
-        // through, and it should close the wood behind you rather than let you
-        // see out over the sea on the way.
-        corridorTreeRows(FOREST_EXIT_X, 1, 1.9, 3);
+        // No tree frame at the EXIT. It was 126 trees you walked straight
+        // through - the invisible barriers do the stopping there, so it read
+        // as decoration you could stand inside rather than as a passage.
 
         // No border ring of trees any more. It existed because the scatter is
         // pure noise, and noise has no notion of an edge, so the wood thinned
@@ -10107,14 +10155,16 @@ export function startGame(CharacterClass) {
         if (window.resetPlayerMomentum) window.resetPlayerMomentum();
         star.visible = true;
         // In the mouth of the EXIT corridor, which is across the river - so
-        // the compass sends you over the water on the way to it. Same spot as
-        // the gate, so walking through the doorway IS taking the diamond
-        // rather than two separate things to find.
-        // On the bridge, on top of the frame - so finishing the level means
-        // climbing out of the wood rather than walking out of it.
-        star.position.set(FOREST_EXIT_X, forestFrameTopY() + 1.6, forestSlabHalf());
+        // The diamond is NOT at the exit any more - it sits on the canopy
+        // platform in the middle of the wood, which you can only reach by
+        // climbing the trees ringing it. That makes finishing the level
+        // something you go and take rather than a door you walk through, and
+        // it gives that platform a reason to exist beyond the throw lesson.
         buildForestExitSteps();
-        buildForestCanopyPlatform();
+        {
+            const cp = buildForestCanopyPlatform();
+            star.position.set(cp.x, FOREST_CANOPY_Y + 1.6, cp.z);
+        }
         placeForestExitGate();
         levelGroup.add(star);
         window.compassTarget = star.position;
