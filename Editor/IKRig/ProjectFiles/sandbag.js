@@ -3,6 +3,9 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 export class Sandbag {
             constructor(scene, position, collidables, debugHelpers, threeTone) {
                 this.group = new THREE.Group();
+                // Lets the combat lock treat a bag as a target without having
+                // to fake isLoaded/isRagdoll on it - see updateLockTarget.
+                this.isSandbag = true;
                 this.group.position.copy(position);
                 scene.add(this.group);
                 

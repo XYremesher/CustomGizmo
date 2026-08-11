@@ -1453,7 +1453,7 @@ export function startGame(CharacterClass) {
     // between - so there is a wide dead band and no chance of flicker.
     const AI_RUN_ENTER = 5.5, AI_RUN_EXIT = 4.5;
     // 2.5, not 5 - it keeps running until it is nearly on top of you, and
-    // only walks the last stretch before the punch lands (AI_PUNCH_RANGE is
+    // only walks the last stretch before the punch lands (window.aiPunchRange is
     // 1.3). Dropping to a walk five units out meant it spent the whole final
     // approach strolling, which read as losing interest right when it should
     // look most committed.
@@ -1832,12 +1832,19 @@ export function startGame(CharacterClass) {
     // the moment you walk away - 8/11 meant it gave up almost immediately and
     // went back to wandering. Still bounded, so it does return to wandering
     // if you get properly far from it.
-    // AI_PUNCH_RANGE was 1.3 - far enough that a bot started swinging with
-    // daylight still between you, which reads as punching at the air near
-    // someone rather than at them. 0.95 makes it close the last step first.
-    // The hit test itself is separate and unchanged (see detectMeleeHits), so
-    // this only moves where the swing STARTS, not what it can reach.
-    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45, AI_PUNCH_RANGE = 0.95;
+    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45;
+    // How close a bot gets before it starts a swing. LIVE, not a constant -
+    // I set this to 0.95 to make them close the last step first and they
+    // stopped landing anything at all, because a bot cannot reliably stand
+    // that close: its own separation push, the victim's body and the ground
+    // scan all conspire to hold it further out, so the condition was simply
+    // never true. Back to 1.15 with a slider, so the number can be found by
+    // feel instead of guessed at twice.
+    window.aiPunchRange = 1.15;
+    window.aiChargeRange = 1.6;
+    // How fast a bot creeps forward while swinging. Slower than its walk -
+    // it is following through on a punch, not chasing.
+    window.aiPunchStep = 1.6;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
     // normalized hit times the player's own combo uses, so it reads as the
@@ -1874,7 +1881,11 @@ export function startGame(CharacterClass) {
     // It gets one heavy hit; the recovery is correspondingly long.
     const AI_CHARGE_COOLDOWN = 2.2;
     // Slightly further out than a jab - a wound-up swing has reach.
-    const AI_CHARGE_RANGE = 1.4;
+    // How far off the line to the victim another bot has to be before it stops
+    // counting as "in my way". Roughly a body width - tighter and they still
+    // clip each other's swings, wider and three of them deadlock politely
+    // waiting for a lane that never opens.
+    const AI_FRIENDLY_CLEAR = 0.85;
     // Tallest rise the bot's ordinary walk snaps up (a stair step, not a
     // climb). Module scope because the climb code needs the same number to
     // know where walking stops and climbing starts - it used to be a local
@@ -2949,6 +2960,34 @@ export function startGame(CharacterClass) {
                 const facingDir = _tempVec1.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
                 if (facingDir.lengthSq() > 0.0001) {
                     facingDir.normalize();
+                    // Walk INTO the combo, the same way the player now does.
+                    //
+                    // A bot rooted to the spot for the whole string is why a
+                    // victim could simply back away and watch it punch air:
+                    // the swing takes most of a second and nothing closed the
+                    // gap that opened during it. Creeping forward keeps the
+                    // later hits of a combo live instead of leaving the first
+                    // one as the only chance to connect.
+                    //
+                    // Stops at aiPunchRange so it closes the gap rather than
+                    // walking through the victim, and the charge bot's wind-up
+                    // is excluded: that telegraph reads as planting your feet,
+                    // and creeping through it would give the whole thing away
+                    // as a chase instead of a threat.
+                    const gap = Math.hypot(pvPos.x - pos.x, pvPos.z - pos.z);
+                    if (!charging && gap > window.aiPunchRange * 0.9) {
+                        const st = Math.min(window.aiPunchStep * delta, gap - window.aiPunchRange * 0.9);
+                        if (st > 0) {
+                            const nx2 = pos.x + facingDir.x * st, nz2 = pos.z + facingDir.z * st;
+                            const gy2 = aiBotSurfaceY(nx2, nz2, pos.y + 2.0);
+                            // Only onto ground level with where it stands -
+                            // a bot must not punch its way up a step or off
+                            // a ledge it would never have walked over.
+                            if (gy2 > -Infinity && Math.abs(gy2 - pos.y) <= AI_MAX_STEP_UP) {
+                                pos.x = nx2; pos.z = nz2; pos.y = gy2;
+                            }
+                        }
+                    }
                     const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
                     aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], swingAnim, false);
                 }
@@ -2963,7 +3002,7 @@ export function startGame(CharacterClass) {
                 // reward for reacting to the telegraph.
                 if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_CHARGE_HOLD + swingDur * AI_CHARGE_HIT_T) {
                     aiBotState.punchHasHit = true;
-                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_CHARGE_RANGE + 0.6) {
+                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < window.aiChargeRange + 0.6) {
                         aiBotHitVictim(pv, pos, AI_CHARGE_FORCE, 'high');
                     }
                 }
@@ -2990,7 +3029,7 @@ export function startGame(CharacterClass) {
                     // be knocked away or walk off partway through. Landing the
                     // rest of the string on empty air afterwards is the bug
                     // this guard exists for.
-                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_PUNCH_RANGE + 0.6) {
+                    if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < window.aiPunchRange + 0.6) {
                         aiBotHitVictim(pv, pos, last ? AI_COMBO_FINISH_FORCE : AI_COMBO_FORCE, last ? 'medium' : 'low');
                     }
                 }
@@ -3004,7 +3043,7 @@ export function startGame(CharacterClass) {
 
             if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_PUNCH_HIT_TIME) {
                 aiBotState.punchHasHit = true;
-                if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < AI_PUNCH_RANGE + 0.6) {
+                if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < window.aiPunchRange + 0.6) {
                     aiBotHitVictim(pv, pos);
                 }
             }
@@ -3028,7 +3067,41 @@ export function startGame(CharacterClass) {
             // The charge bot starts its wind-up from further out - the swing
             // has more reach, and starting it at jab distance would put it
             // nose-to-nose with the victim for the whole telegraph.
-            if (distToVictim < (aiBotState.charge ? AI_CHARGE_RANGE : AI_PUNCH_RANGE)) {
+            // Don't swing through a friend.
+            //
+            // Every bot chases the same victim, so they converge on one point
+            // and end up shoulder to shoulder - and a punch thrown from the
+            // back of that queue passes straight through the one in front. The
+            // charge bot is the worst of it: its projectile is fired along its
+            // own forward and knocks down whatever it meets, including its own
+            // side. Holding the swing until the line is clear reads as waiting
+            // for an opening, which is what it should have been doing anyway.
+            const lineBlocked = (() => {
+                // `victim` is this branch's own target and is what the punch
+                // below commits to; pvPos belongs to an earlier block and can
+                // be null, which would throw here rather than simply skipping.
+                if (!victim || !victim.group) return false;
+                const vpos = victim.group.position;
+                const toV = _tempVec2.set(vpos.x - pos.x, 0, vpos.z - pos.z);
+                const len = toV.length();
+                if (len < 1e-4) return false;
+                toV.multiplyScalar(1 / len);
+                for (let i = 0; i < aiBots.length; i++) {
+                    const other = aiBots[i].bot;
+                    if (other === aiBot || !other.isLoaded || other.isRagdoll) continue;
+                    const op = other.group.position;
+                    const relX = op.x - pos.x, relZ = op.z - pos.z;
+                    // How far along the line to the victim it stands, and how
+                    // far off that line. In front of me, nearer than the
+                    // victim, and roughly on the line = in the way.
+                    const along = relX * toV.x + relZ * toV.z;
+                    if (along <= 0.2 || along >= len) continue;
+                    const offX = relX - toV.x * along, offZ = relZ - toV.z * along;
+                    if (Math.hypot(offX, offZ) < AI_FRIENDLY_CLEAR) return true;
+                }
+                return false;
+            })();
+            if (!lineBlocked && distToVictim < (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
@@ -3830,6 +3903,23 @@ export function startGame(CharacterClass) {
     //   - forward, to confirm there's still a wall face to hold onto
     //     (otherwise it's an outside corner and there's nothing to hang from
     //     even though the floor above continues).
+    // Is this lip occupied - by the player OR by another companion?
+    //
+    // One definition on purpose. The hang check and the shimmy search both
+    // need it, and when only the hang check knew about other companions the
+    // shimmy happily slid along to a stretch someone else was already
+    // standing on, which is the same collision one step to the left.
+    function companionTopOccupied(t, p, pad) {
+        const r = COMP_TOPOUT_CLEAR + (pad || 0);
+        if (Math.hypot(t.x - p.x, t.z - p.z) < r && p.y >= t.y - 0.6) return true;
+        for (let i = 0; i < companions.length; i++) {
+            const o = companions[i].comp;
+            if (o === companion || !o.isLoaded) continue;
+            const op = o.group.position;
+            if (Math.hypot(t.x - op.x, t.z - op.z) < r && op.y >= t.y - 0.6) return true;
+        }
+        return false;
+    }
     function tryCompanionShimmy(p) {
         const sx = -_hangFwd.z, sz = _hangFwd.x;
         for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
@@ -3838,8 +3928,10 @@ export function startGame(CharacterClass) {
                 const sign = s === 0 ? 1 : -1;
                 const off = d * sign;
                 const tx = _hangTop.x + sx * off, tz = _hangTop.z + sz * off;
-                // Far enough along that it isn't landing on the player again.
-                if (Math.hypot(tx - p.x, tz - p.z) < COMP_TOPOUT_CLEAR + 0.4) continue;
+                // Far enough along that it isn't landing on anyone again -
+                // the player or another companion.
+                _ledgeSpotTop.set(tx, _hangTop.y, tz);
+                if (companionTopOccupied(_ledgeSpotTop, p, 0.4)) continue;
                 // Hang derived from THIS spot's own lip, not the current hang
                 // slid sideways - the edge can bend or set back as it runs,
                 // and offsetting the old position blindly is how it ended up
@@ -4711,8 +4803,19 @@ export function startGame(CharacterClass) {
         // it to oscillate: go up if the spot freed, shuffle sideways if the
         // ledge offers a clear one, otherwise just hold on.
         if (_compMode === 'hang') {
-            const topClear = Math.hypot(_hangTop.x - p.x, _hangTop.z - p.z) >= COMP_TOPOUT_CLEAR
-                || p.y < _hangTop.y - 0.6;   // player left, or dropped below this ledge entirely
+            // Is the lip I would pull onto occupied - by ANYONE?
+            //
+            // This used to test the player alone, which is why companions
+            // stacked: two of them would hang on the same wall, the first
+            // would top out, and the second saw a clear lip (the player was
+            // elsewhere) and pulled up into the one already standing there.
+            // The separation push then shoved them apart at the edge and they
+            // fell off together, which is the "they all come back down" part.
+            //
+            // Being blocked is NOT a reason to let go. The shimmy below moves
+            // along the ledge to a free stretch and tops out there - hanging
+            // and sliding sideways is the whole point of having the grip.
+            const topClear = !companionTopOccupied(_hangTop, p, 0);
             if (topClear) {
                 startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
                 return;
@@ -4972,6 +5075,11 @@ export function startGame(CharacterClass) {
                 if (Math.abs(p.y - behindGroundY) > COMP_LEAP_EDGE_DROP) wantsBehind = false;
             }
         }
+        // Carrying something puts the whole point of the game in front of you
+        // - where you are aiming a throw, and what you are looking past. A
+        // companion standing there is a wall. While you are holding anything,
+        // behind is not a preference any more, it is the rule.
+        if (window.isCarryingObj || window.isCarryStarting) wantsBehind = true;
         if (wantsBehind) {
             dirx = _compBehindDir.x; dirz = _compBehindDir.z;
         } else {
@@ -13869,9 +13977,14 @@ export function startGame(CharacterClass) {
     // one" and this is "and now I am close enough to hit it": you close the
     // distance facing your target, and the punches start when they can land.
     //
-    // Defaulted just outside AI_PUNCH_RANGE (0.95), so you begin swinging at
+    // Defaulted just outside the bot's own punch range, so you begin swinging at
     // about the distance a bot does.
     window.autoPunchRange = 1.6;
+    // The charge punch reaches further than a jab, because it throws a
+    // projectile - so its auto range sits OUTSIDE jab distance rather than at
+    // it. Standing nose-to-nose to release one wastes the reach entirely and
+    // puts you inside the enemy's own swing for the whole wind-up.
+    window.chargeAutoRange = 4.5;
     let lockedBot = null;
     let autoPunchT = 0;
     const _lockVec = new THREE.Vector3();
@@ -13886,16 +13999,45 @@ export function startGame(CharacterClass) {
     function updateLockTarget() {
         if (!window.lockTargetEnabled || char.isRagdoll || char.isStandingUp) { lockedBot = null; return; }
         const p = char.group.position;
-        const usable = (b) => b && b.isLoaded && !b.isRagdoll && !b.isStandingUp && !(b.knockedOutT > 0);
-        if (usable(lockedBot) && p.distanceTo(lockedBot.group.position) <= window.lockOnDrop) return;
-        lockedBot = null;
-        let best = window.lockOnRange;
+        // A sandbag counts as a target. It has no isLoaded/isRagdoll of its
+        // own, so the test is written to pass anything with a group that is
+        // not currently down - which is what a practice bag always is. Being
+        // able to lock onto the bag is the whole point of having one: the
+        // punch tutorial is where you first meet this feature.
+        const usable = (b) => !!(b && b.group) &&
+            (b.isSandbag || (b.isLoaded && !b.isRagdoll && !b.isStandingUp && !(b.knockedOutT > 0)));
+        // An ENEMY always outranks a practice bag, and the bag never holds the
+        // lock against one. Previously any valid target was kept while it
+        // stayed inside lockOnDrop, so once you locked the sandbag it owned
+        // you: a bot could walk up beside you and the character would keep
+        // facing the bag, which is exactly backwards when something is
+        // actually attacking.
+        //
+        // So: a live bot may hold the lock at the generous drop range, but a
+        // bag is re-decided every frame and yields the moment a bot is in
+        // range at all.
+        const isBot = (t) => !!(t && !t.isSandbag);
+        if (isBot(lockedBot) && usable(lockedBot) &&
+            p.distanceTo(lockedBot.group.position) <= window.lockOnDrop) return;
+
+        let best = window.lockOnRange, found = null;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
             if (!usable(b)) continue;
             const d = p.distanceTo(b.group.position);
-            if (d < best) { best = d; lockedBot = b; }
+            if (d < best) { best = d; found = b; }
         }
+        // Only if nothing is trying to hit you.
+        if (!found && window.sacks) {
+            let bagBest = window.lockOnRange;
+            for (let i = 0; i < window.sacks.length; i++) {
+                const sk = window.sacks[i];
+                if (!usable(sk)) continue;
+                const d = p.distanceTo(sk.group.position);
+                if (d < bagBest) { bagBest = d; found = sk; }
+            }
+        }
+        lockedBot = found;
     }
     window.getLockedBot = () => lockedBot;
     // Surfaces steeper than this (measured from the real, un-flattened hit
@@ -14257,6 +14399,10 @@ export function startGame(CharacterClass) {
         { id: 'lock-range-slider', vId: 'lock-range-val', func: v => { window.lockOnRange = v; window.lockOnDrop = v + 3; }, fix: 1 },
         { id: 'auto-punch-int-slider', vId: 'auto-punch-int-val', func: v => window.autoPunchInterval = v, fix: 2 },
         { id: 'auto-punch-range-slider', vId: 'auto-punch-range-val', func: v => window.autoPunchRange = v, fix: 1 },
+        { id: 'charge-auto-range-slider', vId: 'charge-auto-range-val', func: v => window.chargeAutoRange = v, fix: 1 },
+        { id: 'ai-punch-range-slider', vId: 'ai-punch-range-val', func: v => window.aiPunchRange = v, fix: 2 },
+        { id: 'ai-charge-range-slider', vId: 'ai-charge-range-val', func: v => window.aiChargeRange = v, fix: 2 },
+        { id: 'ai-punch-step-slider', vId: 'ai-punch-step-val', func: v => window.aiPunchStep = v, fix: 2 },
         { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
         { id: 'bubble-bottom-slider', vId: 'bubble-bottom-val', func: v => window.bubbleBottomMargin = v, fix: 0 },
         { id: 'bubble-maxy-slider', vId: 'bubble-maxy-val', func: v => window.bubbleMaxYFrac = v, fix: 2 },
@@ -18610,8 +18756,14 @@ export function startGame(CharacterClass) {
                     if (lockedBot && _lastMoveDir.lengthSq() > 1e-6) {
                         _lockVec.copy(_lastMoveDir).applyQuaternion(
                             _tempQuat.copy(char.group.quaternion).invert());
+                        // +X in the character's local space is its LEFT, not
+                        // its right: with the model facing +Z and +Y up, the
+                        // right-handed cross product puts +X on the far side
+                        // from the hand you would call right. Mapping it the
+                        // other way played the left strafe while sidestepping
+                        // right, so the feet crossed the wrong way.
                         moveState = Math.abs(_lockVec.x) > Math.abs(_lockVec.z)
-                            ? (_lockVec.x > 0 ? 'strafe_right' : 'strafe_left')
+                            ? (_lockVec.x > 0 ? 'strafe_left' : 'strafe_right')
                             : (_lockVec.z > 0 ? 'walk' : 'walk_backward');
                     }
                     char.animate(delta, moveState, moveMag, time, yVelocity, 0);
