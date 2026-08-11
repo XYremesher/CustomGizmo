@@ -1845,6 +1845,7 @@ export function startGame(CharacterClass) {
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
+    window.locoAnimSpeed = 1.25;   // walk/run/strafe clip playback multiplier
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
     // normalized hit times the player's own combo uses, so it reads as the
@@ -4122,6 +4123,30 @@ export function startGame(CharacterClass) {
     //     the clip back and forth every frame - it has to cross the gap
     //     between enter and exit, not just cross one line, to switch again.
     const COMP_RUN_ENTER = 3.5, COMP_RUN_EXIT = 2.8;
+    // Which locomotion clip a character should play, given where it is FACING
+    // and which way it is actually travelling. Shared by the companions and
+    // the bots so they circle a target the way the player does instead of
+    // sliding sideways in the forward walk cycle.
+    //
+    // Only meaningful when the two differ - which for these two is exactly
+    // when they are locked onto someone: approaching a victim they face it and
+    // move around it. Walking normally, facing IS travel and this returns the
+    // plain state unchanged.
+    const _locoLocalDir = new THREE.Vector3();
+    const _locoInvQuat = new THREE.Quaternion();
+    function strafeStateFor(state, quat, dirX, dirZ) {
+        if (state !== 'walk' && state !== 'run') return state;
+        if (Math.abs(dirX) < 1e-6 && Math.abs(dirZ) < 1e-6) return state;
+        _locoLocalDir.set(dirX, 0, dirZ).normalize()
+            .applyQuaternion(_locoInvQuat.copy(quat).invert());
+        // +X is the character's LEFT here - the same handedness note as the
+        // player's own lock-on mapping.
+        if (Math.abs(_locoLocalDir.x) <= Math.abs(_locoLocalDir.z)) {
+            return _locoLocalDir.z > 0 ? state : 'walk_backward';
+        }
+        const side = _locoLocalDir.x > 0 ? 'strafe_left' : 'strafe_right';
+        return state === 'run' ? side + '_run' : side + '_walk';
+    }
     const COMP_WALK_ENTER = 0.4, COMP_WALK_EXIT = 0.15;
     function companionLocoState(rawSpeed, delta) {
         const smoothT = Math.min(1, delta * 10);
@@ -5359,7 +5384,8 @@ export function startGame(CharacterClass) {
             ? Math.atan2(movedX, movedZ)
             : Math.atan2(p.x - c.x, p.z - c.z), 0);
         _compFaceQuat.setFromEuler(_compFaceEuler);
-        const st = companionLocoState(movedH, delta);
+        let st = companionLocoState(movedH, delta);
+        st = strafeStateFor(st, _compFaceQuat, movedX, movedZ);
         companion.group.position.set(nx, ny, nz);
         companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
         companion.update(delta);
@@ -14403,6 +14429,7 @@ export function startGame(CharacterClass) {
         { id: 'ai-punch-range-slider', vId: 'ai-punch-range-val', func: v => window.aiPunchRange = v, fix: 2 },
         { id: 'ai-charge-range-slider', vId: 'ai-charge-range-val', func: v => window.aiChargeRange = v, fix: 2 },
         { id: 'ai-punch-step-slider', vId: 'ai-punch-step-val', func: v => window.aiPunchStep = v, fix: 2 },
+        { id: 'loco-anim-speed-slider', vId: 'loco-anim-speed-val', func: v => window.locoAnimSpeed = v, fix: 2 },
         { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
         { id: 'bubble-bottom-slider', vId: 'bubble-bottom-val', func: v => window.bubbleBottomMargin = v, fix: 0 },
         { id: 'bubble-maxy-slider', vId: 'bubble-maxy-val', func: v => window.bubbleMaxYFrac = v, fix: 2 },

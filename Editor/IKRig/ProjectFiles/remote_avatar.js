@@ -8,6 +8,14 @@ const BASE_URL = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/
 const REMOTE_ANIMS = [
     { name: 'idle', file: 'Idle.fbx' },
     { name: 'walk', file: 'Walking.fbx' },
+    // Strafes, so companions and bots can circle a target the way the player
+    // does instead of moonwalking in the forward cycle. The two RUN files are
+    // authored the opposite way round from the walks - the same crossed
+    // mapping ClimbGame.html documents.
+    { name: 'strafe_left_walk', file: 'StrafeLeftWalk.fbx' },
+    { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
+    { name: 'strafe_left_run', file: 'StrafeRunRight.fbx' },
+    { name: 'strafe_right_run', file: 'StrafeRunLeft.fbx' },
     { name: 'run', file: 'Running.fbx' },
     { name: 'jump_start', file: 'JumpStart.fbx' },
     { name: 'fall', file: 'JumpMidAir.fbx' },
@@ -40,7 +48,8 @@ const REMOTE_ANIMS = [
 // ClimbGame.html's setupActionProperties, it needs to loop for a sustained
 // walk cycle instead of freezing after one stride.
 const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'standup_front', 'standup_back', 'stop_sliding']);
-const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run'];
+const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run',
+    'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run'];
 
 function processClip(clip) {
     let minTime = Infinity;

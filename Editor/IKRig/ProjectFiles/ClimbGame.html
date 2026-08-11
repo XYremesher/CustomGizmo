@@ -620,6 +620,8 @@
                     <input type="range" id="ai-punch-range-slider" min="0.6" max="3" step="0.05" value="1.15" style="width: 100%;"><br>
                     <label>Enemy Charge Range: <span id="ai-charge-range-val">1.60</span></label><br>
                     <input type="range" id="ai-charge-range-slider" min="0.6" max="5" step="0.05" value="1.6" style="width: 100%;"><br>
+                    <label>Walk/Strafe Anim Speed: <span id="loco-anim-speed-val">1.25</span>x</label><br>
+                    <input type="range" id="loco-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.25" style="width: 100%;"><br>
                     <label>Enemy Punch Step: <span id="ai-punch-step-val">1.60</span> u/s</label><br>
                     <input type="range" id="ai-punch-step-slider" min="0" max="6" step="0.1" value="1.6" style="width: 100%;"><br>
                     <label>Carry Lock Range: <span id="carry-lock-range-val">2.5</span></label><br>
@@ -2873,6 +2875,14 @@
                 let timeScale = 1.0;
                 if (targetActionName.includes('climb')) timeScale = this.climbSpeed;
                 else if (targetActionName.includes('land')) timeScale = this.landSpeed;
+                // Walk, run and the four strafes share one multiplier. The
+                // clips were authored at a gentler pace than the speeds the
+                // character actually travels at, so the feet skated - most
+                // visibly on the strafes, which cover ground fast.
+                else if (targetActionName.startsWith('walk') || targetActionName.startsWith('run') ||
+                         targetActionName.startsWith('strafe')) {
+                    timeScale = window.locoAnimSpeed !== undefined ? window.locoAnimSpeed : 1.25;
+                }
 
                 this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
                 if (duration > 0) this.activeAction.fadeIn(duration);
