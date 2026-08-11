@@ -1015,7 +1015,7 @@ export function startGame(CharacterClass) {
         // Ground-level trees only. _forestPlacements also carries the ones
         // standing on top of the frame wall, 11 units up, and a collar for
         // those would be scattered at y=0 against the wall's foot.
-        let treeSpots = (currentLevel === 'local_forest' && _forestPlacements)
+        let treeSpots = (isForestLevel() && _forestPlacements)
             ? _forestPlacements.filter(p => !p.y) : null;
         // An empty array is truthy, and would send every collar attempt into a
         // read off index NaN.
@@ -1060,7 +1060,7 @@ export function startGame(CharacterClass) {
             // sprouting up through the surface. Tested against the BANK, not
             // the waterline: the torus is a wet shore that shelves into the
             // lake, and blades on its inner slope stand half-submerged.
-            if (currentLevel === 'local_forest') {
+            if (isForestLevel()) {
                 let inWater = false;
                 for (let i = 0; i < _forestLakes.length; i++) {
                     const L = _forestLakes[i];
@@ -1845,7 +1845,8 @@ export function startGame(CharacterClass) {
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
-    window.locoAnimSpeed = 1.25;   // walk/run/strafe clip playback multiplier
+    window.walkAnimSpeed = 1.7;    // walk + strafe-walk playback multiplier
+    window.runAnimSpeed = 1.0;     // run + strafe-run, kept separate on purpose
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
     // normalized hit times the player's own combo uses, so it reads as the
@@ -1925,7 +1926,7 @@ export function startGame(CharacterClass) {
         // between them every frame (net standing still, vibrating).
         avoidSide: 0
     };
-    window.aiBotPathVisible = true;
+    window.aiBotPathVisible = false;   // debug path lines, off by default
     // Two lines, not one: goalLine (yellow) is where the bot is ultimately
     // trying to get to (the player in chase, a random point while
     // wandering); stepLine (cyan) is the direction it's actually walking
@@ -1972,11 +1973,20 @@ export function startGame(CharacterClass) {
             new THREE.Vector3(stepPos.x, goalY, stepPos.z)
         ]);
     }
-    const aiBotPathToggle = document.getElementById('ai-bot-path-toggle');
-    if (aiBotPathToggle) {
-        window.aiBotPathVisible = aiBotPathToggle.checked;
-        aiBotPathToggle.addEventListener('change', () => { window.aiBotPathVisible = aiBotPathToggle.checked; });
-    }
+    // Companions get their OWN flag rather than sharing the bot one. They are
+    // usually on screen in threes while the bots are not, so being able to see
+    // one set of lines without the other is the difference between a readable
+    // debug view and a bowl of spaghetti.
+    window.companionPathVisible = false;
+    [['ai-bot-path-toggle', 'aiBotPathVisible'],
+     ['companion-path-toggle', 'companionPathVisible']].forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        // Markup is the source of truth at startup - same rule as the other
+        // toggles, so the box and the flag cannot start out disagreeing.
+        window[key] = el.checked;
+        el.addEventListener('change', () => { window[key] = el.checked; });
+    });
 
     function pickNewAiWanderTarget() {
         const angle = Math.random() * Math.PI * 2;
@@ -3346,9 +3356,13 @@ export function startGame(CharacterClass) {
     }
     function updateCompanionPathVisual(botPos, goalPos, stepPos) {
         if (!companionGoalLine || !companionStepLine) return;
-        companionGoalLine.visible = window.aiBotPathVisible;
-        companionStepLine.visible = window.aiBotPathVisible;
-        if (!window.aiBotPathVisible) return;
+        companionGoalLine.visible = window.companionPathVisible;
+        companionStepLine.visible = window.companionPathVisible;
+        // Early-out on the COMPANION flag, not the bot one - this was the
+        // leftover from when they shared a single toggle, and it would have
+        // kept rewriting the geometry of invisible lines whenever the bot
+        // lines happened to be on.
+        if (!window.companionPathVisible) return;
         const goalY = botPos.y + 0.1;
         companionGoalLine.geometry.setFromPoints([
             new THREE.Vector3(botPos.x, goalY, botPos.z),
@@ -4276,7 +4290,7 @@ export function startGame(CharacterClass) {
     // these particular clips and not a guarantee. Writing it after the
     // avatars have updated costs a handful of assignments and cannot be
     // silently undone by a clip that does carry a scale track.
-    window.headScale = 0.7;
+    window.headScale = 0.4;
     function getHeadBone(avatar) {
         if (!avatar || !avatar.fbxModel) return null;
         if (avatar._headBone !== undefined) return avatar._headBone;
@@ -4519,6 +4533,24 @@ export function startGame(CharacterClass) {
         // the "gets to the top and goes back down" case. The post-climb hold
         // already exists to stop it leaping or walking back down; this puts
         // punching under the same rule.
+        // The post-climb hold exists to stop it stepping straight back off the
+        // ledge - but it also gates attacking, so a companion that pulls up
+        // right next to a bot stood there unable to swing for the whole hold.
+        // An enemy in reach ends the hold early: the thing the hold protects
+        // against (wandering off the edge) is now refused outright by the
+        // descent check, so there is nothing left for it to guard here.
+        if (_compJustClimbedT > 0) {
+            for (let bi = 0; bi < aiBots.length; bi++) {
+                const eb = aiBots[bi].bot;
+                if (!eb.isLoaded || eb.isRagdoll || eb.knockedOutT > 0) continue;
+                const ep = eb.group.position;
+                if (Math.abs(ep.y - c.y) < 1.5 &&
+                    Math.hypot(ep.x - c.x, ep.z - c.z) < COMP_ATTACK_SEEK) {
+                    _compJustClimbedT = 0;
+                    break;
+                }
+            }
+        }
         const canStartAttack = _compMode === 'follow' && _compJustClimbedT <= 0;
         // Counter-attack, once the stagger and the settle are both over - the
         // hit has to visibly land before the answer to it does.
@@ -5221,6 +5253,33 @@ export function startGame(CharacterClass) {
                 // round trip is where the flying came from; the fix is to not
                 // make the pointless descent in the first place.
                 if (landing && (c.y - landing.y) > COMP_LEAP_EDGE_DROP && p.y > landing.y + 1.0) landing = null;
+                // ...and never drop off a ledge while there is an enemy up
+                // here with you.
+                //
+                // The post-climb hold already stops it walking straight back
+                // down, but it is a TIMER: once it expires the follow spot is
+                // still down where the player is, so the companion turns round
+                // and steps off - which, mid-fight, is it abandoning the fight
+                // it just climbed into. Rejoining you is not worth more than
+                // the bot standing next to it.
+                //
+                // Only a real descent is refused. Stepping down something
+                // knee-high is not leaving anything.
+                if (landing && (c.y - landing.y) > COMP_LEAP_EDGE_DROP) {
+                    for (let bi = 0; bi < aiBots.length; bi++) {
+                        const eb = aiBots[bi].bot;
+                        if (!eb.isLoaded || eb.isRagdoll || eb.knockedOutT > 0) continue;
+                        const ep = eb.group.position;
+                        // On MY level, not one standing at the bottom of the
+                        // drop - that one is a reason to go down, not to stay.
+                        if (Math.abs(ep.y - c.y) > 1.5) continue;
+                        if (Math.hypot(ep.x - c.x, ep.z - c.z) < COMP_ATTACK_SEEK) {
+                            landing = null;
+                            _compWhy = 'holding the ledge, enemy up here';
+                            break;
+                        }
+                    }
+                }
                 if (landing) {
                     _compLeapStart.copy(c);
                     _compLeapEnd.set(landing.x, landing.y, landing.z);
@@ -5821,7 +5880,7 @@ export function startGame(CharacterClass) {
     let bridgeScene = null, _forestBridge = null;
     let levelExitScene = null, _forestExitGate = null;
     function placeForestExitGate() {
-        if (currentLevel !== 'local_forest') return;
+        if (!isForestLevel()) return;
         const gz = forestSlabHalf();
         const topY = forestFrameTopY();
         // No bridge any more. It existed to carry the gate across the hole
@@ -7768,23 +7827,35 @@ export function startGame(CharacterClass) {
         if (!owner) return null;
         return owner.group || owner;
     }
-    function makeWorldLabel(text, target, offsetY) {
+    function makeWorldLabel(text, target, offsetY, opts) {
         const host = document.getElementById('world-labels');
         if (!host || !target) return null;
         const el = document.createElement('div');
         el.className = 'world-label';
         const box = document.createElement('div');
         box.className = 'wl-box';
-        fillLabelText(box, text);
+        // Typewritten labels start empty and are filled by whoever owns the
+        // reveal; plain ones are written out in full immediately.
+        if (!(opts && opts.typewriter)) fillLabelText(box, text);
         const tail = document.createElement('div');
         tail.className = 'wl-tail';
         el.appendChild(box); el.appendChild(tail);
         host.appendChild(el);
         const rec = {
-            el, owner: target,
+            el, box, text, owner: target,
             offsetY: offsetY === undefined ? window.bubbleAnchorY : offsetY,
             visible: true,
         };
+        if (opts && opts.onTap) {
+            // The layer is pointer-events:none so a bubble never eats a tap
+            // meant for a control; a tappable one opts back in for itself.
+            el.style.pointerEvents = 'auto';
+            el.style.cursor = 'pointer';
+            el.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                opts.onTap(rec);
+            });
+        }
         _worldLabels.push(rec);
         return rec;
     }
@@ -8977,8 +9048,36 @@ export function startGame(CharacterClass) {
         console.log(`Forest jars: ${n} (${jarTemplate ? 'model' : 'fallback'}) placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
     }
 
+    // Hands over every companion at once and skips the whole tutorial.
+    //
+    // For working on what comes AFTER the introductions - and, once this level
+    // is cloned into a punch level and a climb level, for the one that is not
+    // about recruiting anybody. Grants them rather than fast-forwarding the
+    // stages, so the level ends up in the state the story would have left it
+    // in rather than half way through a beat.
+    window.instantCompanions = false;
+    function grantAllCompanions() {
+        storySay(null, null, 'companion');
+        storyClearNpc();
+        COMPANION_SPECS.forEach(sp => storyRecruit(sp.key));
+        companions.forEach(r => { r.comp.followOverride = null; r.comp.demoTarget = null; });
+        coachStep = -1; coachT = 0; coachOutroT = 0;
+        storyStage = 'done';
+        window.compassTarget = star.visible ? star.position : null;
+    }
+
     function startForestStory() {
         storyReset();
+        // The bare forest: no NPCs, no lines, no beats - the companions are
+        // just with you from the first frame, the way they would be in any
+        // level that is not about meeting them.
+        if (currentLevel === 'local_forest_free' || window.instantCompanions) {
+            // Still spawn the practice bag - it is scenery worth having even
+            // when nobody is there to point at it.
+            spawnForestSandbag(forestMeetPoint().x + STORY_PAIR_HALF, forestMeetPoint().z);
+            grantAllCompanions();
+            return;
+        }
         // Standing right at the spawn, a few steps along the route - close
         // enough that it is the first thing you see rather than something to
         // go looking for. Walking up to it is what makes it join.
@@ -9313,10 +9412,16 @@ export function startGame(CharacterClass) {
     // jumping the stage: you still end up with the companion at your back and
     // the compass pointing at the next beat, so the level is in the state the
     // story expects - just without the homework.
+    // The stages the tutorial can be jumped out of. Shared by the SKIP button
+    // (to decide whether to show itself) and by the skip itself, so the button
+    // can never appear for a beat that would ignore it.
+    const STORY_SKIPPABLE = ['toFirst', 'briefing', 'brief', 'demo', 'test'];
+    window.storyCanSkip = function storyCanSkip() {
+        return currentLevel === 'local_forest' && STORY_SKIPPABLE.indexOf(storyStage) >= 0;
+    };
     window.storySkipTutorial = function storySkipTutorial() {
         if (currentLevel !== 'local_forest') return false;
-        const skippable = ['toFirst', 'briefing', 'brief', 'demo', 'test'];
-        if (skippable.indexOf(storyStage) < 0) return false;
+        if (!window.storyCanSkip()) return false;
         storySay(null, null, 'companion');
         storyClearNpc();
         const comp = storyCompanionOf('CompBlue') || storyRecruit('CompBlue');
@@ -9644,6 +9749,14 @@ export function startGame(CharacterClass) {
         buildLevel();
     }
 
+    // Two levels share this builder: the scripted one and a bare variant with
+    // no story at all. Anything that asks "is this the forest?" for terrain
+    // reasons - water, foam, tree scatter - has to mean both, while the story
+    // checks stay pinned to 'local_forest' precisely because the other one is
+    // defined by not having it.
+    function isForestLevel() {
+        return currentLevel === 'local_forest' || currentLevel === 'local_forest_free';
+    }
     function buildForestLevel() {
         if (!treeModel) { pendingForestLevelBuild = true; return; }
         while (levelGroup.children.length > 0) levelGroup.remove(levelGroup.children[0]);
@@ -11265,6 +11378,27 @@ export function startGame(CharacterClass) {
             dialogueIconEl.style.display = 'inline-block';
         } else { dialogueIconEl.style.display = 'none'; }
     }
+    // The conversation's own bubble, distinct from the ambient ones so a
+    // story line cannot be wiped by a companion piping up mid-sentence.
+    let _dialogueLabel = null;
+    function clearDialogueLabel() { removeWorldLabel(_dialogueLabel); _dialogueLabel = null; }
+    function showDialogueLine() {
+        clearDialogueLabel();
+        if (!activeDialogueSpeaker) return;
+        const line = activeDialogueLines[villageDialogueLineIndex];
+        if (!line) return;
+        _dialogueLabel = makeWorldLabel(line.text, activeDialogueSpeaker, undefined, {
+            typewriter: true,
+            // Mid-type it finishes the line; once finished it moves on. Same
+            // two-stage tap the dialogue box had, now on the bubble itself.
+            onTap: () => {
+                if (!villageDialogueActive) return;
+                if (villageTypewriterDone) advanceVillageDialogueLine();
+                else villageDialogueFastForward = true;
+            },
+        });
+    }
+
     function startVillageDialogue() {
         startDialogue(VILLAGE_DIALOGUE_LINES, villageNpcAvatar, null);
     }
@@ -11274,20 +11408,22 @@ export function startGame(CharacterClass) {
         activeDialogueSpeaker = speaker;
         activeDialogueOnEnd = onEnd || null;
         villageDialogueActive = true;
-        window.dialogueInputLocked = true;
         villageDialogueLineIndex = 0;
         villageTypewriterProgress = 0;
         villageTypewriterDone = false;
         villageDialogueFastForward = false;
         if (villageNpcBubble) villageNpcBubble.visible = false;
-        if (dialogueTextEl) dialogueTextEl.textContent = '';
-        if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
-        updateDialogueIconForCurrentLine();
-        if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'block';
-        if (dialogueTapCatcherEl) dialogueTapCatcherEl.style.display = 'block';
-        // Clears the joysticks/buttons out from under your hands during
-        // the conversation - same helper the editor toggle already uses.
-        setGameControlsVisible(false);
+        // No cut, no box, no lock.
+        //
+        // A conversation used to take the game away from you: input locked,
+        // controls hidden, a panel over the screen. It now plays as a speech
+        // bubble over the speaker's head while you keep the controls - the
+        // ONLY thing borrowed from the old cinematic is its camera framing,
+        // which eases across and back on its own.
+        //
+        // The typewriter, the line stepping and the tap-to-advance all still
+        // work; they just render somewhere else.
+        showDialogueLine();
 
         // The player is deliberately NOT re-aimed here. Snapping them to
         // face the NPC was tried and rejected: you already walk up to the
@@ -11350,11 +11486,15 @@ export function startGame(CharacterClass) {
         // "finished" two characters before it looks finished.
         const full = labelPlainLength(line);
         const shown = Math.min(full, Math.floor(villageTypewriterProgress));
-        if (dialogueTextEl) renderTypedText(dialogueTextEl, line, shown);
-        if (shown >= full) {
-            villageTypewriterDone = true;
-            if (dialogueContinueEl) dialogueContinueEl.style.display = 'inline-block';
+        if (_dialogueLabel && _dialogueLabel.box) {
+            renderTypedText(_dialogueLabel.box, line, shown);
+            // The bubble grows as the line appears, so its cached size is
+            // stale from the first character onward - and a stale height is
+            // what would leave it clipping the compass or the screen edge.
+            _dialogueLabel._h = 0;
+            _dialogueLabel._hw = 0;
         }
+        if (shown >= full) villageTypewriterDone = true;
     }
     function advanceVillageDialogueLine() {
         villageDialogueLineIndex++;
@@ -11363,17 +11503,13 @@ export function startGame(CharacterClass) {
         } else {
             villageTypewriterProgress = 0;
             villageTypewriterDone = false;
-            if (dialogueTextEl) dialogueTextEl.textContent = '';
-            if (dialogueContinueEl) dialogueContinueEl.style.display = 'none';
-            updateDialogueIconForCurrentLine();
+            villageDialogueFastForward = false;
+            showDialogueLine();
         }
     }
     function endVillageDialogue() {
         villageDialogueActive = false;
-        window.dialogueInputLocked = false;
-        if (dialogueBoxEl2) dialogueBoxEl2.style.display = 'none';
-        if (dialogueTapCatcherEl) dialogueTapCatcherEl.style.display = 'none';
-        setGameControlsVisible(true);
+        clearDialogueLabel();
         // Without this, the normal follow-cam resumes from cameraTheta/Phi -
         // whatever they were BEFORE dialogue started, since dialogue drove
         // camera.position directly and never touched them. That reads as the
@@ -11437,6 +11573,16 @@ export function startGame(CharacterClass) {
     // Runs endVillageDialogue, so the camera hand-back, the input unlock and
     // whatever the conversation was supposed to trigger all still happen; the
     // only thing skipped is the reading.
+    // Shown while a conversation is running, or while the forest tutorial is
+    // in a stage that can be skipped. It used to live inside the dialogue box
+    // and inherit its visibility; the box is gone, so it has to decide for
+    // itself.
+    function updateSkipButton() {
+        const el = document.getElementById('dialogue-skip');
+        if (!el) return;
+        const skippable = window.storyCanSkip && window.storyCanSkip();
+        el.style.display = (villageDialogueActive || skippable) ? 'block' : 'none';
+    }
     const dialogueSkipEl = document.getElementById('dialogue-skip');
     if (dialogueSkipEl) {
         dialogueSkipEl.addEventListener('pointerdown', (e) => {
@@ -11459,6 +11605,10 @@ export function startGame(CharacterClass) {
         if (villageTypewriterDone) advanceVillageDialogueLine();
         else villageDialogueFastForward = true;
     };
+    // The box and its full-screen catcher are no longer used - a line is
+    // tapped on the BUBBLE now (see showDialogueLine's onTap). Left wired
+    // anyway so nothing depends on them being dead: if either is ever shown
+    // again it still behaves.
     [dialogueBoxEl2, dialogueTapCatcherEl].forEach(el => {
         if (!el) return;
         el.addEventListener('pointerdown', onDialogueTapDown);
@@ -11466,6 +11616,9 @@ export function startGame(CharacterClass) {
         el.addEventListener('pointercancel', stopFastForward);
         el.addEventListener('pointerleave', stopFastForward);
     });
+    // Releasing anywhere ends a fast-forward, since the press that started it
+    // was on a bubble that may already have been replaced by the next line.
+    window.addEventListener('pointerup', stopFastForward);
 
     function addCarryableDebugHelper(c) {
         let helperGeo;
@@ -12505,7 +12658,7 @@ export function startGame(CharacterClass) {
         else if (currentLevel === "local_water") buildWaterTestLevel();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else if (currentLevel === "local_village") buildVillageLevel();
-        else if (currentLevel === "local_forest") buildForestLevel();
+        else if (currentLevel === "local_forest" || currentLevel === "local_forest_free") buildForestLevel();
         else if (currentLevel === "local_voxel") buildVoxelLevel();
         else {
             try {
@@ -12540,7 +12693,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_voxel">Voxel (authored)</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_forest_free">Forest (no story)</option><option value="local_voxel">Voxel (authored)</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
@@ -13050,6 +13203,22 @@ export function startGame(CharacterClass) {
             window.chargeKickIntensity = e.target.checked ? 'medium_high' : 'medium';
         });
     }
+    // These two read their STARTING value from the markup rather than pushing
+    // a global into the box.
+    //
+    // The other way round was wrong here: this wiring runs about a thousand
+    // lines before the lock section that assigns window.showLockFov, so
+    // `el.checked = window.showLockFov` set the box from `undefined` - it
+    // rendered unticked - and the flag was then set to true afterwards. Box
+    // said off, cone drew anyway.
+    [['toggle-friendly-fire', 'friendlyFire'],
+     ['toggle-instant-companions', 'instantCompanions'],
+     ['toggle-lock-fov', 'showLockFov']].forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        window[key] = el.checked;
+        el.addEventListener('change', e => { window[key] = e.target.checked; });
+    });
     const punchBtnEl = document.getElementById('punch-btn');
     // The two combat toggles. Both sit on the punch button because both change
     // what punching does, and both are the kind of assist you want to flip
@@ -13953,6 +14122,18 @@ export function startGame(CharacterClass) {
             _punchRecoilVel.copy(_punchStepDir).multiplyScalar(-window.chargePunchKick);
             if (char.applyProceduralRecoil) {
                 char.applyProceduralRecoil(_punchRecoilVel, window.chargeKickIntensity);
+                // applyProceduralRecoil stages the STEP behind hitRecoveryDelay
+                // - a deliberate beat for a hit you are receiving, so the blow
+                // lands before you stagger. Releasing your own punch is not
+                // that: the kick is the release, and any gap between them
+                // reads as the recoil arriving late. Overwritten here rather
+                // than by changing hitRecoveryDelay, which every real hit in
+                // the game shares.
+                char.hitRecoveryTimer = (window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35);
+                if (char.hitRecoveryDir) {
+                    char.hitRecoveryDir.copy(_punchRecoilVel).setY(0);
+                    if (char.hitRecoveryDir.lengthSq() > 1e-6) char.hitRecoveryDir.normalize();
+                }
             }
             if (char.triggerHitFlash && window.chargeKickFlash > 0) {
                 char.triggerHitFlash(window.chargeKickFlash);
@@ -13992,8 +14173,23 @@ export function startGame(CharacterClass) {
     let lockedCarry = null;
     window.lockTargetEnabled = false;
     window.autoPunchEnabled = false;
-    window.lockOnRange = 3.0;      // close enough to be "in a fight"
-    window.lockOnDrop = 6.0;       // ...and how far before it lets go
+    // Both of these are READ by the targeting and the debug draw, and were
+    // only ever assigned by their panel handlers - so until you touched a
+    // slider, lockFovDeg was undefined, degToRad(undefined) was NaN, and every
+    // `dot >= NaN` came out false. Nothing was ever in view, so nothing could
+    // be locked: the whole feature looked broken until you nudged the cone
+    // size, which is exactly what set the value.
+    // Can YOUR attacks hurt your own companions? Off by default, which is the
+    // behaviour the game already had - no player attack path scans companions
+    // at all, so a thrown jar sails straight through one. The flag exists so
+    // that can be turned on deliberately rather than being an accident of
+    // which lists each hit test happens to walk.
+    if (window.friendlyFire === undefined) window.friendlyFire = false;
+    if (window.instantCompanions === undefined) window.instantCompanions = false;
+    window.lockFovDeg = 140;       // how wide the character's view cone is
+    if (window.showLockFov === undefined) window.showLockFov = false;  // debug aid, off by default
+    window.lockOnRange = 2.0;      // close enough to be "in a fight"
+    window.lockOnDrop = 5.0;       // ...and how far before it lets go
     window.autoPunchInterval = 0.55;
     // Auto punch has its OWN, shorter reach than the lock.
     //
@@ -14022,8 +14218,76 @@ export function startGame(CharacterClass) {
     // still near, otherwise the nearest one inside lockOnRange. The two radii
     // differ on purpose - one threshold would make the lock chatter on and off
     // while you fight at exactly that distance.
+    // The view cone, drawn flat on the ground under the player. Rebuilt only
+    // when its shape actually changes - a CircleGeometry per frame would be a
+    // new buffer upload sixty times a second for a debug aid.
+    let _fovMesh = null, _fovShape = '';
+    // Both of these were referenced by updateLockFovViz without ever being
+    // created - the scratch vector threw a ReferenceError on the first frame
+    // the cone drew, which killed the whole animate() call and froze the game
+    // the moment the checkbox was ticked. The drop was only ever assigned by
+    // its slider's change handler, so until you touched it the value was
+    // undefined and the height came out NaN.
+    const _fovHeadPos = new THREE.Vector3();
+    // ABOVE the head, not below. The cone represents where the character is
+    // LOOKING, and a wedge under the chin reads as something at chest height.
+    // Zero now means exactly at the head's centre, which is a sensible floor -
+    // there was no reason to want it any lower than that.
+    if (window.lockFovRise === undefined) window.lockFovRise = 0;
+    function updateLockFovViz() {
+        // NOT gated on lockTargetEnabled. That toggle is off by default, so
+        // the cone was hidden until you happened to turn locking on - which
+        // makes a debug display useless for the thing it is meant to explain,
+        // namely why a target was or was not acquired.
+        const on = window.showLockFov && !!char && !!char.group;
+        if (!on) { if (_fovMesh) _fovMesh.visible = false; return; }
+        const shape = window.lockFovDeg + '/' + window.lockOnRange;
+        if (!_fovMesh || _fovShape !== shape) {
+            if (_fovMesh) { scene.remove(_fovMesh); _fovMesh.geometry.dispose(); }
+            const half = THREE.MathUtils.degToRad(window.lockFovDeg) * 0.5;
+            // CircleGeometry lies in XY with its angle measured from +X, and
+            // rotateX(-90) below maps an angle t to the ground direction
+            // (cos t, -sin t). The character faces +Z, so the centre has to be
+            // the t where -sin t = 1: that is -PI/2, not +PI/2. Using +PI/2
+            // put the wedge behind the player.
+            const geo = new THREE.CircleGeometry(window.lockOnRange, 48, -Math.PI * 0.5 - half, half * 2);
+            geo.rotateX(-Math.PI / 2);
+            _fovMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                color: 0x44ddff, transparent: true, opacity: 0.16,
+                depthWrite: false, side: THREE.DoubleSide,
+            }));
+            _fovMesh.raycast = () => {};   // a debug wedge must never be a wall
+            _fovMesh.renderOrder = 2;
+            scene.add(_fovMesh);
+            _fovShape = shape;
+        }
+        _fovMesh.visible = true;
+        // At eye level, not on the ground - a cone drawn at the feet reads as
+        // a floor decal and tells you nothing about where the character is
+        // LOOKING. Taken from the head bone so it follows the real pose, and
+        // dropped just under the head's centre.
+        //
+        // The drop scales with headScale because the head does: at 0.4 the
+        // head is a fraction of the size it is at 1.0, and a fixed offset that
+        // sat neatly under the chin at one size floats well clear of it at the
+        // other.
+        const hb = getHeadBone(char);
+        let coneY = char.group.position.y + 1.55;
+        if (hb) { hb.getWorldPosition(_fovHeadPos); coneY = _fovHeadPos.y; }
+        coneY += window.lockFovRise * (window.headScale !== undefined ? window.headScale : 1);
+        // x/z from the ROOT, not the head: the head sways with every walk
+        // cycle, and a cone swinging side to side would read as the targeting
+        // being unstable when it is not.
+        _fovMesh.position.set(char.group.position.x, coneY, char.group.position.z);
+        _fovMesh.quaternion.copy(char.group.quaternion);
+        // Green once something is actually locked, so the cone doubles as a
+        // readout of whether the targeting agrees with what you can see.
+        _fovMesh.material.color.setHex(lockedBot ? 0x66ff88 : 0x44ddff);
+    }
+
     function updateLockTarget() {
         if (!window.lockTargetEnabled || char.isRagdoll || char.isStandingUp) { lockedBot = null; return; }
+
         const p = char.group.position;
         // A sandbag counts as a target. It has no isLoaded/isRagdoll of its
         // own, so the test is written to pass anything with a group that is
@@ -14053,10 +14317,27 @@ export function startGame(CharacterClass) {
         if (isBot(lockedBot) && usable(lockedBot) &&
             p.distanceTo(lockedBot.group.position) <= holdRange) return;
 
+        // Acquiring also needs the target to be IN VIEW. Holding one does not:
+        // once you are squared up to something, turning slightly away should
+        // not drop it, or the lock would let go every time you sidestepped.
+        const _fovFwd = _lockVec.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+        _fovFwd.y = 0;
+        if (_fovFwd.lengthSq() > 1e-6) _fovFwd.normalize();
+        const cosHalf = Math.cos(THREE.MathUtils.degToRad(window.lockFovDeg) * 0.5);
+        const inView = (t) => {
+            const tp = t.group.position;
+            const dx = tp.x - p.x, dz = tp.z - p.z;
+            const len = Math.hypot(dx, dz);
+            // Practically on top of you counts as seen - at zero distance the
+            // direction is meaningless and the test would flicker.
+            if (len < 0.4) return true;
+            return (dx / len) * _fovFwd.x + (dz / len) * _fovFwd.z >= cosHalf;
+        };
+
         let best = window.lockOnRange, found = null;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
-            if (!usable(b)) continue;
+            if (!usable(b) || !inView(b)) continue;
             const d = p.distanceTo(b.group.position);
             if (d < best) { best = d; found = b; }
         }
@@ -14065,7 +14346,7 @@ export function startGame(CharacterClass) {
             let bagBest = window.lockOnRange;
             for (let i = 0; i < window.sacks.length; i++) {
                 const sk = window.sacks[i];
-                if (!usable(sk)) continue;
+                if (!usable(sk) || !inView(sk)) continue;
                 const d = p.distanceTo(sk.group.position);
                 if (d < bagBest) { bagBest = d; found = sk; }
             }
@@ -14430,13 +14711,16 @@ export function startGame(CharacterClass) {
         { id: 'charge-kick-slider', vId: 'charge-kick-val', func: v => window.chargePunchKick = v, fix: 2 },
         { id: 'charge-kick-flash-slider', vId: 'charge-kick-flash-val', func: v => window.chargeKickFlash = v, fix: 2 },
         { id: 'lock-range-slider', vId: 'lock-range-val', func: v => { window.lockOnRange = v; window.lockOnDrop = v + 3; }, fix: 1 },
+        { id: 'lock-fov-slider', vId: 'lock-fov-val', func: v => window.lockFovDeg = v, fix: 0 },
+        { id: 'lock-fov-rise-slider', vId: 'lock-fov-rise-val', func: v => window.lockFovRise = v, fix: 2 },
         { id: 'auto-punch-int-slider', vId: 'auto-punch-int-val', func: v => window.autoPunchInterval = v, fix: 2 },
         { id: 'auto-punch-range-slider', vId: 'auto-punch-range-val', func: v => window.autoPunchRange = v, fix: 1 },
         { id: 'charge-auto-range-slider', vId: 'charge-auto-range-val', func: v => window.chargeAutoRange = v, fix: 1 },
         { id: 'ai-punch-range-slider', vId: 'ai-punch-range-val', func: v => window.aiPunchRange = v, fix: 2 },
         { id: 'ai-charge-range-slider', vId: 'ai-charge-range-val', func: v => window.aiChargeRange = v, fix: 2 },
         { id: 'ai-punch-step-slider', vId: 'ai-punch-step-val', func: v => window.aiPunchStep = v, fix: 2 },
-        { id: 'loco-anim-speed-slider', vId: 'loco-anim-speed-val', func: v => window.locoAnimSpeed = v, fix: 2 },
+        { id: 'walk-anim-speed-slider', vId: 'walk-anim-speed-val', func: v => window.walkAnimSpeed = v, fix: 2 },
+        { id: 'run-anim-speed-slider', vId: 'run-anim-speed-val', func: v => window.runAnimSpeed = v, fix: 2 },
         { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
         { id: 'bubble-bottom-slider', vId: 'bubble-bottom-val', func: v => window.bubbleBottomMargin = v, fix: 0 },
         { id: 'bubble-maxy-slider', vId: 'bubble-maxy-val', func: v => window.bubbleMaxYFrac = v, fix: 2 },
@@ -15614,7 +15898,7 @@ export function startGame(CharacterClass) {
         // Before the uniform upload below, never after: uWaterLevel and
         // uFoamLevel are both read straight off mesh.position.y, so moving the
         // surface afterwards would leave the foam a frame behind it.
-        if (currentLevel === 'local_forest') updateForestLakeSurfaces();
+        if (isForestLevel()) updateForestLakeSurfaces();
         waterBodies.forEach(wb => {
             wb.uniforms.uTime.value = clock.elapsedTime;
             // These aren't part of the shared foam `uniforms` object (only
@@ -17086,8 +17370,16 @@ export function startGame(CharacterClass) {
                     // to throw it at. Routed through staggerBot like every
                     // other hit, so the poise pool and the knockdown rule are
                     // the same ones punching obeys.
-                    for (let bi = 0; bi < aiBots.length; bi++) {
-                        const b = aiBots[bi].bot;
+                    // Bots always; companions only with friendly fire on.
+                    // Built as one list so a thrown jar cannot quietly treat
+                    // the two differently in some other way later.
+                    const throwTargets = [];
+                    for (let bi = 0; bi < aiBots.length; bi++) throwTargets.push(aiBots[bi].bot);
+                    if (window.friendlyFire) {
+                        for (let ci2 = 0; ci2 < companions.length; ci2++) throwTargets.push(companions[ci2].comp);
+                    }
+                    for (let bi = 0; bi < throwTargets.length; bi++) {
+                        const b = throwTargets[bi];
                         if (!b.isLoaded || b.isRagdoll) continue;
                         if (b.getHitReferencePoint(_tempVec2).distanceTo(c.mesh.position) < hitRadius + 1.0) {
                             const vel = _tempVec1.copy(impactDir).multiplyScalar(hitForce);
@@ -17811,7 +18103,9 @@ export function startGame(CharacterClass) {
                     (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && !isLedgeGrabbing)
                         ? 'flex' : 'none';
             }
+            updateSkipButton();
             updateLockTarget();
+            updateLockFovViz();
             updateAutoPunch(delta);
             updatePunchMomentum(delta);
 
@@ -18787,6 +19081,8 @@ export function startGame(CharacterClass) {
                     // already does (see hitRecoveryAnimState). Without it you
                     // get the forward walk cycle while moonwalking sideways.
                     let moveState = 'walk';
+                    window._chargeStrafeSide = null;
+                    window._chargeMovingBack = false;
                     if (lockedBot && _lastMoveDir.lengthSq() > 1e-6) {
                         _lockVec.copy(_lastMoveDir).applyQuaternion(
                             _tempQuat.copy(char.group.quaternion).invert());
@@ -18799,6 +19095,12 @@ export function startGame(CharacterClass) {
                         moveState = Math.abs(_lockVec.x) > Math.abs(_lockVec.z)
                             ? (_lockVec.x > 0 ? 'strafe_left' : 'strafe_right')
                             : (_lockVec.z > 0 ? 'walk' : 'walk_backward');
+                        // Published for the charge hold, which needs the side
+                        // to pick its own authored clip - see the charge branch
+                        // in CombatController.update.
+                        window._chargeStrafeSide = moveState === 'strafe_left' ? 'left'
+                            : moveState === 'strafe_right' ? 'right' : null;
+                        window._chargeMovingBack = moveState === 'walk_backward';
                     }
                     char.animate(delta, moveState, moveMag, time, yVelocity, 0);
                     networkStateName = moveState === 'walk' ? (moveMag > 0.8 ? 'run' : 'walk') : moveState;
@@ -18946,7 +19248,7 @@ export function startGame(CharacterClass) {
         }
         // Before both consumers - the bot reads the trail to find where the
         // player left its level, the companion to retrace their route.
-        if (currentLevel === 'local_forest') applyForestFoam();
+        if (isForestLevel()) applyForestFoam();
         // Published for the companions' ledge-clearance test, which has to
         // know whether the player is HOLDING a grip or merely standing near
         // one - see hangSpotTaken.

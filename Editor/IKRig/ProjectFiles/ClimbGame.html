@@ -27,6 +27,9 @@
            the layer so a bubble over a control never eats the tap. */
         #world-labels { position: absolute; inset: 0; z-index: 150; pointer-events: none; overflow: hidden; }
         .world-label { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
+        /* A tappable line gets a little more presence than an ambient one -
+           it is asking to be pressed, so it should not look like scenery. */
+        .world-label[style*="pointer-events: auto"] .wl-box { border-color: rgba(255,255,255,0.9); }
         .world-label .wl-box {
             background: rgba(15, 15, 20, 0.92);
             border: 2px solid rgba(255, 255, 255, 0.6);
@@ -378,6 +381,11 @@
          couple of metres away. Positioned per frame by projecting the
          speaker's head - see updateWorldLabels in game_js.js. -->
     <div id="world-labels"></div>
+    <!-- SKIP, standing on its own now that dialogue plays in speech bubbles
+         rather than in a panel - it used to be a child of that panel, so
+         hiding the panel took the button with it. Shown only while there is
+         something to skip (see updateSkipButton). -->
+    <div id="dialogue-skip" style="display:none; position:absolute; right:14px; top:14px; padding:6px 14px; font-size:13px; font-family:monospace; font-weight:bold; letter-spacing:0.08em; color:rgba(255,255,255,0.85); background:rgba(20,20,26,0.75); border:1px solid rgba(255,255,255,0.4); border-radius:6px; cursor:pointer; touch-action:none; user-select:none; z-index:210;">SKIP &#187;</div>
 
     <!-- Village NPC dialogue box - old-game-style typewriter text, tap to
          advance once the ▼ "continue" marker shows (see
@@ -400,11 +408,6 @@
             <img id="dialogue-icon" style="display:none; height:40px; width:auto; flex:0 0 auto; filter: drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff) drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff);">
             <div style="flex:1 1 auto; min-width:0;"><span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span></div>
         </div>
-        <!-- Skip. Ends the conversation AND, in the forest's opening, the
-             tutorial with it - for replaying a level, and for not punching a
-             sandbag five times on every reload. Its own pointerdown stops the
-             box's advance handler from also firing. -->
-        <div id="dialogue-skip" style="position:absolute; right:10px; bottom:6px; padding:3px 12px; font-size:12px; font-family:monospace; font-weight:bold; letter-spacing:0.08em; color:rgba(255,255,255,0.75); background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.3); border-radius:5px; cursor:pointer; touch-action:none; user-select:none;">SKIP &#187;</div>
         <!-- Downward-pointing tail, same shape/idea as the in-world "Hey!"
              speech bubble's own tail (createSpeechBubbleSprite) so this
              screen-space panel reads as pointing at the NPC too. Two nested
@@ -608,8 +611,15 @@
                     <label>Charge Kick Flash: <span id="charge-kick-flash-val">0.50</span></label><br>
                     <input type="range" id="charge-kick-flash-slider" min="0" max="3" step="0.05" value="0.5" style="width: 100%;"><br>
                     <label><input type="checkbox" id="charge-kick-hard"> Charge Kick: harder recoil</label><br>
-                    <label>Lock-On Range: <span id="lock-range-val">3.0</span></label><br>
-                    <input type="range" id="lock-range-slider" min="1" max="15" step="0.5" value="3.0" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-instant-companions"> Instant Companions (skip the tutorial beats)</label><br>
+                    <label><input type="checkbox" id="toggle-friendly-fire"> Friendly Fire (hit your own companions)</label><br>
+                    <label><input type="checkbox" id="toggle-lock-fov"> Show Vision Cone</label><br>
+                    <label>Vision Cone: <span id="lock-fov-val">140</span>&deg;</label><br>
+                    <input type="range" id="lock-fov-slider" min="20" max="360" step="5" value="140" style="width: 100%;"><br>
+                    <label>Cone Rise Above Head: <span id="lock-fov-rise-val">0.00</span></label><br>
+                    <input type="range" id="lock-fov-rise-slider" min="0" max="2" step="0.05" value="0" style="width: 100%;"><br>
+                    <label>Lock-On Range: <span id="lock-range-val">2.0</span></label><br>
+                    <input type="range" id="lock-range-slider" min="1" max="15" step="0.5" value="2.0" style="width: 100%;"><br>
                     <label>Auto Punch Range: <span id="auto-punch-range-val">1.6</span></label><br>
                     <input type="range" id="auto-punch-range-slider" min="0.5" max="12" step="0.1" value="1.6" style="width: 100%;"><br>
                     <label>Charge Auto Range: <span id="charge-auto-range-val">4.5</span></label><br>
@@ -620,8 +630,10 @@
                     <input type="range" id="ai-punch-range-slider" min="0.6" max="3" step="0.05" value="1.15" style="width: 100%;"><br>
                     <label>Enemy Charge Range: <span id="ai-charge-range-val">1.60</span></label><br>
                     <input type="range" id="ai-charge-range-slider" min="0.6" max="5" step="0.05" value="1.6" style="width: 100%;"><br>
-                    <label>Walk/Strafe Anim Speed: <span id="loco-anim-speed-val">1.25</span>x</label><br>
-                    <input type="range" id="loco-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.25" style="width: 100%;"><br>
+                    <label>Walk Anim Speed: <span id="walk-anim-speed-val">1.70</span>x</label><br>
+                    <input type="range" id="walk-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.7" style="width: 100%;"><br>
+                    <label>Run Anim Speed: <span id="run-anim-speed-val">1.00</span>x</label><br>
+                    <input type="range" id="run-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.0" style="width: 100%;"><br>
                     <label>Enemy Punch Step: <span id="ai-punch-step-val">1.60</span> u/s</label><br>
                     <input type="range" id="ai-punch-step-slider" min="0" max="6" step="0.1" value="1.6" style="width: 100%;"><br>
                     <label>Carry Lock Range: <span id="carry-lock-range-val">2.5</span></label><br>
@@ -777,8 +789,8 @@
                     <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
                     <label>Orange Recoil Force: <span id="orange-recoil-val">60.0</span></label><br>
                     <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="60.0" style="width: 100%;"><br>
-                    <label>Head Size (all characters): <span id="head-scale-val">0.70</span></label><br>
-                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.70" style="width: 100%;"><br>
+                    <label>Head Size (all characters): <span id="head-scale-val">0.40</span></label><br>
+                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.40" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -886,7 +898,8 @@
                     <button id="ai-bot-spawn-btn" style="width: 100%;">Spawn Enemies</button>
                     <button id="ai-bot-despawn-btn" style="width: 100%; margin-top: 6px; display: none;">Remove Enemies</button>
                     <div id="ai-bot-status" style="margin-top: 6px; opacity: 0.8;">not spawned</div>
-                    <label style="display: block; margin-top: 6px;"><input type="checkbox" id="ai-bot-path-toggle" checked> Show AI Bot Path</label>
+                    <label style="display: block; margin-top: 6px;"><input type="checkbox" id="ai-bot-path-toggle"> Show AI Bot Path</label>
+                    <label style="display: block;"><input type="checkbox" id="companion-path-toggle"> Show Companion Path</label>
                 </div>
             </div>
             <div class="category">
@@ -1647,7 +1660,13 @@
                 // them drained the other's poise too and whichever you hit
                 // last went down. It lives on the avatar now (see
                 // staggerPool), so each takes its own beating.
-                const enemies = window.aiBots || (window.aiBot ? [window.aiBot] : []);
+                // Bots always; your own companions only when friendly fire is
+                // switched on. Off (the default) is the behaviour the game
+                // shipped with - punches simply pass through a companion.
+                const enemies = (window.aiBots || (window.aiBot ? [window.aiBot] : [])).slice();
+                if (window.friendlyFire && window.companions) {
+                    for (const cmp of window.companions) enemies.push(cmp);
+                }
                 for (let bi = 0; bi < enemies.length; bi++) {
                     const bot = enemies[bi];
                     if (!bot || !bot.isLoaded || bot.isRagdoll) continue;
@@ -1711,7 +1730,72 @@
                         // Only the moving half changed: standing still is
                         // still the full-body punch_charge_hold, which is what
                         // carries the charge-paced timeScale below.
-                        if (wantWalkAnim && this.char.actions['punch_charge_hold_upper']) {
+                        // Sideways while charging gets its own authored clip -
+                        // a full-body swap, exactly like punch_walk, so the
+                        // pose stays authored instead of assembled from two
+                        // halves that disagree about the hips.
+                        //
+                        // window._chargeStrafeSide is published by the movement
+                        // code (see the lock-on classification in game_js.js):
+                        // 'left', 'right', or null when travel is forward or
+                        // backward.
+                        const strafeSide = wantWalkAnim ? window._chargeStrafeSide : null;
+                        // charge_back is authored from Charge Run Back - it is a
+                        // RUN. Using it for any backward movement made a slow
+                        // backstep look like a sprint, so it is reserved for
+                        // when the character is actually running: the same
+                        // moveMag > 0.8 threshold the rest of the locomotion
+                        // uses to tell a run from a walk. Backing off slowly
+                        // falls through to the split below, which puts
+                        // walk_backward under the held charge.
+                        const backRunning = window._chargeMovingBack && moveMag > 0.8;
+                        const strafeClip = strafeSide ? 'charge_strafe_' + strafeSide
+                            : (wantWalkAnim && backRunning ? 'charge_back' : null);
+                        if (strafeClip && this.char.actions[strafeClip]) {
+                            window._chargeHoldSplit = false;
+                            if (this.chargeHoldAnimName !== strafeClip) {
+                                const prevA = this.char.actions[this.chargeHoldAnimName];
+                                const prevF = prevA ? Math.min(1, prevA.time / prevA.getClip().duration) : 0;
+                                this.chargeHoldAnimName = strafeClip;
+                                // Full-body again, so any upper-only charge
+                                // pose left over from the split must go or it
+                                // will fight this clip's own arms.
+                                this.char.stopUpperAction(0.15);
+                                this.char.fadeToAction(strafeClip, 0.15);
+                                const na = this.char.actions[strafeClip];
+                                if (na) na.time = prevF * na.getClip().duration;
+                            }
+                            const growthS = Math.min(1, this.punchTimer / (this.chargeDuration || 1));
+                            this.updateUI(growthS);
+                            this.updateChargeEffect(delta);
+                            return;
+                        }
+                        // The split is the FALLBACK, not the default.
+                        //
+                        // Every direction with a purpose-authored clip uses it
+                        // full-body: forward is punch_walk, sideways is the
+                        // charge_strafe pair, running backward is charge_back.
+                        // Only walking backward has nothing authored, so only
+                        // that falls through to charge-hold-upper over a
+                        // borrowed lower body.
+                        //
+                        // This branch used to fire for ANY movement, which
+                        // quietly retired punch_walk - forward-while-charging
+                        // went from an authored clip to two halves stitched
+                        // together, and looked worse for it.
+                        const needsSplit = wantWalkAnim && window._chargeMovingBack;
+                        // punch_walk's OWN torso, not punch_charge_hold's.
+                        //
+                        // Walking backward should look, from the waist up,
+                        // exactly like walking forward - it is the same held
+                        // charge, only the legs differ. punch_charge_hold_upper
+                        // is the STANDING wind-up: it winds the arms up on a
+                        // charge-paced timeScale, which reads differently from
+                        // the settled carry punch_walk holds. Borrowing the
+                        // upper half of the forward clip makes the two match.
+                        const splitUpper = this.char.actions['punch_walk_upper']
+                            ? 'punch_walk_upper' : 'punch_charge_hold_upper';
+                        if (needsSplit && this.char.actions[splitUpper]) {
                             if (this.chargeHoldAnimName !== 'punch_walk') {
                                 // Carry the wind-up's progress across the swap,
                                 // measured as a FRACTION of each clip's own
@@ -1722,8 +1806,8 @@
                                 const prevFrac = prevAct
                                     ? Math.min(1, prevAct.time / prevAct.getClip().duration) : 0;
                                 this.chargeHoldAnimName = 'punch_walk';
-                                this.char.fadeToUpperAction('punch_charge_hold_upper', 0.15);
-                                const upAct = this.char.actions['punch_charge_hold_upper'];
+                                this.char.fadeToUpperAction(splitUpper, 0.15);
+                                const upAct = this.char.actions[splitUpper];
                                 if (upAct) upAct.time = prevFrac * upAct.getClip().duration;
                             }
                             // ...and pace it to the CHARGE, not to the clip.
@@ -1735,8 +1819,12 @@
                             // so the arms tore through the whole wind-up in a
                             // fraction of a second and then sat clamped at its
                             // last frame, which is the broken upper-body pose.
-                            const holdUp = this.char.actions['punch_charge_hold_upper'];
-                            if (holdUp) {
+                            // Only the WIND-UP clip needs the charge-derived
+                            // pace. punch_walk_upper is a loop of a held pose,
+                            // so stretching it would just slow the arms down
+                            // for no reason.
+                            const holdUp = this.char.actions[splitUpper];
+                            if (holdUp && splitUpper === 'punch_charge_hold_upper') {
                                 holdUp.setEffectiveTimeScale(
                                     this.chargeDuration > 0
                                         ? (this.chargeHoldClipDuration || 1) / this.chargeDuration
@@ -2418,6 +2506,21 @@
                         // in the state machine: this way the action named
                         // strafe_left_run genuinely IS a left strafe, and
                         // every consumer of it stays honest.
+                        // Purpose-authored charge-and-strafe clips. Full-body,
+                        // like punch_walk - the upper/lower split could not do
+                        // this: punch_charge_hold_upper was authored over a
+                        // STANDING lower body, and laying it over a strafe
+                        // cycle whose hips rotate and shift sideways left the
+                        // arms sitting wrong on the torso. A clip authored as
+                        // one motion has no such disagreement.
+                        // Backward pair. run_backward is the fast counterpart
+                        // to WalkingBackwards; charge_back is authored with the
+                        // charge held, so it is right as a FULL-BODY clip the
+                        // same way the strafe pair is - no split needed.
+                        { name: 'run_backward', url: 'RunBackward.fbx' },
+                        { name: 'charge_back', url: 'ChargeRunBack.fbx' },
+                        { name: 'charge_strafe_left', url: 'ChargeStrafeLeft.fbx' },
+                        { name: 'charge_strafe_right', url: 'ChargeStrafeRight.fbx' },
                         { name: 'strafe_left_run', file: 'StrafeRunRight.fbx' },
                         { name: 'strafe_right_run', file: 'StrafeRunLeft.fbx' },
                         { name: 'walk_backward', file: 'WalkingBackwards.fbx' }
@@ -2434,7 +2537,11 @@
                     };
 
                     Promise.all(anims.map(anim => {
-                        return loader.loadAsync(baseUrl + anim.file)
+                        // `url` wins over `file` for clips served from beside
+                        // this page rather than from the asset repo - new ones
+                        // work the moment they are dropped in, without waiting
+                        // on a push.
+                        return loader.loadAsync(anim.url || (baseUrl + anim.file))
                             .then(animObj => {
                                 if (animObj.animations.length > 0) {
                                     if (anim.name === 'punch_charge') {
@@ -2493,14 +2600,14 @@
                     this.actions[name] = fullBodyAction;
 
                     if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land', 'punch_walk',
-                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward'].includes(name)) {
+                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward', 'run_backward'].includes(name)) {
                         const lowerClip = makeLowerBodyClip(clip);
                         const lowerAction = this.mixer.clipAction(lowerClip);
                         this.setupActionProperties(name + '_lower', lowerAction);
                         this.actions[name + '_lower'] = lowerAction;
                     }
 
-                    if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch'].includes(name)) {
+                    if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'punch_walk'].includes(name)) {
                         const upperClip = makeUpperBodyClip(clip, spineBlend);
                         const upperAction = this.mixer.clipAction(upperClip);
                         this.setupActionProperties(name + '_upper', upperAction);
@@ -2907,7 +3014,7 @@
 
                 if (isCarrying) {
                     if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land',
-                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward'].includes(name)) {
+                         'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward', 'run_backward'].includes(name)) {
                         targetActionName = name + '_lower';
                     }
                 }
@@ -2927,13 +3034,23 @@
                 let timeScale = 1.0;
                 if (targetActionName.includes('climb')) timeScale = this.climbSpeed;
                 else if (targetActionName.includes('land')) timeScale = this.landSpeed;
-                // Walk, run and the four strafes share one multiplier. The
-                // clips were authored at a gentler pace than the speeds the
-                // character actually travels at, so the feet skated - most
-                // visibly on the strafes, which cover ground fast.
-                else if (targetActionName.startsWith('walk') || targetActionName.startsWith('run') ||
-                         targetActionName.startsWith('strafe')) {
-                    timeScale = window.locoAnimSpeed !== undefined ? window.locoAnimSpeed : 1.25;
+                // Walking and running get SEPARATE multipliers.
+                //
+                // One shared value was wrong: it was meant to stop the walk and
+                // the strafes skating, but startsWith('run') dragged the run
+                // cycle along with them - and startsWith caught 'runup' too,
+                // which is not locomotion at all. Matched by exact name now,
+                // with any '_lower' suffix stripped first so the split clips
+                // used under a punch are paced like their full-body originals.
+                else {
+                    const base = targetActionName.replace(/_lower$/, '');
+                    if (base === 'run' || base === 'run_backward' ||
+                        base === 'strafe_left_run' || base === 'strafe_right_run') {
+                        timeScale = window.runAnimSpeed !== undefined ? window.runAnimSpeed : 1.0;
+                    } else if (base === 'walk' || base === 'walk_backward' ||
+                               base === 'strafe_left_walk' || base === 'strafe_right_walk') {
+                        timeScale = window.walkAnimSpeed !== undefined ? window.walkAnimSpeed : 1.25;
+                    }
                 }
 
                 this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
