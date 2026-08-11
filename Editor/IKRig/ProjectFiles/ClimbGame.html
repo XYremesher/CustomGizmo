@@ -608,8 +608,8 @@
                     <label>Charge Kick Flash: <span id="charge-kick-flash-val">0.50</span></label><br>
                     <input type="range" id="charge-kick-flash-slider" min="0" max="3" step="0.05" value="0.5" style="width: 100%;"><br>
                     <label><input type="checkbox" id="charge-kick-hard"> Charge Kick: harder recoil</label><br>
-                    <label>Lock-On Range: <span id="lock-range-val">6.0</span></label><br>
-                    <input type="range" id="lock-range-slider" min="1" max="15" step="0.5" value="6.0" style="width: 100%;"><br>
+                    <label>Lock-On Range: <span id="lock-range-val">3.0</span></label><br>
+                    <input type="range" id="lock-range-slider" min="1" max="15" step="0.5" value="3.0" style="width: 100%;"><br>
                     <label>Auto Punch Range: <span id="auto-punch-range-val">1.6</span></label><br>
                     <input type="range" id="auto-punch-range-slider" min="0.5" max="12" step="0.1" value="1.6" style="width: 100%;"><br>
                     <label>Charge Auto Range: <span id="charge-auto-range-val">4.5</span></label><br>
@@ -1700,6 +1700,58 @@
                         // stationary pose - see the comment on
                         // chargeWalkStopTimer in the constructor.
                         const wantWalkAnim = isMovingNow || (this.chargeHoldAnimName === 'punch_walk' && this.chargeWalkStopTimer < 0.2);
+                        // MOVING while charging is handled by the upper/lower
+                        // split instead of the full-body punch_walk, so the
+                        // legs are free to play whichever locomotion clip the
+                        // dispatch picked - including the strafes. punch_walk
+                        // is a single forward cycle and has no sideways
+                        // variant, which is why charging used to lock you into
+                        // walking forward no matter which way you moved.
+                        //
+                        // Only the moving half changed: standing still is
+                        // still the full-body punch_charge_hold, which is what
+                        // carries the charge-paced timeScale below.
+                        if (wantWalkAnim && this.char.actions['punch_charge_hold_upper']) {
+                            if (this.chargeHoldAnimName !== 'punch_walk') {
+                                // Carry the wind-up's progress across the swap,
+                                // measured as a FRACTION of each clip's own
+                                // length - the same trick the full-body swap
+                                // below uses, so stepping off mid-charge does
+                                // not jump the arms back to the start.
+                                const prevAct = this.char.actions[this.chargeHoldAnimName];
+                                const prevFrac = prevAct
+                                    ? Math.min(1, prevAct.time / prevAct.getClip().duration) : 0;
+                                this.chargeHoldAnimName = 'punch_walk';
+                                this.char.fadeToUpperAction('punch_charge_hold_upper', 0.15);
+                                const upAct = this.char.actions['punch_charge_hold_upper'];
+                                if (upAct) upAct.time = prevFrac * upAct.getClip().duration;
+                            }
+                            // ...and pace it to the CHARGE, not to the clip.
+                            //
+                            // punch_charge_hold is a wind-up that is meant to
+                            // take exactly as long as the charge does - the
+                            // full-body path stretches it with a timeScale for
+                            // that reason. fadeToUpperAction leaves it at 1.0,
+                            // so the arms tore through the whole wind-up in a
+                            // fraction of a second and then sat clamped at its
+                            // last frame, which is the broken upper-body pose.
+                            const holdUp = this.char.actions['punch_charge_hold_upper'];
+                            if (holdUp) {
+                                holdUp.setEffectiveTimeScale(
+                                    this.chargeDuration > 0
+                                        ? (this.chargeHoldClipDuration || 1) / this.chargeDuration
+                                        : 1);
+                            }
+                            // Charge progress is measured from punchTimer, not
+                            // from clip time (see growthT below), so handing
+                            // the legs over costs nothing to the wind-up.
+                            window._chargeHoldSplit = true;
+                            const growthNow = Math.min(1, this.punchTimer / (this.chargeDuration || 1));
+                            this.updateUI(growthNow);
+                            this.updateChargeEffect(delta);
+                            return;
+                        }
+                        window._chargeHoldSplit = false;
                         const desiredHoldName = wantWalkAnim ? 'punch_walk' : 'punch_charge_hold';
                         if (desiredHoldName !== this.chargeHoldAnimName) {
                             const prevAction = this.char.actions[this.chargeHoldAnimName];
@@ -3376,6 +3428,23 @@ updateClimbing(delta) {
                         // and the throw animation would never advance.
                         if (isNewThrow && window.throwTrimStart) {
                             throwAction.time = window.throwTrimStart;
+                        }
+                    } else if (window.combat && window.combat.punchState === 4 && window._chargeHoldSplit) {
+                        // Charging AND moving. CombatController is holding the
+                        // charge on the UPPER action, so the legs are ours to
+                        // drive - same selection the isPunching branch below
+                        // makes, which is what gives us the strafe lowers.
+                        //
+                        // This branch has to DO the work rather than be empty:
+                        // an else-if that matches and does nothing does not
+                        // fall through to the later branches, it just leaves
+                        // the legs on whatever was already playing - which is
+                        // why charging stopped animating them at all.
+                        if (this.activeUpperAction) {
+                            const wantsWalkingLower = baseMoveState === 'walk' || baseMoveState === 'run';
+                            const lowerName = (wantsWalkingLower && this.actions['punch_walk_lower'])
+                                ? 'punch_walk_lower' : (baseMoveState + '_lower');
+                            if (this.actions[lowerName]) this.fadeToAction(lowerName, dur);
                         }
                     } else if (window.combat && window.combat.punchState === 4) {
                         // punch_charge_hold/punch_walk (charge-hold, state 4)

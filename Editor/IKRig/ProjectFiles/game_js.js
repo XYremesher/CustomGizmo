@@ -13992,8 +13992,8 @@ export function startGame(CharacterClass) {
     let lockedCarry = null;
     window.lockTargetEnabled = false;
     window.autoPunchEnabled = false;
-    window.lockOnRange = 6.0;      // close enough to be "in a fight"
-    window.lockOnDrop = 9.0;       // ...and how far before it lets go
+    window.lockOnRange = 3.0;      // close enough to be "in a fight"
+    window.lockOnDrop = 6.0;       // ...and how far before it lets go
     window.autoPunchInterval = 0.55;
     // Auto punch has its OWN, shorter reach than the lock.
     //
@@ -14043,8 +14043,15 @@ export function startGame(CharacterClass) {
         // bag is re-decided every frame and yields the moment a bot is in
         // range at all.
         const isBot = (t) => !!(t && !t.isSandbag);
+        // While a charge is being held, the CHARGE range is what holds the
+        // lock - not the generous drop radius. A charge punch is aimed, and
+        // walking out past the distance it can actually reach should let the
+        // target go rather than leaving you pointed at something you can no
+        // longer hit. punchState 4 is the wind-up.
+        const charging = window.combat && window.combat.punchState === 4;
+        const holdRange = charging ? window.chargeAutoRange : window.lockOnDrop;
         if (isBot(lockedBot) && usable(lockedBot) &&
-            p.distanceTo(lockedBot.group.position) <= window.lockOnDrop) return;
+            p.distanceTo(lockedBot.group.position) <= holdRange) return;
 
         let best = window.lockOnRange, found = null;
         for (let i = 0; i < aiBots.length; i++) {
