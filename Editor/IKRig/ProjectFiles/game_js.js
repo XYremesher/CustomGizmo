@@ -1466,7 +1466,18 @@ export function startGame(CharacterClass) {
     // a step change, so sitting exactly at AI_CATCHUP_NEAR would otherwise
     // flip the speed every frame.
     let _aiChaseRunning = false;
+    let _aiCounterT = 0;   // per-bot; carried by the context switch like the rest
+    // How long after YOUR attack ends a bot presses its counter, and how far
+    // away it has to be to care. The window is what turns a fight from you
+    // hitting a punchbag into an exchange: while you are swinging it eats the
+    // hits, and the moment you stop it comes at you.
+    window.aiCounterWindow = 1.4;
+    window.aiCounterRange = 9.0;
     function aiBotChaseSpeed(dist) {
+        // Countering overrides the walk band entirely. Normally a bot inside
+        // AI_CATCHUP_NEAR strolls the last stretch, which is right for an
+        // approach and wrong for a counter - it should be closing.
+        if (_aiCounterT > 0) return AI_RUN_SPEED;
         if (!_aiChaseRunning && dist > AI_CATCHUP_NEAR) _aiChaseRunning = true;
         else if (_aiChaseRunning && dist < AI_CATCHUP_NEAR - AI_CATCHUP_HYST) _aiChaseRunning = false;
         if (!_aiChaseRunning) return AI_WANDER_SPEED;
@@ -1845,6 +1856,50 @@ export function startGame(CharacterClass) {
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
+    window.compPunchStep = 2.0;    // companions close the last step while swinging too
+    window.enemyWakeRange = 16;    // how close you get before a sleeper notices
+
+    // ---- Assisted ledge grab ----
+    // Widens the window in which a lip counts as grabbable. Forgiveness, not
+    // automation: you still choose to jump and you still aim it - this only
+    // catches the attempts that were clearly meant and missed by a hand's
+    // width. Deliberately does NOT jump for you, and does not climb for you.
+    //
+    // 0.8 is the strict window - a grip sits 1.85 below its lip, so that is
+    // how far off that height the lip may be. 1.5 roughly doubles it, which is
+    // the difference between "I have to hit it" and "I have to reach it".
+    window.assistedGrab = true;
+    window.ledgeGrabTolStrict = 0.8;
+    window.ledgeGrabTolAssist = 1.5;
+    // ---- Auto jump ----
+    // Walk at a wall whose lip you could reach, and the character jumps for
+    // you. Paired with the grab assist rather than separate from it: this puts
+    // you in the air, that catches the lip - together they turn "walk at the
+    // ledge" into "get up the ledge".
+    //
+    // Deliberately narrow. It only fires when ALL of these hold:
+    //   - you are on the ground, moving, and not carrying anything
+    //   - there is a wall within arm's reach in the direction you are moving
+    //   - its top is high enough to need a jump, and low enough to reach one
+    // So walking past scenery does nothing, and a wall you could simply step
+    // onto does nothing either - it is not a jump if you did not need one.
+    window.autoJump = true;
+    window.autoJumpProbe = 1.1;      // how far ahead a wall counts
+    window.autoJumpMinRise = 0.7;    // below this you just walk up it
+    window.autoJumpMaxRise = 3.4;    // above this a jump would not reach
+    // ---- Auto jump: gaps ----
+    window.autoJumpGaps = true;
+    window.autoJumpGapLook = 2.5;    // how far ahead an edge is searched for
+    window.autoJumpGapTakeoff = 1.0; // ...and how close before it actually jumps
+    window.autoJumpGapDrop = 1.2;    // a fall bigger than this counts as a gap
+    window.autoJumpGapReach = 5.0;   // just inside the real 5.33 flat reach
+    window.autoJumpGapFall = 4.0;    // how far BELOW you a landing may be
+    let _autoJumpCd = 0;
+    const _ajFwd = new THREE.Vector3();
+    const _ajOrigin = new THREE.Vector3();
+    function ledgeGrabTol() {
+        return window.assistedGrab ? window.ledgeGrabTolAssist : window.ledgeGrabTolStrict;
+    }
     window.walkAnimSpeed = 1.7;    // walk + strafe-walk playback multiplier
     window.runAnimSpeed = 1.0;     // run + strafe-run, kept separate on purpose
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
@@ -2744,6 +2799,28 @@ export function startGame(CharacterClass) {
 
     function updateAiBot(delta) {
         if (!aiBot || !aiBot.isLoaded) return;
+        if (_aiCounterT > 0) _aiCounterT -= delta;
+        // Asleep until you walk into its patch.
+        //
+        // Every bot is built when the LEVEL is, then frozen - constructing one
+        // mid-play costs an FBX parse, a skeleton and a set of materials in a
+        // single frame, which is a visible hitch exactly when a fight is
+        // starting. Standing them up front and waking them on approach moves
+        // that cost into the load, where it is already being paid.
+        //
+        // A sleeping bot still gets update(delta) so it breathes on its idle
+        // clip; it just does not think, chase or swing.
+        if (aiBot.dormant) {
+            const dp = char.group.position;
+            if (dp.distanceTo(aiBot.group.position) < window.enemyWakeRange) {
+                aiBot.dormant = false;
+            } else {
+                const q = aiBot.group.quaternion, bp = aiBot.group.position;
+                aiBot.setNetworkState([bp.x, bp.y, bp.z], [q.x, q.y, q.z, q.w], 'idle', false);
+                aiBot.update(delta);
+                return;
+            }
+        }
         // Ticked BEFORE the ragdoll early-out below, or the clock would only
         // run once it was already back on its feet - a bot spends most of a
         // knockout lying down, and that time has to count.
@@ -3112,7 +3189,12 @@ export function startGame(CharacterClass) {
                 }
                 return false;
             })();
-            if (!lineBlocked && distToVictim < (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)) {
+            // Countering reaches a little further than a standing swing, so a
+            // bot that was knocked back a step still answers instead of having
+            // to walk in first and losing the moment.
+            const reach = (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)
+                + (_aiCounterT > 0 ? 0.5 : 0);
+            if (!lineBlocked && distToVictim < reach) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
@@ -3258,6 +3340,7 @@ export function startGame(CharacterClass) {
             climbTop: new THREE.Vector3(), climbQuat: new THREE.Quaternion(),
             climbModelRest: new THREE.Vector3(), climbBlendT: 0,
             climbWhy: 'none', climbRise: 0, climbPhase: 'none', climbT: 0, climbDur: 0,
+            counterT: 0,
             goalLine: null, stepLine: null,
         };
         rec.bot.setColor(opts.color);
@@ -3297,6 +3380,7 @@ export function startGame(CharacterClass) {
         _aiClimbFrom = rec.climbFrom; _aiClimbHang = rec.climbHang;
         _aiClimbTop = rec.climbTop; _aiClimbQuat = rec.climbQuat;
         _aiClimbModelRest = rec.climbModelRest; _aiClimbBlendT = rec.climbBlendT;
+        _aiCounterT = rec.counterT;
         _aiClimbWhy = rec.climbWhy; _aiClimbRise = rec.climbRise;
         _aiClimbPhase = rec.climbPhase; _aiClimbT = rec.climbT; _aiClimbDur = rec.climbDur;
         aiBotGoalLine = rec.goalLine; aiBotStepLine = rec.stepLine;
@@ -3310,6 +3394,7 @@ export function startGame(CharacterClass) {
         rec.recoverT = _aiRecoverT;
         rec.unstickT = _aiUnstickT;
         rec.climbBlendT = _aiClimbBlendT;
+        rec.counterT = _aiCounterT;
         rec.climbWhy = _aiClimbWhy; rec.climbRise = _aiClimbRise;
         rec.climbPhase = _aiClimbPhase; rec.climbT = _aiClimbT; rec.climbDur = _aiClimbDur;
         rec.goalLine = aiBotGoalLine; rec.stepLine = aiBotStepLine;
@@ -4586,6 +4671,33 @@ export function startGame(CharacterClass) {
             _compPunchT += delta;
             _compFaceEuler.set(0, Math.atan2(tp.x - c.x, tp.z - c.z), 0);
             _compFaceQuat.setFromEuler(_compFaceEuler);
+            // Step INTO the swing, the way the player and the bots now do.
+            //
+            // A companion rooted for the whole string was the other half of
+            // two characters standing just outside each other's reach trading
+            // air: the bot creeps in to aiPunchRange*0.9 and stops, the
+            // companion never moved at all, and the gap that was left is
+            // wider than COMP_PUNCH_RANGE (1.9) - so the hit check at each
+            // frame found nobody close enough.
+            // Cleared every frame and set only while actually closing, so a
+            // punch thrown on the spot keeps its authored full-body clip.
+            companion.punchStepping = false;
+            {
+                const gapT = Math.hypot(tp.x - c.x, tp.z - c.z);
+                const want = COMP_PUNCH_RANGE * 0.75;
+                if (gapT > want) {
+                    const st = Math.min(window.compPunchStep * delta, gapT - want);
+                    const ux = (tp.x - c.x) / gapT, uz = (tp.z - c.z) / gapT;
+                    const nx2 = c.x + ux * st, nz2 = c.z + uz * st;
+                    // Only onto ground level with where it stands - it must not
+                    // punch its way up a step or off the ledge it is fighting on.
+                    const gy2 = companionGroundY(nx2, nz2, c.y);
+                    if (gy2 > -Infinity && Math.abs(gy2 - c.y) <= COMP_STEP_UP) {
+                        c.x = nx2; c.z = nz2; c.y = gy2;
+                        companion.punchStepping = true;
+                    }
+                }
+            }
             // The REAL combo clip when this companion has one - Punch_Combo.fbx,
             // the same five-hit string the player and the orange bot throw, on
             // its own hit frames. The alternating left/right jabs below are the
@@ -8830,6 +8942,9 @@ export function startGame(CharacterClass) {
         storyTestFrom = 0;
         storyFightBot = null;
         storyFightT = 0;
+        // The companions themselves are owned by the companion registry -
+        // this only drops the waiting list.
+        _freeRecruits = [];
         _forestTopReached = false;
         _forestStairsSeen = false;
         coachStep = -1;
@@ -9071,11 +9186,57 @@ export function startGame(CharacterClass) {
         // The bare forest: no NPCs, no lines, no beats - the companions are
         // just with you from the first frame, the way they would be in any
         // level that is not about meeting them.
-        if (currentLevel === 'local_forest_free' || window.instantCompanions) {
-            // Still spawn the practice bag - it is scenery worth having even
-            // when nobody is there to point at it.
+        if (window.instantCompanions) {
             spawnForestSandbag(forestMeetPoint().x + STORY_PAIR_HALF, forestMeetPoint().z);
             grantAllCompanions();
+            return;
+        }
+        if (currentLevel === 'local_forest_free') {
+            // The REAL companions, waiting - not stand-ins.
+            //
+            // A stand-in is a plain RemoteAvatar, which means it sits outside
+            // applyHeadScale's lists and wears a full-size head: you could
+            // tell at a glance it was not the character you were about to get.
+            // Spawning the actual companion and simply holding it in place
+            // removes the swap entirely - what you walk up to IS what follows
+            // you, with the right head, the right colour and the right
+            // animation set from the first frame.
+            //
+            // Held by pinning followOverride to where it stands. That is the
+            // same field the punch demo uses to send one to the sandbag, so
+            // "wait here" costs no new state: it walks to its own spot, gets
+            // there, and idles.
+            const m1 = forestMeetPoint(), m2 = forestMeetPoint2();
+            spawnForestSandbag(m1.x + STORY_PAIR_HALF, m1.z);
+            const spots = [
+                { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z },
+                { key: 'CompDark', x: m2.x, y: null, z: m2.z },
+                { key: 'CompPale', x: FOREST_EXIT_X + 4.0, y: forestFrameTopY(),
+                  z: (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5 },
+            ];
+            _freeRecruits = [];
+            spots.forEach(sp => {
+                const y = sp.y === null ? storyGroundY(sp.x, sp.z, 0) : sp.y;
+                const at = new THREE.Vector3(sp.x, y, sp.z);
+                const comp = storyRecruit(sp.key, at, 0);
+                if (!comp) return;
+                comp.group.position.copy(at);
+                comp.followOverride = at;   // stand here until spoken to
+                _freeRecruits.push({ comp, at });
+            });
+            // Every enemy in the level, placed now and asleep. One of them
+            // per beat, where that beat happens: the first clearing, the far
+            // island, and the top of the stairs. They wake when you get close
+            // (see aiBot.dormant), so nothing is constructed mid-fight.
+            const topStepZ = FOREST_PLATFORM_Z0 - FOREST_STEP_SIZE * 0.5;
+            const topStepY = Math.min(forestFrameTopY(),
+                Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE - 1) * FOREST_STEP_SIZE);
+            storyPlaceBot('BotYellow', m1.x + FREE_WAVE_SPREAD, storyGroundY(m1.x + FREE_WAVE_SPREAD, m1.z + FREE_WAVE_SPREAD, 0), m1.z + FREE_WAVE_SPREAD, true);
+            storyPlaceBot('BotOrange', m2.x + FREE_WAVE_SPREAD, storyGroundY(m2.x + FREE_WAVE_SPREAD, m2.z + FREE_WAVE_SPREAD, 0), m2.z + FREE_WAVE_SPREAD, true);
+            storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
+
+            storyStage = 'free';
+            window.compassTarget = _freeRecruits.length ? _freeRecruits[0].at : null;
             return;
         }
         // Standing right at the spawn, a few steps along the route - close
@@ -9445,7 +9606,7 @@ export function startGame(CharacterClass) {
     // the yellow and orange are already in the level - somewhere far below,
     // very likely knocked out. Moving them is the only way to stage a fight up
     // here without duplicating characters the player has already met.
-    function storyPlaceBot(key, x, y, z) {
+    function storyPlaceBot(key, x, y, z, dormant) {
         const spec = AI_BOT_SPECS.find(sp => sp.key === key);
         if (!spec) return;
         const rec = aiBots.find(r => r.bot.id === spec.id);
@@ -9458,6 +9619,7 @@ export function startGame(CharacterClass) {
             rec.bot.knockedOutT = 0;
             rec.bot._lastDownAt = undefined;
             rec.bot._koAnnounced = false;
+            rec.bot.dormant = !!dormant;
             setBotKnockedOutLook(rec.bot, false);
             return;
         }
@@ -9467,6 +9629,37 @@ export function startGame(CharacterClass) {
         if (el) el.checked = true;
         syncSpawnedAgents();
         _aiBotSpawnOverride = null;
+    }
+
+    // The story-free forest's only rule: get close to one and it joins you.
+    // Companions waiting to be collected in the story-free forest. They are
+    // already real companions - updateCompanions drives them, so they idle and
+    // foot-plant like anything else - just pinned to a spot until you arrive.
+    let _freeRecruits = [];
+    const FREE_WAVE_SPREAD = 3.5;   // how far either side of the spot they land
+    function updateFreeRecruits() {
+        if (currentLevel !== 'local_forest_free' || !_freeRecruits.length) return;
+        const p = char.group.position;
+        let released = false;
+        for (let i = 0; i < _freeRecruits.length; i++) {
+            const r = _freeRecruits[i];
+            if (!r.comp || !r.comp.followOverride) continue;
+            if (p.distanceTo(r.at) > STORY_REACH) continue;
+            // Released: from here it follows you like any other companion.
+            // Nothing is created or destroyed, so there is nothing to pop.
+            r.comp.followOverride = null;
+            released = true;
+            // No spawning here any more - the enemy for this beat has been
+            // standing in the clearing since the level was built, asleep. It
+            // wakes on its own when you get close enough, which is usually the
+            // same moment you reach the companion.
+        }
+        // Nothing is spawned on reaching the top either - the red one has
+        // been standing on that step since the level loaded.
+        if (released) {
+            const next = _freeRecruits.find(o => o.comp && o.comp.followOverride);
+            window.compassTarget = next ? next.at : (star.visible ? star.position : null);
+        }
     }
 
     function updateForestStory(delta) {
@@ -12758,7 +12951,7 @@ export function startGame(CharacterClass) {
     window.ditherStrength = 0.98;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
-    window.ditherFadeSpeed = 2.0;
+    window.ditherFadeSpeed = 7.0;
     // Radius of the see-through hole, in FRAMEBUFFER pixels (gl_FragCoord is
     // in framebuffer space, so this is compared against a drawing-buffer size,
     // not CSS pixels - they differ by devicePixelRatio on a phone).
@@ -13211,7 +13404,9 @@ export function startGame(CharacterClass) {
     // `el.checked = window.showLockFov` set the box from `undefined` - it
     // rendered unticked - and the flag was then set to true afterwards. Box
     // said off, cone drew anyway.
-    [['toggle-friendly-fire', 'friendlyFire'],
+    [['toggle-auto-jump', 'autoJump'],
+     ['toggle-charge-kick-lean', 'chargeKickLean'],
+     ['toggle-friendly-fire', 'friendlyFire'],
      ['toggle-instant-companions', 'instantCompanions'],
      ['toggle-lock-fov', 'showLockFov']].forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -13236,6 +13431,8 @@ export function startGame(CharacterClass) {
             paint();
             return el;
         };
+        // These two default ON, so `paint()` inside wire() lights them on the
+        // first frame rather than leaving a lit feature with a dark button.
         wire('lock-target-btn', () => window.lockTargetEnabled, v => {
             window.lockTargetEnabled = v;
             // Turning it off has to release immediately, or the character
@@ -13243,6 +13440,8 @@ export function startGame(CharacterClass) {
             if (!v) { lockedBot = null; }
         });
         wire('auto-punch-btn', () => window.autoPunchEnabled, v => { window.autoPunchEnabled = v; });
+        wire('assist-grab-btn', () => window.assistedGrab, v => { window.assistedGrab = v; });
+        wire('auto-jump-gap-btn', () => window.autoJumpGaps, v => { window.autoJumpGaps = v; });
         wire('carry-lock-btn', () => window.carryAutoLock, v => {
             window.carryAutoLock = v;
             if (!v) lockedCarry = null;
@@ -14067,11 +14266,40 @@ export function startGame(CharacterClass) {
     // is not a cost, it is a punishment - so it is not offered here.
     window.chargeKickIntensity = 'medium';
     window.chargeKickFlash = 0.5;
+    window.chargeKickLean = true;   // spine bend on release - suspect for the stale lean
     let _lastPunchState = 0;
     const _punchStepDir = new THREE.Vector3();
     const _punchProbe = new THREE.Vector3();
     const _punchRecoilVel = new THREE.Vector3();
     let _punchStepT = 0;
+    // Arms every nearby bot the moment YOUR attack finishes.
+    //
+    // While you are mid-combo they are being staggered and cannot act - which
+    // is correct, that is what the poise pool is for - but it meant the whole
+    // fight was you hitting and them absorbing. The counter window is the
+    // answer to that: the instant your swing ends, whoever is close comes at
+    // you at running speed with a slightly longer reach, so stopping to
+    // breathe is a decision with a cost.
+    let _lastPlayerPunchState = 0;
+    function updateEnemyCounters() {
+        const ps = window.combat ? window.combat.punchState : 0;
+        // The falling edge of ANY attack, jab or charge alike.
+        if (_lastPlayerPunchState > 0 && ps === 0) {
+            const p = char.group.position;
+            for (let i = 0; i < aiBots.length; i++) {
+                const rec = aiBots[i];
+                const b = rec.bot;
+                if (!b.isLoaded || b.isRagdoll || b.dormant || b.knockedOutT > 0) continue;
+                if (p.distanceTo(b.group.position) > window.aiCounterRange) continue;
+                // Written to the RECORD, not the live register: this runs
+                // outside the per-bot context switch, so the active bindings
+                // belong to whichever bot was updated last.
+                rec.counterT = window.aiCounterWindow;
+            }
+        }
+        _lastPlayerPunchState = ps;
+    }
+
     function updatePunchMomentum(delta) {
         if (_punchStepT > 0) _punchStepT -= delta;
         const cb = window.combat;
@@ -14120,7 +14348,16 @@ export function startGame(CharacterClass) {
             // The velocity points BACKWARD along your own facing - the
             // direction a blow arriving in your face would throw you.
             _punchRecoilVel.copy(_punchStepDir).multiplyScalar(-window.chargePunchKick);
-            if (char.applyProceduralRecoil) {
+            // The LEAN half of the kick is separable from the STEP half.
+            //
+            // applyProceduralRecoil does both: it pushes the step, and it bends
+            // the spine and twists the model. That bend is the same path
+            // CLAUDE.md records as settling into a stale angle after a hit -
+            // and firing it on yourself every single charge release is a lot
+            // of chances for it to stick, which looks like the character bent
+            // at the root. Off = you still get thrown backward, without the
+            // spine ever being touched.
+            if (char.applyProceduralRecoil && window.chargeKickLean) {
                 char.applyProceduralRecoil(_punchRecoilVel, window.chargeKickIntensity);
                 // applyProceduralRecoil stages the STEP behind hitRecoveryDelay
                 // - a deliberate beat for a hit you are receiving, so the blow
@@ -14129,11 +14366,13 @@ export function startGame(CharacterClass) {
                 // reads as the recoil arriving late. Overwritten here rather
                 // than by changing hitRecoveryDelay, which every real hit in
                 // the game shares.
-                char.hitRecoveryTimer = (window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35);
-                if (char.hitRecoveryDir) {
-                    char.hitRecoveryDir.copy(_punchRecoilVel).setY(0);
-                    if (char.hitRecoveryDir.lengthSq() > 1e-6) char.hitRecoveryDir.normalize();
-                }
+            }
+            // The step is set here either way, so turning the lean off costs
+            // the kick nothing - you are still thrown back, just not bent.
+            char.hitRecoveryTimer = (window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35);
+            if (char.hitRecoveryDir) {
+                char.hitRecoveryDir.copy(_punchRecoilVel).setY(0);
+                if (char.hitRecoveryDir.lengthSq() > 1e-6) char.hitRecoveryDir.normalize();
             }
             if (char.triggerHitFlash && window.chargeKickFlash > 0) {
                 char.triggerHitFlash(window.chargeKickFlash);
@@ -14171,8 +14410,8 @@ export function startGame(CharacterClass) {
     window.carryAutoLock = false;
     window.carryLockRange = 2.5;
     let lockedCarry = null;
-    window.lockTargetEnabled = false;
-    window.autoPunchEnabled = false;
+    window.lockTargetEnabled = true;    // on by default - see the lock buttons
+    window.autoPunchEnabled = true;     // ...and so is auto punch
     // Both of these are READ by the targeting and the debug draw, and were
     // only ever assigned by their panel handlers - so until you touched a
     // slider, lockFovDeg was undefined, degToRad(undefined) was NaN, and every
@@ -14719,6 +14958,9 @@ export function startGame(CharacterClass) {
         { id: 'ai-punch-range-slider', vId: 'ai-punch-range-val', func: v => window.aiPunchRange = v, fix: 2 },
         { id: 'ai-charge-range-slider', vId: 'ai-charge-range-val', func: v => window.aiChargeRange = v, fix: 2 },
         { id: 'ai-punch-step-slider', vId: 'ai-punch-step-val', func: v => window.aiPunchStep = v, fix: 2 },
+        { id: 'comp-punch-step-slider', vId: 'comp-punch-step-val', func: v => window.compPunchStep = v, fix: 2 },
+        { id: 'auto-jump-min-slider', vId: 'auto-jump-min-val', func: v => window.autoJumpMinRise = v, fix: 2 },
+        { id: 'auto-jump-max-slider', vId: 'auto-jump-max-val', func: v => window.autoJumpMaxRise = v, fix: 2 },
         { id: 'walk-anim-speed-slider', vId: 'walk-anim-speed-val', func: v => window.walkAnimSpeed = v, fix: 2 },
         { id: 'run-anim-speed-slider', vId: 'run-anim-speed-val', func: v => window.runAnimSpeed = v, fix: 2 },
         { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
@@ -15753,6 +15995,8 @@ export function startGame(CharacterClass) {
     });
 
     let gameReadyOverlayHidden = false;
+    let _readyWaitT = 0;
+    const READY_WAIT_MAX = 12;   // seconds before we show the game T-poses and all
     // Uses the RAW (unclamped) per-frame delta, not the 0.1s-capped `delta`
     // used everywhere else - the cap exists specifically to stop a slow
     // frame from blowing up physics/animation timing, which would otherwise
@@ -15972,7 +16216,19 @@ export function startGame(CharacterClass) {
             }
         }
 
-        if (!gameReadyOverlayHidden && char.isLoaded && window._cubesLoaded) {
+        // Everyone who is already in the level has to be RIGGED, not just the
+        // player. Companions and bots are now built when the level is (see the
+        // dormant enemies), and a RemoteAvatar has no clip playing until its
+        // FBX arrives - so the overlay used to lift on a scene full of
+        // T-posing figures. Waiting for them costs a moment of loading screen
+        // and buys a first frame that looks finished.
+        //
+        // The timeout is not optional: an asset that 404s would otherwise hold
+        // the overlay up forever, which is a worse failure than a T-pose.
+        _readyWaitT += rawDelta;
+        const castReady = _readyWaitT > READY_WAIT_MAX ||
+            (companions.every(r => r.comp.isLoaded) && aiBots.every(r => r.bot.isLoaded));
+        if (!gameReadyOverlayHidden && char.isLoaded && window._cubesLoaded && castReady) {
             gameReadyOverlayHidden = true;
             const overlay = document.getElementById('loading-overlay');
             if (overlay) overlay.classList.add('hidden');
@@ -17761,7 +18017,7 @@ export function startGame(CharacterClass) {
                             window._wrapTopRayLine.visible = false;
                         }
                         if (h.length > 0) debugHeightDiff = Math.abs(h[0].point.y - (char.group.position.y + 1.85));
-                        if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                        if (h.length > 0 && Math.abs(h[0].point.y - (char.group.position.y + 1.85)) < ledgeGrabTol()) {
                             const candX = sH[0].point.x + n.x*ledgeOffset;
                             const candZ = sH[0].point.z + n.z*ledgeOffset;
                             const candGroupY = h[0].point.y - 1.85;
@@ -17830,7 +18086,7 @@ export function startGame(CharacterClass) {
                                 rayDown.set(ledgeTopProbe, _downVec);
                                 const freshLedgeHits = rayDown.intersectObjects(solidCollidables);
                                 rayEnd = freshLedgeHits.length > 0 ? freshLedgeHits[0].point.clone() : ledgeTopProbe.clone().addScaledVector(_downVec, 4.0);
-                                if (freshLedgeHits.length > 0 && Math.abs(freshLedgeHits[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                                if (freshLedgeHits.length > 0 && Math.abs(freshLedgeHits[0].point.y - (char.group.position.y + 1.85)) < ledgeGrabTol()) {
                                     validLedgeTop = true;
                                     char.group.position.copy(_tempVec3);
                                     ledgeTarget.copy(freshLedgeHits[0].point);
@@ -17891,7 +18147,7 @@ export function startGame(CharacterClass) {
                                             const retreatLedgeProbe = retreatWallHits[0].point.clone().add(freshFwd.clone().multiplyScalar(0.2)).setY(retreatWallHits[0].point.y + 3.0);
                                             rayDown.set(retreatLedgeProbe, _downVec);
                                             const retreatLedgeHits = rayDown.intersectObjects(solidCollidables);
-                                            if (retreatLedgeHits.length > 0 && Math.abs(retreatLedgeHits[0].point.y - (char.group.position.y + 1.85)) < 0.8) {
+                                            if (retreatLedgeHits.length > 0 && Math.abs(retreatLedgeHits[0].point.y - (char.group.position.y + 1.85)) < ledgeGrabTol()) {
                                                 // Eased into over a few frames
                                                 // (below, every frame) instead
                                                 // of snapped instantly - the
@@ -18097,6 +18353,12 @@ export function startGame(CharacterClass) {
             // something - it decides whether a jar can be targeted at all, so
             // hiding it with the punch button would make it unreachable in the
             // exact situation it is for.
+            const grabBtn = document.getElementById('assist-grab-btn');
+            // Shown whenever climbing is possible at all - it is a traversal
+            // assist, so it has nothing to do with whether you can punch.
+            if (grabBtn) grabBtn.style.display = window.isCarryingObj ? 'none' : 'flex';
+            const gapBtn = document.getElementById('auto-jump-gap-btn');
+            if (gapBtn) gapBtn.style.display = window.isCarryingObj ? 'none' : 'flex';
             const carryLockBtn = document.getElementById('carry-lock-btn');
             if (carryLockBtn) {
                 carryLockBtn.style.display =
@@ -18107,6 +18369,119 @@ export function startGame(CharacterClass) {
             updateLockTarget();
             updateLockFovViz();
             updateAutoPunch(delta);
+            updateEnemyCounters();
+            // Defined here rather than at closure level: it reads isGrounded,
+            // isSliding and the ledge flags, all of which live in THIS scope.
+            // Declared further up it could not see them at all - it threw on
+            // its first call and took animate() with it, which is a permanent
+            // loading screen.
+            // Jumps a gap in front of you, if there is a landing on the far
+            // side you could actually reach.
+            //
+            // The reach is measured, not guessed: v0=10 against gravity 30
+            // gives 0.67s of air, and at the player's own top speed of 8 that
+            // is 5.33 units of ground. Scanning past that would promise jumps
+            // that fall short, which is worse than not jumping at all.
+            // Ground height straight down at a point, ignoring canopies.
+            function autoJumpGroundAt(x, z, fromY) {
+                rayDown.set(_tempVec1.set(x, fromY, z), _downVec);
+                const hits = rayDown.intersectObjects(collidables, true);
+                for (let i = 0; i < hits.length; i++) {
+                    if (hits[i].object.userData.isTreeCollider) continue;
+                    return hits[i].point.y;
+                }
+                return -Infinity;
+            }
+            function updateAutoJumpGap() {
+                const p0 = char.group.position;
+                // FIND the edge rather than sampling one point in front of the
+                // feet. A single probe at a fixed distance only notices a gap
+                // that happens to start exactly there: one starting slightly
+                // further out was invisible until the character had already
+                // walked off it, and by then it is airborne and this whole
+                // function has been skipped.
+                //
+                // Stepping outward finds the edge wherever it is, and the
+                // takeoff test below then decides whether NOW is the moment.
+                let edgeDist = -1;
+                for (let d = 0.3; d <= window.autoJumpGapLook; d += 0.25) {
+                    const gy = autoJumpGroundAt(p0.x + _ajFwd.x * d, p0.z + _ajFwd.z * d, p0.y + 1.0);
+                    if (p0.y - gy > window.autoJumpGapDrop) { edgeDist = d; break; }
+                }
+                if (edgeDist < 0) return;
+                // Close enough to launch from. Jumping the moment the edge is
+                // merely visible would waste most of the 5.33 of reach on
+                // ground you were still standing on.
+                if (edgeDist > window.autoJumpGapTakeoff) return;
+
+                // Somewhere to land, out along the same heading.
+                for (let d = edgeDist + 0.5; d <= window.autoJumpGapReach; d += 0.5) {
+                    const ly = autoJumpGroundAt(p0.x + _ajFwd.x * d, p0.z + _ajFwd.z * d,
+                        p0.y + window.autoJumpMaxRise + 1.0);
+                    if (ly === -Infinity) continue;
+                    // A landing has to be roughly level with you: too high and
+                    // the jump clips the face of it, too low and you were
+                    // going to fall down there anyway.
+                    if (ly - p0.y > window.autoJumpMaxRise) continue;
+                    if (p0.y - ly > window.autoJumpGapFall) continue;
+                    _autoJumpCd = 0.6;
+                    handleJump();
+                    return;
+                }
+            }
+
+            function updateAutoJump(delta) {
+                if (_autoJumpCd > 0) _autoJumpCd -= delta;
+                if (!window.autoJump || _autoJumpCd > 0) return;
+                if (!isGrounded || isLedgeGrabbing || isClimbingUp || isSliding) return;
+                if (window.isCarryingObj || window.isCarryStarting || window.dialogueInputLocked) return;
+                if (char.isRagdoll || char.isStandingUp) return;
+                // The direction actually being TRAVELLED, not the facing - locked on
+                // to an enemy you can strafe into a wall while looking elsewhere, and
+                // the jump should follow your feet.
+                if (_lastMoveDir.lengthSq() < 1e-6) return;
+                _ajFwd.copy(_lastMoveDir).setY(0).normalize();
+
+                _ajOrigin.copy(char.group.position).setY(char.group.position.y + 0.6);
+                rayFwd.set(_ajOrigin, _ajFwd);
+                const wallHits = rayFwd.intersectObjects(collidables, true);
+                let wall = null;
+                for (let i = 0; i < wallHits.length; i++) {
+                    const ud = wallHits[i].object.userData;
+                    // Canopies are not walls, and neither is anything you are carrying.
+                    if (ud.isTreeCollider || ud.isCarryable) continue;
+                    wall = wallHits[i]; break;
+                }
+                if (!wall || wall.distance > window.autoJumpProbe) {
+                    // No wall ahead - so the other case: a GAP.
+                    //
+                    // Same idea from the other side. Instead of "there is
+                    // something to climb", this is "the ground runs out and
+                    // there is ground again within a jump". Separately
+                    // toggleable because they are different promises: one gets
+                    // you UP something, this one carries you OVER a hole, and
+                    // wanting the first does not mean wanting the second.
+                    if (window.autoJumpGaps) updateAutoJumpGap();
+                    return;
+                }
+
+                // Where the top of that wall is: straight down from above, just past
+                // the face, skipping canopies the same way.
+                const px = wall.point.x + _ajFwd.x * 0.35, pz = wall.point.z + _ajFwd.z * 0.35;
+                rayDown.set(_tempVec1.set(px, char.group.position.y + window.autoJumpMaxRise + 2.0, pz), _downVec);
+                const topHits = rayDown.intersectObjects(collidables, true);
+                let lipY = null;
+                for (let i = 0; i < topHits.length; i++) {
+                    if (topHits[i].object.userData.isTreeCollider) continue;
+                    lipY = topHits[i].point.y; break;
+                }
+                if (lipY === null) return;
+                const rise = lipY - char.group.position.y;
+                if (rise < window.autoJumpMinRise || rise > window.autoJumpMaxRise) return;
+                _autoJumpCd = 0.6;   // one jump per approach, not a pogo stick
+                handleJump();
+            }
+            updateAutoJump(delta);
             updatePunchMomentum(delta);
 
             // Village NPC proximity trigger - only relevant while that
@@ -18591,7 +18966,18 @@ export function startGame(CharacterClass) {
                 }
             }
 
-            if (!isGrounded && yVelocity < 2 && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
+            // Normally you must be AIRBORNE to grab - a grip is something you
+            // catch on the way up or past. Standing in the river, though, you
+            // are grounded on the bed, so no grab was ever attempted and the
+            // widened window had nothing to widen: the wall in front of you
+            // simply did nothing.
+            //
+            // With the assist on, a grounded attempt is allowed too, but only
+            // while you are actively pushing into the wall. That last part is
+            // what stops it grabbing every waist-high kerb you happen to stand
+            // next to - you have to be walking at the thing.
+            const grabFromGround = window.assistedGrab && isGrounded && moveMag > 0.1;
+            if ((grabFromGround || (!isGrounded && yVelocity < 2)) && ledgeGrabCooldown <= 0 && !window.isCarryingObj && !window.isCarryStarting) {
                 // Aimed at actual movement INTENT, not the character's own
                 // facing - group.quaternion visually lags behind input
                 // while turning (curved running/strafing), so a jump timed
@@ -19255,6 +19641,7 @@ export function startGame(CharacterClass) {
         window.playerIsLedgeGrabbing = isLedgeGrabbing || isClimbingUp;
         updateVillageGoal();
         updateForestStory(delta);
+        updateFreeRecruits();
         updateRiverLesson();
         recordPlayerTrail(delta);
         updateAiBots(delta);

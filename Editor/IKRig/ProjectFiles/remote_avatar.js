@@ -48,7 +48,8 @@ const REMOTE_ANIMS = [
 // ClimbGame.html's setupActionProperties, it needs to loop for a sustained
 // walk cycle instead of freezing after one stride.
 const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'standup_front', 'standup_back', 'stop_sliding']);
-const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run',
+const UPPER_SPLIT_ANIMS = ['punch_left', 'punch_right', 'punch_combo'];
+const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run', 'punch_walk',
     'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run'];
 
 function processClip(clip) {
@@ -124,6 +125,7 @@ export class RemoteAvatar {
         this.hasTarget = false;
         this.stateName = 'idle';
         this.carryUpper = false;
+        this.punchStepping = false;
 
         this.spine = null;
         this.spine1 = null;
@@ -371,8 +373,12 @@ export class RemoteAvatar {
                     .then(animObj => {
                         if (animObj.animations.length === 0) return;
                         if (anim.name === 'punch_charge') {
-                            makeAction('punch_charge_hold', processClip(animObj.animations[0]));
-                            makeAction('punch_charge_punch', processClip(animObj.animations[1] || animObj.animations[0]));
+                            const holdClip = processClip(animObj.animations[0]);
+                            const swingClip = processClip(animObj.animations[1] || animObj.animations[0]);
+                            makeAction('punch_charge_hold', holdClip);
+                            makeAction('punch_charge_punch', swingClip);
+                            makeAction('punch_charge_hold_upper', makeUpperBodyClip(holdClip));
+                            makeAction('punch_charge_punch_upper', makeUpperBodyClip(swingClip));
                             return;
                         }
                         const clip = processClip(animObj.animations[0]);
@@ -381,6 +387,13 @@ export class RemoteAvatar {
                             makeAction(anim.name + '_lower', makeLowerBodyClip(clip));
                         } else if (anim.name === 'carry') {
                             makeAction('carry_upper', makeUpperBodyClip(clip));
+                        }
+                        // Punches get an upper-only variant too, so a companion
+                        // can walk INTO a swing instead of sliding forward with
+                        // its feet planted. Only `carry` had one before, which
+                        // is why every punch here was full-body.
+                        if (UPPER_SPLIT_ANIMS.includes(anim.name)) {
+                            makeAction(anim.name + '_upper', makeUpperBodyClip(clip));
                         }
                     })
                     .catch(err => console.error('RemoteAvatar: failed to load anim', anim.name, err))
@@ -853,12 +866,46 @@ export class RemoteAvatar {
         const hitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
         const hitRecoveryStepActive = this.hitRecoveryTimer > 0 && this.hitRecoveryTimer <= hitRecoveryDuration;
 
-        let animName = hitRecoveryStepActive ? 'walk' : (this.actions[this.stateName] ? this.stateName : 'idle');
-        if (this.carryUpper && this.actions[animName + '_lower']) animName += '_lower';
-        this.fadeToAction(animName, 0.2);
+        // The hit-recovery step forces the walk cycle, because a stagger is
+        // something you do on your FEET. On a wall it means nothing - and it
+        // was overriding the shimmy clips, so a companion that had been hit at
+        // some point slid along a ledge playing a walk cycle in mid-air.
+        //
+        // Hanging and climbing keep their own clip; the recovery step still
+        // runs underneath, it just stops choosing the animation.
+        const onWall = this.stateName === 'hang_idle' || this.stateName === 'hang_left' ||
+            this.stateName === 'hang_right' || this.stateName === 'climb';
+        let animName = (hitRecoveryStepActive && !onWall)
+            ? 'walk'
+            : (this.actions[this.stateName] ? this.stateName : 'idle');
 
-        if (this.carryUpper) this.fadeToUpperAction('carry_upper', 0.2);
-        else this.stopUpperAction(0.2);
+        // Walking into a punch: legs from the walk cycle, arms from the swing.
+        // punchStepping is set by whoever drives this avatar (see the
+        // companion's punch block) - it is only true while it is actually
+        // closing the last step, so a punch thrown standing still stays the
+        // authored full-body clip.
+        const stepUpper = this.punchStepping && !this.carryUpper && !onWall
+            ? this.actions[animName + '_upper'] && (animName + '_upper')
+            : null;
+        // punch_walk's legs, not the civilian walk's.
+        //
+        // The upper clip carries no hips - they come from whatever is playing
+        // underneath - so the arms are posed relative to THAT stride. Over the
+        // ordinary walk cycle, whose hips swing for a stroll rather than a
+        // fight, a punch ends up thrown at the wrong angle. punch_walk is the
+        // combat-stance stride the charge hold already uses, and the player's
+        // own split picks it for the same reason.
+        const stepLower = this.actions['punch_walk_lower'] ? 'punch_walk_lower'
+            : (this.actions['walk_lower'] ? 'walk_lower' : null);
+        if (stepUpper && stepLower) {
+            this.fadeToAction(stepLower, 0.2);
+            this.fadeToUpperAction(stepUpper, 0.15);
+        } else {
+            if (this.carryUpper && this.actions[animName + '_lower']) animName += '_lower';
+            this.fadeToAction(animName, 0.2);
+            if (this.carryUpper) this.fadeToUpperAction('carry_upper', 0.2);
+            else this.stopUpperAction(0.2);
+        }
 
         this.updatePunchEffects(delta);
         this.updateCarryStabilize(delta);

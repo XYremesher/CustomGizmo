@@ -274,6 +274,8 @@
         #lock-target-btn { bottom: 140px; }
         #auto-punch-btn { bottom: 176px; }
         #carry-lock-btn { bottom: 212px; }
+        #assist-grab-btn { bottom: 248px; }
+        #auto-jump-gap-btn { bottom: 284px; }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
@@ -347,7 +349,36 @@
     </style>
 </head>
 <body>
-    <div id="loading-overlay"><div id="loading-spinner"></div><div>Loading...</div></div>
+    <div id="loading-overlay"><div id="loading-spinner"></div><div>Loading...</div><div id="loading-error" style="display:none; margin-top:14px; max-width:80vw; font-family:monospace; font-size:12px; color:#ff8a8a; white-space:pre-wrap; text-align:left;"></div></div>
+    <script>
+        // A throw during startup leaves the loading overlay up forever, and
+        // the only way to find out why has been to open the console. Three
+        // times this week that cost a round trip. Now it prints onto the
+        // overlay itself.
+        (function () {
+            const show = (what) => {
+                const el = document.getElementById('loading-error');
+                const ov = document.getElementById('loading-overlay');
+                if (!el || !ov || ov.classList.contains('hidden')) return;
+                el.style.display = 'block';
+                el.textContent = (el.textContent ? el.textContent + '
+
+' : '') + what;
+            };
+            window.addEventListener('error', (e) => {
+                show((e.message || 'Error') + '
+  at ' + (e.filename || '?') + ':' + (e.lineno || '?') +
+                     (e.error && e.error.stack ? '
+' + e.error.stack.split('
+').slice(1, 4).join('
+') : ''));
+            });
+            window.addEventListener('unhandledrejection', (e) => {
+                show('Unhandled promise rejection:
+  ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+            });
+        })();
+    </script>
     <!-- Disabled for now during dev so it doesn't block testing - re-enable by removing class="hidden" here. -->
     <div id="start-overlay" class="hidden">
         <div id="start-title-row">
@@ -611,6 +642,12 @@
                     <label>Charge Kick Flash: <span id="charge-kick-flash-val">0.50</span></label><br>
                     <input type="range" id="charge-kick-flash-slider" min="0" max="3" step="0.05" value="0.5" style="width: 100%;"><br>
                     <label><input type="checkbox" id="charge-kick-hard"> Charge Kick: harder recoil</label><br>
+                    <label><input type="checkbox" id="toggle-charge-kick-lean" checked> Charge Kick: spine lean</label><br>
+                    <label><input type="checkbox" id="toggle-auto-jump" checked> Auto Jump at reachable ledges</label><br>
+                    <label>Auto Jump Min Rise: <span id="auto-jump-min-val">0.70</span></label><br>
+                    <input type="range" id="auto-jump-min-slider" min="0.2" max="2" step="0.05" value="0.7" style="width: 100%;"><br>
+                    <label>Auto Jump Max Rise: <span id="auto-jump-max-val">3.40</span></label><br>
+                    <input type="range" id="auto-jump-max-slider" min="1" max="6" step="0.1" value="3.4" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-instant-companions"> Instant Companions (skip the tutorial beats)</label><br>
                     <label><input type="checkbox" id="toggle-friendly-fire"> Friendly Fire (hit your own companions)</label><br>
                     <label><input type="checkbox" id="toggle-lock-fov"> Show Vision Cone</label><br>
@@ -634,6 +671,8 @@
                     <input type="range" id="walk-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.7" style="width: 100%;"><br>
                     <label>Run Anim Speed: <span id="run-anim-speed-val">1.00</span>x</label><br>
                     <input type="range" id="run-anim-speed-slider" min="0.5" max="2.5" step="0.05" value="1.0" style="width: 100%;"><br>
+                    <label>Companion Punch Step: <span id="comp-punch-step-val">2.00</span> u/s</label><br>
+                    <input type="range" id="comp-punch-step-slider" min="0" max="6" step="0.1" value="2.0" style="width: 100%;"><br>
                     <label>Enemy Punch Step: <span id="ai-punch-step-val">1.60</span> u/s</label><br>
                     <input type="range" id="ai-punch-step-slider" min="0" max="6" step="0.1" value="1.6" style="width: 100%;"><br>
                     <label>Carry Lock Range: <span id="carry-lock-range-val">2.5</span></label><br>
@@ -700,8 +739,8 @@
                     <input type="range" id="dither-hole-feather-slider" min="0.0" max="1.0" step="0.01" value="0.50" style="width: 100%;"><br>
                     <label>Depth Fade (world units): <span id="dither-depth-fade-val">4.5</span></label><br>
                     <input type="range" id="dither-depth-fade-slider" min="0.4" max="10.0" step="0.1" value="4.5" style="width: 100%;"><br>
-                    <label>Fade Speed: <span id="dither-fade-speed-val">2.0</span></label><br>
-                    <input type="range" id="dither-fade-speed-slider" min="0.5" max="30.0" step="0.5" value="2.0" style="width: 100%;"><br>
+                    <label>Fade Speed: <span id="dither-fade-speed-val">7.0</span></label><br>
+                    <input type="range" id="dither-fade-speed-slider" min="0.5" max="30.0" step="0.5" value="7.0" style="width: 100%;"><br>
                     <label>Probe Radius: <span id="dither-probe-radius-val">0.20</span></label><br>
                     <input type="range" id="dither-probe-radius-slider" min="0.0" max="2.0" step="0.05" value="0.20" style="width: 100%;"><br>
                 </div>
@@ -1004,6 +1043,8 @@
     <div id="lock-target-btn" class="lock-btn" title="Lock on to a nearby enemy">&#128274;</div>
     <div id="auto-punch-btn" class="lock-btn" title="Punch automatically while locked on">&#128274;&#9889;</div>
     <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
+    <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
+    <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
     <div id="punch-btn">
         PUNCH
         <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">
@@ -1784,17 +1825,21 @@
                         // went from an authored clip to two halves stitched
                         // together, and looked worse for it.
                         const needsSplit = wantWalkAnim && window._chargeMovingBack;
-                        // punch_walk's OWN torso, not punch_charge_hold's.
+                        // charge_back's OWN torso.
                         //
-                        // Walking backward should look, from the waist up,
-                        // exactly like walking forward - it is the same held
-                        // charge, only the legs differ. punch_charge_hold_upper
-                        // is the STANDING wind-up: it winds the arms up on a
-                        // charge-paced timeScale, which reads differently from
-                        // the settled carry punch_walk holds. Borrowing the
-                        // upper half of the forward clip makes the two match.
-                        const splitUpper = this.char.actions['punch_walk_upper']
-                            ? 'punch_walk_upper' : 'punch_charge_hold_upper';
+                        // This is the backward-charge pose you authored, so it
+                        // is the right one for backward movement - punch_walk's
+                        // torso is aimed the way a forward walk carries it, and
+                        // wearing it while retreating reads as facing the wrong
+                        // way. Only the legs come from elsewhere, because
+                        // charge_back is a RUN and this is the walking case.
+                        //
+                        // Falls back through punch_walk to the standing wind-up
+                        // if a clip is missing, so a failed load degrades
+                        // rather than leaves the arms empty.
+                        const splitUpper = this.char.actions['charge_back_upper'] ? 'charge_back_upper'
+                            : (this.char.actions['punch_walk_upper'] ? 'punch_walk_upper'
+                            : 'punch_charge_hold_upper');
                         if (needsSplit && this.char.actions[splitUpper]) {
                             if (this.chargeHoldAnimName !== 'punch_walk') {
                                 // Carry the wind-up's progress across the swap,
@@ -2607,7 +2652,7 @@
                         this.actions[name + '_lower'] = lowerAction;
                     }
 
-                    if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'punch_walk'].includes(name)) {
+                    if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'punch_walk', 'charge_back'].includes(name)) {
                         const upperClip = makeUpperBodyClip(clip, spineBlend);
                         const upperAction = this.mixer.clipAction(upperClip);
                         this.setupActionProperties(name + '_upper', upperAction);
