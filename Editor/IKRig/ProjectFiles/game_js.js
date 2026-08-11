@@ -5295,12 +5295,6 @@ export function startGame(CharacterClass) {
             const mesh = new THREE.Mesh(geom, shinyJarMat);
             mesh.castShadow = true; mesh.receiveShadow = true;
             jarTemplate = mesh;
-            // ...and any forest landing that asked for jars before now.
-            if (_pendingForestJars && currentLevel === 'local_forest') {
-                const q = _pendingForestJars;
-                _pendingForestJars = null;
-                spawnForestJars(q.x, q.y, q.z);
-            }
 
             // Used to call the full buildLevel() here whenever this (slow-
             // to-fetch) FBX finished loading after the level had already
@@ -8627,6 +8621,7 @@ export function startGame(CharacterClass) {
         storyFightBot = null;
         storyFightT = 0;
         _forestTopReached = false;
+        _forestStairsSeen = false;
         coachStep = -1;
         coachT = 0;
         coachPraised = false;
@@ -8772,14 +8767,23 @@ export function startGame(CharacterClass) {
         const steps = Math.max(1, Math.ceil(top / FOREST_STEP_SIZE) - 1);
         for (let i = 0; i < steps; i++) {
             const h = (i + 1) * FOREST_STEP_SIZE;
+            // Shifted half a step north so each one's far face meets the next
+            // one's near face, and the last meets the landing. They used to be
+            // centred on those points, which left a 1.5 gap between every pair
+            // - small enough to walk over and large enough that a bot chasing
+            // you up them stalled at the first one, since its step-up check
+            // finds no ground ahead across a hole.
             put(FOREST_STEP_SIZE, h, FOREST_STEP_SIZE, forestStepX(),
-                FOREST_PLATFORM_Z0 - (steps - i) * FOREST_STEP_SIZE);
+                FOREST_PLATFORM_Z0 - (steps - i) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5);
         }
         // Laid out in front of where the carry teacher stands, not merely
         // somewhere on the landing - the lesson is "grab one of these", and
         // that only reads if they are the thing you are looking at while it
         // is said.
-        spawnForestJars(FOREST_EXIT_X + 1.4, top, pz - 1.0);
+        // Centred on the landing in both axes rather than offset by hand -
+        // the deck is 12 wide and 26 deep, and hand-picked offsets are how
+        // they ended up beside it instead of on it.
+        spawnForestJars(forestStepX() - 1.3, top, pz - 0.65);
     }
 
     function storySpawnNpcAt(id, color, x, y, z) {
@@ -8792,24 +8796,29 @@ export function startGame(CharacterClass) {
     // level's own jar contract exactly - isCarryable/isJar/containsKey, with
     // destroyJarCarryable spawning the key when the right one shatters - so
     // the carry lesson is taught on the real prop rather than a stand-in.
-    // Remembered so a build that happened before Jar.glb finished loading can
-    // still get its jars - the forest is usually built long before that model
-    // arrives, which is why the landing was bare.
-    let _pendingForestJars = null;
     const FOREST_JAR_COLS = 3, FOREST_JAR_ROWS = 2;   // 6, in front of the teacher
+    // A stand-in jar, built from primitives. jarTemplate comes from an FBX on
+    // a GitHub raw URL, and if that is slow, blocked or missing there is no
+    // template - so the carry lesson had nothing to carry and the landing was
+    // bare. The lesson matters more than the model: this keeps six carryables
+    // on the deck whatever the network did, and they behave identically
+    // because everything downstream reads userData, not the mesh.
+    function makeFallbackJar() {
+        const g = new THREE.CylinderGeometry(0.42, 0.32, 0.9, 10);
+        const m = new THREE.Mesh(g, shinyJarMat);
+        m.castShadow = true; m.receiveShadow = true;
+        return m;
+    }
     function spawnForestJars(x, y, z) {
-        if (!jarTemplate) { _pendingForestJars = { x, y, z }; return; }
         const n = FOREST_JAR_COLS * FOREST_JAR_ROWS;
         for (let i = 0; i < n; i++) {
             const r = Math.floor(i / FOREST_JAR_COLS), c = i % FOREST_JAR_COLS;
-            const jarMesh = jarTemplate.clone();
-            // +1.0, not +0.5. The carryable's collision box is a fixed
-            // 1x1x1, so at +0.5 the jar's underside sat exactly on the deck -
-            // an equality the physics loses by an epsilon, and a jar that
-            // starts a hair inside the floor falls through it and shatters on
-            // the forest floor twelve metres below. Starting clear of the
-            // surface lets it settle onto it instead.
-            jarMesh.position.set(x + c * 1.3, y + 1.0, z + r * 1.3);
+            const jarMesh = jarTemplate ? jarTemplate.clone() : makeFallbackJar();
+            // Exactly restY (floor + 0.5) - already at rest, not dropped onto
+            // it. Even half a unit of fall reaches 5.5 m/s against gravity 30,
+            // and the jar shatter threshold is 5.0: anything dropped in, however
+            // gently, breaks on landing. So it starts where it would end up.
+            jarMesh.position.set(x + c * 1.3, y + 0.5, z + r * 1.3);
             jarMesh.userData.isCarryable = true;
             jarMesh.userData.isJar = true;
             // The middle of the nine. Hidden rather than obvious on purpose -
@@ -8821,11 +8830,12 @@ export function startGame(CharacterClass) {
             const carryJar = {
                 mesh: jarMesh, velocity: new THREE.Vector3(),
                 isCarried: false, wasThrown: false, netId: nextCarryNetId++,
+                restStatic: true,
             };
             carryables.push(carryJar);
             addCarryableDebugHelper(carryJar);
         }
-        console.log(`Forest jars: ${n} placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
+        console.log(`Forest jars: ${n} (${jarTemplate ? 'model' : 'fallback'}) placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
     }
 
     function startForestStory() {
@@ -9060,6 +9070,9 @@ export function startGame(CharacterClass) {
     ];
     const COACH_PRAISE = 'Like that. Perfect!';
     let _forestTopReached = false;
+    let _forestStairsSeen = false;
+    const STORY_STAIRS_REACH = 11;
+    const STORY_STAIRS_LINE = 'Here! We can get higher\nfrom up there - climb!';
     let storyFightT = 0;               // how long the first fight has run
     const STORY_FIGHT_TIMEOUT = 75;    // ...before the story moves on regardless
     const STORY_TOP_LINE = 'We made it up! The way out\nis right there - careful, he is not alone.';
@@ -9435,6 +9448,16 @@ export function startGame(CharacterClass) {
             storyStage = 'toThird';
             window.compassTarget = storyNpc ? storyNpc.group.position : null;
             return;
+        }
+
+        // At the FOOT of the stairs. Said before the climb, not after - it is
+        // the moment the route stops being along the ground and starts going
+        // up, and nothing else in the level tells you that.
+        if (!_forestStairsSeen && p.y < forestFrameTopY() - 4 &&
+            Math.hypot(p.x - FOREST_EXIT_X, p.z - (FOREST_PLATFORM_Z0 - 6)) < STORY_STAIRS_REACH) {
+            _forestStairsSeen = true;
+            const atFoot = storyCompanionOf('CompBlue');
+            if (atFoot) storySay(atFoot, STORY_STAIRS_LINE, 'companion');
         }
 
         // Reaching the top of the stairs. Said once, on arrival, by whoever is
@@ -10050,12 +10073,16 @@ export function startGame(CharacterClass) {
             // invisible one standing in the trees. Being stopped by a wall of
             // trunks reads fine; walking out between two of them into open sea
             // does not.
-            [[FOREST_ENTRY_X, -1], [FOREST_EXIT_X, 1]].forEach(([cx, dir]) => {
-                const [z0, z1] = forestCorridorZ(dir);
-                forestCorridorWallX(cx).forEach(wx => {
+            // ENTRANCE only. The exit's trees were removed, so its barriers
+            // were stopping you in open ground with nothing visible doing the
+            // stopping - an invisible corridor at the end of the level. A
+            // barrier is only honest when something you can see is holding it.
+            {
+                const [z0, z1] = forestCorridorZ(-1);
+                forestCorridorWallX(FOREST_ENTRY_X).forEach(wx => {
                     segs.push([wx, (z0 + z1) * 0.5, step, z1 - z0]);
                 });
-            });
+            }
             segs.forEach(([cx, cz, sx, sz]) => {
                 if (sx <= 0.01 || sz <= 0.01) return;
                 const w = new THREE.Mesh(new THREE.BoxGeometry(sx, top + FOREST_BORDER_CAP, sz),
@@ -11464,7 +11491,7 @@ export function startGame(CharacterClass) {
         const spacing = 1.2;
         for (let r = 0; r < 3; r++) {
             for (let c = 0; c < 3; c++) {
-                const jarMesh = jarTemplate.clone();
+                const jarMesh = jarTemplate ? jarTemplate.clone() : makeFallbackJar();
                 jarMesh.position.set(startX + r * spacing, 0.5, startZ + c * spacing);
                 jarMesh.userData.isCarryable = true;
                 jarMesh.userData.isJar = true;
@@ -12972,6 +12999,9 @@ export function startGame(CharacterClass) {
             if (cObj) {
                 cObj.isCarried = true;
                 cObj.wasThrown = false;
+                // Picked up = no longer staged scenery. From here it is an
+                // ordinary carryable and obeys the physics like any other.
+                cObj.restStatic = false;
                 cObj.velocity.set(0, 0, 0);
             }
             carryBtn.style.display = 'none';
@@ -16370,6 +16400,16 @@ export function startGame(CharacterClass) {
                 c.debugHelper.visible = document.getElementById('toggle-hitbox').checked;
             }
             if (c.isCarried) return;
+            // Placed by hand and never touched: it sits exactly where it was
+            // put, with no gravity and no collision run against it at all.
+            //
+            // This exists because the physics below assumes a world built on
+            // the ground plane, and a prop staged on a raised surface has to
+            // survive the gap between that assumption and the level. The flag
+            // clears the first time anything interacts with the object - a
+            // pick-up, a throw, a punch - so it is inert scenery until it
+            // becomes a real carryable, and after that it behaves normally.
+            if (c.restStatic) return;
 
             // Captured before the substep physics below can touch it - the
             // generic obstacle-bounce collision response a few lines down
@@ -16477,8 +16517,43 @@ export function startGame(CharacterClass) {
                 if (earlyExit) break;
 
                 c.mesh.position.y += c.velocity.y * subDelta;
-                if (c.mesh.position.y < 0.5) {
-                    c.mesh.position.y = 0.5;
+                // The floor a carryable rests on. This was hardcoded to 0.5 -
+                // the world origin plus half a jar - which is right on a level
+                // built on the ground plane and wrong the moment anything is
+                // put on a raised surface: a jar placed on the exit landing
+                // fell twelve metres through it and shattered on impact, so
+                // the lesson's props were broken before the level started.
+                //
+                // Only cast while actually falling, and only every few frames
+                // per object: a resting jar needs no ray, and this loop runs
+                // over every carryable in the level.
+                // Re-measured on a timer, ALWAYS - not only while falling, and
+                // never seeded from where the object was placed. Both of those
+                // were wrong: a jar put down over empty space kept the floor
+                // it was born with and hung in the air at that height forever,
+                // because with velocity.y == 0 nothing ever looked again.
+                //
+                // The ray starts ABOVE the object, so a jar already resting on
+                // a surface still finds it rather than casting from inside it.
+                c._floorT = (c._floorT || 0) - subDelta;
+                if (c._floorT <= 0 || c._floorY === undefined) {
+                    c._floorT = 0.12;
+                    rayDown.set(_tempVec1.set(c.mesh.position.x, c.mesh.position.y + 1.2, c.mesh.position.z), _downVec);
+                    const fh = rayDown.intersectObjects(collidables, true);
+                    let fy = 0;
+                    for (let k = 0; k < fh.length; k++) {
+                        const ud = fh[k].object.userData;
+                        // Not tree canopies, and not the carryable's own
+                        // collider - it is in `collidables` too, and a jar
+                        // reading itself as its floor never lands at all.
+                        if (ud.isTreeCollider || fh[k].object === c.mesh) continue;
+                        fy = fh[k].point.y; break;
+                    }
+                    c._floorY = fy;
+                }
+                const restY = Math.max(0.5, c._floorY + 0.5);
+                if (c.mesh.position.y < restY) {
+                    c.mesh.position.y = restY;
                     if (c.mesh.userData.isJar && Math.abs(c.velocity.y) > 5.0) {
                         shatterJar(c.mesh.position.clone(), c.velocity.clone());
                         destroyJarCarryable(c.mesh); break;
