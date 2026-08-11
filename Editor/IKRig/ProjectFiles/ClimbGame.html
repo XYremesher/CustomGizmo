@@ -243,6 +243,28 @@
            and the "UI" panel's "Show Punch Button" checkbox) - not part of
            the default control set until the teaching levels actually
            introduce the mechanic. */
+        /* The two combat toggles, stacked directly above PUNCH - they change
+           what that button does, so they belong on it rather than in a menu.
+           Dim when off, lit when on, so their state is readable at a glance
+           mid-fight without reading the label. */
+        .lock-btn {
+            position: absolute; right: 170px;
+            width: 40px; height: 40px; border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            background: rgba(20, 20, 26, 0.6);
+            display: none; justify-content: center; align-items: center;
+            font-size: 17px; color: rgba(255, 255, 255, 0.55);
+            touch-action: none; cursor: pointer; z-index: 11; user-select: none;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+        .lock-btn.on {
+            background: rgba(200, 50, 50, 0.75);
+            border-color: rgba(255, 255, 255, 0.85);
+            color: #fff;
+        }
+        #lock-target-btn { bottom: 100px; }
+        #auto-punch-btn { bottom: 148px; }
+        #carry-lock-btn { bottom: 196px; }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
@@ -562,6 +584,34 @@
                 </div>
             </div>
 
+            <div class="category">
+                <div class="category-header">Punch Momentum</div>
+                <div class="category-content">
+                    <label>Forward Push: <span id="punch-step-fwd-val">2.20</span> u/s</label><br>
+                    <input type="range" id="punch-step-fwd-slider" min="0" max="10" step="0.1" value="2.2" style="width: 100%;"><br>
+                    <label>Starts At: <span id="punch-step-start-val">0.15</span> of swing</label><br>
+                    <input type="range" id="punch-step-start-slider" min="0" max="1" step="0.01" value="0.15" style="width: 100%;"><br>
+                    <label>Ends At: <span id="punch-step-end-val">0.65</span> of swing</label><br>
+                    <input type="range" id="punch-step-end-slider" min="0" max="1" step="0.01" value="0.65" style="width: 100%;"><br>
+                    <label>Leg Speed: <span id="punch-step-anim-val">0.32</span></label><br>
+                    <input type="range" id="punch-step-anim-slider" min="0" max="1.5" step="0.02" value="0.32" style="width: 100%;"><br>
+                    <label>Leg Linger: <span id="punch-step-linger-val">0.25</span>s</label><br>
+                    <input type="range" id="punch-step-linger-slider" min="0" max="1.5" step="0.05" value="0.25" style="width: 100%;"><br>
+                    <label>Charge Kick Back: <span id="charge-kick-val">4.50</span></label><br>
+                    <input type="range" id="charge-kick-slider" min="0" max="20" step="0.5" value="4.5" style="width: 100%;"><br>
+                    <label>Charge Kick Flash: <span id="charge-kick-flash-val">0.50</span></label><br>
+                    <input type="range" id="charge-kick-flash-slider" min="0" max="3" step="0.05" value="0.5" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="charge-kick-hard"> Charge Kick: harder recoil</label><br>
+                    <label>Lock-On Range: <span id="lock-range-val">6.0</span></label><br>
+                    <input type="range" id="lock-range-slider" min="1" max="15" step="0.5" value="6.0" style="width: 100%;"><br>
+                    <label>Auto Punch Range: <span id="auto-punch-range-val">1.6</span></label><br>
+                    <input type="range" id="auto-punch-range-slider" min="0.5" max="12" step="0.1" value="1.6" style="width: 100%;"><br>
+                    <label>Auto Punch Interval: <span id="auto-punch-int-val">0.55</span>s</label><br>
+                    <input type="range" id="auto-punch-int-slider" min="0.1" max="2" step="0.05" value="0.55" style="width: 100%;"><br>
+                    <label>Carry Lock Range: <span id="carry-lock-range-val">2.5</span></label><br>
+                    <input type="range" id="carry-lock-range-slider" min="0.5" max="8" step="0.1" value="2.5" style="width: 100%;"><br>
+                </div>
+            </div>
             <div class="category">
                 <div class="category-header">Speech Bubbles</div>
                 <div class="category-content">
@@ -922,6 +972,9 @@
     <div id="drop-btn">DROP</div>
     <div id="throw-btn">THROW</div>
     
+    <div id="lock-target-btn" class="lock-btn" title="Lock on to a nearby enemy">&#128274;</div>
+    <div id="auto-punch-btn" class="lock-btn" title="Punch automatically while locked on">&#128274;&#9889;</div>
+    <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
     <div id="punch-btn">
         PUNCH
         <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">

@@ -1832,7 +1832,12 @@ export function startGame(CharacterClass) {
     // the moment you walk away - 8/11 meant it gave up almost immediately and
     // went back to wandering. Still bounded, so it does return to wandering
     // if you get properly far from it.
-    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45, AI_PUNCH_RANGE = 1.3;
+    // AI_PUNCH_RANGE was 1.3 - far enough that a bot started swinging with
+    // daylight still between you, which reads as punching at the air near
+    // someone rather than at them. 0.95 makes it close the last step first.
+    // The hit test itself is separate and unchanged (see detectMeleeHits), so
+    // this only moves where the swing STARTS, not what it can reach.
+    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45, AI_PUNCH_RANGE = 0.95;
     const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
     // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
     // normalized hit times the player's own combo uses, so it reads as the
@@ -1869,7 +1874,7 @@ export function startGame(CharacterClass) {
     // It gets one heavy hit; the recovery is correspondingly long.
     const AI_CHARGE_COOLDOWN = 2.2;
     // Slightly further out than a jab - a wound-up swing has reach.
-    const AI_CHARGE_RANGE = 1.8;
+    const AI_CHARGE_RANGE = 1.4;
     // Tallest rise the bot's ordinary walk snaps up (a stair step, not a
     // climb). Module scope because the climb code needs the same number to
     // know where walking stops and climbing starts - it used to be a local
@@ -12903,7 +12908,78 @@ export function startGame(CharacterClass) {
     // here since that's where isLedgeGrabbing/isCarryingObj are already
     // read every frame for the hold/carry buttons - see the per-frame
     // update below.
+    {
+        // 'medium_high' bends the spine further than 'medium' - the same two
+        // tiers every other hit in the game is graded on.
+        const el = document.getElementById('charge-kick-hard');
+        if (el) el.addEventListener('change', e => {
+            window.chargeKickIntensity = e.target.checked ? 'medium_high' : 'medium';
+        });
+    }
     const punchBtnEl = document.getElementById('punch-btn');
+    // The two combat toggles. Both sit on the punch button because both change
+    // what punching does, and both are the kind of assist you want to flip
+    // mid-fight rather than hunt for in a panel.
+    {
+        const wire = (id, get, set) => {
+            const el = document.getElementById(id);
+            if (!el) return null;
+            const paint = () => el.classList.toggle('on', !!get());
+            el.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                set(!get());
+                paint();
+            });
+            paint();
+            return el;
+        };
+        wire('lock-target-btn', () => window.lockTargetEnabled, v => {
+            window.lockTargetEnabled = v;
+            // Turning it off has to release immediately, or the character
+            // keeps facing whatever it was locked to until it walks away.
+            if (!v) { lockedBot = null; }
+        });
+        wire('auto-punch-btn', () => window.autoPunchEnabled, v => { window.autoPunchEnabled = v; });
+        wire('carry-lock-btn', () => window.carryAutoLock, v => {
+            window.carryAutoLock = v;
+            if (!v) lockedCarry = null;
+        });
+    }
+    // Throws a punch on its own while locked on and in reach. Deliberately
+    // gated on the lock: auto-punching at nothing in particular would just be
+    // the character flailing as they walk around.
+    function updateAutoPunch(delta) {
+        if (autoPunchT > 0) autoPunchT -= delta;
+        if (!window.autoPunchEnabled || !lockedBot) return;
+        if (char.isRagdoll || char.isStandingUp || window.isCarryingObj) return;
+        const cb = window.combat;
+        if (!cb) return;
+        // The lock reaches further than the fist does - see autoPunchRange.
+        if (char.group.position.distanceTo(lockedBot.group.position) > window.autoPunchRange) return;
+
+        // Left, then right, then left again - not left, left, left.
+        //
+        // triggerPunch() only STARTS a punch from idle, and that start is
+        // always punch_left; from inside a swing it instead queues the follow-
+        // up, which is what turns a left into a right. Firing it only from
+        // idle - which is what the first version did - threw the same left
+        // hook over and over.
+        //
+        // State 2 is deliberately left alone: queueing there advances into the
+        // five-hit combo, and this is meant to be a steady one-two, not an
+        // auto-combo that empties a bot's poise pool without you touching
+        // anything.
+        if (cb.punchState === 0) {
+            if (autoPunchT > 0) return;
+            autoPunchT = window.autoPunchInterval;
+            cb.triggerPunch();
+        } else if (cb.punchState === 1 && !cb.nextPunchQueued) {
+            // No cooldown here - triggerPunch itself only accepts the queue
+            // inside the swing's own 0.1-0.9 window, so the clip's timing is
+            // what paces the follow-up rather than a second timer fighting it.
+            cb.triggerPunch();
+        }
+    }
 
     const pickupStartPos = new THREE.Vector3();
     const pickupStartRot = new THREE.Quaternion();
@@ -13652,6 +13728,176 @@ export function startGame(CharacterClass) {
     // window so it can be tuned further from the console without a
     // reload if needed.
     window.CHAR_TURN_RATE = 28;
+
+    // ---- Lock on ----
+    // Close in on an enemy and the character keeps facing it, so the stick
+    // moves you AROUND it instead of turning you away - which is what makes
+    // the strafe clips read, and what makes a fight feel like circling
+    // someone rather than steering a car at them.
+    //
+    // Deliberately proximity-based rather than a button press: at range there
+    // is nothing to circle, and a lock you have to acquire is one more thing
+    // to do with a thumb that is already busy.
+    // A punch carries you into it, a charge punch throws you back off it.
+    // Both are small - this is weight, not a dash: an attack that does not
+    // move the attacker at all reads as the animation happening near the
+    // world rather than against it.
+    window.punchStepForward = 2.2;    // units/sec while a normal swing lands
+    window.chargePunchKick = 4.5;     // ...and backward on a charge release
+    // Leg speed fed to the walk clip while the punch is carrying you. Matched
+    // to punchStepForward by eye - enough movement to sell the step without
+    // the cycle outrunning the ground actually covered.
+    window.punchStepAnimMag = 0.32;
+    // WHEN in the swing the push applies, as a fraction of the punch clip.
+    // Starting at 0 shoves you the instant the button goes down, before the
+    // arm has begun to move; the weight belongs where the punch does.
+    window.punchStepStart = 0.15;
+    window.punchStepEnd = 0.65;
+    // How long the walking legs linger after the push stops. Without it the
+    // legs flicker: punchState drops to 0 for a frame or two between the left
+    // and the right, the state machine falls back to idle, and the walk clip
+    // restarts from frame one every single swing - which is the "walk keeps
+    // starting over" look.
+    window.punchStepLinger = 0.25;
+    // How hard the release reads on yourself. 'medium' is the ordinary punch
+    // reaction; 'medium_high' bends further. 'high' would knock you down, which
+    // is not a cost, it is a punishment - so it is not offered here.
+    window.chargeKickIntensity = 'medium';
+    window.chargeKickFlash = 0.5;
+    let _lastPunchState = 0;
+    const _punchStepDir = new THREE.Vector3();
+    const _punchProbe = new THREE.Vector3();
+    const _punchRecoilVel = new THREE.Vector3();
+    let _punchStepT = 0;
+    function updatePunchMomentum(delta) {
+        if (_punchStepT > 0) _punchStepT -= delta;
+        const cb = window.combat;
+        if (!cb || char.isRagdoll || char.isStandingUp) { _lastPunchState = cb ? cb.punchState : 0; return; }
+        const ps = cb.punchState;
+        _punchStepDir.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+        _punchStepDir.y = 0;
+        if (_punchStepDir.lengthSq() < 1e-6) { _lastPunchState = ps; return; }
+        _punchStepDir.normalize();
+        // States 1/2/3 are the jabs and the combo - a steady push forward for
+        // as long as the swing runs. State 5 is the charge RELEASE, and it
+        // only kicks on the frame it starts: a sustained shove backward would
+        // walk the character out of their own punch.
+        // Where we are inside the current swing, 0..1. The push is windowed on
+        // this rather than applied for the whole state.
+        let nt = 0;
+        if (ps >= 1 && ps <= 3) {
+            const clipName = ps === 1 ? 'punch_left' : ps === 2 ? 'punch_right' : 'punch_combo';
+            const act = char.actions && char.actions[clipName];
+            const dur = act ? act.getClip().duration : 0.5;
+            nt = dur > 0 ? (cb.punchTimer || 0) / dur : 0;
+        }
+        // Legs walk for the WHOLE swing; the push only applies inside its
+        // window. Tying the animation to the window too is what produced a
+        // walk cycle in the dead air between punches - the push ends at 0.65
+        // of the clip, the linger kept the legs going past the end of the
+        // swing, and you saw walking while standing still.
+        if (ps >= 1 && ps <= 3) _punchStepT = window.punchStepLinger;
+        if (ps >= 1 && ps <= 3 && nt >= window.punchStepStart && nt <= window.punchStepEnd) {
+            // Told to the animation dispatch below. The push moves the
+            // character's POSITION without touching the stick, so as far as
+            // the locomotion state machine is concerned you are standing
+            // still - which is why the body slid forward with the legs
+            // planted. punch_left_upper and friends already leave the lower
+            // body free (see playPunchPose), so all that is missing is
+            // something telling the legs to walk.
+            _punchStepDir.multiplyScalar(window.punchStepForward * delta);
+        } else if (ps === 5 && _lastPunchState !== 5) {
+            // Released. The kick back is staged as a HIT TAKEN FROM THE FRONT,
+            // not as a position nudge with a lean bolted on: applyProceduralRecoil
+            // is the same call every punch in the game lands on its victim, so
+            // the spine bend, the flash timing and the settle all match what
+            // the player already reads as "that connected". Firing it on
+            // yourself is what makes the release feel like it cost something.
+            //
+            // The velocity points BACKWARD along your own facing - the
+            // direction a blow arriving in your face would throw you.
+            _punchRecoilVel.copy(_punchStepDir).multiplyScalar(-window.chargePunchKick);
+            if (char.applyProceduralRecoil) {
+                char.applyProceduralRecoil(_punchRecoilVel, window.chargeKickIntensity);
+            }
+            if (char.triggerHitFlash && window.chargeKickFlash > 0) {
+                char.triggerHitFlash(window.chargeKickFlash);
+            }
+            _punchStepDir.multiplyScalar(-window.chargePunchKick * 0.12);
+        } else {
+            _lastPunchState = ps;
+            return;
+        }
+        // Refused if there is a wall right there. A chest-height ray in the
+        // direction of travel, skipping tree canopies - they are soft, and
+        // being unable to punch your way through leaves is not the rule this
+        // is enforcing. overlapsSolidCollidable is deliberately NOT used: it
+        // tests a 1x1x1 carryable box, which is not the player's shape.
+        _punchProbe.copy(_punchStepDir).normalize();
+        rayFwd.set(_tempVec1.copy(char.group.position).setY(char.group.position.y + 1.0), _punchProbe);
+        const hits = rayFwd.intersectObjects(collidables, true);
+        let blocked = false;
+        for (let i = 0; i < hits.length; i++) {
+            if (hits[i].object.userData.isTreeCollider) continue;
+            blocked = hits[i].distance < 0.6;
+            break;
+        }
+        if (!blocked) {
+            char.group.position.x += _punchStepDir.x;
+            char.group.position.z += _punchStepDir.z;
+        }
+        _lastPunchState = ps;
+    }
+    // Carry has its own lock. The ordinary pick-up test is a FORWARD ray that
+    // has to hit within 1.5 - so a jar half a step to your side is invisible
+    // to it until you turn onto it exactly. With this on, the nearest one
+    // inside carryLockRange counts wherever it is standing, and the character
+    // turns onto it so the pick-up animation aims somewhere sensible.
+    window.carryAutoLock = false;
+    window.carryLockRange = 2.5;
+    let lockedCarry = null;
+    window.lockTargetEnabled = false;
+    window.autoPunchEnabled = false;
+    window.lockOnRange = 6.0;      // close enough to be "in a fight"
+    window.lockOnDrop = 9.0;       // ...and how far before it lets go
+    window.autoPunchInterval = 0.55;
+    // Auto punch has its OWN, shorter reach than the lock.
+    //
+    // They were the same number, which meant the character started swinging
+    // the moment it turned to face something - punching at air across the
+    // whole lock radius. Split apart, the lock is "I am dealing with that
+    // one" and this is "and now I am close enough to hit it": you close the
+    // distance facing your target, and the punches start when they can land.
+    //
+    // Defaulted just outside AI_PUNCH_RANGE (0.95), so you begin swinging at
+    // about the distance a bot does.
+    window.autoPunchRange = 1.6;
+    let lockedBot = null;
+    let autoPunchT = 0;
+    const _lockVec = new THREE.Vector3();
+    // This frame's world-space move direction, published from inside the
+    // movement block. The animation dispatch runs several hundred lines later,
+    // in a different scope, and finalMoveDir is long out of it by then.
+    const _lastMoveDir = new THREE.Vector3();
+    // Re-evaluated every frame: the current target if it is still valid and
+    // still near, otherwise the nearest one inside lockOnRange. The two radii
+    // differ on purpose - one threshold would make the lock chatter on and off
+    // while you fight at exactly that distance.
+    function updateLockTarget() {
+        if (!window.lockTargetEnabled || char.isRagdoll || char.isStandingUp) { lockedBot = null; return; }
+        const p = char.group.position;
+        const usable = (b) => b && b.isLoaded && !b.isRagdoll && !b.isStandingUp && !(b.knockedOutT > 0);
+        if (usable(lockedBot) && p.distanceTo(lockedBot.group.position) <= window.lockOnDrop) return;
+        lockedBot = null;
+        let best = window.lockOnRange;
+        for (let i = 0; i < aiBots.length; i++) {
+            const b = aiBots[i].bot;
+            if (!usable(b)) continue;
+            const d = p.distanceTo(b.group.position);
+            if (d < best) { best = d; lockedBot = b; }
+        }
+    }
+    window.getLockedBot = () => lockedBot;
     // Surfaces steeper than this (measured from the real, un-flattened hit
     // normal) count as a genuine wall for the horizontal wall-stop below,
     // not a climbable/slideable slope - comfortably past the ~39.6deg
@@ -14001,6 +14247,17 @@ export function startGame(CharacterClass) {
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
         // Speech-bubble placement. Same slider table as everything else, so
         // they persist and reset exactly like the rest of the panel.
+        { id: 'punch-step-fwd-slider', vId: 'punch-step-fwd-val', func: v => window.punchStepForward = v, fix: 2 },
+        { id: 'punch-step-start-slider', vId: 'punch-step-start-val', func: v => window.punchStepStart = v, fix: 2 },
+        { id: 'punch-step-end-slider', vId: 'punch-step-end-val', func: v => window.punchStepEnd = v, fix: 2 },
+        { id: 'punch-step-anim-slider', vId: 'punch-step-anim-val', func: v => window.punchStepAnimMag = v, fix: 2 },
+        { id: 'punch-step-linger-slider', vId: 'punch-step-linger-val', func: v => window.punchStepLinger = v, fix: 2 },
+        { id: 'charge-kick-slider', vId: 'charge-kick-val', func: v => window.chargePunchKick = v, fix: 2 },
+        { id: 'charge-kick-flash-slider', vId: 'charge-kick-flash-val', func: v => window.chargeKickFlash = v, fix: 2 },
+        { id: 'lock-range-slider', vId: 'lock-range-val', func: v => { window.lockOnRange = v; window.lockOnDrop = v + 3; }, fix: 1 },
+        { id: 'auto-punch-int-slider', vId: 'auto-punch-int-val', func: v => window.autoPunchInterval = v, fix: 2 },
+        { id: 'auto-punch-range-slider', vId: 'auto-punch-range-val', func: v => window.autoPunchRange = v, fix: 1 },
+        { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
         { id: 'bubble-bottom-slider', vId: 'bubble-bottom-val', func: v => window.bubbleBottomMargin = v, fix: 0 },
         { id: 'bubble-maxy-slider', vId: 'bubble-maxy-val', func: v => window.bubbleMaxYFrac = v, fix: 2 },
         { id: 'bubble-side-slider', vId: 'bubble-side-val', func: v => window.bubbleSideMargin = v, fix: 0 },
@@ -17325,8 +17582,24 @@ export function startGame(CharacterClass) {
                         let target = carryHits[0].object;
                         while(target && (!target.userData || !target.userData.isCarryable) && target.parent) target = target.parent;
                         carryTargetObj = target;
+                    } else if (window.carryAutoLock) {
+                        // Nearest carryable in range, regardless of facing.
+                        let best = window.carryLockRange, found = null;
+                        for (let ci = 0; ci < carryables.length; ci++) {
+                            const m = carryables[ci].mesh;
+                            if (!m || carryables[ci].isCarried) continue;
+                            const d = char.group.position.distanceTo(m.position);
+                            if (d < best) { best = d; found = m; }
+                        }
+                        if (found) {
+                            carryBtn.style.display = 'flex';
+                            carryTargetObj = found;
+                            lockedCarry = found;
+                        } else {
+                            carryBtn.style.display = 'none'; carryTargetObj = null; lockedCarry = null;
+                        }
                     } else {
-                        carryBtn.style.display = 'none'; carryTargetObj = null;
+                        carryBtn.style.display = 'none'; carryTargetObj = null; lockedCarry = null;
                     }
                 }
             } else if (isHoldingMovable || window.isCarryingObj || window.isCarryStarting || window.isCarryDropping) {
@@ -17340,7 +17613,27 @@ export function startGame(CharacterClass) {
             // (default false - see the "UI" panel's "Show Punch Button"
             // checkbox), since it's not part of the default control set
             // until a teaching level actually introduces the mechanic.
-            if (punchBtnEl) punchBtnEl.style.display = (window.punchButtonEnabled && !isLedgeGrabbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping) ? 'flex' : 'none';
+            const punchUsable = (window.punchButtonEnabled && !isLedgeGrabbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping);
+            if (punchBtnEl) punchBtnEl.style.display = punchUsable ? 'flex' : 'none';
+            // The toggles live and die with the button they modify - a lock
+            // control on screen while punching is impossible is a dead switch.
+            const lockBtn = document.getElementById('lock-target-btn');
+            const autoBtn = document.getElementById('auto-punch-btn');
+            if (lockBtn) lockBtn.style.display = punchUsable ? 'flex' : 'none';
+            if (autoBtn) autoBtn.style.display = punchUsable ? 'flex' : 'none';
+            // The carry toggle stays up whenever you are NOT already holding
+            // something - it decides whether a jar can be targeted at all, so
+            // hiding it with the punch button would make it unreachable in the
+            // exact situation it is for.
+            const carryLockBtn = document.getElementById('carry-lock-btn');
+            if (carryLockBtn) {
+                carryLockBtn.style.display =
+                    (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && !isLedgeGrabbing)
+                        ? 'flex' : 'none';
+            }
+            updateLockTarget();
+            updateAutoPunch(delta);
+            updatePunchMomentum(delta);
 
             // Village NPC proximity trigger - only relevant while that
             // level's NPC actually exists (villageNpcAvatar is null on
@@ -17778,7 +18071,23 @@ export function startGame(CharacterClass) {
                 // this slerp turns the character straight back to their
                 // walk-in direction for as long as that decay lasts, which
                 // is exactly the "player isn't facing the NPC" bug.
-                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && !window.dialogueInputLocked) char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, mAng), window.CHAR_TURN_RATE*delta);
+                _lastMoveDir.copy(finalMoveDir);
+                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && !window.dialogueInputLocked) {
+                    // Locked on: face the enemy, not the way you are walking.
+                    // That inversion is the whole feature - the stick stops
+                    // steering your facing and starts orbiting you around it.
+                    // An enemy outranks a jar - if both are in reach you are in
+                    // a fight, and turning away from it to face scenery would
+                    // be the wrong call every time.
+                    const lb = lockedBot;
+                    const lockPos = lb ? lb.group.position
+                        : (window.carryAutoLock && lockedCarry && !window.isCarryingObj ? lockedCarry.position : null);
+                    const faceAng = lockPos
+                        ? Math.atan2(lockPos.x - char.group.position.x,
+                                     lockPos.z - char.group.position.z)
+                        : mAng;
+                    char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, faceAng), window.CHAR_TURN_RATE*delta);
+                }
             }
 
             // Walking downhill (stairs, a shallow ramp, the hemisphere,
@@ -18291,7 +18600,30 @@ export function startGame(CharacterClass) {
                     // natural climbable slopes.
                     const isOnTestRamp = lastGroundObject && lastGroundObject.userData && lastGroundObject.userData.isSlopeRamp;
                     window.isOnSlopeSurfaceForWalk = isGrounded && isOnTestRamp && groundNormal.angleTo(_upVec) > SLIDE_EXIT_ANGLE && !isLedgeGrabbing && !isClimbingUp;
-                    char.animate(delta, 'walk', moveMag, time, yVelocity, 0); networkStateName = moveMag > 0.8 ? 'run' : 'walk';
+                    // Locked on, the character faces the enemy while the stick
+                    // moves it in some other direction - so the clip has to be
+                    // chosen from that direction expressed in the character's
+                    // OWN space, exactly the classification hit recovery
+                    // already does (see hitRecoveryAnimState). Without it you
+                    // get the forward walk cycle while moonwalking sideways.
+                    let moveState = 'walk';
+                    if (lockedBot && _lastMoveDir.lengthSq() > 1e-6) {
+                        _lockVec.copy(_lastMoveDir).applyQuaternion(
+                            _tempQuat.copy(char.group.quaternion).invert());
+                        moveState = Math.abs(_lockVec.x) > Math.abs(_lockVec.z)
+                            ? (_lockVec.x > 0 ? 'strafe_right' : 'strafe_left')
+                            : (_lockVec.z > 0 ? 'walk' : 'walk_backward');
+                    }
+                    char.animate(delta, moveState, moveMag, time, yVelocity, 0);
+                    networkStateName = moveState === 'walk' ? (moveMag > 0.8 ? 'run' : 'walk') : moveState;
+                }
+                else if (_punchStepT > 0 && window.combat &&
+                         (window.combat.punchState > 0 || window.combat.nextPunchQueued)) {
+                    // Punching on the spot, being carried forward by the swing:
+                    // walk the legs at a token pace so the step reads as a step
+                    // rather than as the character skating.
+                    char.animate(delta, 'walk', window.punchStepAnimMag, time, yVelocity, 0);
+                    networkStateName = 'walk';
                 }
                 else { char.animate(delta, 'idle', 0, time, 0, 0); networkStateName = 'idle'; }
             } else { char.animate(delta, 'air', effectiveMoveMag, time, yVelocity, 0); networkStateName = yVelocity > 0 ? 'jump_start' : 'fall'; }
