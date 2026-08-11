@@ -126,6 +126,7 @@ export class RemoteAvatar {
         this.stateName = 'idle';
         this.carryUpper = false;
         this.punchStepping = false;
+        this._punchSplitLatch = null;   // see updateAnimation's split latch
 
         this.spine = null;
         this.spine1 = null;
@@ -884,7 +885,22 @@ export class RemoteAvatar {
         // companion's punch block) - it is only true while it is actually
         // closing the last step, so a punch thrown standing still stays the
         // authored full-body clip.
-        const stepUpper = this.punchStepping && !this.carryUpper && !onWall
+        //
+        // Latched for the whole attack, not sampled per frame. The driver
+        // stops stepping the moment it is in range, which is usually PART WAY
+        // THROUGH the string - and switching then swaps the arms from
+        // punch_combo_upper to the full-body punch_combo, a different action.
+        // That one is LoopOnce/clampWhenFinished, so it fades in either
+        // restarted from frame 0 or frozen on the clamped last frame, mid
+        // swing: the hands snap somewhere that has nothing to do with where
+        // the punch was going. The charge did it again across hold->swing.
+        // Deciding once at the start keeps one continuous upper action from
+        // wind-up to follow-through; only the LEGS change when it plants.
+        const isPunch = animName.indexOf('punch_') === 0;
+        if (!isPunch) this._punchSplitLatch = null;
+        else if (this._punchSplitLatch === null) this._punchSplitLatch = !!this.punchStepping;
+
+        const stepUpper = this._punchSplitLatch && !this.carryUpper && !onWall
             ? this.actions[animName + '_upper'] && (animName + '_upper')
             : null;
         // punch_walk's legs, not the civilian walk's.
@@ -895,14 +911,25 @@ export class RemoteAvatar {
         // fight, a punch ends up thrown at the wrong angle. punch_walk is the
         // combat-stance stride the charge hold already uses, and the player's
         // own split picks it for the same reason.
-        const stepLower = this.actions['punch_walk_lower'] ? 'punch_walk_lower'
+        //
+        // Once it has closed the distance the feet stop but the split stays,
+        // so the legs settle onto idle instead of the arms changing action.
+        const stepLower = !this.punchStepping && this.actions['idle_lower'] ? 'idle_lower'
+            : this.actions['punch_walk_lower'] ? 'punch_walk_lower'
             : (this.actions['walk_lower'] ? 'walk_lower' : null);
+        // A punch is a snap, not a transition. The player enters its charge
+        // release at 0.05 and its jabs at 0.1-0.15 (playPunchPose); at the
+        // flat 0.2 used for everything else, 40% of the 0.5s charge swing was
+        // spent blending out of the wind-up, which is why a companion's charge
+        // looked soft next to the player's. Legs keep the slow blend - those
+        // really are transitions.
+        const punchFade = animName === 'punch_charge_punch' ? 0.05 : isPunch ? 0.12 : 0.15;
         if (stepUpper && stepLower) {
             this.fadeToAction(stepLower, 0.2);
-            this.fadeToUpperAction(stepUpper, 0.15);
+            this.fadeToUpperAction(stepUpper, punchFade);
         } else {
             if (this.carryUpper && this.actions[animName + '_lower']) animName += '_lower';
-            this.fadeToAction(animName, 0.2);
+            this.fadeToAction(animName, isPunch ? punchFade : 0.2);
             if (this.carryUpper) this.fadeToUpperAction('carry_upper', 0.2);
             else this.stopUpperAction(0.2);
         }

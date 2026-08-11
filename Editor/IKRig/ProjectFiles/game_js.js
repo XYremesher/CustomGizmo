@@ -1894,6 +1894,12 @@ export function startGame(CharacterClass) {
     window.autoJumpGapDrop = 1.2;    // a fall bigger than this counts as a gap
     window.autoJumpGapReach = 5.0;   // just inside the real 5.33 flat reach
     window.autoJumpGapFall = 4.0;    // how far BELOW you a landing may be
+    window.autoJumpGapClear = 1.0;   // ground still needed past a landing spot
+    // Shorter than the wall jump's 0.6. You cannot re-trigger while airborne
+    // anyway (updateAutoJump needs isGrounded), so this only ever governs how
+    // soon AFTER LANDING the next gap may be taken - and 0.6 was long enough
+    // to eat the follow-up jump when two gaps come one after the other.
+    window.autoJumpGapCooldown = 0.2;
     let _autoJumpCd = 0;
     const _ajFwd = new THREE.Vector3();
     const _ajOrigin = new THREE.Vector3();
@@ -4472,7 +4478,24 @@ export function startGame(CharacterClass) {
         // drives the BONES rather than the group, so the dot would sit at a
         // stale spot on the ground with nobody standing on it.
         if (companion.marker) companion.marker.visible = !companion.isRagdoll && !companion.isStandingUp;
+        // Knocked out of a swing - drop it. The branches below return before
+        // `_compPunchT += delta` ever runs, so an attack left standing here is
+        // frozen at whatever frame it was on and can never reach totalDur to
+        // end itself: the companion comes back up still holding a punch pose
+        // it cannot finish. Being hit should interrupt a punch anyway, which
+        // is what the player and the bots both do.
+        // _compRetaliate is deliberately NOT touched - see its comment below,
+        // the answer to a hit outlives whatever it was doing when it landed.
+        const cancelAttack = () => {
+            if (!_compPunchTarget) return;
+            _compPunchTarget = null;
+            _compPunchT = -1;
+            _compPunchIndex = 0;
+            companion.punchStepping = false;
+            _compAttackCD = COMP_ATTACK_COOLDOWN;
+        };
         if (companion.isRagdoll || companion.isStandingUp) {
+            cancelAttack();
             // Ragdoll drives the bones directly - leaving a model offset in
             // place would displace the whole ragdoll. Drop it immediately.
             if (_climbBlendT > 0 && companion.fbxModel) { companion.fbxModel.position.copy(_climbModelRest); _climbBlendT = 0; }
@@ -4536,6 +4559,7 @@ export function startGame(CharacterClass) {
         if (companion.hitRecoveryTimer > 0 && companion.hitRecoveryTimer <= compHitRecoveryDuration) {
             _compWhy = 'staggering';
             _compMode = 'follow';        // abandon any route it was mid-way through
+            cancelAttack();              // ...and any swing, same reason - see cancelAttack
             // Roll for a counter-attack ONCE per hit, not once per frame of
             // the stagger. _compRecoverT is only ever 0 here on the first
             // frame of a new one - every later frame of the same stagger has
@@ -4567,6 +4591,7 @@ export function startGame(CharacterClass) {
             return;
         }
         if (_compRecoverT > 0) {
+            cancelAttack();
             _compRecoverT -= delta;
             _compWhy = 'recovering';
             _compStuckT = 0; _compStuckAt.copy(c);
@@ -14961,6 +14986,12 @@ export function startGame(CharacterClass) {
         { id: 'comp-punch-step-slider', vId: 'comp-punch-step-val', func: v => window.compPunchStep = v, fix: 2 },
         { id: 'auto-jump-min-slider', vId: 'auto-jump-min-val', func: v => window.autoJumpMinRise = v, fix: 2 },
         { id: 'auto-jump-max-slider', vId: 'auto-jump-max-val', func: v => window.autoJumpMaxRise = v, fix: 2 },
+        // Reach maxes out at 5.3 in the markup on purpose: 5.33 is the real
+        // flat distance a jump covers (v0=10, gravity 30, speed 8), and a
+        // slider that promised more would only ever promise jumps that fall short.
+        { id: 'auto-jump-gap-reach-slider', vId: 'auto-jump-gap-reach-val', func: v => window.autoJumpGapReach = v, fix: 2 },
+        { id: 'auto-jump-gap-takeoff-slider', vId: 'auto-jump-gap-takeoff-val', func: v => window.autoJumpGapTakeoff = v, fix: 2 },
+        { id: 'auto-jump-gap-clear-slider', vId: 'auto-jump-gap-clear-val', func: v => window.autoJumpGapClear = v, fix: 2 },
         { id: 'walk-anim-speed-slider', vId: 'walk-anim-speed-val', func: v => window.walkAnimSpeed = v, fix: 2 },
         { id: 'run-anim-speed-slider', vId: 'run-anim-speed-val', func: v => window.runAnimSpeed = v, fix: 2 },
         { id: 'carry-lock-range-slider', vId: 'carry-lock-range-val', func: v => window.carryLockRange = v, fix: 1 },
@@ -18415,6 +18446,15 @@ export function startGame(CharacterClass) {
                 if (edgeDist > window.autoJumpGapTakeoff) return;
 
                 // Somewhere to land, out along the same heading.
+                //
+                // The FIRST qualifying point is the far side's lip, and landing
+                // on a lip puts you back on an edge with nothing behind you -
+                // no room to gather for the next gap, and a step in any wrong
+                // direction goes in the water. So a candidate is only taken if
+                // the ground still holds autoJumpGapClear further on; the bare
+                // lip is kept as a fallback so a landing that is genuinely
+                // narrow still gets jumped rather than refused.
+                let fallback = -1;
                 for (let d = edgeDist + 0.5; d <= window.autoJumpGapReach; d += 0.5) {
                     const ly = autoJumpGroundAt(p0.x + _ajFwd.x * d, p0.z + _ajFwd.z * d,
                         p0.y + window.autoJumpMaxRise + 1.0);
@@ -18424,9 +18464,18 @@ export function startGame(CharacterClass) {
                     // going to fall down there anyway.
                     if (ly - p0.y > window.autoJumpMaxRise) continue;
                     if (p0.y - ly > window.autoJumpGapFall) continue;
-                    _autoJumpCd = 0.6;
+                    const dd = d + window.autoJumpGapClear;
+                    const beyond = dd <= window.autoJumpGapReach
+                        ? autoJumpGroundAt(p0.x + _ajFwd.x * dd, p0.z + _ajFwd.z * dd, ly + 1.0)
+                        : ly;   // past our reach anyway - do not fail it for that
+                    if (Math.abs(beyond - ly) > 0.6) { if (fallback < 0) fallback = d; continue; }
+                    _autoJumpCd = window.autoJumpGapCooldown;
                     handleJump();
                     return;
+                }
+                if (fallback > 0) {
+                    _autoJumpCd = window.autoJumpGapCooldown;
+                    handleJump();
                 }
             }
 
@@ -18475,9 +18524,17 @@ export function startGame(CharacterClass) {
                     if (topHits[i].object.userData.isTreeCollider) continue;
                     lipY = topHits[i].point.y; break;
                 }
-                if (lipY === null) return;
-                const rise = lipY - char.group.position.y;
-                if (rise < window.autoJumpMinRise || rise > window.autoJumpMaxRise) return;
+                // Not a ledge worth jumping - but "there is something ahead"
+                // is not the same as "there is no gap". A riverbank whose far
+                // face reaches into probe range is read as a wall here, fails
+                // the rise test, and used to return outright: the gap check
+                // never ran and you walked into the water. Fall through to it
+                // instead, which is what the geometry actually calls for.
+                const rise = lipY === null ? null : lipY - char.group.position.y;
+                if (rise === null || rise < window.autoJumpMinRise || rise > window.autoJumpMaxRise) {
+                    if (window.autoJumpGaps) updateAutoJumpGap();
+                    return;
+                }
                 _autoJumpCd = 0.6;   // one jump per approach, not a pogo stick
                 handleJump();
             }
