@@ -276,6 +276,24 @@
         #carry-lock-btn { bottom: 212px; }
         #assist-grab-btn { bottom: 248px; }
         #auto-jump-gap-btn { bottom: 284px; }
+        /* Warp buttons - one per companion/bot, stacked upward from just
+           above the topmost lock button. Same 30px circle so the whole right
+           edge reads as one column; the ring is the agent's own body colour,
+           which is the only label they need. Built by refreshWarpButtons(). */
+        #warp-btns {
+            position: absolute; right: 12px; bottom: 320px;
+            display: flex; flex-direction: column-reverse; gap: 6px;
+            z-index: 11;
+        }
+        .warp-btn {
+            width: 30px; height: 30px; border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.45);
+            display: flex; justify-content: center; align-items: center;
+            font-size: 11px; line-height: 1; color: rgba(255, 255, 255, 0.9);
+            touch-action: none; cursor: pointer; user-select: none;
+            transition: transform 0.1s, border-color 0.15s;
+        }
+        .warp-btn:active { transform: scale(0.88); border-color: #fff; }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
@@ -659,6 +677,18 @@
                     <label><input type="checkbox" id="toggle-lock-fov"> Show Vision Cone</label><br>
                     <label>Vision Cone: <span id="lock-fov-val">140</span>&deg;</label><br>
                     <input type="range" id="lock-fov-slider" min="20" max="360" step="5" value="140" style="width: 100%;"><br>
+                    <label>Enemy Vision Cone: <span id="ai-vision-val">360</span>&deg;</label><br>
+                    <input type="range" id="ai-vision-slider" min="20" max="360" step="5" value="360" style="width: 100%;"><br>
+                    <label>Companion Vision Cone: <span id="comp-vision-val">360</span>&deg;</label><br>
+                    <input type="range" id="comp-vision-slider" min="20" max="360" step="5" value="360" style="width: 100%;"><br>
+                    <label>Companion Engage Range: <span id="comp-seek-val">2.20</span></label><br>
+                    <input type="range" id="comp-seek-slider" min="0.5" max="6" step="0.1" value="2.2" style="width: 100%;"><br>
+                    <label>Companion Attack Cooldown: <span id="comp-cd-val">2.60</span>s</label><br>
+                    <input type="range" id="comp-cd-slider" min="0.5" max="6" step="0.1" value="2.6" style="width: 100%;"><br>
+                    <label>Companion Cooldown Jitter: <span id="comp-cd-jitter-val">0.90</span>s</label><br>
+                    <input type="range" id="comp-cd-jitter-slider" min="0" max="3" step="0.1" value="0.9" style="width: 100%;"><br>
+                    <label>Companion Combo Chance: <span id="comp-combo-val">0.50</span></label><br>
+                    <input type="range" id="comp-combo-slider" min="0" max="1" step="0.05" value="0.5" style="width: 100%;"><br>
                     <label>Cone Rise Above Head: <span id="lock-fov-rise-val">0.00</span></label><br>
                     <input type="range" id="lock-fov-rise-slider" min="0" max="2" step="0.05" value="0" style="width: 100%;"><br>
                     <label>Lock-On Range: <span id="lock-range-val">2.0</span></label><br>
@@ -1051,6 +1081,7 @@
     <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
     <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
     <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
+    <div id="warp-btns"></div>
     <div id="punch-btn">
         PUNCH
         <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">

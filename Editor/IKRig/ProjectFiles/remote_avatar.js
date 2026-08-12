@@ -900,7 +900,23 @@ export class RemoteAvatar {
         if (!isPunch) this._punchSplitLatch = null;
         else if (this._punchSplitLatch === null) this._punchSplitLatch = !!this.punchStepping;
 
-        const stepUpper = this._punchSplitLatch && !this.carryUpper && !onWall
+        // window.agentPunchSplit gates the whole thing, and it is OFF.
+        //
+        // The split was meant to let an agent walk INTO a swing: arms from the
+        // punch, legs from a stride. Three rounds of trying to make it hold
+        // together (which lower clip, latching it against mid-swing changes,
+        // matching the player's fade times) all failed the same way, because
+        // the premise is wrong - the spine rides in the lower clip, so the
+        // arms are always posed against hips the animator never paired them
+        // with, and there is no lower clip that makes that come out right.
+        //
+        // Full authored clip, every punch, for everyone. It is what the player
+        // plays and it is what these clips were made for. The cost is that a
+        // bot's feet stay planted while it punches; the step-in code still
+        // moves it, so it slides slightly. That is a smaller, duller flaw than
+        // arms swinging to places nobody posed.
+        const stepUpper = window.agentPunchSplit && this._punchSplitLatch &&
+            !this.carryUpper && !onWall
             ? this.actions[animName + '_upper'] && (animName + '_upper')
             : null;
         // punch_walk's legs, not the civilian walk's.
@@ -912,10 +928,12 @@ export class RemoteAvatar {
         // combat-stance stride the charge hold already uses, and the player's
         // own split picks it for the same reason.
         //
-        // Once it has closed the distance the feet stop but the split stays,
-        // so the legs settle onto idle instead of the arms changing action.
-        const stepLower = !this.punchStepping && this.actions['idle_lower'] ? 'idle_lower'
-            : this.actions['punch_walk_lower'] ? 'punch_walk_lower'
+        // Held for the whole attack, like the upper half. Swapping the legs to
+        // idle when the feet planted was a mid-swing change of exactly the
+        // kind the latch above exists to prevent: the spine rides in the LOWER
+        // clip, so idle's upright torso cancelled the punch's twist and the
+        // arms landed somewhere nobody posed them.
+        const stepLower = this.actions['punch_walk_lower'] ? 'punch_walk_lower'
             : (this.actions['walk_lower'] ? 'walk_lower' : null);
         // A punch is a snap, not a transition. The player enters its charge
         // release at 0.05 and its jabs at 0.1-0.15 (playPunchPose); at the

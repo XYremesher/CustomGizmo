@@ -1823,14 +1823,25 @@ export function startGame(CharacterClass) {
     // pool, however many hits it is split into.
     const COMP_PUNCH_TOTAL_POISE = 30;
     let _compFullCombo = false;
+    let _compUseCombo = false;   // rolled per attack from compComboChance
+    window.compComboChance = 0.5;
     let _compCharge = false;
     let _compAttackCD = 0;
     // Proactive engage: a bot this close gets attacked without waiting to be
     // hit first. Shorter than COMP_PUNCH_SEEK (which is how far it will look
     // for whoever just hit it) - answering a punch is worth crossing a bit of
     // ground for, starting one is not.
-    const COMP_ATTACK_SEEK = 3.0;
-    const COMP_ATTACK_COOLDOWN = 1.8;
+    // Live-tunable: how eagerly a companion picks fights is the kind of thing
+    // that has to be watched rather than reasoned about, so both are sliders.
+    // Seek came down from 3.0 and the cooldown up from 1.8 - at those values a
+    // companion was swinging almost continuously and reading as frantic.
+    window.compAttackSeek = 2.2;
+    window.compAttackCooldown = 2.6;
+    // How much of that cooldown is randomly ADDED on top, so two companions
+    // beside the same bot do not lock into the same rhythm and swing in
+    // unison, which is what made a pair of them look like a machine.
+    window.compAttackJitter = 0.9;
+    const compAttackCooldown = () => window.compAttackCooldown + Math.random() * window.compAttackJitter;
     // Charge attack (the dark blue one). Deliberately under the hold clip's
     // own length - see the swingAnim comment for why that matters.
     const COMP_CHARGE_HOLD = 0.75;
@@ -1895,6 +1906,37 @@ export function startGame(CharacterClass) {
     window.autoJumpGapReach = 5.0;   // just inside the real 5.33 flat reach
     window.autoJumpGapFall = 4.0;    // how far BELOW you a landing may be
     window.autoJumpGapClear = 1.0;   // ground still needed past a landing spot
+    // Vision cones. Same shape and default as the player's lockFovDeg, kept
+    // separate so an enemy can be made keener or blinder than you are.
+    // 360 = sees everything, which is exactly how targeting worked before
+    // there was a cone. Defaulted off after the cone turned out to interact
+    // badly with agents that steer themselves; the sliders bring it back at
+    // whatever angle, so the feature is one drag away rather than gone.
+    window.aiVisionDeg = 360;
+    window.compVisionDeg = 360;
+    // How far a bot keeps chasing whoever it already picked, cone or not.
+    // AI_CHASE_RADIUS, deliberately: the cone decides who a bot STARTS a fight
+    // with, and after that distance governs, exactly as it did before there
+    // was a cone at all.
+    //
+    // This number has been wrong in both directions. At 14 a bot locked onto
+    // the player and never re-decided, so companions stopped being targets. At
+    // 5 it was shorter than the chase itself, so the cone got re-tested every
+    // frame against a facing the chase controls - steer around an obstacle,
+    // lose the victim, fall back to wander, turn toward the wander target, and
+    // now the victim is certainly out of view. That feedback loop is what had
+    // bots standing sideways. The player never hits it because a human aims
+    // their own facing; anything that steers itself needs the hold to outlast
+    // the steering.
+    window.aiVisionHold = 35;
+    // ...and even inside that, someone this much closer takes the fight over.
+    // Without it a bot chases a distant player past a companion hitting it.
+    window.aiVisionSteal = 1.5;
+    window.warpRingDist = 2.0;   // how far from you a warped agent lands
+    // Upper/lower split on bot and companion punches. Off: every punch plays
+    // its authored full-body clip, the same as the player's. See the long
+    // comment in remote_avatar.js's updateAnimation for why.
+    window.agentPunchSplit = false;
     // Shorter than the wall jump's 0.6. You cannot re-trigger while airborne
     // anyway (updateAutoJump needs isGrounded), so this only ever governs how
     // soon AFTER LANDING the next gap may be taken - and 0.6 was long enough
@@ -1978,6 +2020,9 @@ export function startGame(CharacterClass) {
         // Locked in when a swing starts (char or companion) so the bot can't
         // switch targets mid-punch and pivot to face someone else.
         victim: null,
+        // Who it is CHASING, held across frames so the vision cone gates
+        // acquiring a fight without also cancelling one - see aiBotPickVictim.
+        foe: null,
         // Which side (-1 left / 0 none / 1 right) moveAiBotToward last
         // steered around an obstacle on. Persisted across frames so it
         // keeps preferring that same side next frame instead of
@@ -2748,6 +2793,31 @@ export function startGame(CharacterClass) {
         return false;
     };
 
+    // The one vision cone in the game. The player's lock only ACQUIRES a
+    // target that is in front of it (see updateLockTarget, which calls this);
+    // bots and companions used to notice anything inside a radius, including
+    // whatever was squarely behind them. Now all three see the same way.
+    //
+    // Flat: y is dropped on both the facing and the offset, so something on a
+    // ledge overhead is judged by where it stands, not by the angle up to it.
+    const _visionFwd = new THREE.Vector3();
+    function inVisionCone(fromPos, fromQuat, targetPos, fovDeg) {
+        const deg = fovDeg === undefined ? window.lockFovDeg : fovDeg;
+        if (!(deg > 0)) return false;
+        if (deg >= 360) return true;
+        _visionFwd.set(0, 0, 1).applyQuaternion(fromQuat);
+        _visionFwd.y = 0;
+        if (_visionFwd.lengthSq() < 1e-6) return true;
+        _visionFwd.normalize();
+        const dx = targetPos.x - fromPos.x, dz = targetPos.z - fromPos.z;
+        const len = Math.hypot(dx, dz);
+        // Practically on top of you counts as seen - at zero distance the
+        // direction is meaningless and the test would flicker.
+        if (len < 0.4) return true;
+        return (dx / len) * _visionFwd.x + (dz / len) * _visionFwd.z >=
+            Math.cos(THREE.MathUtils.degToRad(deg) * 0.5);
+    }
+
     // Ragdolling or getting back up means it is already being dealt with -
     // hitting it again would just reset an animation that is mid-play.
     function aiBotVictimAvailable(v) {
@@ -2762,18 +2832,47 @@ export function startGame(CharacterClass) {
     // Nearest thing worth attacking. Companions are targets in their own
     // right, not scenery - so the bot picks a fight with whichever of them it
     // runs into, rather than walking past one to get to the player.
-    function aiBotPickVictim(pos) {
+    // `quat` optional: without it this is the old pure-distance pick, which is
+    // what the read-only debug readout wants.
+    function aiBotPickVictim(pos, quat) {
+        // Holding is not acquiring - the same split the player's lock makes.
+        // Once a bot has picked its fight, the victim stepping out of the cone
+        // must not call it off, or you could break any chase by walking round
+        // the bot, and it would stand there re-deciding every frame.
+        // Mid-swing, the target is not up for reconsideration at all. The
+        // punch block locks aiBotState.victim when the string starts for
+        // exactly this reason; the cone must not undercut it from upstream.
+        if (aiBotState.mode === 'punch' && aiBotVictimAvailable(aiBotState.victim)) {
+            return aiBotState.victim;
+        }
+        const held = aiBotState.foe;
+        const heldD = held && aiBotVictimAvailable(held) &&
+            pos.distanceTo(held.group.position) <= window.aiVisionHold
+            ? pos.distanceTo(held.group.position) : Infinity;
+
+        // Just been hit: look everywhere. Something that punched you has been
+        // noticed whatever direction it came from, and a bot that could not
+        // find whoever is hitting it in the back would never answer - the same
+        // exemption the companions' retaliation gets.
+        const blind = aiBot.hitRecoveryTimer > 0;
+        const seen = (v) => !quat || blind ||
+            inVisionCone(pos, quat, v.group.position, window.aiVisionDeg);
         let best = null, bestD = Infinity;
-        if (aiBotVictimAvailable(char)) {
+        if (aiBotVictimAvailable(char) && seen(char)) {
             const d = pos.distanceTo(char.group.position);
             if (d < bestD) { bestD = d; best = char; }
         }
         for (let i = 0; i < companions.length; i++) {
             const cmp = companions[i].comp;
-            if (!aiBotVictimAvailable(cmp)) continue;
+            if (!aiBotVictimAvailable(cmp) || !seen(cmp)) continue;
             const d = pos.distanceTo(cmp.group.position);
             if (d < bestD) { bestD = d; best = cmp; }
         }
+        // The hold wins unless what it can see is meaningfully closer - a bot
+        // should not drop a fight because someone crossed its view, but it
+        // should turn on a companion that has walked up beside it.
+        if (heldD < Infinity && (!best || bestD > heldD - window.aiVisionSteal)) return held;
+        if (quat) aiBotState.foe = best;
         return best;
     }
 
@@ -3023,7 +3122,7 @@ export function startGame(CharacterClass) {
             return;
         }
 
-        const victim = aiBotPickVictim(pos);
+        const victim = aiBotPickVictim(pos, aiBot.group.quaternion);
         const distToVictim = victim ? pos.distanceTo(victim.group.position) : Infinity;
 
         // Combat mode transitions - punch/cooldown run their own timers below
@@ -3336,7 +3435,7 @@ export function startGame(CharacterClass) {
                 waitTimer: 0, punchTimer: 0, punchHasHit: false, cooldownTimer: 0,
                 comboIndex: 0, comboHand: 'punch_left',
                 combo: !!opts.combo, charge: !!opts.charge,
-                victim: null, avoidSide: 0,
+                victim: null, foe: null, avoidSide: 0,
             },
             chaseRunning: false, locoState: 'idle',
             stuckAt: new THREE.Vector3(), stuckT: 0,
@@ -3566,6 +3665,7 @@ export function startGame(CharacterClass) {
             retaliateChance: opts.retaliateChance,
             punchCount: opts.punchCount,
             fullCombo: !!opts.fullCombo,
+            useCombo: false,
             charge: !!opts.charge,
             followDist: COMP_FOLLOW_DIST,
             mode: 'follow', replayStartT: 0, replayT: 0,
@@ -3745,6 +3845,7 @@ export function startGame(CharacterClass) {
         companion = rec.comp;
         _compRetaliateChance = rec.retaliateChance; _compPunchCount = rec.punchCount;
         _compFullCombo = rec.fullCombo; _compCharge = rec.charge;
+        _compUseCombo = rec.useCombo;
         _compFollowDist = rec.followDist;
         _compAttackCD = rec.attackCD; _compLedgeWaitT = rec.ledgeWaitT;
         _compMode = rec.mode; _replayStartT = rec.replayStartT; _replayT = rec.replayT;
@@ -3783,6 +3884,7 @@ export function startGame(CharacterClass) {
         rec.speedSmooth = _compSpeedSmooth; rec.locoState = _compLocoState;
         rec.avoidSide = _compAvoidSide; rec.steerDirValid = _compSteerDirValid;
         rec.steerBlockedFor = _compSteerBlockedFor;
+        rec.useCombo = _compUseCombo;
         rec.punchT = _compPunchT; rec.punchIndex = _compPunchIndex;
         rec.punchTarget = _compPunchTarget; rec.retaliate = _compRetaliate;
         rec.attackCD = _compAttackCD; rec.ledgeWaitT = _compLedgeWaitT;
@@ -4457,7 +4559,7 @@ export function startGame(CharacterClass) {
         const takeoff = findTakeoffApproach(c);
         const dTk = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : -1;
         el.textContent = [
-            companion.id + (_compCharge ? '   charge' : _compFullCombo ? '   full combo' : '   combo x' + _compPunchCount)
+            companion.id + (_compCharge ? '   charge' : _compUseCombo ? '   full combo' : '   combo x' + _compPunchCount)
                 + (_compAttackCD > 0 ? '  cd ' + _compAttackCD.toFixed(1) : ''),
             'mode    ' + _compMode,
             'why     ' + _compWhy,
@@ -4492,7 +4594,7 @@ export function startGame(CharacterClass) {
             _compPunchT = -1;
             _compPunchIndex = 0;
             companion.punchStepping = false;
-            _compAttackCD = COMP_ATTACK_COOLDOWN;
+            _compAttackCD = compAttackCooldown();
         };
         if (companion.isRagdoll || companion.isStandingUp) {
             cancelAttack();
@@ -4611,11 +4713,17 @@ export function startGame(CharacterClass) {
 
         if (_compAttackCD > 0) _compAttackCD -= delta;
         // Nearest bot worth swinging at, within `range`.
-        const nearestBot = (range) => {
+        //
+        // `blind` skips the vision cone. Retaliation uses it: something that
+        // just hit you has been noticed by definition, and a companion punched
+        // from behind that could not find its attacker would never hit back.
+        const nearestBot = (range, blind) => {
             let best = null, bestD = range;
             for (let i = 0; i < aiBots.length; i++) {
                 const b = aiBots[i].bot;
                 if (!b.isLoaded || b.isRagdoll || b.isStandingUp) continue;
+                if (!blind && !inVisionCone(c, companion.group.quaternion,
+                    b.group.position, window.compVisionDeg)) continue;
                 const d = c.distanceTo(b.group.position);
                 if (d < bestD) { bestD = d; best = b; }
             }
@@ -4625,7 +4733,14 @@ export function startGame(CharacterClass) {
             _compPunchTarget = target;
             _compPunchT = 0;
             _compPunchIndex = 0;
-            _compAttackCD = _compCharge ? COMP_CHARGE_COOLDOWN : COMP_ATTACK_COOLDOWN;
+            // Rolled per attack, not fixed per companion. `fullCombo` used to
+            // mean EVERY swing was the five-hit string, so the one companion
+            // you spend the whole level beside only ever threw one attack and
+            // the fight had no rhythm to it. Now the combo is its signature
+            // move rather than its only one - the rest of the time it throws
+            // the short jab string, which also gives the enemy room to answer.
+            _compUseCombo = _compFullCombo && Math.random() < window.compComboChance;
+            _compAttackCD = _compCharge ? COMP_CHARGE_COOLDOWN : compAttackCooldown();
         };
         // Whether it is free to start swinging at anything at all.
         //
@@ -4655,7 +4770,7 @@ export function startGame(CharacterClass) {
                 if (!eb.isLoaded || eb.isRagdoll || eb.knockedOutT > 0) continue;
                 const ep = eb.group.position;
                 if (Math.abs(ep.y - c.y) < 1.5 &&
-                    Math.hypot(ep.x - c.x, ep.z - c.z) < COMP_ATTACK_SEEK) {
+                    Math.hypot(ep.x - c.x, ep.z - c.z) < window.compAttackSeek) {
                     _compJustClimbedT = 0;
                     break;
                 }
@@ -4670,14 +4785,14 @@ export function startGame(CharacterClass) {
         // should still hit back when it gets there, not forget it was hit.
         if (_compRetaliate && canStartAttack) {
             _compRetaliate = false;
-            const hitBack = nearestBot(COMP_PUNCH_SEEK);
+            const hitBack = nearestBot(COMP_PUNCH_SEEK, true);
             if (hitBack) startAttack(hitBack);
         }
         // ...and they no longer WAIT to be hit. A bot that wanders into reach
         // gets swung at on its own - but never at the cost of finishing a
         // climb, per the gate above.
         if (!_compPunchTarget && _compAttackCD <= 0 && canStartAttack) {
-            const prey = nearestBot(COMP_ATTACK_SEEK);
+            const prey = nearestBot(window.compAttackSeek);
             if (prey) startAttack(prey);
         }
         // A target handed over by the story (the practice bag). Checked after
@@ -4728,7 +4843,7 @@ export function startGame(CharacterClass) {
             // its own hit frames. The alternating left/right jabs below are the
             // fallback for a companion without the clip (and what the short
             // two-hit counter still uses).
-            const comboAction = _compFullCombo && companion.actions && companion.actions['punch_combo'];
+            const comboAction = _compUseCombo && companion.actions && companion.actions['punch_combo'];
             const comboDur = comboAction ? comboAction.getClip().duration : 0;
             const chargeAction = _compCharge && companion.actions && companion.actions['punch_charge_punch'];
             const hitCount = chargeAction ? 1
@@ -5410,7 +5525,7 @@ export function startGame(CharacterClass) {
                         // On MY level, not one standing at the bottom of the
                         // drop - that one is a reason to go down, not to stay.
                         if (Math.abs(ep.y - c.y) > 1.5) continue;
-                        if (Math.hypot(ep.x - c.x, ep.z - c.z) < COMP_ATTACK_SEEK) {
+                        if (Math.hypot(ep.x - c.x, ep.z - c.z) < window.compAttackSeek) {
                             landing = null;
                             _compWhy = 'holding the ledge, enemy up here';
                             break;
@@ -14549,6 +14664,109 @@ export function startGame(CharacterClass) {
         _fovMesh.material.color.setHex(lockedBot ? 0x66ff88 : 0x44ddff);
     }
 
+    // ---- Warp buttons -------------------------------------------------
+    // One circle per companion and bot, in its own body colour, stacked above
+    // the lock buttons. Tapping one brings that agent to you.
+    //
+    // Rebuilt from a signature of the roster rather than from every spawn call
+    // site: companions and bots are added by the level build, by the debug
+    // checkboxes, by the story beats and by syncSpawnedAgents, and hooking all
+    // of those is how one of them ends up forgotten. Comparing a joined id
+    // string costs nothing at this list length.
+    let _warpSig = '';
+    const _warpVec = new THREE.Vector3();
+    function warpAgentToPlayer(avatar, isBot) {
+        const p = char.group.position;
+        // Behind the player, then around the ring. Behind is the useful
+        // default: a companion dropped in front is immediately walked into,
+        // and a bot dropped in front gets a free swing at you.
+        _warpVec.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+        const back = Math.atan2(-_warpVec.x, -_warpVec.z);
+        for (let i = 0; i < 12; i++) {
+            // Alternate to either side of straight-behind rather than sweeping
+            // one way, so the spot found is the closest workable one to it.
+            const step = Math.ceil(i / 2) * (Math.PI / 6) * (i % 2 ? 1 : -1);
+            const a = back + step;
+            const x = p.x + Math.sin(a) * window.warpRingDist;
+            const z = p.z + Math.cos(a) * window.warpRingDist;
+            const gy = isBot ? aiBotSurfaceY(x, z, p.y + 2.0)
+                : companionGroundY(x, z, p.y, 99);
+            if (gy === -Infinity || Math.abs(gy - p.y) > 2.0) continue;
+            // Not on top of somebody who is already standing there.
+            let taken = false;
+            for (let j = 0; j < companions.length && !taken; j++) {
+                const o = companions[j].comp;
+                if (o !== avatar && Math.hypot(o.group.position.x - x, o.group.position.z - z) < 1.0) taken = true;
+            }
+            for (let j = 0; j < aiBots.length && !taken; j++) {
+                const o = aiBots[j].bot;
+                if (o !== avatar && Math.hypot(o.group.position.x - x, o.group.position.z - z) < 1.0) taken = true;
+            }
+            if (taken) continue;
+            avatar.group.position.set(x, gy, z);
+            // The brain has to be told, not just the transform. Every agent
+            // carries a stuck watchdog that measures how far it has moved and
+            // a route it was part way through; teleporting under those leaves
+            // it either convinced it is wedged or walking back to where it
+            // came from.
+            if (isBot) {
+                const rec = aiBots.find(r => r.bot === avatar);
+                if (rec) {
+                    activateAiBot(rec);
+                    avatar.dormant = false;
+                    aiBotState.mode = 'chase';
+                    aiBotState.victim = null;
+                    _aiClimbPhase = 'none'; _aiUnstickT = 0;
+                    _aiStuckT = 0; _aiStuckAt.copy(avatar.group.position);
+                    saveAiBot(rec);
+                }
+            } else {
+                const rec = companions.find(r => r.comp === avatar);
+                if (rec) {
+                    activateCompanion(rec);
+                    _compMode = 'follow';
+                    _compPunchTarget = null; _compPunchT = -1;
+                    _compUnstickT = 0;
+                    _compStuckT = 0; _compStuckAt.copy(avatar.group.position);
+                    saveCompanion(rec);
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+    function refreshWarpButtons() {
+        const host = document.getElementById('warp-btns');
+        if (!host) return;
+        const list = companions.map(r => ({ a: r.comp, bot: false }))
+            .concat(aiBots.map(r => ({ a: r.bot, bot: true })));
+        const sig = list.map(e => e.a.id).join('|');
+        if (sig === _warpSig) return;
+        _warpSig = sig;
+        host.innerHTML = '';
+        list.forEach(e => {
+            const b = document.createElement('div');
+            b.className = 'warp-btn';
+            // bodyColor stays null until setColor is called, and a spec
+            // without a `color` never calls it - the first companion is one.
+            // 0x66aaff is what RemoteAvatar's material falls back to in that
+            // case, so the button matches the body rather than guessing.
+            const hex = (e.a.bodyColor === undefined || e.a.bodyColor === null)
+                ? 0x66aaff : e.a.bodyColor;
+            b.style.background = '#' + hex.toString(16).padStart(6, '0');
+            b.title = 'Bring ' + e.a.id + ' to you';
+            b.textContent = e.bot ? '⚔' : '⚑';
+            // pointerdown, not click: the touch controls elsewhere all use it,
+            // and click would fire after the canvas had already taken the drag.
+            b.addEventListener('pointerdown', ev => {
+                ev.preventDefault(); ev.stopPropagation();
+                warpAgentToPlayer(e.a, e.bot);
+            });
+            host.appendChild(b);
+        });
+    }
+    window.refreshWarpButtons = refreshWarpButtons;
+
     function updateLockTarget() {
         if (!window.lockTargetEnabled || char.isRagdoll || char.isStandingUp) { lockedBot = null; return; }
 
@@ -14584,19 +14802,8 @@ export function startGame(CharacterClass) {
         // Acquiring also needs the target to be IN VIEW. Holding one does not:
         // once you are squared up to something, turning slightly away should
         // not drop it, or the lock would let go every time you sidestepped.
-        const _fovFwd = _lockVec.set(0, 0, 1).applyQuaternion(char.group.quaternion);
-        _fovFwd.y = 0;
-        if (_fovFwd.lengthSq() > 1e-6) _fovFwd.normalize();
-        const cosHalf = Math.cos(THREE.MathUtils.degToRad(window.lockFovDeg) * 0.5);
-        const inView = (t) => {
-            const tp = t.group.position;
-            const dx = tp.x - p.x, dz = tp.z - p.z;
-            const len = Math.hypot(dx, dz);
-            // Practically on top of you counts as seen - at zero distance the
-            // direction is meaningless and the test would flicker.
-            if (len < 0.4) return true;
-            return (dx / len) * _fovFwd.x + (dz / len) * _fovFwd.z >= cosHalf;
-        };
+        const inView = (t) => inVisionCone(p, char.group.quaternion, t.group.position,
+            window.lockFovDeg);
 
         let best = window.lockOnRange, found = null;
         for (let i = 0; i < aiBots.length; i++) {
@@ -14976,6 +15183,12 @@ export function startGame(CharacterClass) {
         { id: 'charge-kick-flash-slider', vId: 'charge-kick-flash-val', func: v => window.chargeKickFlash = v, fix: 2 },
         { id: 'lock-range-slider', vId: 'lock-range-val', func: v => { window.lockOnRange = v; window.lockOnDrop = v + 3; }, fix: 1 },
         { id: 'lock-fov-slider', vId: 'lock-fov-val', func: v => window.lockFovDeg = v, fix: 0 },
+        { id: 'ai-vision-slider', vId: 'ai-vision-val', func: v => window.aiVisionDeg = v, fix: 0 },
+        { id: 'comp-vision-slider', vId: 'comp-vision-val', func: v => window.compVisionDeg = v, fix: 0 },
+        { id: 'comp-seek-slider', vId: 'comp-seek-val', func: v => window.compAttackSeek = v, fix: 2 },
+        { id: 'comp-cd-slider', vId: 'comp-cd-val', func: v => window.compAttackCooldown = v, fix: 2 },
+        { id: 'comp-cd-jitter-slider', vId: 'comp-cd-jitter-val', func: v => window.compAttackJitter = v, fix: 2 },
+        { id: 'comp-combo-slider', vId: 'comp-combo-val', func: v => window.compComboChance = v, fix: 2 },
         { id: 'lock-fov-rise-slider', vId: 'lock-fov-rise-val', func: v => window.lockFovRise = v, fix: 2 },
         { id: 'auto-punch-int-slider', vId: 'auto-punch-int-val', func: v => window.autoPunchInterval = v, fix: 2 },
         { id: 'auto-punch-range-slider', vId: 'auto-punch-range-val', func: v => window.autoPunchRange = v, fix: 1 },
@@ -18397,6 +18610,8 @@ export function startGame(CharacterClass) {
                         ? 'flex' : 'none';
             }
             updateSkipButton();
+            // Cheap: returns immediately unless the roster actually changed.
+            refreshWarpButtons();
             updateLockTarget();
             updateLockFovViz();
             updateAutoPunch(delta);
