@@ -9,6 +9,7 @@ import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
@@ -570,11 +571,59 @@ export function startGame(CharacterClass) {
     window.sharpeningStrength = 0.50;
 
     const composer = new EffectComposer(renderer);
+
+    // Sharpening shader (unsharp mask)
+    const sharpeningShader = {
+        uniforms: {
+            tDiffuse: { value: null },
+            strength: { value: 0.5 }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D tDiffuse;
+            uniform float strength;
+            varying vec2 vUv;
+
+            void main() {
+                vec2 texelSize = 1.0 / vec2(textureSize(tDiffuse, 0));
+
+                vec4 center = texture2D(tDiffuse, vUv);
+                vec4 blur = vec4(0.0);
+
+                // Simple box blur
+                blur += texture2D(tDiffuse, vUv + vec2(-1.0, -1.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(0.0, -1.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(1.0, -1.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(-1.0, 0.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(1.0, 0.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(-1.0, 1.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(0.0, 1.0) * texelSize);
+                blur += texture2D(tDiffuse, vUv + vec2(1.0, 1.0) * texelSize);
+                blur /= 8.0;
+
+                // Unsharp mask
+                vec4 sharpened = center + (center - blur) * strength;
+                gl_FragColor = sharpened;
+            }
+        `
+    };
+
+    const sharpeningPass = new ShaderPass(sharpeningShader);
+    sharpeningPass.enabled = false;
+
     // Pixel size 1 - no pixelation at all. The pass is kept purely for its
     // depth-edge outline; raise the Pixel Size slider for the chunky look.
     const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
     renderPixelatedPass.normalEdgeStrength = 0.0;
     renderPixelatedPass.depthEdgeStrength = 0.75;
+
+    composer.addPass(sharpeningPass);
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
 
@@ -13303,20 +13352,19 @@ export function startGame(CharacterClass) {
         // The hole is measured in gl_FragCoord, i.e. in whatever buffer the
         // scene is actually being drawn into. With the pixelation pass on that
         // is NOT the drawing buffer - RenderPixelatedPass renders the scene at
-        // 1/pixelSize resolution and upscales afterwards. Sizing the hole from
-        // the full drawing buffer therefore put its centre at pixelSize times
-        // the right coordinates and made its radius pixelSize times too big,
-        // which is the "hole is in the wrong place and too large at pixel size
-        // 2" report. Both are the same divide.
+        // 1/pixelSize resolution and upscales afterwards. Render scale also
+        // downsamples, so both need to be accounted for.
         const pixelDiv = (window.pixelEffectEnabled && renderPixelatedPass.pixelSize > 0)
             ? renderPixelatedPass.pixelSize : 1;
+        const renderDiv = window.pixelRenderScale || 1.0;
+        const totalDiv = pixelDiv / renderDiv;
         _ditherScreenUniform.value.set(
-            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x / pixelDiv,
-            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y / pixelDiv);
+            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x / totalDiv,
+            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y / totalDiv);
         // Matches vViewPosition.z in the shader: distance in front of the
         // camera, not straight-line distance to it.
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
-        _ditherRadiusUniform.value = window.ditherHoleRadius / pixelDiv;
+        _ditherRadiusUniform.value = window.ditherHoleRadius / totalDiv;
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
@@ -16307,11 +16355,13 @@ export function startGame(CharacterClass) {
 
     document.getElementById('toggle-sharpening').addEventListener('change', e => {
         window.sharpeningEnabled = e.target.checked;
+        sharpeningPass.enabled = e.target.checked;
     });
 
     document.getElementById('sharpening-strength-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
         window.sharpeningStrength = v;
+        sharpeningPass.uniforms.strength.value = v;
         document.getElementById('sharpening-strength-val').textContent = v.toFixed(2);
     });
 
