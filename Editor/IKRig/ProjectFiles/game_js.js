@@ -623,8 +623,8 @@ export function startGame(CharacterClass) {
     renderPixelatedPass.normalEdgeStrength = 0.0;
     renderPixelatedPass.depthEdgeStrength = 0.75;
 
-    composer.addPass(sharpeningPass);
     composer.addPass(renderPixelatedPass);
+    composer.addPass(sharpeningPass);
     composer.addPass(new OutputPass());
 
     const updateComposerRenderTarget = () => {
@@ -13349,22 +13349,25 @@ export function startGame(CharacterClass) {
     function updateDitherOccluders(cam, playerPoint, delta) {
         _ditherScreenVec.copy(playerPoint).project(cam);
         renderer.getDrawingBufferSize(_ditherDrawSize);
+        // Scale draw size to match the actual render target size when render scale < 1
+        const renderScale = window.pixelRenderScale || 1.0;
+        const scaledDrawSize = {
+            x: _ditherDrawSize.x * renderScale,
+            y: _ditherDrawSize.y * renderScale
+        };
         // The hole is measured in gl_FragCoord, i.e. in whatever buffer the
         // scene is actually being drawn into. With the pixelation pass on that
         // is NOT the drawing buffer - RenderPixelatedPass renders the scene at
-        // 1/pixelSize resolution and upscales afterwards. Render scale also
-        // downsamples, so both need to be accounted for.
+        // 1/pixelSize resolution and upscales afterwards.
         const pixelDiv = (window.pixelEffectEnabled && renderPixelatedPass.pixelSize > 0)
             ? renderPixelatedPass.pixelSize : 1;
-        const renderDiv = window.pixelRenderScale || 1.0;
-        const totalDiv = pixelDiv / renderDiv;
         _ditherScreenUniform.value.set(
-            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x / totalDiv,
-            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y / totalDiv);
+            (_ditherScreenVec.x * 0.5 + 0.5) * scaledDrawSize.x / pixelDiv,
+            (_ditherScreenVec.y * 0.5 + 0.5) * scaledDrawSize.y / pixelDiv);
         // Matches vViewPosition.z in the shader: distance in front of the
         // camera, not straight-line distance to it.
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
-        _ditherRadiusUniform.value = window.ditherHoleRadius / totalDiv;
+        _ditherRadiusUniform.value = window.ditherHoleRadius * renderScale / pixelDiv;
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
