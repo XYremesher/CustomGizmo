@@ -564,19 +564,14 @@ export function startGame(CharacterClass) {
     // - off by default, toggled from the settings panel. Built once up front
     // rather than lazily on first enable, so the toggle is instant either way.
     window.pixelEffectEnabled = true;
-    window.pixelRenderScale = 1.0;
+    window.pixelRenderScale = 0.65;
 
     const composer = new EffectComposer(renderer);
     // Pixel size 1 - no pixelation at all. The pass is kept purely for its
     // depth-edge outline; raise the Pixel Size slider for the chunky look.
     const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
     renderPixelatedPass.normalEdgeStrength = 0.0;
-    // 7, well past the 0..1 the pass's own maths assumes: the indicator is
-    // quantised to 0 / 0.5 / 1 and the result is texel * (1 - strength * dei),
-    // so anything over 2 drives an edge fragment negative and it clamps to
-    // solid black. That is the point - a hard black outline rather than a
-    // darkened one.
-    renderPixelatedPass.depthEdgeStrength = 7.0;
+    renderPixelatedPass.depthEdgeStrength = 1.25;
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
 
@@ -607,7 +602,7 @@ export function startGame(CharacterClass) {
     // and every replacement is verified - if a three.js update changes the
     // source out from under this, it leaves the stock shader alone and says so
     // rather than silently rendering a broken pass.
-    window.pixelDepthEdgeSensitivity = 0.055;  // relative depth step counted as an edge
+    window.pixelDepthEdgeSensitivity = 0.010;  // relative depth step counted as an edge
     const _pixelEdgeUniforms = {
         uEdgeNear: { value: 0.1 },
         uEdgeFar: { value: 1000 },
