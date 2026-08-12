@@ -7,6 +7,13 @@ const _tempQuat = new THREE.Quaternion();
 const _tempQuat2 = new THREE.Quaternion();
 const _tempMat4 = new THREE.Matrix4();
 const _fwdVec = new THREE.Vector3(0, 0, 1);
+const _zeroVec = new THREE.Vector3();
+const _recoilStep = new THREE.Vector3();
+// Below this the lean is invisible, so it is treated as gone rather than left
+// to decay asymptotically forever. Same value and same reasoning as
+// RemoteAvatar's RECOIL_SETTLE_THRESHOLD, which already applies this test to
+// these exact two vectors before it trusts its stabilize cache.
+const RECOIL_ZERO_EPS = 0.01;
 
 // Scratch objects reused by applyHingeLimit / updateRagdoll so the 20-iteration
 // constraint solver doesn't allocate fresh Vector3/Quaternion/Box3 every call.
@@ -250,15 +257,33 @@ export const RagdollPhysics = {
     },
 
     updateRecoil(delta) {
-        this.recoilVelocity.lerp(new THREE.Vector3(), 15 * delta);
-        this.recoilRotation.lerp(new THREE.Vector3(), 10 * delta);
-        this.recoilRotation.add(this.recoilVelocity.clone().multiplyScalar(delta));
+        this.recoilVelocity.lerp(_zeroVec, 15 * delta);
+        this.recoilRotation.lerp(_zeroVec, 10 * delta);
+        this.recoilRotation.add(_recoilStep.copy(this.recoilVelocity).multiplyScalar(delta));
+        // Exponential decay never actually reaches zero, and applyRecoilVisual
+        // feeds whatever is left into the spine, spine1 and neck EVERY frame -
+        // so the tail of a hit is a permanent sliver of lean rather than a
+        // fading one, and the body never quite straightens up again. Cutting
+        // it once it is below the visible threshold is what actually ends the
+        // lean. Both halves have to go: leaving the velocity alive would keep
+        // feeding the rotation on the next line.
+        if (this.recoilRotation.lengthSq() + this.recoilVelocity.lengthSq()
+            < RECOIL_ZERO_EPS * RECOIL_ZERO_EPS) {
+            this.recoilRotation.set(0, 0, 0);
+            this.recoilVelocity.set(0, 0, 0);
+        }
         // Same spring-damper shape as recoilVelocity/recoilRotation above,
         // just scalar - drives the whole-character impact twist (see
         // applyProceduralRecoil and setSlopeTilt's hitTwistAngle param).
         this.hitTwistVelocity = THREE.MathUtils.lerp(this.hitTwistVelocity, 0, 15 * delta);
         this.hitTwistAngle = THREE.MathUtils.lerp(this.hitTwistAngle, 0, 10 * delta);
         this.hitTwistAngle += this.hitTwistVelocity * delta;
+        // Same cut-off, same reason - this one is fed to setSlopeTilt, so its
+        // residue is a permanent twist rather than a permanent lean.
+        if (Math.abs(this.hitTwistAngle) + Math.abs(this.hitTwistVelocity) < RECOIL_ZERO_EPS) {
+            this.hitTwistAngle = 0;
+            this.hitTwistVelocity = 0;
+        }
     },
 
     detectFallDirection() {

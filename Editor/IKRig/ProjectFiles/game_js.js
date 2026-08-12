@@ -1606,15 +1606,7 @@ export function startGame(CharacterClass) {
     // COMP_FOLLOW_FALLBACKS taking a shorter stand-off, so this only catches
     // "the landing spot is literally occupied".
     const COMP_TOPOUT_CLEAR = 0.6;
-    // Sideways offsets along the ledge tried when the top-out is occupied,
-    // nearest first - the companion shuffles along the edge to a clear spot
-    // and mantles up there instead of hanging until the player moves.
-    const COMP_SHIMMY_STEPS = [1.0, 1.8, 2.6];
-    const COMP_SHIMMY_SPEED = 1.6;  // units/sec sliding along the ledge
     const COMP_LEDGE_WALL_REACH = 1.2; // a hang spot needs wall within this, or there's nothing to hold
-    let _shimmyHang = new THREE.Vector3();   // where to hang once shuffled across
-    let _shimmyTop = new THREE.Vector3();    // the clear surface to mantle onto
-    let _shimmyFaceQuat = new THREE.Quaternion();
     // HANG mode: committed to holding a ledge. Captured once when the replay
     // finds its top-out occupied, then owned by that mode - the point being
     // that the decision is made ONCE. Re-deciding every frame inside the
@@ -1637,35 +1629,22 @@ export function startGame(CharacterClass) {
     const COMP_HANG_DROP = 1.85;            // matches the player's hangGroupY drop
     const _ledgeFwdVec = new THREE.Vector3();
     const _ledgeSpotTop = new THREE.Vector3();
-    // How far apart two grips have to be. Roughly two body radii (0.45 each),
-    // so shoulders clear; the first shimmy step is 1.0, which is enough to
-    // resolve a clash in one move.
-    //
-    // This constant was USED by nudgeHangClearOfPlayer and never declared -
-    // an undeclared identifier in a module is a ReferenceError, so that
-    // function threw every single time it ran and the exception propagated
-    // out through updateCompanion. Which is why companions have been grabbing
-    // on wherever they liked: the code meant to stop it never completed.
+    // Scratch for the sideways grip search in startCompanionJumpGrab. Its own
+    // vector because the `top` it searches around is usually _ledgeSpotTop
+    // itself, passed in by the caller - writing candidates into that would
+    // destroy the very point being searched around.
+    const _gripTryTop = new THREE.Vector3();
+    // How far along the ledge to look for a free grip when the one straight
+    // ahead is already spoken for, and how far apart those tries are. Two steps
+    // of one separation each: far enough to clear a companion, near enough that
+    // the pair still reads as going up the same wall together.
+    const COMP_GRIP_SIDE_STEPS = [1, -1, 2, -2];
+    // How far apart two grips have to be to avoid overlap between companions
     const COMP_LEDGE_MIN_SEP = 0.9;
     // Only bodies within this much height of each other count as sharing a
     // grip. A hang is 1.85 below its lip, so anything looser would have a
     // companion on the ledge above competing with one on the ledge below.
     const COMP_LEDGE_SEP_DY = 1.2;
-    // How long a companion stands off after finding the ledge occupied.
-    //
-    // Refusing the grab on its own is not enough: the refusal is re-derived
-    // every frame from the same geometry, so it just re-probes the same wall
-    // sixty times a second and presses against it. This makes the refusal
-    // STICK for long enough that the one already on the ledge can top out -
-    // a climb-up clip plus the post-climb hold is a little over a second - and
-    // turns "both scrambling at the same grip" into a queue.
-    const COMP_LEDGE_WAIT = 1.1;
-    // Jitter on that wait. Two companions blocked by the same climber would
-    // otherwise come off cooldown on the same frame, re-probe together, and
-    // block each other again - the retry has to be desynchronised or the queue
-    // is just a slower deadlock.
-    const COMP_LEDGE_WAIT_JITTER = 0.5;
-    let _compLedgeWaitT = 0;
     // CLIMBUP: the same shape as the player's own climb-up (see isClimbingUp
     // in the movement block) - hold the root still, play the climb clip, then
     // place the root on the ledge at the end. The generic mantle arc was
@@ -1675,7 +1654,7 @@ export function startGame(CharacterClass) {
     let _climbTo = new THREE.Vector3();
     let _climbQuat = new THREE.Quaternion();
     let _climbT = 0, _climbDur = 1.0;
-    const COMP_CLIMB_STAND_IN = 0.25;       // matches the player's own ledgeTarget + fwd*0.25
+    const COMP_CLIMB_STAND_IN = 0.5;       // distance from ledge edge after climb
     const _compFaceEuler = new THREE.Euler();
     let _compFaceQuat = new THREE.Quaternion();
     const _compBehindDir = new THREE.Vector3();
@@ -1850,13 +1829,25 @@ export function startGame(CharacterClass) {
     // the point.
     let _compHitSettled = false;
     const COMP_HIT_OK_DIST = 3.2;
+    // How long this companion has been hanging. Only drives when the sideways
+    // search starts - there is no give-up timeout, see the HANG block.
+    let _compHangT = 0;
+    // HANG shimmy - slide along the ledge to a clear spot. _compShimmyOffset is
+    // how far along the edge that spot is, signed; the slide drives to exactly
+    // that. Travelling a fixed distance instead - which it used to - meant a
+    // spot found half a metre away was left behind and the companion ended up
+    // somewhere it had never checked, quite often inside the block.
+    let _compShimmyT = 0;
+    let _compShimmyOffset = 0;   // signed distance along the edge to the target
+    const COMP_SHIMMY_SEARCH_OFFSETS = [0.9, 1.8, 2.7];  // how far along to look
+    const COMP_SHIMMY_SPEED = 1.6; // units/sec moving along ledge
     // Post-climb model offset: cancels the root placement's jump, then decays
     // so the model settles back onto its root. See the CLIMBUP completion.
     let _climbModelRest = new THREE.Vector3();
     const _climbMoveDiff = new THREE.Vector3();
     const _climbTmpQuat = new THREE.Quaternion();
     let _climbBlendT = 0;
-    const COMP_CLIMB_BLEND = 0.3;
+    const COMP_CLIMB_BLEND = 0.6;  // increased for smoother settle
     // How much of the climb's rise the model offset is allowed to cancel.
     //
     // Cancelling ALL of it is what the anti-pop trick wants, but the rise from
@@ -1995,8 +1986,8 @@ export function startGame(CharacterClass) {
     // there was a cone. Defaulted off after the cone turned out to interact
     // badly with agents that steer themselves; the sliders bring it back at
     // whatever angle, so the feature is one drag away rather than gone.
-    window.aiVisionDeg = 360;
-    window.compVisionDeg = 360;
+    window.aiVisionDeg = 140;
+    window.compVisionDeg = 140;
     // How far a bot keeps chasing whoever it already picked, cone or not.
     // AI_CHASE_RADIUS, deliberately: the cone decides who a bot STARTS a fight
     // with, and after that distance governs, exactly as it did before there
@@ -2398,9 +2389,6 @@ export function startGame(CharacterClass) {
         // to, so future obstacles get re-decided fresh rather than sticking
         // to whatever side was last used for something unrelated.
         aiBotState.avoidSide = chosenAngle === 0 ? 0 : Math.sign(chosenAngle);
-        if (window.aiBotPathVisible) {
-            updateAiBotPathVisual(pos, destTarget, moveDir ? _tempVec2.copy(pos).addScaledVector(moveDir, 3) : pos);
-        }
         // Every candidate angle is blocked within lookahead - genuinely
         // boxed in, not just "one direction happens to be blocked".
         if (!moveDir) return -1;
@@ -2442,6 +2430,19 @@ export function startGame(CharacterClass) {
             nextPos.y = pos.y - AI_FALL_SPEED * delta;
         }
 
+        // Drawn here rather than up beside the steering decision, so the line
+        // starts where the bot ENDS this frame instead of where it began it -
+        // nextPos is already through separation, the ground snap and the
+        // refused-step-up case, so it is the final answer.
+        //
+        // (Strictly the visible root trails this by whatever setNetworkState's
+        // smoothing lerp has left to cover, which is centimetres at walking
+        // speed. Reading group.position back after aiBot.update would be exact,
+        // but updateAiBot returns from a dozen places and each would need its
+        // own draw.)
+        if (window.aiBotPathVisible) {
+            updateAiBotPathVisual(nextPos, destTarget, _tempVec2.copy(nextPos).addScaledVector(moveDir, 3));
+        }
         aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
             aiBotLocoState(speed), false);
         return dist;
@@ -2486,6 +2487,10 @@ export function startGame(CharacterClass) {
     let _aiClimbBlendT = 0;
     const _aiHangFwd = new THREE.Vector3();
     const _aiHangNormal = new THREE.Vector3();
+    // Scratch for the punch block's facing, which used to allocate a fresh
+    // Quaternion and Vector3 every frame, per bot, for the whole swing.
+    const _aiPunchFaceQuat = new THREE.Quaternion();
+    const _aiForwardZ = new THREE.Vector3(0, 0, 1);
     // Why the last climb attempt did or did not happen. Set at every exit of
     // tryAiBotClimb and shown by the debug readout - "it cannot climb here" is
     // the same picture for half a dozen different refusals, and they need
@@ -2903,6 +2908,17 @@ export function startGame(CharacterClass) {
     // Flat: y is dropped on both the facing and the offset, so something on a
     // ledge overhead is judged by where it stands, not by the angle up to it.
     const _visionFwd = new THREE.Vector3();
+    // Own scratch, not the shared _tempVecN. This runs from inside updateAiBot
+    // and updateCompanion, both of which keep live values in those across the
+    // call - borrowing them here would corrupt whatever the caller was midway
+    // through computing.
+    const _visionEye = new THREE.Vector3();
+    const _visionAim = new THREE.Vector3();
+    // Eyes and the point aimed at, above each root. Both raised so the test is
+    // head-to-chest rather than foot-to-foot: standing on a block and looking
+    // down at someone at its base, it is the block's own edge that has to cut
+    // the line, and it only does from up there.
+    const VISION_EYE_Y = 1.5, VISION_AIM_Y = 1.0;
     function inVisionCone(fromPos, fromQuat, targetPos, fovDeg) {
         const deg = fovDeg === undefined ? window.lockFovDeg : fovDeg;
         if (!(deg > 0)) return false;
@@ -2916,8 +2932,27 @@ export function startGame(CharacterClass) {
         // Practically on top of you counts as seen - at zero distance the
         // direction is meaningless and the test would flicker.
         if (len < 0.4) return true;
-        return (dx / len) * _visionFwd.x + (dz / len) * _visionFwd.z >=
+        const inCone = (dx / len) * _visionFwd.x + (dz / len) * _visionFwd.z >=
             Math.cos(THREE.MathUtils.degToRad(deg) * 0.5);
+        if (!inCone) return false;
+        // In the cone, but is there anything in the way? Without this the cone
+        // was purely an angle, so a companion on top of a block "saw" - and
+        // went for - a bot standing at its foot, straight through the block.
+        _visionEye.set(fromPos.x, fromPos.y + VISION_EYE_Y, fromPos.z);
+        _visionAim.set(targetPos.x, targetPos.y + VISION_AIM_Y, targetPos.z).sub(_visionEye);
+        const reach = _visionAim.length();
+        if (reach < 1e-4) return true;
+        _visionAim.divideScalar(reach);
+        rayFwd.set(_visionEye, _visionAim);
+        // Stop the ray at the target rather than letting it run to infinity and
+        // sorting every hit beyond: this is called for each viewer/target pair
+        // every frame, against the whole collidables list. Restored afterwards
+        // because rayFwd is shared with the ground/wall probes.
+        const prevFar = rayFwd.far;
+        rayFwd.far = reach - 0.3;   // ignore the target's own body
+        const blocked = rayFwd.far > 0 && rayFwd.intersectObjects(collidables, true).length > 0;
+        rayFwd.far = prevFar;
+        return !blocked;
     }
 
     // Ragdolling or getting back up means it is already being dealt with -
@@ -3251,6 +3286,21 @@ export function startGame(CharacterClass) {
             const swingAnim = charging ? 'punch_charge_hold'
                 : chargeAction ? 'punch_charge_punch'
                 : comboAction ? 'punch_combo' : 'punch_left';
+            // Keep facing what it is hitting; hold the current facing when
+            // there is nothing to aim at. Both branches fall through to the
+            // one setNetworkState below - see the comment there.
+            //
+            // "Hold" is rebuilt as pure yaw rather than copied off the group.
+            // Every other facing this bot is ever given comes from
+            // setFromUnitVectors against flat (0,0,1), so it is upright by
+            // construction; copying the live quaternion instead would take any
+            // tilt currently in it - mid-recoil, part-way through a stand-up -
+            // and feed it back as the target, latching a lean that the slerp
+            // would otherwise have pulled straight.
+            _tempVec3.set(0, 0, 1).applyQuaternion(aiBot.group.quaternion);
+            _tempVec3.y = 0;
+            if (_tempVec3.lengthSq() < 1e-6) _aiPunchFaceQuat.identity();
+            else _aiPunchFaceQuat.setFromUnitVectors(_aiForwardZ, _tempVec3.normalize());
             if (pvPos) {
                 const facingDir = _tempVec1.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
                 if (facingDir.lengthSq() > 0.0001) {
@@ -3283,10 +3333,21 @@ export function startGame(CharacterClass) {
                             }
                         }
                     }
-                    const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), facingDir);
-                    aiBot.setNetworkState([pos.x, pos.y, pos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w], swingAnim, false);
+                    _aiPunchFaceQuat.setFromUnitVectors(_aiForwardZ, facingDir);
                 }
             }
+            // Unconditionally, every frame of the swing - it used to sit inside
+            // both ifs above, so a swing with no victim to aim at (one that
+            // ragdolled, was despawned, or ended up exactly underfoot) pushed
+            // no state at all. That is not a no-op: RemoteAvatar.hasTarget is
+            // latched true for the avatar's whole life and update() keeps
+            // lerping group position AND quaternion toward the last target
+            // every frame regardless. With no fresh one, the bot slid back
+            // toward wherever it was standing when the target was last set and
+            // slerped to that old facing - the drift-and-end-up-sideways.
+            aiBot.setNetworkState([pos.x, pos.y, pos.z],
+                [_aiPunchFaceQuat.x, _aiPunchFaceQuat.y, _aiPunchFaceQuat.z, _aiPunchFaceQuat.w],
+                swingAnim, false);
 
             if (chargeAction) {
                 const swingDur = chargeAction.getClip().duration;
@@ -3670,6 +3731,23 @@ export function startGame(CharacterClass) {
             new THREE.Vector3(stepPos.x, goalY, stepPos.z)
         ]);
     }
+    const _compPathStep = new THREE.Vector3();
+    // Draws the companion's path from where it NOW stands. Called after the
+    // root has been placed, not before - the same "everything has already
+    // moved by now" ordering updateWorldLabels uses, and for the same reason:
+    // drawn first, the line starts a frame behind the body it belongs to.
+    //
+    // The step leg becomes the direction just travelled, extended, rather than
+    // the step target itself. Once the move is applied the companion is
+    // standing ON that target, so a line to it would collapse to a point.
+    function drawCompanionPath(goalX, goalZ, movedX, movedZ) {
+        if (!window.companionPathVisible) return;
+        const c = companion.group.position;
+        const len = Math.hypot(movedX, movedZ);
+        if (len > 1e-5) _compPathStep.set(c.x + (movedX / len) * 1.5, c.y, c.z + (movedZ / len) * 1.5);
+        else _compPathStep.copy(c);
+        updateCompanionPathVisual(c, { x: goalX, y: c.y, z: goalZ }, _compPathStep);
+    }
 
     // ---- Companion registry ----
     // Same shape as the bot registry (see addAiBot): one record per companion
@@ -3776,10 +3854,16 @@ export function startGame(CharacterClass) {
             charge: !!opts.charge,
             followDist: COMP_FOLLOW_DIST,
             mode: 'follow', replayStartT: 0, replayT: 0,
-            shimmyHang: new THREE.Vector3(), shimmyTop: new THREE.Vector3(),
-            shimmyFaceQuat: new THREE.Quaternion(),
             hangPos: new THREE.Vector3(), hangQuat: new THREE.Quaternion(),
             hangTop: new THREE.Vector3(), hangFwd: new THREE.Vector3(),
+            // Per companion like everything else here. These three were plain
+            // module-level scalars for a while, which with more than one
+            // companion meant they SHARED a shimmy: whoever ticked first set
+            // the timer, and the next one read it back the same frame and
+            // believed it was sliding along a ledge while standing on the
+            // ground. That is what had them drifting side to side for no
+            // reason.
+            hangT: 0, shimmyT: 0, shimmyOffset: 0,
             climbFrom: new THREE.Vector3(), climbTo: new THREE.Vector3(),
             climbQuat: new THREE.Quaternion(), climbT: 0, climbDur: 1.0,
             climbModelRest: new THREE.Vector3(), climbBlendT: 0,
@@ -3793,7 +3877,6 @@ export function startGame(CharacterClass) {
             avoidSide: 0, steerDirSmooth: new THREE.Vector3(),
             steerDirValid: false, steerBlockedFor: 0,
             punchT: -1, punchIndex: 0, punchTarget: null, retaliate: false, attackCD: 0,
-            ledgeWaitT: 0,
             // Its OWN breadcrumb trail. Deliberately not shared: the two
             // wander off in different directions, and a bot retracing one
             // interleaved trail would cut between whichever crumbs happened to
@@ -3954,10 +4037,11 @@ export function startGame(CharacterClass) {
         _compFullCombo = rec.fullCombo; _compCharge = rec.charge;
         _compUseCombo = rec.useCombo;
         _compFollowDist = rec.followDist;
-        _compAttackCD = rec.attackCD; _compLedgeWaitT = rec.ledgeWaitT;
+        _compAttackCD = rec.attackCD;
         _compMode = rec.mode; _replayStartT = rec.replayStartT; _replayT = rec.replayT;
-        _shimmyHang = rec.shimmyHang; _shimmyTop = rec.shimmyTop; _shimmyFaceQuat = rec.shimmyFaceQuat;
         _hangPos = rec.hangPos; _hangQuat = rec.hangQuat; _hangTop = rec.hangTop; _hangFwd = rec.hangFwd;
+        _compHangT = rec.hangT; _compShimmyT = rec.shimmyT;
+        _compShimmyOffset = rec.shimmyOffset;
         _climbFrom = rec.climbFrom; _climbTo = rec.climbTo; _climbQuat = rec.climbQuat; _climbT = rec.climbT; _climbDur = rec.climbDur;
         _climbModelRest = rec.climbModelRest; _climbBlendT = rec.climbBlendT;
         _compFaceQuat = rec.faceQuat;
@@ -3982,6 +4066,8 @@ export function startGame(CharacterClass) {
         // REFERENCE with the record and need no copying back - only the
         // scalars, which the companion code reassigns rather than mutates.
         rec.mode = _compMode; rec.replayStartT = _replayStartT; rec.replayT = _replayT;
+        rec.hangT = _compHangT; rec.shimmyT = _compShimmyT;
+        rec.shimmyOffset = _compShimmyOffset;
         rec.climbT = _climbT; rec.climbDur = _climbDur; rec.climbBlendT = _climbBlendT;
         rec.leapT = _compLeapT; rec.leapDur = _compLeapDur; rec.leapToHang = _compLeapToHang;
         rec.stuckT = _compStuckT; rec.unstickT = _compUnstickT;
@@ -3994,7 +4080,7 @@ export function startGame(CharacterClass) {
         rec.useCombo = _compUseCombo;
         rec.punchT = _compPunchT; rec.punchIndex = _compPunchIndex;
         rec.punchTarget = _compPunchTarget; rec.retaliate = _compRetaliate;
-        rec.attackCD = _compAttackCD; rec.ledgeWaitT = _compLedgeWaitT;
+        rec.attackCD = _compAttackCD;
         rec.trailT = _companionTrailT;
         rec.goalLine = companionGoalLine; rec.stepLine = companionStepLine;
     }
@@ -4043,8 +4129,20 @@ export function startGame(CharacterClass) {
                 dx = Math.cos(a); dz = Math.sin(a); d = 1;
             }
             const push = Math.min((COMP_SEPARATION - d) * COMP_SEPARATION_PUSH, maxPush) / d;
-            out.x += dx * push;
-            out.y += dz * push;
+            const pushDx = dx * push, pushDz = dz * push;
+            // Only shove somewhere it could actually stand. `out` is a Vector2
+            // holding world X in .x and world Z in .y, so the ground probe
+            // takes them in that order - getting this wrong is what broke the
+            // previous version of this guard: it built a Vector3 ray origin out
+            // of (worldX, worldZ) and cast down from a nonsense point, then
+            // read the result inverted (floor at foot height was treated as a
+            // reason NOT to move) and answered by rotating the push 90 degrees.
+            // The result was companions shoving each other sideways instead of
+            // apart, which is what made a following pair drift into each other.
+            const gy = companionGroundY(out.x + pushDx, out.y + pushDz, y);
+            if (gy === -Infinity || gy - y > COMP_STEP_UP || y - gy > 2.0) continue;
+            out.x += pushDx;
+            out.y += pushDz;
         }
     }
 
@@ -4169,30 +4267,56 @@ export function startGame(CharacterClass) {
     // Refuses anything the player's own jump could not reach, so the
     // companion is never doing something you could not.
     function startCompanionJumpGrab(c, top, fwdX, fwdZ) {
-        computeLedgeHang(top, fwdX, fwdZ, _hangPos);
-        _hangFwd.set(fwdX, 0, fwdZ);
-        // Square up to the wall before committing, so the grab lands facing
-        // the face rather than facing however it happened to walk in. The
-        // player takes its hang facing from the wall normal too (its grab does
-        // lookAt(position - n)); taking it from the travel direction only
-        // matches when the approach was dead-on.
-        squareHangToWall();
-        if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
-        _hangTop.copy(top);
-        // Clear of whoever is already on this ledge before committing to the
-        // jump. This path had no such check at all, which is the main way two
-        // companions ended up on one grip: they both probe the same wall on
-        // the same frame, both compute the same hang from the same geometry,
-        // and both leap to it. Refusing sends this one back to following, and
-        // it tries again once the ledge is free or from somewhere else along it.
-        if (!nudgeHangClear(char.group.position)) {
-            _compLedgeWaitT = COMP_LEDGE_WAIT * (1 + Math.random() * COMP_LEDGE_WAIT_JITTER);
-            _compWhy = 'ledge busy, waiting';
+        // One candidate grip: measure the hang off `_gripTryTop`, square it to
+        // the wall, and report whether it is reachable, free, and on a stretch
+        // of ledge that actually exists. Leaves _hangPos/_hangFwd holding the
+        // last candidate tried, which is what the accepted one wants anyway.
+        const tryGrip = () => {
+            computeLedgeHang(_gripTryTop, fwdX, fwdZ, _hangPos);
+            _hangFwd.set(fwdX, 0, fwdZ);
+            // Square up to the wall before committing, so the grab lands facing
+            // the face rather than facing however it happened to walk in. The
+            // player takes its hang facing from the wall normal too (its grab
+            // does lookAt(position - n)); taking it from the travel direction
+            // only matches when the approach was dead-on. This can slide the
+            // grip along the ledge, so every test below runs after it.
+            squareHangToWall();
+            if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
+            return !hangSpotTaken(_hangPos.x, _hangPos.z, _hangPos.y, char.group.position);
+        };
+        // The grip straight ahead is the one it wants.
+        _gripTryTop.copy(top);
+        let found = tryGrip();
+        // Taken - most often by the companion that got here first. Rather than
+        // refusing the climb (which left the second one milling about at the
+        // foot of the wall) or waiting for the grip to free up (which had them
+        // going up single file, one long pause apart), look along the ledge for
+        // a grip of its own. That is what makes a pair go up side by side.
+        //
+        // The offsets run along the edge: _hangFwd points out over it, so its
+        // perpendicular is the edge's own axis. Each candidate still has to
+        // pass the same reach and occupancy tests, and the top surface has to
+        // continue at this height - past the end of the ledge there is nothing
+        // to hang from, however free the space is.
+        if (!found) {
+            const sx = -fwdZ, sz = fwdX;
+            for (let i = 0; i < COMP_GRIP_SIDE_STEPS.length && !found; i++) {
+                const off = COMP_GRIP_SIDE_STEPS[i] * COMP_LEDGE_MIN_SEP;
+                _gripTryTop.set(top.x + sx * off, top.y, top.z + sz * off);
+                // Does the ledge still run this far? Probed from above, and the
+                // hit has to be THIS lip rather than a floor further down.
+                _tempVec2.set(_gripTryTop.x, _gripTryTop.y + 1.0, _gripTryTop.z);
+                rayDown.set(_tempVec2, _downVec);
+                const surf = rayDown.intersectObjects(_compGroundList, true);
+                if (!surf.length || Math.abs(surf[0].point.y - top.y) > 0.4) continue;
+                found = tryGrip();
+            }
+        }
+        if (!found) {
+            _compWhy = 'ledge busy';
             return false;
         }
-        // The nudge may have slid the grip along the ledge, so the reach test
-        // is re-run against where it will ACTUALLY jump to.
-        if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
+        _hangTop.copy(_gripTryTop);
         _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
         _hangQuat.setFromEuler(_compFaceEuler);
         _compLeapStart.copy(c);
@@ -4224,6 +4348,25 @@ export function startGame(CharacterClass) {
     // need it, and when only the hang check knew about other companions the
     // shimmy happily slid along to a stretch someone else was already
     // standing on, which is the same collision one step to the left.
+    // Only one companion pulls up at a time.
+    //
+    // The pull-up is the one move where two arriving together reliably ends
+    // with one standing inside the other: CLIMBUP holds the root still at the
+    // hang for the whole clip and only places it on the lip on the last frame,
+    // so for its entire duration neither companion is anywhere the other's
+    // top-out test or separation push can see it. Both read the lip as free,
+    // both finish, both land on it.
+    //
+    // Whoever asks second keeps hanging instead - a stable state now that the
+    // hang has no give-up timeout - and goes up as soon as this clears. That is
+    // a queue, not a retry loop: nobody lets go and re-approaches.
+    function anotherCompanionIsClimbing() {
+        for (let i = 0; i < companions.length; i++) {
+            const rec = companions[i];
+            if (rec.comp !== companion && rec.mode === 'climbup') return true;
+        }
+        return false;
+    }
     function companionTopOccupied(t, p, pad) {
         const r = COMP_TOPOUT_CLEAR + (pad || 0);
         if (Math.hypot(t.x - p.x, t.z - p.z) < r && p.y >= t.y - 0.6) return true;
@@ -4235,33 +4378,6 @@ export function startGame(CharacterClass) {
         }
         return false;
     }
-    function tryCompanionShimmy(p) {
-        const sx = -_hangFwd.z, sz = _hangFwd.x;
-        for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
-            const d = COMP_SHIMMY_STEPS[i];
-            for (let s = 0; s < 2; s++) {
-                const sign = s === 0 ? 1 : -1;
-                const off = d * sign;
-                const tx = _hangTop.x + sx * off, tz = _hangTop.z + sz * off;
-                // Far enough along that it isn't landing on anyone again -
-                // the player or another companion.
-                _ledgeSpotTop.set(tx, _hangTop.y, tz);
-                if (companionTopOccupied(_ledgeSpotTop, p, 0.4)) continue;
-                // Hang derived from THIS spot's own lip, not the current hang
-                // slid sideways - the edge can bend or set back as it runs,
-                // and offsetting the old position blindly is how it ended up
-                // hanging somewhere the wall isn't.
-                _ledgeSpotTop.set(tx, _hangTop.y, tz);
-                if (!validateLedgeSpot(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _shimmyHang)) continue;
-                _shimmyTop.copy(_ledgeSpotTop);
-                _shimmyFaceQuat.copy(_hangQuat);
-                _compMode = 'shimmy';
-                return true;
-            }
-        }
-        return false;
-    }
-
     // Where to hang in order to climb onto `top`, given the direction the
     // climb runs over the edge. Finds the lip by walking BACK from the top
     // point until the surface falls away, then sits just outside it.
@@ -4287,32 +4403,6 @@ export function startGame(CharacterClass) {
         }
         const outset = hi + COMP_HANG_OUT;
         out.set(top.x - fwdX * outset, top.y - COMP_HANG_DROP, top.z - fwdZ * outset);
-    }
-
-    // Is `top` somewhere the companion could actually hang from, given the
-    // wall runs along (fwdX, fwdZ)? Snaps top.y onto the real surface and
-    // fills `outHang` with the hang position. A spot needs BOTH halves of a
-    // ledge, which is why there are two rays:
-    //   - down: the top surface continues at this height (otherwise the edge
-    //     has run out, or that's a different step);
-    //   - forward: there is still a wall face within reach to hold (otherwise
-    //     it's an outside corner - floor above, nothing to grip).
-    function validateLedgeSpot(top, fwdX, fwdZ, outHang) {
-        _tempVec2.set(top.x, top.y + 5.0, top.z);
-        rayDown.set(_tempVec2, _downVec);
-        const hits = rayDown.intersectObjects(_compGroundList, true);
-        let surfaceY = null;
-        for (let i = 0; i < hits.length; i++) {
-            if (Math.abs(hits[i].point.y - top.y) <= 0.4) { surfaceY = hits[i].point.y; break; }
-        }
-        if (surfaceY === null) return false;
-        top.y = surfaceY;
-        computeLedgeHang(top, fwdX, fwdZ, outHang);
-        _ledgeFwdVec.set(fwdX, 0, fwdZ);
-        _tempVec2.set(outHang.x, outHang.y + 0.4, outHang.z);
-        rayFwd.set(_tempVec2, _ledgeFwdVec);
-        const wallHits = rayFwd.intersectObjects(_compGroundList, true);
-        return wallHits.length > 0 && wallHits[0].distance <= COMP_LEDGE_WALL_REACH;
     }
 
     // Squares the hang up against the wall it is actually holding, using that
@@ -4357,53 +4447,24 @@ export function startGame(CharacterClass) {
         // player STANDING AT THE BOTTOM was 1.15 from the grip in y, inside
         // the window, and blocked the grab from below.
         if (window.playerIsLedgeGrabbing && clashes(p.x, p.y, p.z)) return true;
+        // Every other companion's RESERVED grip, not just where it stands right
+        // now. A companion mid-leap is not at its grip yet, so testing only
+        // positions let a second one commit to the same grip during the jump
+        // and the two arrived stacked. Each mode stores its destination
+        // somewhere different, hence the three cases.
         for (let i = 0; i < companions.length; i++) {
             const rec = companions[i];
             if (rec.comp === companion) continue;
-            // ONLY companions actually on, or committed to, a ledge. Testing
-            // raw positions here is what deadlocked two of them at the foot of
-            // a wall: each saw the other standing a metre away, decided the
-            // grip was taken, and waited - symmetrically, forever, neither
-            // ever climbing. Standing near a wall is not holding it.
             if (rec.mode === 'leap' && rec.leapToHang) {
                 if (clashes(rec.leapEnd.x, rec.leapEnd.y, rec.leapEnd.z)) return true;
             } else if (rec.mode === 'hang' || rec.mode === 'shimmy') {
                 if (clashes(rec.hangPos.x, rec.hangPos.y, rec.hangPos.z)) return true;
             } else if (rec.mode === 'climbup') {
                 if (clashes(rec.climbTo.x, rec.climbTo.y, rec.climbTo.z)) return true;
-                // ...and where it physically is while the clip plays, since
-                // that is on the ledge too.
                 const op = rec.comp.group.position;
                 if (clashes(op.x, op.y, op.z)) return true;
             }
         }
-        return false;
-    }
-
-    // Slides the hang along the ledge until it is not on top of anyone else.
-    // Two bodies cannot share one grip, and the top-out clearance test says
-    // nothing about where the companion HANGS - only where it would end up
-    // standing - so nothing was stopping it grabbing on right where someone
-    // already was.
-    function nudgeHangClear(p) {
-        if (!hangSpotTaken(_hangPos.x, _hangPos.z, _hangPos.y, p)) return true;
-        const sx = -_hangFwd.z, sz = _hangFwd.x;
-        for (let i = 0; i < COMP_SHIMMY_STEPS.length; i++) {
-            for (let s = 0; s < 2; s++) {
-                const off = COMP_SHIMMY_STEPS[i] * (s === 0 ? 1 : -1);
-                _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
-                // Validate FIRST, then test the grip it would actually produce
-                // - the top point and the hang hang half a body apart, and it
-                // is the grip that has to be clear, not the lip above it.
-                if (!validateLedgeSpot(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _shimmyHang)) continue;
-                if (hangSpotTaken(_shimmyHang.x, _shimmyHang.z, _shimmyHang.y, p)) continue;
-                _hangTop.copy(_ledgeSpotTop);
-                _hangPos.copy(_shimmyHang);
-                return true;
-            }
-        }
-        // Every spot along this ledge is occupied. The caller decides what to
-        // do about it - grabbing on regardless is the one thing it must not do.
         return false;
     }
 
@@ -4461,7 +4522,7 @@ export function startGame(CharacterClass) {
         const side = _locoLocalDir.x > 0 ? 'strafe_left' : 'strafe_right';
         return state === 'run' ? side + '_run' : side + '_walk';
     }
-    const COMP_WALK_ENTER = 0.4, COMP_WALK_EXIT = 0.15;
+    const COMP_WALK_ENTER = 1.5, COMP_WALK_EXIT = 0.5;  // higher threshold for walk to match player pace
     function companionLocoState(rawSpeed, delta) {
         const smoothT = Math.min(1, delta * 10);
         _compSpeedSmooth += (rawSpeed - _compSpeedSmooth) * smoothT;
@@ -4766,6 +4827,11 @@ export function startGame(CharacterClass) {
         // makes the hit land, and it is why this is not just a movement lock.
         const compHitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
         if (companion.hitRecoveryTimer > 0 && companion.hitRecoveryTimer <= compHitRecoveryDuration) {
+            // Skip hit recovery if hanging/climbing - companions should be committed to the climb
+            if (_compMode === 'hang' || _compMode === 'replay' || _compMode === 'climbup' || _compMode === 'leap') {
+                companion.hitRecoveryTimer = 0;
+                return;
+            }
             _compWhy = 'staggering';
             _compMode = 'follow';        // abandon any route it was mid-way through
             cancelAttack();              // ...and any swing, same reason - see cancelAttack
@@ -4871,18 +4937,9 @@ export function startGame(CharacterClass) {
         // An enemy in reach ends the hold early: the thing the hold protects
         // against (wandering off the edge) is now refused outright by the
         // descent check, so there is nothing left for it to guard here.
-        if (_compJustClimbedT > 0) {
-            for (let bi = 0; bi < aiBots.length; bi++) {
-                const eb = aiBots[bi].bot;
-                if (!eb.isLoaded || eb.isRagdoll || eb.knockedOutT > 0) continue;
-                const ep = eb.group.position;
-                if (Math.abs(ep.y - c.y) < 1.5 &&
-                    Math.hypot(ep.x - c.x, ep.z - c.z) < window.compAttackSeek) {
-                    _compJustClimbedT = 0;
-                    break;
-                }
-            }
-        }
+        // Post-climb hold: companion stays still after climbing to avoid stepping
+        // back off the ledge. Keep this hold even if enemies are nearby - don't
+        // interrupt climbing to fight.
         const canStartAttack = _compMode === 'follow' && _compJustClimbedT <= 0;
         // Counter-attack, once the stagger and the settle are both over - the
         // hit has to visibly land before the answer to it does.
@@ -4892,7 +4949,7 @@ export function startGame(CharacterClass) {
         // should still hit back when it gets there, not forget it was hit.
         if (_compRetaliate && canStartAttack) {
             _compRetaliate = false;
-            const hitBack = nearestBot(COMP_PUNCH_SEEK, true);
+            const hitBack = nearestBot(COMP_PUNCH_SEEK, false);
             if (hitBack) startAttack(hitBack);
         }
         // ...and they no longer WAIT to be hit. A bot that wanders into reach
@@ -5067,13 +5124,6 @@ export function startGame(CharacterClass) {
         }
 
         if (_compJustClimbedT > 0) _compJustClimbedT -= delta;
-        if (_compLedgeWaitT > 0) {
-            _compLedgeWaitT -= delta;
-            // Standing in a queue is not being stuck. Without this the
-            // progress watchdog reads a waiting companion as wedged and sends
-            // it off to wander, which is the opposite of holding its place.
-            _compStuckT = 0; _compStuckAt.copy(c);
-        }
 
         // Progress watchdog - see _compStuckAt. Measured on the real position,
         // so it catches a deadlock whichever rule caused it. Only counts while
@@ -5140,7 +5190,15 @@ export function startGame(CharacterClass) {
             if (t >= 1) {
                 // Catching a ledge hands over to HANG, which then decides
                 // between holding on, shuffling along, and climbing up.
-                _compMode = _compLeapToHang ? 'hang' : 'follow';
+                if (_compLeapToHang) {
+                    _compMode = 'hang';
+                    _compHangT = 0;
+                    // Fresh hang, fresh search - a slide left over from the
+                    // last ledge would otherwise resume against this one.
+                    _compShimmyT = 0; _compShimmyOffset = 0;
+                } else {
+                    _compMode = 'follow';
+                }
                 // A leap that ENDED HIGHER is a hop onto something, and it
                 // leaves the companion on a lip exactly like a full climb
                 // does. It gets the same post-climb hold, so nothing - a
@@ -5155,31 +5213,6 @@ export function startGame(CharacterClass) {
             return;
         }
 
-        // ---- SHIMMY (sidestep along a ledge to a clear top-out) ----
-        // Slides the hang along the edge, then climbs at the far end.
-        if (_compMode === 'shimmy') {
-            const sdx = _shimmyHang.x - c.x, sdz = _shimmyHang.z - c.z;
-            const sd = Math.hypot(sdx, sdz);
-            if (sd > 0.12) {
-                const step = Math.min(sd, COMP_SHIMMY_SPEED * delta);
-                const nx = c.x + sdx / sd * step, nz = c.z + sdz / sd * step;
-                companion.group.position.set(nx, _shimmyHang.y, nz);
-                companion.group.quaternion.copy(_shimmyFaceQuat);
-                // Which way along the wall it is sliding, in its own frame, so
-                // the real shimmy clip plays rather than the idle hang being
-                // dragged sideways. +X local is its right.
-                _ledgeFwdVec.set(1, 0, 0).applyQuaternion(_shimmyFaceQuat);
-                const alongRight = sdx * _ledgeFwdVec.x + sdz * _ledgeFwdVec.z;
-                companion.setNetworkState([nx, _shimmyHang.y, nz], [_shimmyFaceQuat.x, _shimmyFaceQuat.y, _shimmyFaceQuat.z, _shimmyFaceQuat.w], alongRight > 0 ? 'hang_right' : 'hang_left', false);
-                companion.update(delta);
-                return;
-            }
-            // Arrived alongside the clear spot - now the climb, same as the
-            // player's: hold the root, play the clip, place it at the end.
-            startCompanionLedgeClimb(c, _shimmyTop, _hangFwd.x, _hangFwd.z);
-            return;
-        }
-
         // ---- CLIMBUP (pulling onto a ledge from a hang) ----
         if (_compMode === 'climbup') {
             _climbT += delta;
@@ -5187,6 +5220,16 @@ export function startGame(CharacterClass) {
             // end - the clip carries the body up, the root move just commits
             // it.
             const done = _climbT >= _climbDur;
+
+            // Validate climb is still in progress - if companion got knocked far away, abort
+            const climbDist = Math.hypot(_climbFrom.x - c.x, _climbFrom.z - c.z);
+            if (climbDist > 2.0) {
+                // Companion got knocked, abort climb
+                _compMode = 'follow';
+                companion.update(delta);
+                return;
+            }
+
             const pos = done ? _climbTo : _climbFrom;
             companion.group.position.copy(pos);
             companion.group.quaternion.copy(_climbQuat);
@@ -5212,37 +5255,106 @@ export function startGame(CharacterClass) {
             if (done) {
                 _compMode = 'follow';
                 _compJustClimbedT = COMP_POST_CLIMB_HOLD;
-                _climbBlendT = 0; // Clear offset immediately so root movement doesn't stutter
-                if (companion.fbxModel) companion.fbxModel.position.copy(_climbModelRest);
+                // Let offset decay naturally, don't clear immediately
             }
             return;
         }
 
         // ---- HANG (holding a ledge whose top-out is occupied) ----
-        // Committed state, entered from the replay. It does three things in
-        // priority order every frame and nothing else, so there is no way for
-        // it to oscillate: go up if the spot freed, shuffle sideways if the
-        // ledge offers a clear one, otherwise just hold on.
+        // Hold on, slide along to a free stretch, or climb - never let go. A
+        // punch landing here still flashes and recoils on the bones, but the
+        // grip is re-applied every frame below, so being hit does not knock it
+        // off the wall.
         if (_compMode === 'hang') {
-            // Is the lip I would pull onto occupied - by ANYONE?
-            //
-            // This used to test the player alone, which is why companions
-            // stacked: two of them would hang on the same wall, the first
-            // would top out, and the second saw a clear lip (the player was
-            // elsewhere) and pulled up into the one already standing there.
-            // The separation push then shoved them apart at the edge and they
-            // fell off together, which is the "they all come back down" part.
-            //
-            // Being blocked is NOT a reason to let go. The shimmy below moves
-            // along the ledge to a free stretch and tops out there - hanging
-            // and sliding sideways is the whole point of having the grip.
-            const topClear = !companionTopOccupied(_hangTop, p, 0);
+            _compHangT += delta;
+            // Committed to climbing - ignore enemies, focus on getting up
+
+            const topClear = !companionTopOccupied(_hangTop, p, 0.4) && !anotherCompanionIsClimbing();
             if (topClear) {
                 startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
+                _compHangT = 0;
+                _compShimmyT = 0;
+                _compShimmyOffset = 0;
                 return;
             }
-            _compWhy = "hang-look-sideways";
-            if (tryCompanionShimmy(p)) return;
+
+            // The top-out is busy. After a moment's wait - long enough that a
+            // player simply walking across the lip is not worth reacting to -
+            // look along the ledge for somewhere else to come up.
+            //
+            // _hangFwd points out over the edge, so its perpendicular runs
+            // ALONG the edge: that is the axis to search and to slide down. A
+            // candidate needs the top surface to continue at this height (past
+            // the end of the block there is nothing to climb onto) as well as
+            // being unoccupied.
+            if (_compHangT > 1.0 && _compShimmyT <= 0) {
+                const sx = -_hangFwd.z, sz = _hangFwd.x;
+                for (let i = 0; i < COMP_SHIMMY_SEARCH_OFFSETS.length && _compShimmyT <= 0; i++) {
+                    for (const sign of [1, -1]) {
+                        const offset = COMP_SHIMMY_SEARCH_OFFSETS[i] * sign;
+                        _ledgeSpotTop.set(_hangTop.x + sx * offset, _hangTop.y, _hangTop.z + sz * offset);
+                        if (companionTopOccupied(_ledgeSpotTop, p, 0.4)) continue;
+                        // Does the ledge still run this far?
+                        _tempVec2.set(_ledgeSpotTop.x, _ledgeSpotTop.y + 1.0, _ledgeSpotTop.z);
+                        rayDown.set(_tempVec2, _downVec);
+                        const surf = rayDown.intersectObjects(_compGroundList, true);
+                        if (!surf.length || Math.abs(surf[0].point.y - _hangTop.y) > 0.4) continue;
+                        _compShimmyOffset = offset;
+                        // Paced by distance, not a flat duration, so a short
+                        // slide is short.
+                        _compShimmyT = Math.abs(offset) / COMP_SHIMMY_SPEED;
+                        break;
+                    }
+                }
+            }
+
+            // Sliding along the ledge to the spot the search picked.
+            if (_compShimmyT > 0) {
+                const total = Math.max(1e-3, Math.abs(_compShimmyOffset) / COMP_SHIMMY_SPEED);
+                _compShimmyT = Math.max(0, _compShimmyT - delta);
+                // 0 at the start, 1 on arrival - and it arrives at exactly
+                // _compShimmyOffset, the offset that was actually validated.
+                const t = 1.0 - (_compShimmyT / total);
+                const sx = -_hangFwd.z, sz = _hangFwd.x;
+                const off = _compShimmyOffset * t;
+                _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
+                computeLedgeHang(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _hangPos);
+                // Re-square every frame. The face it is sliding along is not
+                // necessarily flat, and without this the hang drifts off the
+                // wall - or into it - the further it travels.
+                squareHangToWall();
+                _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
+                _hangQuat.setFromEuler(_compFaceEuler);
+
+                companion.group.position.copy(_hangPos);
+                companion.group.quaternion.copy(_hangQuat);
+                companion.setNetworkState([_hangPos.x, _hangPos.y, _hangPos.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
+                companion.update(delta);
+
+                if (_compShimmyT <= 0) {
+                    // Arrived. The grip moved, so the ledge it is holding moved
+                    // with it - commit that before deciding anything else.
+                    _hangTop.copy(_ledgeSpotTop);
+                    _compShimmyOffset = 0;
+                    if (!companionTopOccupied(_hangTop, p, 0.4) && !anotherCompanionIsClimbing()) {
+                        startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
+                        _compHangT = 0;
+                        return;
+                    }
+                    // Somebody took it while it was on its way over. Wait a
+                    // beat, then search again from where it now hangs.
+                    _compHangT = 0.5;
+                }
+                return;
+            }
+
+            // No timeout on purpose. Dropping back to 'follow' after a few
+            // seconds is what produced the grab-hang-drop-retry loop: letting
+            // go put the companion back at the foot of the wall, from where the
+            // only thing to do is grab the same ledge again. Whatever is on the
+            // top-out is either the player (who moves) or nobody at all now
+            // that grips are reserved at jump time, so holding on is always the
+            // shorter wait.
             companion.group.position.copy(_hangPos);
             companion.group.quaternion.copy(_hangQuat);
             companion.setNetworkState([_hangPos.x, _hangPos.y, _hangPos.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
@@ -5289,19 +5401,11 @@ export function startGame(CharacterClass) {
                 _hangTop.set(cr.x, cr.y, cr.z);
                 computeLedgeHang(_hangTop, fx, fz, _hangPos);
                 squareHangToWall();
-                if (!nudgeHangClear(p)) {
-                    // Ledge full - stay on the ground and keep following
-                    // rather than piling onto an occupied grip. The route is
-                    // still recorded, so it retries once the wait expires.
-                    _compLedgeWaitT = COMP_LEDGE_WAIT * (1 + Math.random() * COMP_LEDGE_WAIT_JITTER);
-                    _compWhy = 'ledge busy, waiting';
-                    _compMode = 'follow';
-                    companion.update(delta);
-                    return;
-                }
                 _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
                 _hangQuat.setFromEuler(_compFaceEuler);
                 _compMode = 'hang';
+                _compHangT = 0;
+                _compShimmyT = 0; _compShimmyOffset = 0;
                 companion.update(delta);
                 return;
             }
@@ -5319,7 +5423,7 @@ export function startGame(CharacterClass) {
         if (_compUnstickT > 0) {
             _compUnstickT -= delta;
             _compWhy = 'unsticking';
-            const s = Math.min(COMP_SHIMMY_SPEED * 2.0 * delta, 0.2);
+            const s = Math.min(6.0 * delta, 0.2);
             const ux = c.x + _compUnstickDir.x * s, uz = c.z + _compUnstickDir.z * s;
             const ugy = companionGroundY(ux, uz, c.y);
             // Same rule as everywhere else: only take the step if the ground
@@ -5387,8 +5491,7 @@ export function startGame(CharacterClass) {
                 const fl = Math.hypot(fx, fz);
                 if (fl > 1e-4) {
                     fx /= fl; fz /= fl;
-                    if (_compLedgeWaitT <= 0
-                        && tryCompanionClimbUp(c, c.x + fx * COMP_CLIMB_REACH_PROBE, c.z + fz * COMP_CLIMB_REACH_PROBE, fx, fz)) return;
+                    if (tryCompanionClimbUp(c, c.x + fx * COMP_CLIMB_REACH_PROBE, c.z + fz * COMP_CLIMB_REACH_PROBE, fx, fz)) return;
                 }
             }
             if (takeoff) {
@@ -5431,14 +5534,17 @@ export function startGame(CharacterClass) {
                 // should keep heading for it; climbing here stole that and
                 // the recorded climb stopped happening at all.
                 if (dyy <= COMP_STEP_UP) {
-                    updateCompanionPathVisual(c, { x: tk.x, y: c.y, z: tk.z }, { x: nx, y: c.y, z: nz });
                     let ny = c.y;
                     if (dyy < -0.05) ny += Math.max(dyy, -16 * delta); else if (dyy > 0.05) ny += Math.min(dyy, 6 * delta);
                     _compFaceEuler.set(0, Math.atan2(dirTkX, dirTkZ), 0);
                     _compFaceQuat.setFromEuler(_compFaceEuler);
-                    const mv = Math.hypot(nx - c.x, nz - c.z) / Math.max(delta, 1e-3);
+                    // Captured before the move - c IS group.position, so these
+                    // read as zero once it has been set.
+                    const mvX = nx - c.x, mvZ = nz - c.z;
+                    const mv = Math.hypot(mvX, mvZ) / Math.max(delta, 1e-3);
                     companion.group.position.set(nx, ny, nz);
                     companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(mv, delta), false);
+                    drawCompanionPath(tk.x, tk.z, mvX, mvZ);
                     companion.update(delta);
                     return;
                 }
@@ -5509,6 +5615,7 @@ export function startGame(CharacterClass) {
             if (len < 0.001) { dirx = 0; dirz = 1; len = 1; }
             dirx /= len; dirz /= len;
         }
+
         // Stand-off distance, shortened until the spot is actually solid
         // ground at the player's own level. A fixed COMP_FOLLOW_DIST assumes
         // there is always that much room behind the player, which on a single
@@ -5557,6 +5664,18 @@ export function startGame(CharacterClass) {
             companion._spotDist = followDist;
             companion._spotAt = (companion._spotAt || new THREE.Vector3()).copy(p);
         }
+        // No per-companion sideways lane here, deliberately.
+        //
+        // In the ordinary (not carrying) case dirx/dirz above is derived from
+        // the companion's OWN position - "stay on the ray from the player
+        // through me, at followDist" - which is a stable fixed point on its
+        // own. Offsetting perpendicular to it is not: stepping sideways
+        // rotates that ray, which rotates the perpendicular, which moves the
+        // target further round, and the companion chases it in a circle around
+        // the player forever. That was tried and it orbited.
+        //
+        // Spacing is owned by respreadCompanions (each gets a different
+        // followDist) and by companionSeparate, which is where it belongs.
         let tgx = p.x + dirx * followDist, tgz = p.z + dirz * followDist;
 
         const toX = tgx - c.x, toZ = tgz - c.z; const h = Math.hypot(toX, toZ);
@@ -5634,6 +5753,8 @@ export function startGame(CharacterClass) {
                         const eb = aiBots[bi].bot;
                         if (!eb.isLoaded || eb.isRagdoll || eb.knockedOutT > 0) continue;
                         const ep = eb.group.position;
+                        // Only hold ledge if enemy is visible in vision cone
+                        if (!inVisionCone(c, companion.group.quaternion, ep, window.compVisionDeg)) continue;
                         // On MY level, not one standing at the bottom of the
                         // drop - that one is a reason to go down, not to stay.
                         if (Math.abs(ep.y - c.y) > 1.5) continue;
@@ -5783,11 +5904,9 @@ export function startGame(CharacterClass) {
             // is - passing the next-step position would have it measuring the
             // ledge from somewhere it has not reached yet.
             if (climbWorthIt && h > 1e-4
-                && _compLedgeWaitT <= 0
                 && tryCompanionClimbUp(c, probeX, probeZ, probeDx, probeDz)) return;
             nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
         }
-        updateCompanionPathVisual(c, { x: tgx, y: c.y, z: tgz }, { x: nx, y: c.y, z: nz });
         let ny = c.y; const dy = gyHere - c.y;
         // Falling stays uncapped in distance (only in speed) - dropping to
         // follow the player down is always legitimate, and it is only the
@@ -5811,6 +5930,7 @@ export function startGame(CharacterClass) {
         st = strafeStateFor(st, _compFaceQuat, movedX, movedZ);
         companion.group.position.set(nx, ny, nz);
         companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
+        drawCompanionPath(tgx, tgz, movedX, movedZ);
         companion.update(delta);
     }
 
@@ -13671,7 +13791,8 @@ export function startGame(CharacterClass) {
      ['toggle-charge-kick-lean', 'chargeKickLean'],
      ['toggle-friendly-fire', 'friendlyFire'],
      ['toggle-instant-companions', 'instantCompanions'],
-     ['toggle-lock-fov', 'showLockFov']].forEach(([id, key]) => {
+     ['toggle-lock-fov', 'showLockFov'],
+     ['toggle-vision-cones', 'showVisionCones']].forEach(([id, key]) => {
         const el = document.getElementById(id);
         if (!el) return;
         window[key] = el.checked;
@@ -14797,6 +14918,69 @@ export function startGame(CharacterClass) {
         // Green once something is actually locked, so the cone doubles as a
         // readout of whether the targeting agrees with what you can see.
         _fovMesh.material.color.setHex(lockedBot ? 0x66ff88 : 0x44ddff);
+    }
+
+    // Draw companion and bot vision cones
+    let _agentVisionCones = [];
+    function updateAgentVisionCones() {
+        const on = window.showVisionCones;
+
+        // Show/hide existing cones
+        for (let cone of _agentVisionCones) {
+            cone.mesh.visible = on;
+        }
+
+        if (!on) return;
+
+        // Update companion cones
+        for (let i = 0; i < companions.length; i++) {
+            const comp = companions[i].comp;
+            if (!comp || !comp.isLoaded) continue;
+
+            let coneData = _agentVisionCones.find(c => c.avatar === comp);
+            if (!coneData) {
+                const half = THREE.MathUtils.degToRad(window.compVisionDeg) * 0.5;
+                const geo = new THREE.CircleGeometry(8.0, 32, -Math.PI * 0.5 - half, half * 2);
+                geo.rotateX(-Math.PI / 2);
+                const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                    color: 0xff9944, transparent: true, opacity: 0.12,
+                    depthWrite: false, side: THREE.DoubleSide,
+                }));
+                mesh.raycast = () => {};
+                mesh.renderOrder = 2;
+                scene.add(mesh);
+                coneData = { avatar: comp, mesh };
+                _agentVisionCones.push(coneData);
+            }
+            coneData.mesh.position.copy(comp.group.position);
+            coneData.mesh.position.y += 0.8;
+            coneData.mesh.quaternion.copy(comp.group.quaternion);
+        }
+
+        // Update bot cones
+        for (let i = 0; i < aiBots.length; i++) {
+            const bot = aiBots[i].bot;
+            if (!bot || !bot.isLoaded) continue;
+
+            let coneData = _agentVisionCones.find(c => c.avatar === bot);
+            if (!coneData) {
+                const half = THREE.MathUtils.degToRad(window.aiVisionDeg) * 0.5;
+                const geo = new THREE.CircleGeometry(12.0, 32, -Math.PI * 0.5 - half, half * 2);
+                geo.rotateX(-Math.PI / 2);
+                const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                    color: 0xff4444, transparent: true, opacity: 0.12,
+                    depthWrite: false, side: THREE.DoubleSide,
+                }));
+                mesh.raycast = () => {};
+                mesh.renderOrder = 2;
+                scene.add(mesh);
+                coneData = { avatar: bot, mesh };
+                _agentVisionCones.push(coneData);
+            }
+            coneData.mesh.position.copy(bot.group.position);
+            coneData.mesh.position.y += 0.8;
+            coneData.mesh.quaternion.copy(bot.group.quaternion);
+        }
     }
 
     // ---- Warp buttons -------------------------------------------------
@@ -20434,6 +20618,7 @@ if (leftArrow) {
         // belongs to. Projected through the camera actually being rendered,
         // which is not always `camera` - the ortho toggle swaps it.
         updateWorldLabels(activeCamera);
+        updateAgentVisionCones();
         if (window.pixelEffectEnabled) {
             renderPixelatedPass.camera = activeCamera;
             // Linearising depth needs the camera's own near/far, and which
