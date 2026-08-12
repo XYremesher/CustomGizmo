@@ -564,6 +564,8 @@ export function startGame(CharacterClass) {
     // - off by default, toggled from the settings panel. Built once up front
     // rather than lazily on first enable, so the toggle is instant either way.
     window.pixelEffectEnabled = true;
+    window.pixelRenderScale = 1.0;
+
     const composer = new EffectComposer(renderer);
     // Pixel size 1 - no pixelation at all. The pass is kept purely for its
     // depth-edge outline; raise the Pixel Size slider for the chunky look.
@@ -577,6 +579,14 @@ export function startGame(CharacterClass) {
     renderPixelatedPass.depthEdgeStrength = 7.0;
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
+
+    const updateSceneRenderTarget = () => {
+        const scale = window.pixelRenderScale;
+        const w = Math.floor(window.innerWidth * scale);
+        const h = Math.floor(window.innerHeight * scale);
+        composer.setSize(w, h);
+    };
+    updateSceneRenderTarget();
 
     // ---- Depth-edge fix ----
     // The stock pass differences the RAW depth buffer and thresholds it at a
@@ -5143,7 +5153,12 @@ export function startGame(CharacterClass) {
             }
             companion.setNetworkState([pos.x, pos.y, pos.z], [_climbQuat.x, _climbQuat.y, _climbQuat.z, _climbQuat.w], done ? 'idle' : 'climb', false);
             companion.update(delta);
-            if (done) { _compMode = 'follow'; _compJustClimbedT = COMP_POST_CLIMB_HOLD; }
+            if (done) {
+                _compMode = 'follow';
+                _compJustClimbedT = COMP_POST_CLIMB_HOLD;
+                _climbBlendT = 0; // Clear offset immediately so root movement doesn't stutter
+                if (companion.fbxModel) companion.fbxModel.position.copy(_climbModelRest);
+            }
             return;
         }
 
@@ -5394,9 +5409,14 @@ export function startGame(CharacterClass) {
 
         // ---- FOLLOW (manual, distance-based) ----
         let dirx, dirz;
-        let wantsBehind = networkStateName === 'idle' && Math.abs(p.y - c.y) < 1.0;
-        if (wantsBehind) {
+        // Behind-spot only when carrying - normal following otherwise prevents roundabout routing.
+        let wantsBehind = false;
+        if (window.isCarryingObj || window.isCarryStarting) {
             _compBehindDir.set(0, 0, 1).applyQuaternion(q).negate(); // player -> behind-spot direction
+            wantsBehind = true;
+        }
+        if (wantsBehind) {
+            // (validation logic unchanged)
             // Only actually worth it if that spot is clear. If the player's
             // back is to a wall/box, "behind" lands inside or right up
             // against it - the companion can't ever actually reach it, but
@@ -5425,11 +5445,6 @@ export function startGame(CharacterClass) {
                 if (Math.abs(p.y - behindGroundY) > COMP_LEAP_EDGE_DROP) wantsBehind = false;
             }
         }
-        // Carrying something puts the whole point of the game in front of you
-        // - where you are aiming a throw, and what you are looking past. A
-        // companion standing there is a wall. While you are holding anything,
-        // behind is not a preference any more, it is the rule.
-        if (window.isCarryingObj || window.isCarryStarting) wantsBehind = true;
         if (wantsBehind) {
             dirx = _compBehindDir.x; dirz = _compBehindDir.z;
         } else {
@@ -9163,7 +9178,9 @@ export function startGame(CharacterClass) {
         npc.setColor(color);
         npc.group.position.set(x, y, z);
         if (bubbleText) {
-            storyBubble = makeWorldLabel(bubbleText, npc);
+            storyBubble = makeWorldLabel(bubbleText, npc, undefined, {
+                onTap: () => { removeWorldLabel(storyBubble); storyBubble = null; }
+            });
         }
         return npc;
     }
@@ -9450,7 +9467,12 @@ export function startGame(CharacterClass) {
     function storySay(target, text, slot) {
         const prev = slot === 'npc' ? storyBubble : storyCompanionBubble;
         removeWorldLabel(prev);
-        const bubble = (text && target) ? makeWorldLabel(text, target) : null;
+        const bubble = (text && target) ? makeWorldLabel(text, target, undefined, {
+            onTap: () => {
+                if (slot === 'npc') { removeWorldLabel(storyBubble); storyBubble = null; }
+                else { removeWorldLabel(storyCompanionBubble); storyCompanionBubble = null; }
+            }
+        }) : null;
         if (slot === 'npc') storyBubble = bubble; else storyCompanionBubble = bubble;
     }
 
@@ -11763,12 +11785,13 @@ export function startGame(CharacterClass) {
         if (!line) return;
         _dialogueLabel = makeWorldLabel(line.text, activeDialogueSpeaker, undefined, {
             typewriter: true,
-            // Mid-type it finishes the line; once finished it moves on. Same
-            // two-stage tap the dialogue box had, now on the bubble itself.
             onTap: () => {
                 if (!villageDialogueActive) return;
-                if (villageTypewriterDone) advanceVillageDialogueLine();
-                else villageDialogueFastForward = true;
+                if (villageTypewriterDone) {
+                    advanceVillageDialogueLine();
+                } else {
+                    villageDialogueFastForward = true;
+                }
             },
         });
     }
@@ -16239,9 +16262,9 @@ export function startGame(CharacterClass) {
         window.pixelEffectEnabled = e.target.checked;
     });
     document.getElementById('pixel-size-slider').addEventListener('input', e => {
-        const v = parseInt(e.target.value, 10);
+        const v = parseFloat(e.target.value);
         renderPixelatedPass.setPixelSize(v);
-        document.getElementById('pixel-size-val').textContent = v;
+        document.getElementById('pixel-size-val').textContent = v.toFixed(1);
     });
     document.getElementById('pixel-normal-edge-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -16261,6 +16284,13 @@ export function startGame(CharacterClass) {
         const v = parseFloat(e.target.value);
         window.pixelDepthEdgeSensitivity = v;
         document.getElementById('pixel-depth-sens-val').textContent = v.toFixed(3);
+    });
+
+    document.getElementById('pixel-render-scale-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.pixelRenderScale = v;
+        updateSceneRenderTarget();
+        document.getElementById('pixel-render-scale-val').textContent = v.toFixed(2);
     });
 
     document.getElementById('toggle-ortho-camera').addEventListener('change', e => {

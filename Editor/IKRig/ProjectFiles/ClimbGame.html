@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -98,7 +98,7 @@
         .category-header:hover { background: rgba(255, 255, 255, 0.2); }
         .category-content { padding: 8px; display: none; background: rgba(0, 0, 0, 0.4); }
         .category.active .category-content { display: block; }
-        .category-header::after { content: '▶'; font-size: 10px; transition: transform 0.2s; }
+        .category-header::after { content: 'â–¶'; font-size: 10px; transition: transform 0.2s; }
         .category.active .category-header::after { transform: rotate(90deg); }
 
         #stamina-container { position: absolute; top: 10px; left: 10px; width: 150px; height: 4px; background: rgba(0,0,0,0.5); border-radius: 2px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); z-index: 11; }
@@ -413,9 +413,7 @@
                 const ov = document.getElementById('loading-overlay');
                 if (!el || !ov || ov.classList.contains('hidden')) return;
                 el.style.display = 'block';
-                el.textContent = (el.textContent ? el.textContent + '
-
-' : '') + what;
+                el.textContent = (el.textContent ? el.textContent + '\n' : '') + what;
             };
             window.addEventListener('error', (e) => {
                 show((e.message || 'Error') + '
@@ -471,7 +469,7 @@
     <div id="dialogue-skip" style="display:none; position:absolute; right:14px; top:14px; padding:6px 14px; font-size:13px; font-family:monospace; font-weight:bold; letter-spacing:0.08em; color:rgba(255,255,255,0.85); background:rgba(20,20,26,0.75); border:1px solid rgba(255,255,255,0.4); border-radius:6px; cursor:pointer; touch-action:none; user-select:none; z-index:210;">SKIP &#187;</div>
 
     <!-- Village NPC dialogue box - old-game-style typewriter text, tap to
-         advance once the ▼ "continue" marker shows (see
+         advance once the â–¼ "continue" marker shows (see
          startVillageDialogue/updateVillageDialogueTypewriter in
          game_js.js). Tap/hold while still typing speeds up the reveal
          instead of advancing. -->
@@ -529,7 +527,7 @@
          game_js.js. -->
     <div id="player-viewer-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background:#1a252c;">
         <div id="viewer-container" style="width:100%; height:100%;"></div>
-        <button id="close-viewer-btn" style="position:absolute; top:14px; right:14px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.3); background:rgba(0,0,0,0.5); color:white; font-size:16px; cursor:pointer;">×</button>
+        <button id="close-viewer-btn" style="position:absolute; top:14px; right:14px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.3); background:rgba(0,0,0,0.5); color:white; font-size:16px; cursor:pointer;">Ã—</button>
         <div style="position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:280px; background:rgba(28,28,30,0.95); border:1px solid #3a3a3c; border-bottom:none; border-radius:12px 12px 0 0; padding:12px 15px; text-align:center; color:#eee; font-family:sans-serif; box-sizing:border-box;">
             <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
                 <button class="viewer-cat-btn active" data-cat="player" style="background:#2563eb; color:#fff; border:none; padding:5px 14px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Player</button>
@@ -550,7 +548,7 @@
             <span>Level Editor</span>
             <div id="level-editor-header-right">
                 <button id="editor-gear-btn" class="editor-panel-toggle" data-panel="editor-gear-panel" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H2a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4 8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H8a1.65 1.65 0 0 0 1-1.51V2a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V8a1.65 1.65 0 0 0 1.51 1H22a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
-                <button id="level-editor-dock-btn" title="Collapse / expand panel">▲</button>
+                <button id="level-editor-dock-btn" title="Collapse / expand panel">â–²</button>
             </div>
         </div>
         <!-- Always-visible toolbar: stays put even when the panel is docked
@@ -561,7 +559,7 @@
                 <button class="editor-mode-btn" data-mode="translate" title="Move"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M19 9l3 3-3 3M9 19l3 3-3 3M2 12h20M12 2v20"></path></svg></button>
                 <button class="editor-mode-btn" data-mode="rotate" title="Rotate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></svg></button>
                 <button class="editor-mode-btn" data-mode="scale" title="Scale"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 3l-6 6M21 3v6M21 3h-6M3 21l6-6M3 21v-6M3 21h6M15 15l6 6M15 15v6M15 15h6M9 9L3 3M9 9V3M9 9H3"></path></svg></button>
-                <button class="editor-mode-btn" data-mode="shape" title="Shape Controls" style="color:#ffaa00;font-size:15px;">⚒</button>
+                <button class="editor-mode-btn" data-mode="shape" title="Shape Controls" style="color:#ffaa00;font-size:15px;">âš’</button>
                 <button id="editor-space-btn" title="World / Local space">WLD</button>
                 <button id="editor-focus-btn" title="Focus Selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="1"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg></button>
                 <button id="editor-snap-btn" class="active" title="Snap to Surface"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v7a6 6 0 0 0 12 0V3h-4v7a2 2 0 0 1-4 0V3z"></path></svg></button>
@@ -604,7 +602,7 @@
             </div>
             <div id="editor-prefab-panel" class="editor-dropdown-panel" style="display:none;">
                 <div style="display:flex; gap:4px; margin-bottom:6px;">
-                    <button id="editor-group-btn" title="Group selected objects into one entity" style="flex:1;">⧉ Group into Entity</button>
+                    <button id="editor-group-btn" title="Group selected objects into one entity" style="flex:1;">â§‰ Group into Entity</button>
                     <button id="editor-ungroup-btn" title="Ungroup the selected entity" style="flex:1;">Ungroup Entity</button>
                 </div>
                 <div style="border-top:1px solid #444; margin-bottom:6px;"></div>
@@ -635,7 +633,7 @@
     <button id="editor-shift-btn" style="display:none;" title="Add to selection (same as holding Shift)">SHIFT</button>
 
     <div id="ui" class="collapsed">
-        <button id="dock-btn">▶</button>
+        <button id="dock-btn">â–¶</button>
         <div class="ui-controls">
             <div class="category">
                 <div class="category-header">Level & Data</div>
@@ -697,6 +695,7 @@
                     <label><input type="checkbox" id="toggle-charge-kick-lean" checked> Charge Kick: spine lean</label><br>
                     <label><input type="checkbox" id="toggle-auto-jump" checked> Auto Jump at reachable ledges</label><br>
                     <label><input type="checkbox" id="toggle-aj-debug"> Show Auto Jump Reason</label><br>
+                    <label><input type="checkbox" id="toggle-comp-debug"> Show Companion State</label><br>
                     <label>Auto Jump Min Rise: <span id="auto-jump-min-val">0.70</span></label><br>
                     <input type="range" id="auto-jump-min-slider" min="0.2" max="2" step="0.05" value="0.7" style="width: 100%;"><br>
                     <label>Auto Jump Max Rise: <span id="auto-jump-max-val">3.40</span></label><br>
@@ -980,14 +979,16 @@
                     <label>Fill Light Intensity: <span id="fill-light-intensity-val">1.00</span></label><br>
                     <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-pixel-effect" checked> Pixelate (postprocessing)</label><br>
-                    <label>Pixel Size: <span id="pixel-size-val">1</span></label><br>
-                    <input type="range" id="pixel-size-slider" min="1" max="16" step="1" value="1" style="width: 100%;"><br>
+                    <label>Pixel Size: <span id="pixel-size-val">0.1</span></label><br>
+                    <input type="range" id="pixel-size-slider" min="0.1" max="16" step="0.1" value="0.1" style="width: 100%;"><br>
                     <label>Normal Edge Strength: <span id="pixel-normal-edge-val">0.00</span></label><br>
                     <input type="range" id="pixel-normal-edge-slider" min="0.0" max="2.0" step="0.05" value="0.00" style="width: 100%;"><br>
                     <label>Depth Edge Strength: <span id="pixel-depth-edge-val">7.00</span></label><br>
                     <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="7.00" style="width: 100%;"><br>
                     <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.055</span></label><br>
                     <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.055" style="width: 100%;"><br>
+                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">1.00</span></label><br>
+                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
@@ -4198,8 +4199,8 @@ import { startGame } from './game_js.js';
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-      .then(reg => console.log('✓ Service Worker registered'))
-      .catch(err => console.error('✗ Service Worker registration failed:', err));
+      .then(reg => console.log('âœ“ Service Worker registered'))
+      .catch(err => console.error('âœ— Service Worker registration failed:', err));
   });
 }
     </script>
