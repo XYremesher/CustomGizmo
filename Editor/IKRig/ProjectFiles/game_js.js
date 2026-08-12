@@ -564,24 +564,36 @@ export function startGame(CharacterClass) {
     // - off by default, toggled from the settings panel. Built once up front
     // rather than lazily on first enable, so the toggle is instant either way.
     window.pixelEffectEnabled = true;
-    window.pixelRenderScale = 0.65;
+    window.pixelRenderScale = 1.0;
+    window.nearestNeighborUpscaling = false;
+    window.sharpeningEnabled = false;
+    window.sharpeningStrength = 0.50;
 
     const composer = new EffectComposer(renderer);
     // Pixel size 1 - no pixelation at all. The pass is kept purely for its
     // depth-edge outline; raise the Pixel Size slider for the chunky look.
     const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
     renderPixelatedPass.normalEdgeStrength = 0.0;
-    renderPixelatedPass.depthEdgeStrength = 1.25;
+    renderPixelatedPass.depthEdgeStrength = 0.75;
     composer.addPass(renderPixelatedPass);
     composer.addPass(new OutputPass());
 
-    const updateSceneRenderTarget = () => {
+    const updateComposerRenderTarget = () => {
         const scale = window.pixelRenderScale;
         const w = Math.floor(window.innerWidth * scale);
         const h = Math.floor(window.innerHeight * scale);
         composer.setSize(w, h);
+
+        // Apply nearest-neighbor filtering if enabled
+        if (window.nearestNeighborUpscaling && composer.renderTarget) {
+            composer.renderTarget.texture.magFilter = THREE.NearestFilter;
+            composer.renderTarget.texture.minFilter = THREE.NearestFilter;
+        } else if (composer.renderTarget) {
+            composer.renderTarget.texture.magFilter = THREE.LinearFilter;
+            composer.renderTarget.texture.minFilter = THREE.LinearFilter;
+        }
     };
-    updateSceneRenderTarget();
+    updateComposerRenderTarget();
 
     // ---- Depth-edge fix ----
     // The stock pass differences the RAW depth buffer and thresholds it at a
@@ -602,7 +614,7 @@ export function startGame(CharacterClass) {
     // and every replacement is verified - if a three.js update changes the
     // source out from under this, it leaves the stock shader alone and says so
     // rather than silently rendering a broken pass.
-    window.pixelDepthEdgeSensitivity = 0.010;  // relative depth step counted as an edge
+    window.pixelDepthEdgeSensitivity = 0.005;  // relative depth step counted as an edge
     const _pixelEdgeUniforms = {
         uEdgeNear: { value: 0.1 },
         uEdgeFar: { value: 1000 },
@@ -16257,9 +16269,9 @@ export function startGame(CharacterClass) {
         window.pixelEffectEnabled = e.target.checked;
     });
     document.getElementById('pixel-size-slider').addEventListener('input', e => {
-        const v = parseFloat(e.target.value);
+        const v = parseInt(e.target.value, 10);
         renderPixelatedPass.setPixelSize(v);
-        document.getElementById('pixel-size-val').textContent = v.toFixed(1);
+        document.getElementById('pixel-size-val').textContent = v;
     });
     document.getElementById('pixel-normal-edge-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -16284,8 +16296,23 @@ export function startGame(CharacterClass) {
     document.getElementById('pixel-render-scale-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
         window.pixelRenderScale = v;
-        updateSceneRenderTarget();
+        updateComposerRenderTarget();
         document.getElementById('pixel-render-scale-val').textContent = v.toFixed(2);
+    });
+
+    document.getElementById('toggle-nearest-neighbor').addEventListener('change', e => {
+        window.nearestNeighborUpscaling = e.target.checked;
+        updateComposerRenderTarget();
+    });
+
+    document.getElementById('toggle-sharpening').addEventListener('change', e => {
+        window.sharpeningEnabled = e.target.checked;
+    });
+
+    document.getElementById('sharpening-strength-slider').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        window.sharpeningStrength = v;
+        document.getElementById('sharpening-strength-val').textContent = v.toFixed(2);
     });
 
     document.getElementById('toggle-ortho-camera').addEventListener('change', e => {

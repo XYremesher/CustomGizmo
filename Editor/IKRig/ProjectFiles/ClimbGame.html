@@ -979,16 +979,20 @@
                     <label>Fill Light Intensity: <span id="fill-light-intensity-val">1.00</span></label><br>
                     <input type="range" id="fill-light-intensity-slider" min="0.0" max="2.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-pixel-effect" checked> Pixelate (postprocessing)</label><br>
-                    <label>Pixel Size: <span id="pixel-size-val">0.1</span></label><br>
-                    <input type="range" id="pixel-size-slider" min="0.1" max="16" step="0.1" value="0.1" style="width: 100%;"><br>
+                    <label>Pixel Size: <span id="pixel-size-val">1</span></label><br>
+                    <input type="range" id="pixel-size-slider" min="1" max="16" step="1" value="1" style="width: 100%;"><br>
                     <label>Normal Edge Strength: <span id="pixel-normal-edge-val">0.00</span></label><br>
                     <input type="range" id="pixel-normal-edge-slider" min="0.0" max="2.0" step="0.05" value="0.00" style="width: 100%;"><br>
-                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">1.25</span></label><br>
-                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="1.25" style="width: 100%;"><br>
-                    <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.010</span></label><br>
-                    <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.010" style="width: 100%;"><br>
-                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">0.65</span></label><br>
-                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="0.65" style="width: 100%;"><br>
+                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">0.75</span></label><br>
+                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="0.75" style="width: 100%;"><br>
+                    <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.005</span></label><br>
+                    <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.005" style="width: 100%;"><br>
+                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">1.00</span></label><br>
+                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-nearest-neighbor"> Nearest Neighbor Upscaling</label><br>
+                    <label><input type="checkbox" id="toggle-sharpening"> Sharpening</label><br>
+                    <label>Sharpening Strength: <span id="sharpening-strength-val">0.50</span></label><br>
+                    <input type="range" id="sharpening-strength-slider" min="0.0" max="2.0" step="0.1" value="0.50" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
