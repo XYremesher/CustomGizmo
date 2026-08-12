@@ -296,6 +296,40 @@
         .warp-btn:active { transform: scale(0.88); border-color: #fff; }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
+        /* ---- Alternate control layout (body.ui-alt, ON by default) ----
+           Wide-screen problem this solves: the two clusters are anchored to
+           opposite EDGES, so the wider the display the further apart your
+           hands are pulled - at 1920 the move stick and the jump button are
+           most of a metre apart, which is fine on a phone and absurd on a
+           monitor.
+           Here the move stick is anchored to the RIGHT instead, a fixed gap
+           from the action cluster, so the pair travels together and sits
+           around the middle of a wide screen. The min() keeps the phone case
+           identical: on anything narrow, 100% - 150px wins and the stick lands
+           back at its old ~30px from the left edge, so nothing regresses on
+           the device the layout was built for.
+           The action side also moves up and shrinks a little - it sits above
+           the stick's line rather than beside it, which is what makes the two
+           read as one cluster instead of two corners. */
+        :root { --ui-alt-gap: 400px; }
+        /* Portrait: move stick centred. It's 120px wide, so left: 50% - 60px centres it. */
+        body.ui-alt #base-left { left: calc(50% - 60px); }
+        body.ui-alt #jump-btn  { bottom: 200px; right: 70px;  width: 70px; height: 70px; }
+        body.ui-alt #punch-btn { bottom: 120px; right: 60px; width: 60px; height: 60px; }
+        body.ui-alt #carry-btn { bottom: 115px; right: 60px; width: 50px; height: 50px; }
+        body.ui-alt #throw-btn { bottom: 115px; right: 60px; width: 45px; height: 45px; }
+        body.ui-alt #drop-btn  { bottom: 165px; right: 200px; width: 45px; height: 45px; }
+
+        /* Landscape mode: right thumb position is lower. Centre the move stick
+           and position the buttons where the thumb naturally falls. */
+        @media (orientation: landscape) {
+            body.ui-alt #base-left { bottom: 20px; right: calc(50% - 80px); }
+            body.ui-alt #jump-btn  { bottom: 50px; right: calc(50% - 200px); width: 70px; height: 70px; }
+            body.ui-alt #punch-btn { bottom: 50px; right: calc(50% - 290px); width: 60px; height: 60px; }
+            body.ui-alt #carry-btn { bottom: 110px; right: calc(50% - 290px); width: 50px; height: 50px; }
+            body.ui-alt #throw-btn { bottom: 110px; right: calc(50% - 290px); width: 45px; height: 45px; }
+            body.ui-alt #drop-btn  { bottom: 160px; right: calc(50% - 320px); width: 45px; height: 45px; }
+        }
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
 
         .ledge-hint-container { position: absolute; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity 0.2s; border-radius: 50%; overflow: hidden; }
@@ -662,6 +696,7 @@
                     <label><input type="checkbox" id="charge-kick-hard"> Charge Kick: harder recoil</label><br>
                     <label><input type="checkbox" id="toggle-charge-kick-lean" checked> Charge Kick: spine lean</label><br>
                     <label><input type="checkbox" id="toggle-auto-jump" checked> Auto Jump at reachable ledges</label><br>
+                    <label><input type="checkbox" id="toggle-aj-debug"> Show Auto Jump Reason</label><br>
                     <label>Auto Jump Min Rise: <span id="auto-jump-min-val">0.70</span></label><br>
                     <input type="range" id="auto-jump-min-slider" min="0.2" max="2" step="0.05" value="0.7" style="width: 100%;"><br>
                     <label>Auto Jump Max Rise: <span id="auto-jump-max-val">3.40</span></label><br>
@@ -902,6 +937,7 @@
                          wiring in game_js.js) - both off by default here
                          too, matching how the game actually ships; these
                          just make them reachable again for testing. -->
+                    <label><input type="checkbox" id="toggle-ui-alt" checked> UI 2: centred stick, raised buttons</label><br>
                     <label><input type="checkbox" id="toggle-camera-joystick"> Show Camera Joystick</label><br>
                     <label><input type="checkbox" id="toggle-build-btn"> Show Build (B) Button</label><br>
                     <label><input type="checkbox" id="toggle-punch-btn" checked> Show Punch Button</label><br>

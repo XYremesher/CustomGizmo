@@ -1791,6 +1791,23 @@ export function startGame(CharacterClass) {
     const _climbTmpQuat = new THREE.Quaternion();
     let _climbBlendT = 0;
     const COMP_CLIMB_BLEND = 0.3;
+    // How much of the climb's rise the model offset is allowed to cancel.
+    //
+    // Cancelling ALL of it is what the anti-pop trick wants, but the rise from
+    // a hang is COMP_HANG_DROP (1.85) plus the pull-up - so for the whole
+    // blend the body sat that far below its own root, which is inside the
+    // ledge it had just climbed onto. Brief, and impossible to unsee.
+    // Cancelling only the last third leaves a small residual rise that reads
+    // as the body settling onto the ledge, and never buries it.
+    window.agentClimbCancel = 0.35;
+    // Clamps a climb's model-offset compensation to that. Shared so the bot
+    // and the companion cannot drift apart - they had identical copies of this
+    // whole trick already.
+    function clampClimbCancel(v) {
+        const len = v.length();
+        if (len > window.agentClimbCancel) v.multiplyScalar(window.agentClimbCancel / len);
+        return v;
+    }
     let _compLeapToHang = false;        // this leap ends by catching a ledge, not by landing on ground
     // Locomotion clip picker state - low-pass filtered speed plus hysteresis
     // between the run/walk/idle thresholds. Feeding the raw per-frame speed
@@ -2724,7 +2741,7 @@ export function startGame(CharacterClass) {
             _aiClimbMoveDiff.copy(_aiClimbTop).sub(_aiClimbHang);
             _aiClimbTmpQuat.copy(_aiClimbQuat).invert();
             _aiClimbMoveDiff.applyQuaternion(_aiClimbTmpQuat);
-            aiBot.fbxModel.position.sub(_aiClimbMoveDiff);
+            aiBot.fbxModel.position.sub(clampClimbCancel(_aiClimbMoveDiff));
             _aiClimbBlendT = COMP_CLIMB_BLEND;
         }
         aiBot.setNetworkState([at.x, at.y, at.z], [_aiClimbQuat.x, _aiClimbQuat.y, _aiClimbQuat.z, _aiClimbQuat.w],
@@ -5121,7 +5138,7 @@ export function startGame(CharacterClass) {
                 _climbMoveDiff.copy(_climbTo).sub(_climbFrom);
                 _climbTmpQuat.copy(_climbQuat).invert();
                 _climbMoveDiff.applyQuaternion(_climbTmpQuat);
-                companion.fbxModel.position.sub(_climbMoveDiff);
+                companion.fbxModel.position.sub(clampClimbCancel(_climbMoveDiff));
                 _climbBlendT = COMP_CLIMB_BLEND;
             }
             companion.setNetworkState([pos.x, pos.y, pos.z], [_climbQuat.x, _climbQuat.y, _climbQuat.z, _climbQuat.w], done ? 'idle' : 'climb', false);
@@ -13065,7 +13082,7 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_forest'; currentLevel = select.value;
+        select.value = 'local_forest_free'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
@@ -13569,6 +13586,7 @@ export function startGame(CharacterClass) {
     // rendered unticked - and the flag was then set to true afterwards. Box
     // said off, cone drew anyway.
     [['toggle-auto-jump', 'autoJump'],
+     ['toggle-aj-debug', '_ajDebug'],
      ['toggle-charge-kick-lean', 'chargeKickLean'],
      ['toggle-friendly-fire', 'friendlyFire'],
      ['toggle-instant-companions', 'instantCompanions'],
@@ -13578,6 +13596,18 @@ export function startGame(CharacterClass) {
         window[key] = el.checked;
         el.addEventListener('change', e => { window[key] = e.target.checked; });
     });
+    // Layout choice, not a gameplay flag, so it toggles a body class rather
+    // than a window global - the whole thing lives in CSS. Markup is the
+    // source of truth for the initial state (the box carries `checked`),
+    // which is the ordering that broke the vision-cone toggle the other way
+    // round: read the checkbox, do not set it from a global declared later.
+    (() => {
+        const el = document.getElementById('toggle-ui-alt');
+        if (!el) return;
+        const apply = () => document.body.classList.toggle('ui-alt', el.checked);
+        apply();
+        el.addEventListener('change', apply);
+    })();
     const punchBtnEl = document.getElementById('punch-btn');
     // The two combat toggles. Both sit on the punch button because both change
     // what punching does, and both are the kind of assist you want to flip
@@ -18678,7 +18708,7 @@ export function startGame(CharacterClass) {
                     const gy = autoJumpGroundAt(p0.x + _ajFwd.x * d, p0.z + _ajFwd.z * d, p0.y + 1.0);
                     if (p0.y - gy > window.autoJumpGapDrop) { edgeDist = d; break; }
                 }
-                if (edgeDist < 0) return;
+                if (edgeDist < 0) return ajNo(window._ajWhy + ' / no gap edge');
                 // Close enough to launch from. Jumping the moment the edge is
                 // merely visible would waste most of the 5.33 of reach on
                 // ground you were still standing on.
@@ -18718,16 +18748,25 @@ export function startGame(CharacterClass) {
                 }
             }
 
+            // Why the last frame refused to jump. Every auto-jump report so far
+            // has been "it does not fire HERE", and every diagnosis has been a
+            // guess at which of eight gates said no. This makes it say so.
+            // Read it from the panel's Auto Jump line, or window._ajWhy.
+            function ajNo(why) { window._ajWhy = why; }
             function updateAutoJump(delta) {
                 if (_autoJumpCd > 0) _autoJumpCd -= delta;
-                if (!window.autoJump || _autoJumpCd > 0) return;
-                if (!isGrounded || isLedgeGrabbing || isClimbingUp || isSliding) return;
-                if (window.isCarryingObj || window.isCarryStarting || window.dialogueInputLocked) return;
-                if (char.isRagdoll || char.isStandingUp) return;
+                if (!window.autoJump) return ajNo('off');
+                if (_autoJumpCd > 0) return ajNo('cooldown ' + _autoJumpCd.toFixed(2));
+                if (!isGrounded) return ajNo('airborne');
+                if (isLedgeGrabbing) return ajNo('hanging');
+                if (isClimbingUp) return ajNo('climbing');
+                if (isSliding) return ajNo('sliding');
+                if (window.isCarryingObj || window.isCarryStarting || window.dialogueInputLocked) return ajNo('carrying/dialogue');
+                if (char.isRagdoll || char.isStandingUp) return ajNo('down');
                 // The direction actually being TRAVELLED, not the facing - locked on
                 // to an enemy you can strafe into a wall while looking elsewhere, and
                 // the jump should follow your feet.
-                if (_lastMoveDir.lengthSq() < 1e-6) return;
+                if (_lastMoveDir.lengthSq() < 1e-6) return ajNo('not moving');
                 _ajFwd.copy(_lastMoveDir).setY(0).normalize();
 
                 _ajOrigin.copy(char.group.position).setY(char.group.position.y + 0.6);
@@ -18741,6 +18780,8 @@ export function startGame(CharacterClass) {
                     wall = wallHits[i]; break;
                 }
                 if (!wall || wall.distance > window.autoJumpProbe) {
+                    ajNo(wall ? 'wall ' + wall.distance.toFixed(2) + ' > probe ' + window.autoJumpProbe
+                        : 'no wall ahead');
                     // No wall ahead - so the other case: a GAP.
                     //
                     // Same idea from the other side. Instead of "there is
@@ -18771,13 +18812,31 @@ export function startGame(CharacterClass) {
                 // instead, which is what the geometry actually calls for.
                 const rise = lipY === null ? null : lipY - char.group.position.y;
                 if (rise === null || rise < window.autoJumpMinRise || rise > window.autoJumpMaxRise) {
+                    ajNo(rise === null ? 'wall at ' + wall.distance.toFixed(2) + ', no top found'
+                        : 'rise ' + rise.toFixed(2) + ' outside ' +
+                          window.autoJumpMinRise + '..' + window.autoJumpMaxRise);
                     if (window.autoJumpGaps) updateAutoJumpGap();
                     return;
                 }
+                ajNo('JUMP rise ' + rise.toFixed(2));
                 _autoJumpCd = 0.6;   // one jump per approach, not a pogo stick
                 handleJump();
             }
             updateAutoJump(delta);
+            // Same on-demand panel the bot debug uses. window._ajDebug = true
+            // in the console, or tick Show Auto Jump Reason in the panel.
+            if (window._ajDebug) {
+                let el = document.getElementById('aj-debug');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'aj-debug';
+                    el.style.cssText = 'position:fixed;bottom:0;left:0;background:rgba(0,0,0,.85);color:#6df;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
+                    document.body.appendChild(el);
+                }
+                const cp = char.group.position;
+                el.textContent = 'auto jump: ' + (window._ajWhy || '-') +
+                    '\ny ' + cp.y.toFixed(2) + '   grounded ' + isGrounded;
+            }
             updatePunchMomentum(delta);
 
             // Village NPC proximity trigger - only relevant while that
