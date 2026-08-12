@@ -1937,6 +1937,10 @@ export function startGame(CharacterClass) {
     // its authored full-body clip, the same as the player's. See the long
     // comment in remote_avatar.js's updateAnimation for why.
     window.agentPunchSplit = false;
+    // Within this of its victim a chasing bot faces the victim rather than
+    // its steering direction. Comfortably past AI_AVOID_LOOKAHEAD (1.8), so
+    // the eyes are already locked on before avoidance can swing the body.
+    window.aiFaceVictimDist = 3.0;
     // Shorter than the wall jump's 0.6. You cannot re-trigger while airborne
     // anyway (updateAutoJump needs isGrounded), so this only ever governs how
     // soon AFTER LANDING the next gap may be taken - and 0.6 was long enough
@@ -2257,7 +2261,17 @@ export function startGame(CharacterClass) {
     // steering around anything in the way (see AI_AVOID_ANGLES) instead of
     // just refusing to move, with the same ground-snapping the plain wander
     // uses, reused for both wander and chase movement.
-    function moveAiBotToward(destTarget, speed, delta) {
+    // `faceTarget` (optional): what to LOOK at, when that is not the same as
+    // where to step. Steering is allowed to pick an angle up to 100 degrees
+    // off the direct line to get round an obstacle, and the bot faces
+    // whatever it picked - which is right while crossing a room and wrong at
+    // arm's length. AI_AVOID_LOOKAHEAD is 1.8 against an aiPunchRange of
+    // 1.15, so at exactly punching distance the avoidance rays start finding
+    // whatever is in front of it, every forward angle reads blocked, and the
+    // bot swings up to 100 degrees away - facing its escape route at the
+    // moment it should be facing its victim. Passing the victim here keeps
+    // the eyes on it while the feet still route around things.
+    function moveAiBotToward(destTarget, speed, delta, faceTarget) {
         const pos = aiBot.group.position;
         const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
         const dist = toTarget.length();
@@ -2308,7 +2322,12 @@ export function startGame(CharacterClass) {
         // boxed in, not just "one direction happens to be blocked".
         if (!moveDir) return -1;
 
-        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), moveDir);
+        let faceDir = moveDir;
+        if (faceTarget) {
+            const toFace = new THREE.Vector3(faceTarget.x - pos.x, 0, faceTarget.z - pos.z);
+            if (toFace.lengthSq() > 1e-6) faceDir = toFace.normalize();
+        }
+        const facingQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), faceDir);
 
         const nextPos = _tempVec3.copy(pos).addScaledVector(moveDir, speed * delta);
         aiBotSeparate(nextPos.x, nextPos.z, pos.y, delta, _aiSepOut);
@@ -3346,7 +3365,12 @@ export function startGame(CharacterClass) {
                 // steering and look for a way round.
             }
             if (tryAiBotGapLeap(pos, vPos)) { aiBot.update(delta); return; }
-            if (moveAiBotToward(vPos, chaseSpeed, delta) < 0) pickNewAiWanderTarget();
+            // Close in = keep looking at the victim. Further out the steering
+            // direction is the honest facing: it is where it is going, and a
+            // bot that stares at you while walking sideways round a rock
+            // reads as gliding rather than running.
+            const eyesOn = distToVictim < window.aiFaceVictimDist ? vPos : null;
+            if (moveAiBotToward(vPos, chaseSpeed, delta, eyesOn) < 0) pickNewAiWanderTarget();
             aiBot.update(delta);
             return;
         }
