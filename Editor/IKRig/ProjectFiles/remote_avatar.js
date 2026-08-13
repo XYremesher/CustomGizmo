@@ -119,6 +119,8 @@ export class RemoteAvatar {
         this.activeAction = null;
         this.activeUpperAction = null;
         this.isLoaded = false;
+        this.freezeDistance = 18;
+        this.freezeDistanceSq = this.freezeDistance * this.freezeDistance;
 
         this.targetPos = new THREE.Vector3();
         this.targetQuat = new THREE.Quaternion();
@@ -765,6 +767,17 @@ export class RemoteAvatar {
 
     update(delta) {
         if (!this.isLoaded) return;
+
+        const cameraPos = window.gameCamera && window.gameCamera.position ? window.gameCamera.position : null;
+        const shouldFreeze = cameraPos && this.group.position.distanceToSquared(cameraPos) > this.freezeDistanceSq;
+        if (shouldFreeze) {
+            // Distant companions and bots keep their last pose but stop doing
+            // heavy mixer/IK work. This is the same idea as a simple LOD: their
+            // animation state is effectively frozen until the camera gets close.
+            if (this.chargeEffect) this.stopChargeEffect();
+            if (this.mixer) this.mixer.update(0);
+            return;
+        }
 
         this._applyPendingStandupCorrection(delta);
 

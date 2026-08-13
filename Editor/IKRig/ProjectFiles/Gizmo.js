@@ -131,9 +131,9 @@ export default class Gizmo {
             const sub = new THREE.Group();
             sub.userData = { axis, color };
             const radius = this.config.axisLength * 0.9;
-            const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.05 * this.config.gizmoThickness, 16, 64), getMat(color));
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.05 * this.config.gizmoThickness, 8, 32), getMat(color));
             ring.renderOrder = 999;
-            const hitbox = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.35, 8, 32), getMat(0, 0));
+            const hitbox = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.25, 6, 24), getMat(0, 0));
             hitbox.userData.isHitbox = true;
             sub.add(ring, hitbox); sub.rotation.copy(euler); group.add(sub);
         };
@@ -143,9 +143,9 @@ export default class Gizmo {
         
         const screenR = new THREE.Group();
         screenR.userData = { axis: 'SCREEN', color: 0xffff00 };
-        screenR.add(new THREE.Mesh(new THREE.TorusGeometry(this.config.axisLength * 1.15, 0.05 * this.config.gizmoThickness, 16, 64), getMat(0xffff00, 0.5)));
+        screenR.add(new THREE.Mesh(new THREE.TorusGeometry(this.config.axisLength * 1.15, 0.05 * this.config.gizmoThickness, 8, 32), getMat(0xffff00, 0.5)));
         screenR.children[0].renderOrder = 999;
-        const ringSHit = new THREE.Mesh(new THREE.TorusGeometry(this.config.axisLength * 1.15, 0.4, 8, 32), getMat(0, 0));
+        const ringSHit = new THREE.Mesh(new THREE.TorusGeometry(this.config.axisLength * 1.15, 0.3, 6, 24), getMat(0, 0));
         ringSHit.userData.isHitbox = true; screenR.add(ringSHit); this.gizmoRotate.add(screenR);
         this.screenRotateRing = screenR;
 

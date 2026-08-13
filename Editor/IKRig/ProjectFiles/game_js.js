@@ -557,15 +557,20 @@ export function startGame(CharacterClass) {
     }
     updateOrthoFrustum();
 
-    const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    const renderer = new THREE.WebGLRenderer({
+        canvas: canvas,
+        antialias: false,
+        powerPreference: 'high-performance'
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
 
     // Pixelation post-processing test (https://threejs.org/examples/webgl_postprocessing_pixel.html)
-    // - off by default, toggled from the settings panel. Built once up front
-    // rather than lazily on first enable, so the toggle is instant either way.
-    window.pixelEffectEnabled = true;
-    window.pixelRenderScale = 1.0;
+    // - kept off by default to preserve FPS in the editor/game view. It is
+    // still available from the settings panel when a user explicitly wants it.
+    window.pixelEffectEnabled = false;
+    window.pixelRenderScale = 0.75;
     window.nearestNeighborUpscaling = false;
     window.sharpeningEnabled = false;
     window.sharpeningStrength = 0.50;
@@ -768,7 +773,9 @@ export function startGame(CharacterClass) {
     // light. Smaller = sharper shadows and better self-shadowing over a
     // smaller area; larger = shadows further out but blurrier, and
     // eventually too coarse to resolve the character onto itself.
-    window.shadowRange = 120;
+    window.shadowRange = 80;
+    dirLight.shadow.mapSize.width = 2048;
+    dirLight.shadow.mapSize.height = 2048;
     window._shadowCameraHalfExtent = window.shadowRange;
     function applyShadowRange() {
         const r = window.shadowRange;
@@ -782,8 +789,8 @@ export function startGame(CharacterClass) {
         // These are the values that worked at the old 0.039 density,
         // expressed as a ratio of it.
         const texel = (r * 2) / dirLight.shadow.mapSize.width;
-        dirLight.shadow.normalBias = 0.02 * (texel / 0.039);
-        dirLight.shadow.bias = -0.0001 * (texel / 0.039);
+        dirLight.shadow.normalBias = 0.025 * (texel / 0.039);
+        dirLight.shadow.bias = -0.00015 * (texel / 0.039);
     }
     applyShadowRange();
     scene.add(dirLight); scene.add(dirLight.target);
@@ -5038,13 +5045,24 @@ export function startGame(CharacterClass) {
             _compDebugLabels.set(companion, rec);
         }
         if (!rec) return;   // world-labels host not in the DOM yet
+        if (rec.debug && !rec._tapToggleBound) {
+            rec._tapToggleBound = true;
+            rec.compact = false;
+            rec.el.style.pointerEvents = 'auto';
+            rec.el.style.cursor = 'pointer';
+            rec.el.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                rec.compact = !rec.compact;
+                rec._h = null; rec._hw = null;
+                rec.box.textContent = rec.compact ? '...' : (rec.text || text);
+            });
+        }
         // Written directly rather than through fillLabelText/renderTypedText:
         // this box never contains icon/chip markup, and unlike a line of
         // dialogue it changes every single frame, so paying for the typewriter
         // reveal's segment parsing here on every tick would be pure waste for
         // content nobody is meant to read as a reveal.
         if (rec.text !== text) {
-            rec.box.textContent = text;
             rec.text = text;
             // The line count changes with every mode transition (climbing adds
             // up to three lines the rest of the time doesn't have), and
@@ -5052,6 +5070,11 @@ export function startGame(CharacterClass) {
             // they are asked - dropping it here is what makes them remeasure
             // instead of clamping the bubble to its very first frame's size.
             rec._h = null; rec._hw = null;
+        }
+        if (rec.debug) {
+            rec.box.textContent = rec.compact ? '...' : rec.text;
+        } else if (rec.box.textContent !== rec.text) {
+            rec.box.textContent = rec.text;
         }
     }
     // Debug bubbles do not belong to any story beat and must not outlive the
