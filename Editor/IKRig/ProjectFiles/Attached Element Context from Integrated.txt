@@ -1,0 +1,36 @@
+Attached Element Context from Integrated Browser
+
+Element: canvas#gameCanvas
+
+URL: http://127.0.0.1:3000/ClimbGame.html?vscode-livepreview=true
+
+HTML Path: canvas#gameCanvas
+
+Outer HTML:
+```html
+<canvas id="gameCanvas" data-engine="three.js r160" width="695" height="781" style="width: 695px; height: 781px;"></canvas>
+```
+
+Dimensions:
+- top: 0px
+- left: 0px
+- width: 695px
+- height: 781px
+
+CSS:
+```css
+element { width: 695px; height: 781px; }
+#gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+
+/* Resolved values */
+display: block;
+height: 780.992px;
+left: 0px;
+overflow-clip-margin: content-box /*UA*/;
+overflow-x: clip /*UA*/;
+overflow-y: clip /*UA*/;
+position: absolute;
+top: 0px;
+width: 694.997px;
+z-index: 1;
+```
