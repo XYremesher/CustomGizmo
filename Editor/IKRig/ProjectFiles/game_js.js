@@ -802,6 +802,10 @@ export function startGame(CharacterClass) {
     scene.add(fillLight); scene.add(fillLight.target);
 
     const collidables = [];
+    // Bumped once per frame in animate(). Anything that wants to derive a list
+    // from `collidables` and reuse it for the rest of the frame compares
+    // against this instead of rebuilding per call - see visionLosList.
+    let _frameToken = 0;
     window.collidables = collidables;
     const levelGroup = new THREE.Group();
     scene.add(levelGroup);
@@ -1579,6 +1583,11 @@ export function startGame(CharacterClass) {
     // its own limit would never settle - but only just above it, so the lead
     // companion is genuinely at your shoulder.
     const COMP_FOLLOW_NEAR = 0.8;
+    // Bearings the follow-spot search sweeps through, relative to the one it
+    // would otherwise use, when nothing straight behind the player is standable.
+    // Widening pairs so the nearest workable side wins over the far one, and
+    // 180 last as the "round the other side of them" answer.
+    const COMP_SPOT_SWEEP = [50, -50, 100, -100, 145, -145, 180];
     // Floor on the stand-off fallbacks below. Without it the lead companion's
     // shorter attempts (its own 0.8 scaled by 0.5 and 0.39) land at 0.4 and
     // 0.31 - inside COMP_MIN_PLAYER_GAP, which does not move it closer, it
@@ -1606,6 +1615,10 @@ export function startGame(CharacterClass) {
     // COMP_FOLLOW_FALLBACKS taking a shorter stand-off, so this only catches
     // "the landing spot is literally occupied".
     const COMP_TOPOUT_CLEAR = 0.6;
+    // How far back in TIME the replay's "is this a real top-out" check looks
+    // for evidence of an actual climb - see the blocked-crumb comment in the
+    // replay branch.
+    const COMP_TOPOUT_LOOKBACK = 2.5;
     const COMP_LEDGE_WALL_REACH = 1.2; // a hang spot needs wall within this, or there's nothing to hold
     // HANG mode: committed to holding a ledge. Captured once when the replay
     // finds its top-out occupied, then owned by that mode - the point being
@@ -1654,7 +1667,16 @@ export function startGame(CharacterClass) {
     let _climbTo = new THREE.Vector3();
     let _climbQuat = new THREE.Quaternion();
     let _climbT = 0, _climbDur = 1.0;
-    const COMP_CLIMB_STAND_IN = 0.5;       // distance from ledge edge after climb
+    // How far onto the ledge to stand after pulling up. Was 0.5, which is about
+    // the companion's own half-width (AI_AVOID_RADIUS is 0.45) - so it finished
+    // the climb straddling the rim, half of it over the drop. That is the
+    // "stopped ON the ledge" look; a person who has just hauled themselves up
+    // ends up a body's length in, not balanced on the edge.
+    const COMP_CLIMB_STAND_IN = 0.9;
+    // ...but only if the ledge is that deep. Tried longest first and shortened
+    // when the surface does not reach, so a narrow lip still gets stood on
+    // rather than landed off the back of.
+    const COMP_CLIMB_STAND_TRY = [0.9, 0.7, 0.5];
     const _compFaceEuler = new THREE.Euler();
     let _compFaceQuat = new THREE.Quaternion();
     const _compBehindDir = new THREE.Vector3();
@@ -1726,23 +1748,19 @@ export function startGame(CharacterClass) {
     // nearer is worth trying first.
     const COMP_TAKEOFF_PREFER_DIST = 6.0;
     // ---- Companion stuck detection ----
-    // Every individual stall has had its own cause and its own fix, and there
-    // keep being more. The follow logic is a stack of interacting rules
-    // (takeoff route, steering, climb, leap, the refuse-the-move guard) and
-    // there is no way to be confident some combination cannot deadlock. So:
-    // measure the one thing that is unambiguous - whether it is actually
-    // moving - and break the deadlock when it is not.
-    //
-    // The escape is a short sidestep, not a teleport. Deadlocks here are
-    // symmetric (pressed at a wall, or steering flip-flopping between two
-    // equally blocked sides), and moving perpendicular for a moment breaks
-    // the symmetry so the normal rules find a different answer next frame.
+    // Diagnostic only. This used to also DRIVE a sidestep - the companion
+    // would break off whatever it was doing and walk a step perpendicular to
+    // the player once it had made no progress for COMP_STUCK_TIME - but that
+    // action was its own source of the erratic, unexplained sideways motion
+    // being debugged this session: it could fire mid-route for reasons that
+    // had nothing to do with a genuine deadlock (a slow frame, a momentary
+    // separation-push standoff), and there was no way to see it happen short
+    // of the state readout. Removed. `_compStuckT`/`_compStuckAt` are kept
+    // only so the readout can still say "no progress for Xs" - nothing reads
+    // them to make a decision any more.
     let _compStuckAt = new THREE.Vector3();
-    let _compUnstickDir = new THREE.Vector3();
-    let _compStuckT = 0, _compUnstickT = 0;
-    const COMP_STUCK_TIME = 1.2;    // no progress for this long = deadlocked
-    const COMP_STUCK_DIST = 0.25;   // moved less than this in that time = no progress
-    const COMP_UNSTICK_TIME = 0.5;  // how long to sidestep before resuming normal follow
+    let _compStuckT = 0;
+    const COMP_STUCK_DIST = 0.25;   // moved less than this counts as "no progress"
     // Set at each decision point so the debug readout can say WHY it is doing
     // nothing - "decided to hold" and "every branch declined" look identical
     // from outside, and they need opposite fixes.
@@ -1910,6 +1928,12 @@ export function startGame(CharacterClass) {
     // Seek came down from 3.0 and the cooldown up from 1.8 - at those values a
     // companion was swinging almost continuously and reading as frantic.
     window.compAttackSeek = 2.2;
+    // How far you can get before a companion drops the fight and comes after
+    // you. Following is the job; a bot that wandered past is a distraction, and
+    // one that keeps trading punches while you walk off is one you have to go
+    // back and collect. Comfortably wider than the follow distance (2.6) so
+    // ordinary jostling around you never reads as leaving.
+    window.compBreakOffDist = 7.0;
     window.compAttackCooldown = 2.6;
     // How much of that cooldown is randomly ADDED on top, so two companions
     // beside the same bot do not lock into the same rhythm and swing in
@@ -1943,6 +1967,10 @@ export function startGame(CharacterClass) {
     window.aiPunchStep = 1.6;
     window.compPunchStep = 2.0;    // companions close the last step while swinging too
     window.enemyWakeRange = 16;    // how close you get before a sleeper notices
+    // ...and how far you get before it stops caring again. Deliberately wider
+    // than the wake range: with one threshold a bot sitting right on it flips
+    // between thinking and sleeping every frame.
+    window.enemySleepRange = 24;
 
     // ---- Assisted ledge grab ----
     // Widens the window in which a lip counts as grabbable. Forgiveness, not
@@ -2364,6 +2392,12 @@ export function startGame(CharacterClass) {
         const angleOrder = aiBotState.avoidSide < 0 ? AI_AVOID_ANGLES_LEFT_FIRST : AI_AVOID_ANGLES_RIGHT_FIRST;
         let moveDir = null;
         let chosenAngle = 0;
+        // Same pruned list and same near-range cap the companion's steering
+        // uses - see buildSteerList for the arithmetic on why these rays in
+        // particular are worth the trouble.
+        buildSteerList(pos);
+        const prevFar = rayFwd.far;
+        rayFwd.far = AI_AVOID_LOOKAHEAD;
         for (const angleDeg of angleOrder) {
             const candidate = _tempQuat.setFromAxisAngle(_upVec, angleDeg * Math.PI / 180);
             // _tempVec3 is also this function's nextPos scratch further
@@ -2376,8 +2410,7 @@ export function startGame(CharacterClass) {
                 _aiAvoidSideOrigin.copy(rayOrigin);
                 if (sideMul !== 0) _aiAvoidSideOrigin.addScaledVector(_aiAvoidPerp, sideMul * AI_AVOID_RADIUS);
                 rayFwd.set(_aiAvoidSideOrigin, _tempVec3);
-                const hits = rayFwd.intersectObjects(collidables);
-                if (hits.length > 0 && hits[0].distance <= AI_AVOID_LOOKAHEAD) { clear = false; break; }
+                if (rayFwd.intersectObjects(_steerList).length > 0) { clear = false; break; }
             }
             if (clear) {
                 moveDir = _tempVec3.clone();
@@ -2385,6 +2418,7 @@ export function startGame(CharacterClass) {
                 break;
             }
         }
+        rayFwd.far = prevFar;
         // 0 means the direct line is clear again - nothing left to commit
         // to, so future obstacles get re-decided fresh rather than sticking
         // to whatever side was last used for something unrelated.
@@ -2491,6 +2525,15 @@ export function startGame(CharacterClass) {
     // Quaternion and Vector3 every frame, per bot, for the whole swing.
     const _aiPunchFaceQuat = new THREE.Quaternion();
     const _aiForwardZ = new THREE.Vector3(0, 0, 1);
+    // The punch facing needs its OWN vector. It used to borrow _tempVec1, and
+    // the walk-in step between setting it and using it calls aiBotSurfaceY,
+    // which sets _tempVec1 to its ray origin - so by the time the facing was
+    // built from it, it held a world POSITION rather than a direction, with a
+    // non-zero y and no normalisation. setFromUnitVectors then produced an
+    // arbitrary yaw plus pitch and roll: the bot both turned away from whoever
+    // it was hitting and leaned over. That is the "punching backwards" and the
+    // "body off its axis" report, one bug.
+    const _aiPunchDir = new THREE.Vector3();
     // Why the last climb attempt did or did not happen. Set at every exit of
     // tryAiBotClimb and shown by the debug readout - "it cannot climb here" is
     // the same picture for half a dozen different refusals, and they need
@@ -2919,6 +2962,35 @@ export function startGame(CharacterClass) {
     // down at someone at its base, it is the block's own edge that has to cut
     // the line, and it only does from up there.
     const VISION_EYE_Y = 1.5, VISION_AIM_Y = 1.0;
+    // Past this there is no point paying for the sight line. Every caller
+    // rejects a target further off on its own range test anyway (chase radius,
+    // punch seek), so all the ray would decide is whether something nobody is
+    // going to act on is visible. In open play this is what skips most calls.
+    const VISION_LOS_MAX = 20;
+    // What the sight ray is actually cast against: collidables minus the tree
+    // colliders.
+    //
+    // The forest puts a few hundred tree colliders in `collidables`, and this
+    // test runs for every viewer/target pair every frame - roughly twenty full
+    // casts a frame with three bots and three companions - so their length goes
+    // straight into frame time, exactly as the warning on `collidables` says.
+    // Dropping them is also the call the player's own auto-jump already makes
+    // ("Canopies are not walls"): what the user asked for here was that a block
+    // between two characters breaks the sight line, not that a canopy does.
+    //
+    // Rebuilt once a frame off the token animate() bumps, not per call.
+    let _losList = [], _losFrame = -1;
+    function visionLosList() {
+        if (_losFrame === _frameToken) return _losList;
+        _losFrame = _frameToken;
+        _losList.length = 0;
+        for (let i = 0; i < collidables.length; i++) {
+            const ud = collidables[i].userData;
+            if (ud && ud.isTreeCollider) continue;
+            _losList.push(collidables[i]);
+        }
+        return _losList;
+    }
     function inVisionCone(fromPos, fromQuat, targetPos, fovDeg) {
         const deg = fovDeg === undefined ? window.lockFovDeg : fovDeg;
         if (!(deg > 0)) return false;
@@ -2938,6 +3010,7 @@ export function startGame(CharacterClass) {
         // In the cone, but is there anything in the way? Without this the cone
         // was purely an angle, so a companion on top of a block "saw" - and
         // went for - a bot standing at its foot, straight through the block.
+        if (len > VISION_LOS_MAX) return true;
         _visionEye.set(fromPos.x, fromPos.y + VISION_EYE_Y, fromPos.z);
         _visionAim.set(targetPos.x, targetPos.y + VISION_AIM_Y, targetPos.z).sub(_visionEye);
         const reach = _visionAim.length();
@@ -2945,21 +3018,43 @@ export function startGame(CharacterClass) {
         _visionAim.divideScalar(reach);
         rayFwd.set(_visionEye, _visionAim);
         // Stop the ray at the target rather than letting it run to infinity and
-        // sorting every hit beyond: this is called for each viewer/target pair
-        // every frame, against the whole collidables list. Restored afterwards
-        // because rayFwd is shared with the ground/wall probes.
+        // sorting every hit beyond. Restored afterwards because rayFwd is
+        // shared with the ground/wall probes.
         const prevFar = rayFwd.far;
         rayFwd.far = reach - 0.3;   // ignore the target's own body
-        const blocked = rayFwd.far > 0 && rayFwd.intersectObjects(collidables, true).length > 0;
+        const blocked = rayFwd.far > 0 && rayFwd.intersectObjects(visionLosList(), true).length > 0;
         rayFwd.far = prevFar;
         return !blocked;
     }
 
+    // On a wall, on a ledge, or on its way to one. Every one of these modes
+    // drives the companion's position itself rather than walking it, so there
+    // is nothing sensible for a fight to do with it.
+    const COMP_CLIMB_MODES = ['hang', 'climbup', 'leap', 'replay'];
+    function companionIsClimbing(avatar) {
+        for (let i = 0; i < companions.length; i++) {
+            if (companions[i].comp === avatar) {
+                return COMP_CLIMB_MODES.indexOf(companions[i].mode) >= 0;
+            }
+        }
+        return false;
+    }
     // Ragdolling or getting back up means it is already being dealt with -
     // hitting it again would just reset an animation that is mid-play.
     function aiBotVictimAvailable(v) {
         if (!v) return false;
         if (v.isRagdoll || v.isStandingUp) return false;
+        // Mid-climb, a companion is not a target. This is the single gate both
+        // the victim pick and every per-hit re-check go through, so it takes a
+        // climbing companion out of a bot's world entirely: it will not be
+        // chosen, will not be chased, and a combo already swinging stops
+        // landing on it.
+        //
+        // The alternative was letting the companion be hit off the wall and
+        // then having to recover from that, which is where the climb-drop-retry
+        // loops kept coming from. Nothing about a fight has anywhere useful to
+        // put a body that is hanging off a ledge.
+        if (v !== char && companionIsClimbing(v)) return false;
         // A companion that has not loaded yet, or is switched off, is not
         // something to walk over to and punch.
         if (v !== char) return v.isLoaded && v.group.visible;
@@ -3062,6 +3157,19 @@ export function startGame(CharacterClass) {
                 aiBot.update(delta);
                 return;
             }
+        } else if (aiBotState.mode === 'wander' && _aiClimbPhase === 'none' &&
+            !aiBot.isRagdoll && !aiBot.isStandingUp && aiBot.knockedOutT <= 0 &&
+            char.group.position.distanceTo(aiBot.group.position) > window.enemySleepRange) {
+            // Back to sleep once it is well behind you. Nothing ever cleared
+            // this flag before, so a bot you walked past ONCE kept running its
+            // full think - up to 27 avoidance rays a frame - for the rest of
+            // the level, however far away you got. On a level with several of
+            // them that is most of the AI budget spent on nobody.
+            //
+            // Only ever from 'wander'. Mid-fight, mid-climb, ragdolled or
+            // counted out, a bot has business being awake wherever you are -
+            // and freezing one of those would strand it in that state.
+            aiBot.dormant = true;
         }
         // Ticked BEFORE the ragdoll early-out below, or the clock would only
         // run once it was already back on its feet - a bot spends most of a
@@ -3113,14 +3221,24 @@ export function startGame(CharacterClass) {
             // overwriting each other's readout every frame, which is worse
             // than useless when the whole point is comparing what they are
             // each doing.
+            // Same flex column as the companion readout, and for the same
+            // reason - a fixed 130px pitch is a guess at the panel height that
+            // stops being true the moment a line is added, and then the panels
+            // sit on top of each other.
+            let wrap = document.getElementById('bot-debug-wrap');
+            if (!wrap) {
+                wrap = document.createElement('div');
+                wrap.id = 'bot-debug-wrap';
+                wrap.style.cssText = 'position:fixed;bottom:0;right:0;display:flex;flex-direction:column;gap:4px;align-items:flex-end;z-index:99999;pointer-events:none;';
+                document.body.appendChild(wrap);
+            }
             const panelId = 'bot-debug-' + aiBot.id;
             let el = document.getElementById(panelId);
             if (!el) {
                 el = document.createElement('div');
                 el.id = panelId;
-                const slot = aiBots.findIndex(r => r.bot === aiBot);
-                el.style.cssText = 'position:fixed;bottom:' + Math.max(0, slot) * 130 + 'px;right:0;background:rgba(0,0,0,.85);color:#fd6;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
-                document.body.appendChild(el);
+                el.style.cssText = 'background:rgba(0,0,0,.85);color:#fd6;font:12px monospace;padding:8px;white-space:pre;text-align:left;';
+                wrap.appendChild(el);
             }
             const v = aiBotPickVictim(pos);
             el.textContent = [
@@ -3302,7 +3420,7 @@ export function startGame(CharacterClass) {
             if (_tempVec3.lengthSq() < 1e-6) _aiPunchFaceQuat.identity();
             else _aiPunchFaceQuat.setFromUnitVectors(_aiForwardZ, _tempVec3.normalize());
             if (pvPos) {
-                const facingDir = _tempVec1.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
+                const facingDir = _aiPunchDir.set(pvPos.x - pos.x, 0, pvPos.z - pos.z);
                 if (facingDir.lengthSq() > 0.0001) {
                     facingDir.normalize();
                     // Walk INTO the combo, the same way the player now does.
@@ -3870,8 +3988,7 @@ export function startGame(CharacterClass) {
             faceQuat: new THREE.Quaternion(),
             leapStart: new THREE.Vector3(), leapEnd: new THREE.Vector3(),
             leapFaceQuat: new THREE.Quaternion(), leapT: 0, leapDur: 0.35, leapToHang: false,
-            stuckAt: new THREE.Vector3(), unstickDir: new THREE.Vector3(),
-            stuckT: 0, unstickT: 0,
+            stuckAt: new THREE.Vector3(), stuckT: 0,
             why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false,
             speedSmooth: 0, locoState: 'idle',
             avoidSide: 0, steerDirSmooth: new THREE.Vector3(),
@@ -3975,6 +4092,12 @@ export function startGame(CharacterClass) {
         disposeCompanionPathLines();
         saveCompanion(rec);
         if (rec.comp.marker && rec.comp.marker.parent) rec.comp.marker.parent.remove(rec.comp.marker);
+        // Its debug bubble, if the readout was on - dispose() below only takes
+        // down the avatar's own group/mixer, not a label that merely points at
+        // it, so without this the bubble outlived the companion it was hovering
+        // over and hung in the air at their last position forever.
+        const dbgRec = _compDebugLabels.get(rec.comp);
+        if (dbgRec) { removeWorldLabel(dbgRec); _compDebugLabels.delete(rec.comp); }
         rec.comp.dispose();
         companions.splice(i, 1);
         window.companions = companions.map(r => r.comp);
@@ -4048,8 +4171,7 @@ export function startGame(CharacterClass) {
         _compLeapStart = rec.leapStart; _compLeapEnd = rec.leapEnd;
         _compLeapFaceQuat = rec.leapFaceQuat; _compLeapT = rec.leapT;
         _compLeapDur = rec.leapDur; _compLeapToHang = rec.leapToHang;
-        _compStuckAt = rec.stuckAt; _compUnstickDir = rec.unstickDir;
-        _compStuckT = rec.stuckT; _compUnstickT = rec.unstickT;
+        _compStuckAt = rec.stuckAt; _compStuckT = rec.stuckT;
         _compWhy = rec.why; _compRecoverT = rec.recoverT;
         _compJustClimbedT = rec.justClimbedT; _compTakeoffT = rec.takeoffT;
         _compHitSettled = rec.hitSettled;
@@ -4070,7 +4192,7 @@ export function startGame(CharacterClass) {
         rec.shimmyOffset = _compShimmyOffset;
         rec.climbT = _climbT; rec.climbDur = _climbDur; rec.climbBlendT = _climbBlendT;
         rec.leapT = _compLeapT; rec.leapDur = _compLeapDur; rec.leapToHang = _compLeapToHang;
-        rec.stuckT = _compStuckT; rec.unstickT = _compUnstickT;
+        rec.stuckT = _compStuckT;
         rec.why = _compWhy; rec.recoverT = _compRecoverT;
         rec.justClimbedT = _compJustClimbedT; rec.takeoffT = _compTakeoffT;
         rec.hitSettled = _compHitSettled;
@@ -4272,7 +4394,9 @@ export function startGame(CharacterClass) {
         // of ledge that actually exists. Leaves _hangPos/_hangFwd holding the
         // last candidate tried, which is what the accepted one wants anyway.
         const tryGrip = () => {
-            computeLedgeHang(_gripTryTop, fwdX, fwdZ, _hangPos);
+            // No edge here means nothing to hold - jumping at it would land the
+            // companion inside the block.
+            if (!computeLedgeHang(_gripTryTop, fwdX, fwdZ, _hangPos)) return false;
             _hangFwd.set(fwdX, 0, fwdZ);
             // Square up to the wall before committing, so the grab lands facing
             // the face rather than facing however it happened to walk in. The
@@ -4367,6 +4491,28 @@ export function startGame(CharacterClass) {
         }
         return false;
     }
+    // The player blocks a top-out, and letting them not block it was tried and
+    // was worse: the companion pulled up onto the spot you were standing on,
+    // the separation push immediately shoved it off the edge it had just
+    // climbed, and it fell and came back round - which reads as "makes as if to
+    // climb, then gives up". The lip is a metre wide and the drop is right
+    // there, so there is nowhere for that shove to go but off.
+    //
+    // Coming up BESIDE you is the answer instead, and that is handled where the
+    // grip is chosen (findLedgeLip plus the sideways search) rather than by
+    // waiving the check here.
+    // Where the root actually ends up after a pull-up from the lip `top`.
+    // startCompanionLedgeClimb sets _climbTo to exactly this, so asking "is the
+    // top free" about the LIP was asking about the wrong place: the companion
+    // does not stand on the lip, it stands COMP_CLIMB_STAND_IN back from it,
+    // which is more than a whole clearance radius. Depending on where the
+    // player stood that made the test both too strict - refusing a climb that
+    // would have landed clear - and too loose, allowing one that lands on them.
+    const _topTestAt = new THREE.Vector3();
+    function companionClimbLanding(top, fwdX, fwdZ, out) {
+        return out.set(top.x + fwdX * COMP_CLIMB_STAND_IN, top.y,
+                       top.z + fwdZ * COMP_CLIMB_STAND_IN);
+    }
     function companionTopOccupied(t, p, pad) {
         const r = COMP_TOPOUT_CLEAR + (pad || 0);
         if (Math.hypot(t.x - p.x, t.z - p.z) < r && p.y >= t.y - 0.6) return true;
@@ -4388,8 +4534,55 @@ export function startGame(CharacterClass) {
     // and that can easily be a completely different ledge from an earlier
     // grab. A pose that was correct somewhere else is still the wrong place
     // here.
+    // Walks back from `from` along -fwd until the top surface ends, and puts
+    // that lip point in `out`. Returns false only if `from` is not on the
+    // surface at all.
+    //
+    // computeLedgeHang does the same walk but stops at 1.2, which is right for
+    // what it is for: once you are AT an edge, the grip is never further back
+    // than that. The replay hands over the PLAYER'S top-out crumb instead -
+    // wherever they happened to stop after climbing, very often the middle of a
+    // wide block - and from there the nearest edge can be metres away. Looking
+    // only 1.2 found nothing, so the companion had no grip to take while you
+    // stood up there: it could not hang, carried on replaying into your back,
+    // stopped making progress, and the stuck watchdog walked it away to come
+    // round and try the identical thing again. Finding the real lip first is
+    // what turns that loop into "hang below them, then shuffle along".
+    const LIP_SEARCH_MAX = 5.0, LIP_SEARCH_STEP = 0.3;
+    function findLedgeLip(from, fwdX, fwdZ, out) {
+        let lastOn = -1;
+        for (let d = 0; d <= LIP_SEARCH_MAX; d += LIP_SEARCH_STEP) {
+            _tempVec2.set(from.x - fwdX * d, from.y + 5.0, from.z - fwdZ * d);
+            rayDown.set(_tempVec2, _downVec);
+            const hits = rayDown.intersectObjects(_compGroundList, true);
+            let onSurface = false;
+            for (let i = 0; i < hits.length; i++) {
+                if (Math.abs(hits[i].point.y - from.y) <= 0.4) { onSurface = true; break; }
+            }
+            if (!onSurface) break;
+            lastOn = d;
+        }
+        if (lastOn < 0) return false;
+        out.set(from.x - fwdX * lastOn, from.y, from.z - fwdZ * lastOn);
+        return true;
+    }
+    // How far back the lip search is willing to look. If the surface is still
+    // solid this far out there is no edge here to hang from.
+    const LEDGE_SETBACK_MAX = 1.2;
+    // Returns whether it actually FOUND an edge. That answer used to be thrown
+    // away, and it is the reason companions ended up standing inside blocks.
+    //
+    // The search walks back from `top` looking for where the surface falls
+    // away. Aim at the middle of a wide block top and it never does: every
+    // probe out to the limit is still on the surface, `hi` stays at its
+    // starting value, and the function cheerfully returns a "hang" 1.26 back
+    // from the top and 1.85 below it. That point is not off any edge - it is
+    // underneath the block's own top face, i.e. inside the block. The caller
+    // then hung there. Both symptoms come from this: the companion embedded in
+    // the wall, and the one that will not shimmy (its _hangTop is bogus, so
+    // every sideways candidate fails the "same height" test too).
     function computeLedgeHang(top, fwdX, fwdZ, out) {
-        let lo = 0, hi = 1.2;   // lo: known on the surface, hi: assumed past the edge
+        let lo = 0, hi = LEDGE_SETBACK_MAX;   // lo: known on the surface, hi: assumed past the edge
         for (let i = 0; i < 7; i++) {
             const mid = (lo + hi) * 0.5;
             _tempVec2.set(top.x - fwdX * mid, top.y + 5.0, top.z - fwdZ * mid);
@@ -4403,6 +4596,9 @@ export function startGame(CharacterClass) {
         }
         const outset = hi + COMP_HANG_OUT;
         out.set(top.x - fwdX * outset, top.y - COMP_HANG_DROP, top.z - fwdZ * outset);
+        // hi only ever moves DOWN, and only when a probe came back off the
+        // surface. Still at the limit means no probe ever left the block.
+        return hi < LEDGE_SETBACK_MAX - 1e-3;
     }
 
     // Squares the hang up against the wall it is actually holding, using that
@@ -4475,7 +4671,19 @@ export function startGame(CharacterClass) {
         // post-climb offset below has something to decay back to.
         if (companion.fbxModel && _climbBlendT <= 0) _climbModelRest.copy(companion.fbxModel.position);
         _climbFrom.copy(c);
-        _climbTo.set(target.x + fwdX * COMP_CLIMB_STAND_IN, target.y, target.z + fwdZ * COMP_CLIMB_STAND_IN);
+        // Deepest footing the ledge actually offers - see COMP_CLIMB_STAND_TRY.
+        // The probe is from just above the lip and has to come back at the
+        // lip's own height, so a spot past the far side of a narrow block reads
+        // as no good and the next shorter one is tried instead.
+        let standIn = COMP_CLIMB_STAND_TRY[COMP_CLIMB_STAND_TRY.length - 1];
+        for (let i = 0; i < COMP_CLIMB_STAND_TRY.length; i++) {
+            const d = COMP_CLIMB_STAND_TRY[i];
+            _tempVec2.set(target.x + fwdX * d, target.y + 1.0, target.z + fwdZ * d);
+            rayDown.set(_tempVec2, _downVec);
+            const hits = rayDown.intersectObjects(_compGroundList, true);
+            if (hits.length && Math.abs(hits[0].point.y - target.y) <= 0.4) { standIn = d; break; }
+        }
+        _climbTo.set(target.x + fwdX * standIn, target.y, target.z + fwdZ * standIn);
         _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
         _climbQuat.setFromEuler(_compFaceEuler);
         const climbAction = companion.actions && companion.actions['climb'];
@@ -4584,25 +4792,64 @@ export function startGame(CharacterClass) {
     let _compSteerDirValid = false;
     let _compSteerBlockedFor = 0;
     const COMP_STEER_HOLD = 0.12;
+    // The obstacle-avoidance rays are the most expensive thing either AI does,
+    // so they get their own pruned list rather than walking `collidables`.
+    //
+    // The arithmetic: steering fires a 3-ray bundle per candidate angle and
+    // there are 9 angles, so a blocked agent casts 27 rays a frame - times
+    // every companion and every bot. The forest puts ~190 tree colliders in
+    // `collidables`, each a merged ~384-triangle mesh, and three.js has no
+    // spatial index: every one of those rays walks every one of those meshes.
+    //
+    // Trees are the whole problem and also the easy case - a tree collider is
+    // small and sits at its own origin, so a flat distance test on the object
+    // position prunes it correctly. Everything else (blocks, the border, the
+    // ground plane) is kept unconditionally, because for a large mesh the
+    // origin says nothing about how near its nearest face is. Radius covers
+    // the bundle's full reach plus a tree's own canopy spread.
+    const _steerList = [];
+    const STEER_PRUNE_R = AI_AVOID_LOOKAHEAD + AI_AVOID_RADIUS + 4.0;
+    function buildSteerList(pos) {
+        _steerList.length = 0;
+        const r2 = STEER_PRUNE_R * STEER_PRUNE_R;
+        for (let i = 0; i < collidables.length; i++) {
+            const o = collidables[i];
+            const ud = o.userData;
+            if (ud && ud.isTreeCollider) {
+                const dx = o.position.x - pos.x, dz = o.position.z - pos.z;
+                if (dx * dx + dz * dz > r2) continue;
+            }
+            _steerList.push(o);
+        }
+        return _steerList;
+    }
     // Tests a 3-ray bundle (centerline plus two sideways offsets, so a
     // clear centerline that still grazes an obstacle's edge doesn't count
     // as clear) along `dir` from `rayOrigin`.
     function companionRayClear(rayOrigin, dir) {
         _aiAvoidPerp.set(-dir.z, 0, dir.x);
+        const prevFar = rayFwd.far;
+        // Only the first 1.8 units ever mattered - the old cast ran to infinity
+        // and then compared hits[0].distance, so every hit across the whole
+        // level was collected and sorted just to look at the nearest one.
+        rayFwd.far = AI_AVOID_LOOKAHEAD;
+        let clear = true;
         for (const sideMul of [0, 1, -1]) {
             _aiAvoidSideOrigin.copy(rayOrigin);
             if (sideMul !== 0) _aiAvoidSideOrigin.addScaledVector(_aiAvoidPerp, sideMul * AI_AVOID_RADIUS);
             rayFwd.set(_aiAvoidSideOrigin, dir);
-            const hits = rayFwd.intersectObjects(collidables);
-            if (hits.length > 0 && hits[0].distance <= AI_AVOID_LOOKAHEAD) return false;
+            if (rayFwd.intersectObjects(_steerList).length > 0) { clear = false; break; }
         }
-        return true;
+        rayFwd.far = prevFar;
+        return clear;
     }
     function companionSteerDir(pos, destTarget, delta) {
         const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
         if (toTarget.lengthSq() < 1e-6) { _compSteerDirValid = false; return null; }
         toTarget.normalize();
         const rayOrigin = _tempVec2.copy(pos).setY(pos.y + 0.5);
+        // Once, here - every companionRayClear below reuses it.
+        buildSteerList(pos);
 
         if (companionRayClear(rayOrigin, toTarget)) {
             _compAvoidSide = 0;
@@ -4705,37 +4952,114 @@ export function startGame(CharacterClass) {
         while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
     }
 
+    // Live over the companion's own head, as a world label - see
+    // toggleCompDebugEl below for why it is a Map keyed by the companion
+    // rather than one shared element.
+    //
+    // Used to be a fixed corner panel. Off-body, that had two problems a
+    // bubble does not: with more than one companion the panels stacked and
+    // had to fight over vertical space (see the flex-column history this
+    // replaced), and reading one meant looking away from the character it was
+    // describing instead of at it.
+    const _compDebugLabels = new Map();
     // On-screen readout of what the companion thinks it is doing. Off unless
-    // window._compDebug is set from the console.
+    // the "Companion State Readout" panel checkbox (window._compDebug) is on.
     //
     // Worth having because "it is stuck" is the same picture for several
     // completely different causes - deliberately holding a ledge, walking at
     // an unreachable takeoff, every movement branch declining - and they need
     // opposite fixes. Guessing between them from a screenshot has not worked.
     function companionDebugReport(c, p) {
-        // One panel per companion, stacked - a shared id had the two of them
-        // overwriting each other's readout every frame.
-        const panelId = 'companion-debug-' + companion.id;
-        let el = document.getElementById(panelId);
-        if (!el) {
-            el = document.createElement('div');
-            el.id = panelId;
-            const slot = companions.findIndex(r => r.comp === companion);
-            el.style.cssText = 'position:fixed;top:' + Math.max(0, slot) * 130 + 'px;right:0;background:rgba(0,0,0,.85);color:#6cf;font:12px monospace;padding:8px;z-index:99999;white-space:pre;text-align:left;';
-            document.body.appendChild(el);
-        }
         const takeoff = findTakeoffApproach(c);
         const dTk = takeoff ? Math.hypot(takeoff.at.x - c.x, takeoff.at.z - c.z) : -1;
-        el.textContent = [
+        // The ledge half of the readout. Everything above was about walking
+        // around; none of it says a word about the state machine that actually
+        // does the climbing, which is where the trouble has been - so it could
+        // report "mode hang" and leave you guessing which of the three exits it
+        // was failing and why.
+        //
+        // topOcc names WHO is in the way rather than just saying occupied: the
+        // player and another companion are refused by the same test but mean
+        // completely different things (wait vs. shuffle aside).
+        const ledgeLines = [];
+        if (_compMode === 'hang' || _compMode === 'climbup') {
+            companionClimbLanding(_hangTop, _hangFwd.x, _hangFwd.z, _topTestAt);
+            let occ = 'clear';
+            if (Math.hypot(_topTestAt.x - p.x, _topTestAt.z - p.z) < COMP_TOPOUT_CLEAR + 0.4
+                && p.y >= _topTestAt.y - 0.6) {
+                occ = 'PLAYER';
+            } else {
+                for (let i = 0; i < companions.length; i++) {
+                    const o = companions[i].comp;
+                    if (o === companion || !o.isLoaded) continue;
+                    const op = o.group.position;
+                    if (Math.hypot(_topTestAt.x - op.x, _topTestAt.z - op.z) < COMP_TOPOUT_CLEAR + 0.4
+                        && op.y >= _topTestAt.y - 0.6) { occ = 'COMP ' + o.id; break; }
+                }
+            }
+            ledgeLines.push('hangT   ' + _compHangT.toFixed(2) + 's' +
+                (_compShimmyT > 0 ? '   shimmy ' + _compShimmyOffset.toFixed(2) + ' (' + _compShimmyT.toFixed(2) + 's)' : ''));
+            ledgeLines.push('top     ' + occ +
+                (anotherCompanionIsClimbing() ? '   + someone climbing' : ''));
+            ledgeLines.push('lipY    ' + _hangTop.y.toFixed(2) + '   myY ' + c.y.toFixed(2) +
+                '   rise ' + (_hangTop.y - c.y).toFixed(2));
+        }
+        if (_compMode === 'climbup') {
+            ledgeLines.push('climb   ' + _climbT.toFixed(2) + '/' + _climbDur.toFixed(2) +
+                '   dFrom ' + Math.hypot(_climbFrom.x - c.x, _climbFrom.z - c.z).toFixed(2));
+        }
+        if (_compMode === 'replay') {
+            ledgeLines.push('replay  t+' + _replayT.toFixed(2) + '   from ' + _replayStartT.toFixed(1));
+        }
+        if (_compMode === 'leap') {
+            ledgeLines.push('leap    ' + _compLeapT.toFixed(2) + '/' + _compLeapDur.toFixed(2) +
+                (_compLeapToHang ? '   -> hang' : '   -> land') +
+                '   dY ' + (_compLeapEnd.y - _compLeapStart.y).toFixed(2));
+        }
+        const text = [
             companion.id + (_compCharge ? '   charge' : _compUseCombo ? '   full combo' : '   combo x' + _compPunchCount)
                 + (_compAttackCD > 0 ? '  cd ' + _compAttackCD.toFixed(1) : ''),
-            'mode    ' + _compMode,
+            'mode    ' + _compMode + (_compJustClimbedT > 0 ? '   HOLD ' + _compJustClimbedT.toFixed(2) : ''),
             'why     ' + _compWhy,
             'dPlayer ' + Math.hypot(p.x - c.x, p.z - c.z).toFixed(2) + '  dY ' + (p.y - c.y).toFixed(2),
+        ].concat(ledgeLines).concat([
             'takeoff ' + (takeoff ? ('d=' + dTk.toFixed(2) + (dTk > COMP_TAKEOFF_PREFER_DIST ? ' (far)' : ' (near)')) : 'none'),
             'trail   ' + _compTrail.length + ' crumbs',
-            'stuck   ' + _compStuckT.toFixed(1) + 's' + (_compUnstickT > 0 ? '  UNSTICKING' : '')
-        ].join('\n');
+            'stuck   ' + _compStuckT.toFixed(1) + 's'
+        ]).join('\n');
+
+        let rec = _compDebugLabels.get(companion);
+        if (!rec) {
+            // Well above the normal dialogue anchor, so a real story bubble on
+            // the same companion (the river lesson, a tutorial line) sits below
+            // this rather than the two fighting over one spot.
+            rec = makeWorldLabel(text, companion, window.bubbleAnchorY + 1.0);
+            if (rec) { rec.el.classList.add('wl-debug'); rec.debug = true; }
+            _compDebugLabels.set(companion, rec);
+        }
+        if (!rec) return;   // world-labels host not in the DOM yet
+        // Written directly rather than through fillLabelText/renderTypedText:
+        // this box never contains icon/chip markup, and unlike a line of
+        // dialogue it changes every single frame, so paying for the typewriter
+        // reveal's segment parsing here on every tick would be pure waste for
+        // content nobody is meant to read as a reveal.
+        if (rec.text !== text) {
+            rec.box.textContent = text;
+            rec.text = text;
+            // The line count changes with every mode transition (climbing adds
+            // up to three lines the rest of the time doesn't have), and
+            // labelHeight/labelHalfWidth cache their measurement the first time
+            // they are asked - dropping it here is what makes them remeasure
+            // instead of clamping the bubble to its very first frame's size.
+            rec._h = null; rec._hw = null;
+        }
+    }
+    // Debug bubbles do not belong to any story beat and must not outlive the
+    // checkbox that asked for them - left alone they would freeze on their
+    // last frame's text and sit there forever once turned off.
+    function clearCompanionDebugLabels() {
+        for (const rec of _compDebugLabels.values()) removeWorldLabel(rec);
+        _compDebugLabels.clear();
     }
 
     // Drives ONE companion - whichever activateCompanion last pointed the
@@ -4744,6 +5068,15 @@ export function startGame(CharacterClass) {
         if (!companion) return;
         if (!companion.isLoaded) { companion.update(delta); return; }
         companion.group.visible = true;
+        // Drawn HERE, ahead of every early return below.
+        //
+        // It used to sit down beside the stuck watchdog, past the ragdoll, hit
+        // recovery, settle and attack branches - all of which return. So the
+        // one tool that says what a companion is doing went blank in exactly
+        // the states you most need to see: knocked down, staggering, or holding
+        // a swing. Reporting first costs a string build on a debug frame and
+        // means the readout is never lying by omission.
+        if (window._compDebug) companionDebugReport(companion.group.position, char.group.position);
         // Hidden while ragdolled: the marker sits on the group, and ragdoll
         // drives the BONES rather than the group, so the dot would sit at a
         // stale spot on the ground with nobody standing on it.
@@ -4766,6 +5099,28 @@ export function startGame(CharacterClass) {
         };
         if (companion.isRagdoll || companion.isStandingUp) {
             cancelAttack();
+            // Knocked down lets go of the wall, the same rule updateAiBot
+            // applies to its own climb ("being knocked off a wall should look
+            // like being knocked off a wall").
+            //
+            // Without this the mode survived the knockdown: the ragdoll threw
+            // the body somewhere else entirely, stand-up snapped the root to
+            // wherever the hips came to rest, and then HANG resumed and copied
+            // the STALE _hangPos straight back onto the group. That teleported
+            // the companion back to a grip measured against a wall it was no
+            // longer next to - usually into the block, and hanging is 1.85
+            // below its lip, which is what put it underneath the player.
+            //
+            // Only a full knockdown does this. An ordinary hit is procedural
+            // recoil, which never reaches here, so a punch that does not put
+            // the companion down still leaves it holding on.
+            if (_compMode === 'hang' || _compMode === 'climbup' ||
+                _compMode === 'leap' || _compMode === 'replay') {
+                _compMode = 'follow';
+                _compHangT = 0; _compShimmyT = 0; _compShimmyOffset = 0;
+                _compLeapToHang = false;
+                _compWhy = 'knocked off';
+            }
             // Ragdoll drives the bones directly - leaving a model offset in
             // place would displace the whole ragdoll. Drop it immediately.
             if (_climbBlendT > 0 && companion.fbxModel) { companion.fbxModel.position.copy(_climbModelRest); _climbBlendT = 0; }
@@ -4895,6 +5250,12 @@ export function startGame(CharacterClass) {
             for (let i = 0; i < aiBots.length; i++) {
                 const b = aiBots[i].bot;
                 if (!b.isLoaded || b.isRagdoll || b.isStandingUp) continue;
+                // On MY level. The range test below is a 3D distance, so a bot
+                // standing at the foot of a wall counted as "in reach" of a
+                // companion that had just climbed it - and the companion turned
+                // round at the top and started swinging down at it. Same 1.5
+                // the ledge-hold check uses for the same idea.
+                if (Math.abs(b.group.position.y - c.y) > 1.5) continue;
                 if (!blind && !inVisionCone(c, companion.group.quaternion,
                     b.group.position, window.compVisionDeg)) continue;
                 const d = c.distanceTo(b.group.position);
@@ -4941,13 +5302,19 @@ export function startGame(CharacterClass) {
         // back off the ledge. Keep this hold even if enemies are nearby - don't
         // interrupt climbing to fight.
         const canStartAttack = _compMode === 'follow' && _compJustClimbedT <= 0;
+        // You leaving ends a fight. Following is the job - a bot that happened
+        // to be standing near you is not worth being left behind for, and a
+        // companion still swinging at one while you walk off is a companion you
+        // have to go back and collect.
+        const playerLeaving = Math.hypot(p.x - c.x, p.z - c.z) > window.compBreakOffDist;
+        const canFight = canStartAttack && !playerLeaving;
         // Counter-attack, once the stagger and the settle are both over - the
         // hit has to visibly land before the answer to it does.
         //
         // The flag is left ARMED while it cannot act rather than being
         // consumed and dropped: punched off a wall halfway up, a companion
         // should still hit back when it gets there, not forget it was hit.
-        if (_compRetaliate && canStartAttack) {
+        if (_compRetaliate && canFight) {
             _compRetaliate = false;
             const hitBack = nearestBot(COMP_PUNCH_SEEK, false);
             if (hitBack) startAttack(hitBack);
@@ -4955,7 +5322,7 @@ export function startGame(CharacterClass) {
         // ...and they no longer WAIT to be hit. A bot that wanders into reach
         // gets swung at on its own - but never at the cost of finishing a
         // climb, per the gate above.
-        if (!_compPunchTarget && _compAttackCD <= 0 && canStartAttack) {
+        if (!_compPunchTarget && _compAttackCD <= 0 && canFight) {
             const prey = nearestBot(window.compAttackSeek);
             if (prey) startAttack(prey);
         }
@@ -4967,6 +5334,17 @@ export function startGame(CharacterClass) {
             if (c.distanceTo(companion.demoTarget.group.position) < COMP_PUNCH_RANGE) {
                 startAttack(companion.demoTarget);
             }
+        }
+        // Already mid-swing when you walked off - drop it there. cancelAttack
+        // puts the normal cooldown on, so it does not immediately re-engage the
+        // same bot the moment you happen to step back into range.
+        //
+        // A story demonstration is exempt: that target was handed over
+        // deliberately (see companion.demoTarget) and comes with its own
+        // stand-off, so distance from you is not the right test for it.
+        if (_compPunchTarget && playerLeaving && _compPunchTarget !== companion.demoTarget) {
+            cancelAttack();
+            _compWhy = 'breaking off - player leaving';
         }
         if (_compPunchTarget) {
             // Whoever it started swinging at, held for the whole combo - so it
@@ -5125,34 +5503,21 @@ export function startGame(CharacterClass) {
 
         if (_compJustClimbedT > 0) _compJustClimbedT -= delta;
 
-        // Progress watchdog - see _compStuckAt. Measured on the real position,
-        // so it catches a deadlock whichever rule caused it. Only counts while
-        // there is somewhere to be: standing still next to the player is not
-        // being stuck, and the deliberate holds (hanging, climbing, mid-leap)
-        // are not either.
+        // Progress readout only now - see the block comment on _compStuckAt's
+        // declaration for why this no longer takes any action. Still measured
+        // on the real position so it reflects a deadlock whichever rule caused
+        // it, and still gated the same way (nothing to report while there is
+        // deliberately nowhere to be, or while a hang/climb/leap is holding it
+        // on purpose).
         const farFromPlayer = Math.hypot(p.x - c.x, p.z - c.z) > _compFollowDist + 0.8 || Math.abs(p.y - c.y) > 1.0;
         const shouldBeMoving = farFromPlayer && (_compMode === 'follow' || _compMode === 'replay');
         if (c.distanceToSquared(_compStuckAt) > COMP_STUCK_DIST * COMP_STUCK_DIST) {
             _compStuckAt.copy(c); _compStuckT = 0;
-        } else if (shouldBeMoving && _compUnstickT <= 0) {
+        } else if (shouldBeMoving) {
             _compStuckT += delta;
-            if (_compStuckT > COMP_STUCK_TIME) {
-                // Break the symmetry: sidestep perpendicular to the player for
-                // a moment. Which side does not matter, only that it is not
-                // the direction that is jammed.
-                _compUnstickDir.set(-(p.z - c.z), 0, p.x - c.x);
-                if (_compUnstickDir.lengthSq() < 1e-6) _compUnstickDir.set(1, 0, 0);
-                _compUnstickDir.normalize();
-                if (Math.random() < 0.5) _compUnstickDir.negate();
-                _compUnstickT = COMP_UNSTICK_TIME;
-                _compStuckT = 0;
-                _compMode = 'follow';
-                _compStuckAt.copy(c);
-            }
         } else {
             _compStuckT = 0;
         }
-        if (window._compDebug) companionDebugReport(c, p);
 
         const gy = companionGroundY(c.x, c.z, c.y);
         // gy is the companion's OWN ground. With nothing under it that reads
@@ -5207,6 +5572,9 @@ export function startGame(CharacterClass) {
                 // crossing a gap and needs no such protection.
                 if (!_compLeapToHang && _compLeapEnd.y > _compLeapStart.y + 0.3) {
                     _compJustClimbedT = COMP_POST_CLIMB_HOLD;
+                    // Same as the full climb's ending - a hop that gained
+                    // height has left whoever hit it on the way down below.
+                    _compRetaliate = false;
                 }
                 _compLeapToHang = false;
             }
@@ -5255,6 +5623,18 @@ export function startGame(CharacterClass) {
             if (done) {
                 _compMode = 'follow';
                 _compJustClimbedT = COMP_POST_CLIMB_HOLD;
+                // Arriving at the top ends the climb completely - including any
+                // score it was keeping from the way up.
+                //
+                // _compRetaliate is normally left armed across whatever the
+                // companion could not act during, on the reasoning that a hit
+                // deserves an answer whenever the answer becomes possible. That
+                // is wrong for a climb: whoever landed the punch is at the
+                // BOTTOM of the wall, so honouring it at the top means turning
+                // straight back round and swinging down off the ledge it has
+                // just finished pulling itself onto. Getting up is the whole
+                // point of the move; nothing from below survives it.
+                _compRetaliate = false;
                 // Let offset decay naturally, don't clear immediately
             }
             return;
@@ -5267,9 +5647,25 @@ export function startGame(CharacterClass) {
         // off the wall.
         if (_compMode === 'hang') {
             _compHangT += delta;
+            // On the grip FIRST, before anything decides what to do from here.
+            //
+            // This used to happen at the bottom of the block, after the climb
+            // branch had already returned - so on the first frame of a hang the
+            // companion was still standing wherever the previous mode left it.
+            // Entering from REPLAY that is the crumb up on top beside the
+            // player, and startCompanionLedgeClimb takes _climbFrom from the
+            // CURRENT position: the climb then ran from the destination to the
+            // destination. The clip played, the root never went anywhere, and
+            // follow took over and walked it off - "it climbs but does not put
+            // the root down". Snapping here makes the state true from its first
+            // frame however it was entered.
+            companion.group.position.copy(_hangPos);
+            companion.group.quaternion.copy(_hangQuat);
             // Committed to climbing - ignore enemies, focus on getting up
 
-            const topClear = !companionTopOccupied(_hangTop, p, 0.4) && !anotherCompanionIsClimbing();
+            // Tested where it will STAND, not where it will grip.
+            companionClimbLanding(_hangTop, _hangFwd.x, _hangFwd.z, _topTestAt);
+            const topClear = !companionTopOccupied(_topTestAt, p, 0.4) && !anotherCompanionIsClimbing();
             if (topClear) {
                 startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
                 _compHangT = 0;
@@ -5293,7 +5689,8 @@ export function startGame(CharacterClass) {
                     for (const sign of [1, -1]) {
                         const offset = COMP_SHIMMY_SEARCH_OFFSETS[i] * sign;
                         _ledgeSpotTop.set(_hangTop.x + sx * offset, _hangTop.y, _hangTop.z + sz * offset);
-                        if (companionTopOccupied(_ledgeSpotTop, p, 0.4)) continue;
+                        companionClimbLanding(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _topTestAt);
+                        if (companionTopOccupied(_topTestAt, p, 0.4)) continue;
                         // Does the ledge still run this far?
                         _tempVec2.set(_ledgeSpotTop.x, _ledgeSpotTop.y + 1.0, _ledgeSpotTop.z);
                         rayDown.set(_tempVec2, _downVec);
@@ -5318,7 +5715,19 @@ export function startGame(CharacterClass) {
                 const sx = -_hangFwd.z, sz = _hangFwd.x;
                 const off = _compShimmyOffset * t;
                 _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
-                computeLedgeHang(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _hangPos);
+                // Ran past the end of the edge part-way across - stop here and
+                // hold what it has rather than sliding on into the block face.
+                if (!computeLedgeHang(_ledgeSpotTop, _hangFwd.x, _hangFwd.z, _hangPos)) {
+                    _compShimmyT = 0; _compShimmyOffset = 0;
+                    _compHangT = 0.5;
+                    _compWhy = 'edge ran out';
+                    computeLedgeHang(_hangTop, _hangFwd.x, _hangFwd.z, _hangPos);
+                    squareHangToWall();
+                    companion.group.position.copy(_hangPos);
+                    companion.setNetworkState([_hangPos.x, _hangPos.y, _hangPos.z], [_hangQuat.x, _hangQuat.y, _hangQuat.z, _hangQuat.w], 'hang_idle', false);
+                    companion.update(delta);
+                    return;
+                }
                 // Re-square every frame. The face it is sliding along is not
                 // necessarily flat, and without this the hang drifts off the
                 // wall - or into it - the further it travels.
@@ -5336,7 +5745,8 @@ export function startGame(CharacterClass) {
                     // with it - commit that before deciding anything else.
                     _hangTop.copy(_ledgeSpotTop);
                     _compShimmyOffset = 0;
-                    if (!companionTopOccupied(_hangTop, p, 0.4) && !anotherCompanionIsClimbing()) {
+                    companionClimbLanding(_hangTop, _hangFwd.x, _hangFwd.z, _topTestAt);
+                    if (!companionTopOccupied(_topTestAt, p, 0.4) && !anotherCompanionIsClimbing()) {
                         startCompanionLedgeClimb(c, _hangTop, _hangFwd.x, _hangFwd.z);
                         _compHangT = 0;
                         return;
@@ -5367,8 +5777,8 @@ export function startGame(CharacterClass) {
             _replayT += delta;
             const endCr = _compTrail[_compTrail.length - 1];
             const wantT = _replayStartT + _replayT;
-            let cr = endCr;
-            for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t >= wantT) { cr = _compTrail[i]; break; } }
+            let cr = endCr, crIdx = _compTrail.length - 1;
+            for (let i = 0; i < _compTrail.length; i++) { if (_compTrail[i].t >= wantT) { cr = _compTrail[i]; crIdx = i; break; } }
             // Wait, hanging, if the spot we'd top out onto is where the
             // player is standing. No timeout - it holds the ledge for as
             // long as the spot is occupied. COMP_TOPOUT_CLEAR is deliberately
@@ -5383,31 +5793,92 @@ export function startGame(CharacterClass) {
                 // was blocked, and snapping back down to a hang pose - the
                 // lunge-and-recoil loop. Deciding once removes the loop.
                 //
-                // The climb direction comes from THIS replay - takeoff crumb
-                // to top-out crumb - and the hang position is then measured
-                // off the real ledge (computeLedgeHang). Both are properties
-                // of the wall being climbed right now, unlike the previous
-                // approach of reusing the last recorded hang_idle pose, which
-                // could belong to a different ledge entirely and put the
-                // companion nowhere near this one.
-                let takeoff = _compTrail[0];
-                for (let i = 0; i < _compTrail.length; i++) {
-                    if (_compTrail[i].t >= _replayStartT) { takeoff = _compTrail[i]; break; }
+                // The climb direction used to come from _replayStartT's crumb
+                // (wherever THIS lap of the replay began) straight to `cr`. That
+                // is only a real "over the edge" direction if `cr` is the moment
+                // of cresting the wall. If the player instead walked around on
+                // TOP of a block for a while before this particular crumb was
+                // recorded - which is exactly when `blocked` fires, since it
+                // fires whenever cr ends up near wherever the player currently
+                // is - the lap-start-to-cr vector is just an arbitrary walking
+                // direction on already-flat ground. findLedgeLip would then walk
+                // that bogus direction and latch onto whatever unrelated
+                // dropoff it first reached (a different side of the block, a
+                // corner - anything), computeLedgeHang would place a "hang"
+                // there, and squareHangToWall finds no real wall in that made-up
+                // direction to correct it against (it just silently gives up) -
+                // so the companion ends up hanging INSIDE the block. That is the
+                // embedded-in-the-cube screenshots.
+                //
+                // The fix is to require actual EVIDENCE of a climb: search
+                // backward from `cr` a short way in time for a crumb that was
+                // meaningfully lower. Only THAT crumb - the one the rise
+                // actually happened from - is a trustworthy direction. If
+                // nothing lower turns up nearby, `cr` is just a walking crumb on
+                // a surface the companion can perfectly well walk onto once the
+                // player steps aside, and forcing a ledge-grab out of it is
+                // exactly the bug - falling through to plain replay instead
+                // (below) is the correct, boring answer.
+                let climbFrom = null;
+                for (let i = crIdx; i >= 0 && cr.t - _compTrail[i].t <= COMP_TOPOUT_LOOKBACK; i--) {
+                    if (cr.y - _compTrail[i].y > COMP_STEP_UP) { climbFrom = _compTrail[i]; break; }
                 }
-                let fx = cr.x - takeoff.x, fz = cr.z - takeoff.z;
+                if (climbFrom) {
+                let fx = cr.x - climbFrom.x, fz = cr.z - climbFrom.z;
                 const flen = Math.hypot(fx, fz);
                 if (flen < 1e-3) { fx = 0; fz = 1; } else { fx /= flen; fz /= flen; }
                 _hangFwd.set(fx, 0, fz);
                 _hangTop.set(cr.x, cr.y, cr.z);
-                computeLedgeHang(_hangTop, fx, fz, _hangPos);
-                squareHangToWall();
-                _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
-                _hangQuat.setFromEuler(_compFaceEuler);
-                _compMode = 'hang';
-                _compHangT = 0;
-                _compShimmyT = 0; _compShimmyOffset = 0;
-                companion.update(delta);
-                return;
+                // The crumb is where the PLAYER stopped, not where the edge is.
+                // Walk out to the real lip first, so the grip is taken on the
+                // block's actual edge instead of being looked for in the middle
+                // of the top face where there is none.
+                if (findLedgeLip(_hangTop, fx, fz, _ledgeSpotTop)) _hangTop.copy(_ledgeSpotTop);
+                // That lip is the one directly below wherever the player is
+                // standing, so grabbing it puts the companion right under their
+                // feet - and then HANG spends a second noticing the top is
+                // taken before shuffling aside. Pick a free stretch NOW if this
+                // one is occupied: same offsets the hang's own sideways search
+                // uses, and the same two conditions (nobody there, and the top
+                // surface still runs at this height so there is a ledge at all).
+                companionClimbLanding(_hangTop, fx, fz, _topTestAt);
+                if (companionTopOccupied(_topTestAt, p, 0.4)) {
+                    const sx = -fz, sz = fx;
+                    let moved = false;
+                    for (let oi = 0; oi < COMP_SHIMMY_SEARCH_OFFSETS.length && !moved; oi++) {
+                        for (const sign of [1, -1]) {
+                            const off = COMP_SHIMMY_SEARCH_OFFSETS[oi] * sign;
+                            _ledgeSpotTop.set(_hangTop.x + sx * off, _hangTop.y, _hangTop.z + sz * off);
+                            companionClimbLanding(_ledgeSpotTop, fx, fz, _topTestAt);
+                            if (companionTopOccupied(_topTestAt, p, 0.4)) continue;
+                            _tempVec2.set(_ledgeSpotTop.x, _ledgeSpotTop.y + 1.0, _ledgeSpotTop.z);
+                            rayDown.set(_tempVec2, _downVec);
+                            const surf = rayDown.intersectObjects(_compGroundList, true);
+                            if (!surf.length || Math.abs(surf[0].point.y - _hangTop.y) > 0.4) continue;
+                            _hangTop.copy(_ledgeSpotTop);
+                            moved = true;
+                            break;
+                        }
+                    }
+                }
+                // Only hand over to HANG if there is a real edge at this crumb.
+                // Without the check a top-out in the middle of a wide block -
+                // which is exactly where the player tends to stand, and so
+                // exactly when `blocked` fires - produced a grip underneath the
+                // block's own top face, and the companion hung inside it. When
+                // there is no edge, carrying on with the replay and letting the
+                // separation push sort out the crowding is the lesser problem.
+                if (computeLedgeHang(_hangTop, fx, fz, _hangPos)) {
+                    squareHangToWall();
+                    _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
+                    _hangQuat.setFromEuler(_compFaceEuler);
+                    _compMode = 'hang';
+                    _compHangT = 0;
+                    _compShimmyT = 0; _compShimmyOffset = 0;
+                    companion.update(delta);
+                    return;
+                }
+                }
             }
             // Pure replay of the recorded climb - exact pose + state.
             companion.group.position.set(cr.x, cr.y, cr.z);
@@ -5416,32 +5887,6 @@ export function startGame(CharacterClass) {
             companion.update(delta);
             if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow';
             return;
-        }
-
-        // Deadlock escape, ahead of every routing decision - the whole point
-        // is to do something none of them would have chosen.
-        if (_compUnstickT > 0) {
-            _compUnstickT -= delta;
-            _compWhy = 'unsticking';
-            const s = Math.min(6.0 * delta, 0.2);
-            const ux = c.x + _compUnstickDir.x * s, uz = c.z + _compUnstickDir.z * s;
-            const ugy = companionGroundY(ux, uz, c.y);
-            // Same rule as everywhere else: only take the step if the ground
-            // there is somewhere it could stand.
-            if (ugy - c.y <= COMP_STEP_UP && c.y - ugy < 2.0) {
-                // Face where it is GOING, not at the player. Facing the player
-                // while moving perpendicular is a strafe, and there is no
-                // strafe clip - the walk cycle just slides sideways.
-                _compFaceEuler.set(0, Math.atan2(_compUnstickDir.x, _compUnstickDir.z), 0);
-                _compFaceQuat.setFromEuler(_compFaceEuler);
-                companion.group.position.set(ux, ugy > c.y ? ugy : c.y, uz);
-                const up2 = companion.group.position;
-                companion.setNetworkState([up2.x, up2.y, up2.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], 'walk', false);
-                companion.update(delta);
-                return;
-            }
-            // That way is blocked too - try the other side next frame.
-            _compUnstickDir.negate();
         }
 
         // Below a wall the player just climbed: walk to the spot they actually
@@ -5641,7 +6086,15 @@ export function startGame(CharacterClass) {
             companion._spotAt.distanceToSquared(p) > COMP_SPOT_MOVE * COMP_SPOT_MOVE;
         if (companion._spotT > 0 && !movedFar && companion._spotDist !== undefined) {
             followDist = companion._spotDist;
+            // The bearing is cached with the distance. Without it a sweep-found
+            // direction was thrown away the very next frame and re-derived from
+            // the companion's own position, which is what made it drift back
+            // toward the spot the sweep had just rejected.
+            if (companion._spotDirX !== undefined) {
+                dirx = companion._spotDirX; dirz = companion._spotDirZ;
+            }
         } else {
+        let spotFound = false;
         for (let attempt = 0; attempt < COMP_FOLLOW_FALLBACKS.length; attempt++) {
             const d = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
             const spotY = compSpotGroundY(p.x + dirx * d, p.z + dirz * d, p.y + 3.0);
@@ -5655,13 +6108,63 @@ export function startGame(CharacterClass) {
             // watched you swim. With the absolute value the spot is rejected
             // for being 3 units up, the fallbacks pull it in until it lands in
             // the channel WITH you, and walking to it takes it over the lip.
-            if (Math.abs(p.y - spotY) <= COMP_LEAP_EDGE_DROP) { followDist = d; break; }
-            // Nothing worked even at the closest fallback - keep the original
-            // distance and let the ordinary edge/leap logic deal with it.
-            if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) followDist = Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
+            if (Math.abs(p.y - spotY) <= COMP_LEAP_EDGE_DROP) { followDist = d; spotFound = true; break; }
+            // Nothing at any distance sits at the player's level. There are two
+            // very different reasons for that and they want opposite answers.
+            //
+            // Tight space, or the player down in a channel: close in. That is
+            // what the fallbacks are for - the spot ends up beside them and the
+            // edge/leap code carries it the rest of the way.
+            //
+            // The player simply standing ON something: closing in is wrong, and
+            // was the bug. The tightest fallback puts the follow spot directly
+            // beneath them, which is inside the block's own footprint - so the
+            // companion walks INTO the block, and having "arrived" within its
+            // follow distance it stops looking for a way up at all. From under
+            // there it is closer to the player than any honest route would put
+            // it, which is exactly why it settles for that. Holding the normal
+            // stand-off keeps it out at the base, where the takeoff route can
+            // still pick it up.
+            if (attempt === COMP_FOLLOW_FALLBACKS.length - 1) {
+                followDist = (p.y - c.y) > 1.0
+                    ? _compFollowDist
+                    : Math.max(COMP_FOLLOW_MIN, Math.min(followDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
+            }
         }
+            // Nothing worked straight behind, and the two are on the same level
+            // - which is the standing-on-a-small-block case. Sweep round for a
+            // bearing that DOES have footing at the player's height instead of
+            // settling for the tightest distance on a bearing already known to
+            // be bad.
+            //
+            // This is the difference between arriving somewhere sensible in one
+            // walk and shuffling back and forth until a spot happens to work:
+            // on a block barely wider than the two of them, most bearings point
+            // off the rim, and the old code kept aiming at one of those, being
+            // refused by the edge guard, and trying again.
+            //
+            // Only on a cache miss (see _spotT above), and only when level with
+            // the player, so the cost stays where the existing four-ray search
+            // already put it. When the player is genuinely above, the stand-off
+            // answer above is the right one and this does not run.
+            if (!spotFound && Math.abs(p.y - c.y) < 1.0) {
+                for (let si = 0; si < COMP_SPOT_SWEEP.length && !spotFound; si++) {
+                    const a = THREE.MathUtils.degToRad(COMP_SPOT_SWEEP[si]);
+                    const cs = Math.cos(a), sn = Math.sin(a);
+                    const bx = dirx * cs - dirz * sn, bz = dirx * sn + dirz * cs;
+                    for (let attempt = 0; attempt < COMP_FOLLOW_FALLBACKS.length; attempt++) {
+                        const d = Math.max(COMP_FOLLOW_MIN, Math.min(_compFollowDist, _compFollowDist * COMP_FOLLOW_FALLBACKS[attempt]));
+                        const spotY = compSpotGroundY(p.x + bx * d, p.z + bz * d, p.y + 3.0);
+                        if (Math.abs(p.y - spotY) <= COMP_LEAP_EDGE_DROP) {
+                            dirx = bx; dirz = bz; followDist = d; spotFound = true;
+                            break;
+                        }
+                    }
+                }
+            }
             companion._spotT = COMP_SPOT_INTERVAL;
             companion._spotDist = followDist;
+            companion._spotDirX = dirx; companion._spotDirZ = dirz;
             companion._spotAt = (companion._spotAt || new THREE.Vector3()).copy(p);
         }
         // No per-companion sideways lane here, deliberately.
@@ -5871,7 +6374,22 @@ export function startGame(CharacterClass) {
         // ...and it must not simply WALK off either. The leap is suppressed
         // above, but the ordinary glide would happily carry it over the edge
         // one step at a time, which is the same undo by a slower route.
-        if (_compJustClimbedT > 0 && c.y - gyHere > COMP_LEAP_EDGE_DROP) {
+        // Two reasons to refuse a step that goes over an edge, and the second
+        // one is not time-limited on purpose.
+        //
+        //  - just climbed: hold still for a moment, per the comment above.
+        //  - the player is UP HERE. Then stepping off is never following them,
+        //    whatever the follow spot says. On a small block the spot routinely
+        //    lands past the rim: the companion would step out, the ground scan
+        //    would find the level below, and it would walk down - and then
+        //    playerElevated sent it straight back up. That is the climb-descend
+        //    cycle with nothing actually in the way, and because the old guard
+        //    expired with the post-climb hold, it restarted every time.
+        //
+        // Tested against the player's height rather than the companion's, so it
+        // stops caring the moment the player goes down themselves.
+        if (c.y - gyHere > COMP_LEAP_EDGE_DROP &&
+            (_compJustClimbedT > 0 || (p.y - gyHere) > COMP_LEAP_EDGE_DROP)) {
             nx = c.x; nz = c.z;
             gyHere = companionGroundY(c.x, c.z, c.y);
         }
@@ -8401,7 +8919,13 @@ export function startGame(CharacterClass) {
         out.y = (-_labelProj.y * 0.5 + 0.5) * window.innerHeight;
         out.valid = true;
     }
-    function updateWorldLabels(cam) {
+    // Damping rate for a "pinned" world label - see the debug branch in the
+    // main loop below. Small enough that a leap arc or a climb pop does not
+    // yank the bubble across the screen while it's the thing you're trying to
+    // read; large enough that walking around still gets a bubble that keeps up.
+    const LABEL_PIN_RATE = 6.0;
+    const _labelPinTarget = new THREE.Vector3();
+    function updateWorldLabels(cam, delta) {
         const view = cam || camera;
         // The player's own head, once per frame, to push bubbles off it.
         projectKeepout(char && char.group, _playerScreen, view, window.bubbleAnchorY);
@@ -8424,6 +8948,23 @@ export function startGame(CharacterClass) {
             if (!rec.visible) { rec.el.style.display = 'none'; continue; }
             labelAnchor(rec.owner).getWorldPosition(_labelProj);
             _labelProj.y += rec.offsetY;
+            // "Pinned" tracking, debug bubbles only. A real speech bubble is
+            // meant to stay glued to its speaker - that is what the fbxModel
+            // anchor and the smooth-climb-out comment above labelAnchor are
+            // for. A debug readout is the opposite: it is read WHILE the
+            // companion leaps, pops onto a ledge or slides along one, and a
+            // bubble that snaps to the anchor every frame whips around exactly
+            // as violently as the thing it's reporting on, which is unreadable
+            // at the moment it matters most. Lerping the WORLD position (not
+            // the screen one) toward the live anchor keeps it stable under
+            // camera movement too - a screen-space lag would slide sideways
+            // for no reason the instant the camera panned.
+            if (rec.debug) {
+                _labelPinTarget.copy(_labelProj);
+                if (!rec._pinPos) rec._pinPos = _labelPinTarget.clone();
+                else rec._pinPos.lerp(_labelPinTarget, Math.min(1, delta * LABEL_PIN_RATE));
+                _labelProj.copy(rec._pinPos);
+            }
             _labelProj.project(view);
             // z > 1 is behind the near plane. Without this test the projection
             // flips sign and the bubble appears mirrored on the opposite side
@@ -11247,7 +11788,7 @@ export function startGame(CharacterClass) {
     // drop into nothing: it has a bed you wade across. That also means there
     // is no way to strand yourself in it, which matters - there is NO fall
     // recovery anywhere in this game.
-    const FOREST_GAP_W = 7.0;
+    const FOREST_GAP_W = 9.0;
     // The channel floor, and the water sitting in it.
     //
     // 3.0 deep, which is not an arbitrary "looks about right" - it is the
@@ -13792,12 +14333,29 @@ export function startGame(CharacterClass) {
      ['toggle-friendly-fire', 'friendlyFire'],
      ['toggle-instant-companions', 'instantCompanions'],
      ['toggle-lock-fov', 'showLockFov'],
-     ['toggle-vision-cones', 'showVisionCones']].forEach(([id, key]) => {
+     ['toggle-vision-cones', 'showVisionCones'],
+     // The enemy one was console-only (window._botDebug), which is a poor
+     // place for the one tool that says WHY a bot did something.
+     ['toggle-bot-debug', '_botDebug']].forEach(([id, key]) => {
         const el = document.getElementById(id);
         if (!el) return;
         window[key] = el.checked;
         el.addEventListener('change', e => { window[key] = e.target.checked; });
     });
+    // The companion readout gets its own wiring rather than joining the array
+    // above: it owns a world-label bubble per companion (see
+    // companionDebugReport), and unlike a plain boolean, unticking the box has
+    // to tear those bubbles down or they freeze on screen showing their last
+    // frame's text forever - the toggle would look like it did nothing.
+    (() => {
+        const el = document.getElementById('toggle-comp-debug');
+        if (!el) return;
+        window._compDebug = el.checked;
+        el.addEventListener('change', e => {
+            window._compDebug = e.target.checked;
+            if (!e.target.checked) clearCompanionDebugLabels();
+        });
+    })();
     // Layout choice, not a gameplay flag, so it toggles a body class rather
     // than a window global - the whole thing lives in CSS. Markup is the
     // source of truth for the initial state (the box carries `checked`),
@@ -14920,66 +15478,66 @@ export function startGame(CharacterClass) {
         _fovMesh.material.color.setHex(lockedBot ? 0x66ff88 : 0x44ddff);
     }
 
-    // Draw companion and bot vision cones
-    let _agentVisionCones = [];
+    // Companion and bot view cones.
+    //
+    // Drawn at VISION_EYE_Y - the same height inVisionCone measures from - so
+    // what you see is where the agent is actually looking from, not a decal
+    // round its feet. Flat, with no vertical extent, because the test itself is
+    // flat: y is dropped on both the facing and the offset, so height plays no
+    // part in whether something is in view.
+    //
+    // Rebuilt when the shape behind it changes, so the sliders actually redraw
+    // it instead of leaving the first shape on screen.
+    const _agentVisionCones = [];
+    function makeVisionWedge(fovDeg, range, color) {
+        const half = THREE.MathUtils.degToRad(fovDeg) * 0.5;
+        // CircleGeometry lies in XY measured from +X; rotateX(-90) maps it onto
+        // the ground, and starting at -PI/2 - half centres it on +Z, which is
+        // the way these avatars face. See updateLockFovViz for the long version.
+        const geo = new THREE.CircleGeometry(range, 32, -Math.PI * 0.5 - half, half * 2);
+        geo.rotateX(-Math.PI / 2);
+        const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+            color, transparent: true, opacity: 0.10,
+            depthWrite: false, side: THREE.DoubleSide,
+        }));
+        mesh.raycast = () => {};   // a debug wedge must never be a wall
+        mesh.renderOrder = 2;
+        return mesh;
+    }
+    function updateAgentVisionCone(avatar, fovDeg, range, color) {
+        if (!avatar || !avatar.isLoaded) return;
+        const shape = fovDeg + '/' + range;
+        let idx = _agentVisionCones.findIndex(c => c.avatar === avatar);
+        if (idx >= 0 && _agentVisionCones[idx].shape !== shape) {
+            const old = _agentVisionCones[idx];
+            scene.remove(old.mesh);
+            old.mesh.geometry.dispose();
+            _agentVisionCones.splice(idx, 1);
+            idx = -1;
+        }
+        if (idx < 0) {
+            const mesh = makeVisionWedge(fovDeg, range, color);
+            scene.add(mesh);
+            _agentVisionCones.push({ avatar, mesh, shape });
+            idx = _agentVisionCones.length - 1;
+        }
+        const rec = _agentVisionCones[idx];
+        rec.mesh.visible = true;
+        rec.mesh.position.copy(avatar.group.position);
+        rec.mesh.position.y += VISION_EYE_Y;
+        rec.mesh.quaternion.copy(avatar.group.quaternion);
+    }
     function updateAgentVisionCones() {
         const on = window.showVisionCones;
-
-        // Show/hide existing cones
-        for (let cone of _agentVisionCones) {
-            cone.mesh.visible = on;
+        if (!on) {
+            for (const c of _agentVisionCones) c.mesh.visible = false;
+            return;
         }
-
-        if (!on) return;
-
-        // Update companion cones
         for (let i = 0; i < companions.length; i++) {
-            const comp = companions[i].comp;
-            if (!comp || !comp.isLoaded) continue;
-
-            let coneData = _agentVisionCones.find(c => c.avatar === comp);
-            if (!coneData) {
-                const half = THREE.MathUtils.degToRad(window.compVisionDeg) * 0.5;
-                const geo = new THREE.CircleGeometry(8.0, 32, -Math.PI * 0.5 - half, half * 2);
-                geo.rotateX(-Math.PI / 2);
-                const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-                    color: 0xff9944, transparent: true, opacity: 0.12,
-                    depthWrite: false, side: THREE.DoubleSide,
-                }));
-                mesh.raycast = () => {};
-                mesh.renderOrder = 2;
-                scene.add(mesh);
-                coneData = { avatar: comp, mesh };
-                _agentVisionCones.push(coneData);
-            }
-            coneData.mesh.position.copy(comp.group.position);
-            coneData.mesh.position.y += 0.8;
-            coneData.mesh.quaternion.copy(comp.group.quaternion);
+            updateAgentVisionCone(companions[i].comp, window.compVisionDeg, 8.0, 0xff9944);
         }
-
-        // Update bot cones
         for (let i = 0; i < aiBots.length; i++) {
-            const bot = aiBots[i].bot;
-            if (!bot || !bot.isLoaded) continue;
-
-            let coneData = _agentVisionCones.find(c => c.avatar === bot);
-            if (!coneData) {
-                const half = THREE.MathUtils.degToRad(window.aiVisionDeg) * 0.5;
-                const geo = new THREE.CircleGeometry(12.0, 32, -Math.PI * 0.5 - half, half * 2);
-                geo.rotateX(-Math.PI / 2);
-                const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-                    color: 0xff4444, transparent: true, opacity: 0.12,
-                    depthWrite: false, side: THREE.DoubleSide,
-                }));
-                mesh.raycast = () => {};
-                mesh.renderOrder = 2;
-                scene.add(mesh);
-                coneData = { avatar: bot, mesh };
-                _agentVisionCones.push(coneData);
-            }
-            coneData.mesh.position.copy(bot.group.position);
-            coneData.mesh.position.y += 0.8;
-            coneData.mesh.quaternion.copy(bot.group.quaternion);
+            updateAgentVisionCone(aiBots[i].bot, window.aiVisionDeg, 12.0, 0xff4444);
         }
     }
 
@@ -15045,7 +15603,6 @@ export function startGame(CharacterClass) {
                     activateCompanion(rec);
                     _compMode = 'follow';
                     _compPunchTarget = null; _compPunchT = -1;
-                    _compUnstickT = 0;
                     _compStuckT = 0; _compStuckAt.copy(avatar.group.position);
                     saveCompanion(rec);
                 }
@@ -15505,6 +16062,7 @@ export function startGame(CharacterClass) {
         { id: 'ai-vision-slider', vId: 'ai-vision-val', func: v => window.aiVisionDeg = v, fix: 0 },
         { id: 'comp-vision-slider', vId: 'comp-vision-val', func: v => window.compVisionDeg = v, fix: 0 },
         { id: 'comp-seek-slider', vId: 'comp-seek-val', func: v => window.compAttackSeek = v, fix: 2 },
+        { id: 'comp-breakoff-slider', vId: 'comp-breakoff-val', func: v => window.compBreakOffDist = v, fix: 2 },
         { id: 'comp-cd-slider', vId: 'comp-cd-val', func: v => window.compAttackCooldown = v, fix: 2 },
         { id: 'comp-cd-jitter-slider', vId: 'comp-cd-jitter-val', func: v => window.compAttackJitter = v, fix: 2 },
         { id: 'comp-combo-slider', vId: 'comp-combo-val', func: v => window.compComboChance = v, fix: 2 },
@@ -15715,8 +16273,12 @@ export function startGame(CharacterClass) {
         const el = document.getElementById('base-right');
         if (el) el.style.display = e.target.checked ? 'flex' : 'none';
     });
-    window.buildButtonEnabled = false;
     const toggleBuildBtnEl = document.getElementById('toggle-build-btn');
+    // Markup is the source of truth for the initial state - the box carries
+    // `checked` and the CSS starts the button visible to match. Reading it here
+    // rather than assigning a default is the ordering the vision-cone toggle
+    // documents: set the global FROM the checkbox, never the other way round.
+    window.buildButtonEnabled = toggleBuildBtnEl ? toggleBuildBtnEl.checked : true;
     if (toggleBuildBtnEl) toggleBuildBtnEl.addEventListener('change', e => {
         window.buildButtonEnabled = e.target.checked;
         const el = document.getElementById('build-btn');
@@ -16702,6 +17264,7 @@ export function startGame(CharacterClass) {
             Viewer.renderer.render(Viewer.scene, Viewer.camera);
             return;
         }
+        _frameToken++;
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
         // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
@@ -20617,7 +21180,7 @@ if (leftArrow) {
         // moved by now, so a bubble cannot be a frame behind the head it
         // belongs to. Projected through the camera actually being rendered,
         // which is not always `camera` - the ortho toggle swaps it.
-        updateWorldLabels(activeCamera);
+        updateWorldLabels(activeCamera, delta);
         updateAgentVisionCones();
         if (window.pixelEffectEnabled) {
             renderPixelatedPass.camera = activeCamera;

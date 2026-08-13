@@ -83,7 +83,24 @@
             border-right: 9px solid transparent;
             border-top: 12px solid rgba(255, 255, 255, 0.6);
         }
-        
+        /* The companion debug readout's bubble. It is a monospace table of
+           mode/why/distance fields, not a line of dialogue, so the shared
+           .wl-box's centered prose styling (and its 40vw wrap, meant for a
+           sentence) is wrong for it here - left-aligned and no wrapping keeps
+           every row's columns lined up under the next frame's update. */
+        .wl-debug .wl-box {
+            font-family: 'Courier New', monospace;
+            font-weight: normal;
+            font-size: 11px;
+            line-height: 1.3;
+            text-align: left;
+            white-space: pre;
+            max-width: none;
+            border-color: rgba(120, 200, 255, 0.7);
+            background: rgba(10, 15, 25, 0.88);
+        }
+        .wl-debug .wl-tail { border-top-color: rgba(120, 200, 255, 0.7); }
+
         /* Above the dialogue box (200) and its full-screen tap catcher (199)
            on purpose: the panel has to stay reachable DURING a conversation,
            otherwise the dialogue sliders below can't be tuned while the thing
@@ -221,7 +238,7 @@
            it did before this fix. */
         #jump-btn { position: absolute; bottom: 55px; right: 55px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
         /* Hidden by default for now - not part of the core control set yet. */
-        #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
+        #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
         #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
         #hold-btn:active { background: rgba(50, 150, 255, 0.9); }
         /* Debug-only visualization of the look-drag pointerdown handler's
@@ -695,7 +712,6 @@
                     <label><input type="checkbox" id="toggle-charge-kick-lean" checked> Charge Kick: spine lean</label><br>
                     <label><input type="checkbox" id="toggle-auto-jump" checked> Auto Jump at reachable ledges</label><br>
                     <label><input type="checkbox" id="toggle-aj-debug"> Show Auto Jump Reason</label><br>
-                    <label><input type="checkbox" id="toggle-comp-debug"> Show Companion State</label><br>
                     <label>Auto Jump Min Rise: <span id="auto-jump-min-val">0.70</span></label><br>
                     <input type="range" id="auto-jump-min-slider" min="0.2" max="2" step="0.05" value="0.7" style="width: 100%;"><br>
                     <label>Auto Jump Max Rise: <span id="auto-jump-max-val">3.40</span></label><br>
@@ -711,12 +727,14 @@
                     <label><input type="checkbox" id="toggle-lock-fov"> Show Vision Cone</label><br>
                     <label>Vision Cone: <span id="lock-fov-val">140</span>&deg;</label><br>
                     <input type="range" id="lock-fov-slider" min="20" max="360" step="5" value="140" style="width: 100%;"><br>
-                    <label>Enemy Vision Cone: <span id="ai-vision-val">360</span>&deg;</label><br>
-                    <input type="range" id="ai-vision-slider" min="20" max="360" step="5" value="360" style="width: 100%;"><br>
-                    <label>Companion Vision Cone: <span id="comp-vision-val">360</span>&deg;</label><br>
-                    <input type="range" id="comp-vision-slider" min="20" max="360" step="5" value="360" style="width: 100%;"><br>
+                    <label>Enemy Vision Cone: <span id="ai-vision-val">140</span>&deg;</label><br>
+                    <input type="range" id="ai-vision-slider" min="20" max="360" step="5" value="140" style="width: 100%;"><br>
+                    <label>Companion Vision Cone: <span id="comp-vision-val">140</span>&deg;</label><br>
+                    <input type="range" id="comp-vision-slider" min="20" max="360" step="5" value="140" style="width: 100%;"><br>
                     <label>Companion Engage Range: <span id="comp-seek-val">2.20</span></label><br>
                     <input type="range" id="comp-seek-slider" min="0.5" max="6" step="0.1" value="2.2" style="width: 100%;"><br>
+                    <label>Companion Break-Off Distance: <span id="comp-breakoff-val">7.00</span></label><br>
+                    <input type="range" id="comp-breakoff-slider" min="3" max="20" step="0.5" value="7" style="width: 100%;"><br>
                     <label>Companion Attack Cooldown: <span id="comp-cd-val">2.60</span>s</label><br>
                     <input type="range" id="comp-cd-slider" min="0.5" max="6" step="0.1" value="2.6" style="width: 100%;"><br>
                     <label>Companion Cooldown Jitter: <span id="comp-cd-jitter-val">0.90</span>s</label><br>
@@ -925,7 +943,9 @@
                     <label><input type="checkbox" id="toggle-ground-rays"> Ray 5: Ground Scan (5 rays + normals)</label><br>
                     <label>Ground: facet <span id="ground-facet-display">-</span> / used <span id="ground-final-display">-</span></label><br>
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label><br>
-                    <label><input type="checkbox" id="toggle-vision-cones"> Show Vision Cones (Companion/Enemy)</label>
+                    <label><input type="checkbox" id="toggle-vision-cones"> Show Vision Cones (Companion/Enemy)</label><br>
+                    <label><input type="checkbox" id="toggle-comp-debug" checked> Companion State Readout (mode / why)</label><br>
+                    <label><input type="checkbox" id="toggle-bot-debug"> Enemy State Readout (mode / why)</label>
                 </div>
             </div>
 
@@ -939,7 +959,7 @@
                          just make them reachable again for testing. -->
                     <label><input type="checkbox" id="toggle-ui-alt" checked> UI 2: centred stick, raised buttons</label><br>
                     <label><input type="checkbox" id="toggle-camera-joystick"> Show Camera Joystick</label><br>
-                    <label><input type="checkbox" id="toggle-build-btn"> Show Build (B) Button</label><br>
+                    <label><input type="checkbox" id="toggle-build-btn" checked> Show Build (B) Button</label><br>
                     <label><input type="checkbox" id="toggle-punch-btn" checked> Show Punch Button</label><br>
                     <label><input type="checkbox" id="toggle-drag-deadzone"> Show Drag Dead-Zone (matte overlay)</label><br>
                     <label>Icon Size: <span id="icon-size-val">40</span>px</label><br>
