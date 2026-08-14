@@ -46,15 +46,29 @@
         .pixelated-ui .world-label .wl-box,
         .pixelated-ui #dialogue-box {
            font-family: 'BubbleFont', 'Segoe UI', sans-serif;
-           /* 16px is this font's native design size (a 12pt bitmap design,
-              and 12pt = 16px at 96dpi). 14px is the smallest step down that
-              still keeps the blocks readable as blocks - by 12px the strokes
-              start greying out and it stops looking like pixel art. */
-           font-size: 14px;
+           /* 8px is exactly half this font's 16px native design size (a 12pt
+              bitmap design, and 12pt = 16px at 96dpi), so its pixel grid still
+              divides into whole screen pixels rather than being resampled -
+              the one size below native that doesn't grey out the strokes. */
+           font-size: 8px;
+           /* A whole pixel, not a fraction of an em: this face is drawn on a
+              pixel grid, and a fractional gap would land glyphs off it and
+              undo the crispness the native size is chosen for. Its glyphs sit
+              tight against their own side bearings, so without this the words
+              read as one run at this size. */
+           letter-spacing: 1px;
            -webkit-font-smoothing: none;
            font-smooth: never;
            text-rendering: optimizeSpeed;
         }
+        /* The chip is a picture of a real control, so it should stay the size
+           the thumb recognises rather than shrink with the pixel mode's much
+           smaller text - .wl-btn's 0.82em would put it at ~7px here. Fixed px
+           lands it on the same size it has in normal mode (0.82 x 16px), and
+           the taller line-height keeps it from squeezing the lines around it. */
+        .pixelated-ui .world-label .wl-box,
+        .pixelated-ui #dialogue-box { line-height: 2.1; }
+        .pixelated-ui .wl-btn { font-size: 13px; }
         .pixelated-ui .wl-btn,
         .pixelated-ui #dialogue-skip,
         .pixelated-ui .start-btn,
@@ -90,19 +104,26 @@
        .world-label .wl-box {
            background: rgba(15, 15, 20, 0.92);
            border: 2px solid rgba(255, 255, 255, 0.6);
-           border-radius: 10px;
+           border-radius: 0.6em;
            color: #fff;
            font-family: Verdana, sans-serif;
            font-weight: normal;
            font-size: 16px;
-           line-height: 1.35;
-           padding: 8px 14px;
+           line-height: 1.55;
+           /* Box metrics in em, not px/vw, so the bubble is the same SHAPE at
+              any font-size. With a vw cap the pixel mode's 8px text fitted
+              twice the characters of the 16px normal mode, so the two wrapped
+              at different words and the same line read as 2 lines in one mode
+              and 4 in the other. In em both wrap at the same character count,
+              which lets the authored '\n' breaks decide the layout in both.
+              The vw term is only a floor for very narrow screens. */
+           padding: 0.5em 0.9em;
            text-align: center;
            /* pre-line, so the '
 ' the story lines are written with become
                real line breaks and long ones still wrap on their own. */
            white-space: pre-line;
-           max-width: 40vw;
+           max-width: min(88vw, 18em);
            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
        }
        .world-label .wl-tail {
@@ -118,9 +139,12 @@
         .wl-btn {
             display: inline-block;
             vertical-align: middle;
-            border: 2px solid rgba(255, 255, 255, 0.75);
+            /* em, not px: a fixed 2px rim is a quarter of the glyph height once
+               the bubble drops to its small pixel-mode size, and the chip then
+               outgrows its line box and squeezes the lines around it. */
+            border: 0.125em solid rgba(255, 255, 255, 0.75);
             border-radius: 999px;
-            padding: 0.1em 0.6em;
+            padding: 0.12em 0.6em;
             margin: 0 0.15em;
             font-size: 0.82em;
             letter-spacing: 0.03em;
@@ -150,15 +174,27 @@
         }
         /* The companion debug readout's bubble. It is a table of
            mode/why/distance fields, not a line of dialogue, so the shared
-           .wl-box's centered prose styling (and its 40vw wrap, meant for a
-           sentence) is wrong for it here - left-aligned and no wrapping keeps
-           every row's columns lined up under the next frame's update.
+           .wl-box's centered prose styling (and its wrap, meant for a
+           sentence) is wrong for it here.
            The FONT deliberately stays whatever .wl-box already picked for the
            current mode (Verdana / pixel Verdana), so every bubble on screen
-           reads as one family. */
+           reads as one family. That font is proportional, though, and the
+           readout's label/value columns used to be lined up by padding each
+           label out to 8 characters - which only ever works in a monospace
+           face. So the columns are a real grid now (renderDebugRows in
+           game_js.js splits each line on that padding), and tabular-nums stops
+           the values jittering sideways as digits change width. Line-height is
+           set per mode just below: one multiplier can't serve both faces,
+           because the pixel font's glyphs fill nearly its whole em box while
+           Verdana's fill about 70% of it, so the same number that leaves
+           Verdana roomy leaves the pixel rows touching. */
         .wl-debug .wl-box {
             font-weight: normal;
-            line-height: 1.3;
+            line-height: 1.2;
+            display: grid;
+            grid-template-columns: max-content auto;
+            column-gap: 0.9em;
+            font-variant-numeric: tabular-nums;
             text-align: left;
             white-space: pre;
             max-width: calc(100vw - 24px);
@@ -166,6 +202,11 @@
             border-color: rgba(120, 200, 255, 0.7);
             background: rgba(10, 15, 25, 0.88);
         }
+        /* Same 3-class specificity as the pixel-mode bubble rule near the top,
+           later in source, so this is what the debug box ends up with. It has
+           no button chips, so it wants row spacing rather than that rule's
+           chip-clearance 2.1. */
+        .pixelated-ui .wl-debug .wl-box { line-height: 1.9; }
         .wl-debug .wl-tail { border-top-color: rgba(120, 200, 255, 0.7); }
 
         /* Above the dialogue box (200) and its full-screen tap catcher (199)
@@ -199,6 +240,29 @@
         #fullscreen-btn:active { background: rgba(0, 0, 0, 0.7); }
         #fullscreen-btn.editor-active { background: rgba(0, 150, 255, 0.7); border-color: rgba(255, 255, 255, 0.6); }
         #fullscreen-btn svg { width: 18px; height: 18px; fill: white; pointer-events: none; }
+
+        /* Third in the same right-edge column as #fullscreen-btn (55) and
+           #viewer-btn (95). touch-action:none so the press-and-hold that opens
+           the size slider isn't stolen by the browser's scroll/zoom gesture. */
+        #pixel-btn {
+            position: absolute; top: 135px; right: 10px; width: 34px; height: 34px; padding: 0;
+            background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px; cursor: pointer; z-index: 100;
+            display: flex; align-items: center; justify-content: center;
+            touch-action: none; user-select: none; -webkit-user-select: none;
+        }
+        #pixel-btn:active { background: rgba(0, 0, 0, 0.7); }
+        #pixel-btn.on { background: rgba(0, 150, 255, 0.7); border-color: rgba(255, 255, 255, 0.6); }
+        #pixel-btn svg { width: 17px; height: 17px; pointer-events: none; }
+        #pixel-size-popup {
+            display: none; position: absolute; top: 135px; right: 52px; z-index: 101;
+            background: rgba(0, 0, 0, 0.85); border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 6px; padding: 7px 10px; align-items: center; gap: 8px;
+            font-family: monospace; font-size: 12px; color: #fff; touch-action: none;
+        }
+        #pixel-size-popup.open { display: flex; }
+        #pixel-size-popup-slider { width: 120px; touch-action: none; }
+        #pixel-size-popup-val { min-width: 14px; text-align: right; }
 
         #level-editor-panel {
             position: fixed; top: 95px; right: 10px; width: 240px; z-index: 100;
@@ -613,6 +677,17 @@
     <button id="viewer-btn" title="Compendium" style="position:absolute; top:95px; right:10px; width:34px; height:34px; padding:0; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3); border-radius:4px; cursor:pointer; z-index:100; display:flex; align-items:center; justify-content:center;">
         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.5 20c0-4 3.5-6.5 7.5-6.5s7.5 2.5 7.5 6.5"></path></svg>
     </button>
+    <!-- Tap toggles the pixel effect, press-and-hold opens the size slider.
+         Both drive the Debug Vis panel's own #toggle-pixel-effect /
+         #pixel-size-slider rather than the pass directly, so the panel and
+         this button can never disagree about the current state. -->
+    <button id="pixel-btn" title="Pixelate (hold for size)">
+        <svg viewBox="0 0 24 24" fill="white"><path d="M3 3h6v6H3V3zm12 0h6v6h-6V3zM9 9h6v6H9V9zM3 15h6v6H3v-6zm12 0h6v6h-6v-6z"/></svg>
+    </button>
+    <div id="pixel-size-popup">
+        <span id="pixel-size-popup-val">1</span>
+        <input type="range" id="pixel-size-popup-slider" min="1" max="16" step="1" value="1">
+    </div>
 
     <!-- Player/Items compendium/viewer - a minimal port of
          DungeonGame.html's Viewer (that script's own prev/next paging is
@@ -1087,10 +1162,10 @@
                     <input type="range" id="sharpening-strength-slider" min="0.0" max="2.0" step="0.1" value="0.50" style="width: 100%;"><br>
                     <label>Normal Edge Strength: <span id="pixel-normal-edge-val">0.00</span></label><br>
                     <input type="range" id="pixel-normal-edge-slider" min="0.0" max="2.0" step="0.05" value="0.00" style="width: 100%;"><br>
-                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">0.75</span></label><br>
-                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="0.75" style="width: 100%;"><br>
-                    <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.005</span></label><br>
-                    <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.005" style="width: 100%;"><br>
+                    <label>Depth Edge Strength: <span id="pixel-depth-edge-val">2.50</span></label><br>
+                    <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="2.50" style="width: 100%;"><br>
+                    <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.020</span></label><br>
+                    <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.020" style="width: 100%;"><br>
                     <label>Render Scale (fillrate): <span id="pixel-render-scale-val">1.00</span></label><br>
                     <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>

@@ -623,11 +623,12 @@ export function startGame(CharacterClass) {
     const sharpeningPass = new ShaderPass(sharpeningShader);
     sharpeningPass.enabled = false;
 
-    // Pixel size 1 - no pixelation at all. The pass is kept purely for its
-    // depth-edge outline; raise the Pixel Size slider for the chunky look.
+    // Constructed at 1; syncPixelatedPass() below immediately overwrites it
+    // with the Pixel Size slider's own value, which is where the real default
+    // lives (the panel and the pass must not disagree at load).
     const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
     renderPixelatedPass.normalEdgeStrength = 0.0;
-    renderPixelatedPass.depthEdgeStrength = 0.75;
+    renderPixelatedPass.depthEdgeStrength = 2.5;
     renderPixelatedPass.enabled = false;
 
     composer.addPass(renderPixelatedPass);
@@ -670,7 +671,7 @@ export function startGame(CharacterClass) {
     // and every replacement is verified - if a three.js update changes the
     // source out from under this, it leaves the stock shader alone and says so
     // rather than silently rendering a broken pass.
-    window.pixelDepthEdgeSensitivity = 0.005;  // relative depth step counted as an edge
+    window.pixelDepthEdgeSensitivity = 0.020;  // relative depth step counted as an edge
     const _pixelEdgeUniforms = {
         uEdgeNear: { value: 0.1 },
         uEdgeFar: { value: 1000 },
@@ -5056,7 +5057,8 @@ export function startGame(CharacterClass) {
                 e.preventDefault(); e.stopPropagation();
                 rec.compact = !rec.compact;
                 rec._h = null; rec._hw = null;
-                rec.box.textContent = rec.compact ? '...' : (rec.text || text);
+                if (rec.compact) rec.box.textContent = '...';
+                else renderDebugRows(rec.box, rec.text || text);
             });
         }
         // Written directly rather than through fillLabelText/renderTypedText:
@@ -5074,9 +5076,31 @@ export function startGame(CharacterClass) {
             rec._h = null; rec._hw = null;
         }
         if (rec.debug) {
-            rec.box.textContent = rec.compact ? '...' : rec.text;
+            if (rec.compact) rec.box.textContent = '...';
+            else renderDebugRows(rec.box, rec.text);
         } else if (rec.box.textContent !== rec.text) {
             rec.box.textContent = rec.text;
+        }
+    }
+    // Lays the readout out as label/value cells for the CSS grid in
+    // .wl-debug .wl-box. Every line is written as a label padded out to a
+    // fixed 8-character field, which lined the values up back when this box
+    // was monospace; it shares the bubbles' proportional font now, so that
+    // padding no longer aligns anything and is used purely as the split point.
+    // A line with no label (nothing but a value) spans both columns.
+    function renderDebugRows(box, text) {
+        box.textContent = '';
+        for (const line of text.split('\n')) {
+            const m = /^(\S+)\s+([\s\S]*)$/.exec(line);
+            const label = document.createElement('span');
+            label.textContent = m ? m[1] : line;
+            if (!m) label.style.gridColumn = '1 / -1';
+            box.appendChild(label);
+            if (m) {
+                const value = document.createElement('span');
+                value.textContent = m[2];
+                box.appendChild(value);
+            }
         }
     }
     // Debug bubbles do not belong to any story beat and must not outlive the
@@ -9110,9 +9134,14 @@ export function startGame(CharacterClass) {
         document.getElementById('viewer-container').appendChild(Viewer.renderer.domElement);
         Viewer.composer = new EffectComposer(Viewer.renderer);
         Viewer.composer.addPass(new RenderPass(Viewer.scene, Viewer.camera));
+        // Copied off the main pass rather than re-stating the numbers: the
+        // viewer is built lazily, long after the sliders may have been moved,
+        // and hardcoding defaults here made it render the compendium with
+        // different edge/pixel settings than the game behind it.
         Viewer.pixelatedPass = new RenderPixelatedPass(1, Viewer.scene, Viewer.camera);
-        Viewer.pixelatedPass.normalEdgeStrength = 0.0;
-        Viewer.pixelatedPass.depthEdgeStrength = 0.75;
+        Viewer.pixelatedPass.normalEdgeStrength = renderPixelatedPass.normalEdgeStrength;
+        Viewer.pixelatedPass.depthEdgeStrength = renderPixelatedPass.depthEdgeStrength;
+        Viewer.pixelatedPass.setPixelSize(renderPixelatedPass.pixelSize);
         Viewer.pixelatedPass.enabled = !!window.pixelEffectEnabled;
         Viewer.composer.addPass(Viewer.pixelatedPass);
         Viewer.controls = new OrbitControls(Viewer.camera, Viewer.renderer.domElement);
@@ -17154,6 +17183,8 @@ export function startGame(CharacterClass) {
         const enabled = !!(pixelToggleEl && pixelToggleEl.checked);
         window.pixelEffectEnabled = enabled;
         document.body.classList.toggle('pixelated-ui', enabled);
+        const pixelBtn = document.getElementById('pixel-btn');
+        if (pixelBtn) pixelBtn.classList.toggle('on', enabled);
         if (renderPixelatedPass) {
             renderPixelatedPass.enabled = enabled;
             const size = pixelSizeSliderEl ? parseInt(pixelSizeSliderEl.value, 10) : 1;
@@ -17166,15 +17197,80 @@ export function startGame(CharacterClass) {
         }
     };
     if (pixelToggleEl) pixelToggleEl.addEventListener('change', syncPixelatedPass);
+    // One place that pushes a size everywhere, so the panel slider, the HUD
+    // button's popup slider and both passes can't drift apart.
+    const pixelPopupEl = document.getElementById('pixel-size-popup');
+    const pixelPopupSliderEl = document.getElementById('pixel-size-popup-slider');
+    const applyPixelSize = (v, from) => {
+        if (renderPixelatedPass) renderPixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
+        if (Viewer.pixelatedPass) Viewer.pixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
+        const valEl = document.getElementById('pixel-size-val');
+        if (valEl) valEl.textContent = v;
+        const popupValEl = document.getElementById('pixel-size-popup-val');
+        if (popupValEl) popupValEl.textContent = v;
+        if (pixelSizeSliderEl && from !== 'panel') pixelSizeSliderEl.value = v;
+        if (pixelPopupSliderEl && from !== 'popup') pixelPopupSliderEl.value = v;
+    };
     if (pixelSizeSliderEl) {
-        pixelSizeSliderEl.addEventListener('input', e => {
-            const v = parseInt(e.target.value, 10);
-            if (renderPixelatedPass) renderPixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
-            if (Viewer.pixelatedPass) Viewer.pixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
-            document.getElementById('pixel-size-val').textContent = v;
-        });
+        pixelSizeSliderEl.addEventListener('input', e => applyPixelSize(parseInt(e.target.value, 10), 'panel'));
+    }
+    if (pixelPopupSliderEl) {
+        pixelPopupSliderEl.addEventListener('input', e => applyPixelSize(parseInt(e.target.value, 10), 'popup'));
     }
     syncPixelatedPass();
+
+    // HUD pixel button: tap toggles, press-and-hold opens the size slider.
+    // Both routed through the Debug Vis panel's own controls (above) so the
+    // two UIs always report the same state.
+    const pixelBtnEl = document.getElementById('pixel-btn');
+    if (pixelBtnEl && pixelToggleEl) {
+        const HOLD_MS = 400;
+        // Distance, not just time: a hold that drifts is a scroll attempt, and
+        // firing the slider under a moving finger reads as the button
+        // misfiring rather than as a deliberate long press.
+        const HOLD_SLOP = 12;
+        let holdTimer = null, heldOpen = false, startX = 0, startY = 0;
+        const closePopup = () => { if (pixelPopupEl) pixelPopupEl.classList.remove('open'); };
+        const openPopup = () => {
+            if (!pixelPopupEl) return;
+            heldOpen = true;
+            // The slider only means anything with the effect on, so a hold
+            // turns it on rather than opening a control that does nothing.
+            if (!pixelToggleEl.checked) { pixelToggleEl.checked = true; syncPixelatedPass(); }
+            if (pixelPopupSliderEl && pixelSizeSliderEl) pixelPopupSliderEl.value = pixelSizeSliderEl.value;
+            const popupValEl = document.getElementById('pixel-size-popup-val');
+            if (popupValEl && pixelSizeSliderEl) popupValEl.textContent = pixelSizeSliderEl.value;
+            pixelPopupEl.classList.add('open');
+        };
+        pixelBtnEl.addEventListener('pointerdown', e => {
+            e.preventDefault();
+            heldOpen = false; startX = e.clientX; startY = e.clientY;
+            clearTimeout(holdTimer);
+            holdTimer = setTimeout(openPopup, HOLD_MS);
+        });
+        pixelBtnEl.addEventListener('pointermove', e => {
+            if (holdTimer === null) return;
+            if (Math.abs(e.clientX - startX) > HOLD_SLOP || Math.abs(e.clientY - startY) > HOLD_SLOP) {
+                clearTimeout(holdTimer); holdTimer = null;
+            }
+        });
+        const endPress = () => {
+            clearTimeout(holdTimer); holdTimer = null;
+            if (heldOpen) { heldOpen = false; return; } // the hold already acted
+            pixelToggleEl.checked = !pixelToggleEl.checked;
+            syncPixelatedPass();
+            closePopup();
+        };
+        pixelBtnEl.addEventListener('pointerup', e => { e.preventDefault(); endPress(); });
+        pixelBtnEl.addEventListener('pointercancel', () => { clearTimeout(holdTimer); holdTimer = null; heldOpen = false; });
+        // Anywhere else dismisses it - the popup has no close button, and
+        // leaving it up over the game is worse than one extra tap.
+        document.addEventListener('pointerdown', e => {
+            if (!pixelPopupEl || !pixelPopupEl.classList.contains('open')) return;
+            if (pixelPopupEl.contains(e.target) || pixelBtnEl.contains(e.target)) return;
+            closePopup();
+        });
+    }
     document.getElementById('pixel-normal-edge-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
         if (renderPixelatedPass) renderPixelatedPass.normalEdgeStrength = v;
