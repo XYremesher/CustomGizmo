@@ -8,6 +8,7 @@ import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js'
 import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
@@ -627,6 +628,7 @@ export function startGame(CharacterClass) {
     const renderPixelatedPass = new RenderPixelatedPass(1, scene, camera);
     renderPixelatedPass.normalEdgeStrength = 0.0;
     renderPixelatedPass.depthEdgeStrength = 0.75;
+    renderPixelatedPass.enabled = false;
 
     composer.addPass(renderPixelatedPass);
     composer.addPass(sharpeningPass);
@@ -9083,7 +9085,14 @@ export function startGame(CharacterClass) {
     // Lazy-loaded (mirrors ensureLevelEditorLoaded's own reasoning): most
     // players never open this, so the extra FBX fetch + renderer/scene
     // setup only happens the first time the button is actually clicked.
-    const Viewer = { scene: null, camera: null, renderer: null, controls: null, active: false, playerModel: null, loaded: false, mixer: null, clock: new THREE.Clock(), category: 'player' };
+    const Viewer = { scene: null, camera: null, renderer: null, composer: null, controls: null, active: false, playerModel: null, companionGroup: null, enemyGroup: null, loaded: false, mixers: [], clock: new THREE.Clock(), category: 'player' };
+    function applyViewerHeadScale(root) {
+        if (!root) return;
+        const scale = window.headScale !== undefined ? window.headScale : 0.4;
+        root.traverse(obj => {
+            if (obj.isBone && obj.name.toLowerCase().includes('head')) obj.scale.setScalar(scale);
+        });
+    }
     function ensureViewerLoaded() {
         if (Viewer.loaded) return;
         Viewer.loaded = true;
@@ -9099,6 +9108,13 @@ export function startGame(CharacterClass) {
         Viewer.renderer.setSize(window.innerWidth, window.innerHeight);
         Viewer.renderer.shadowMap.enabled = true;
         document.getElementById('viewer-container').appendChild(Viewer.renderer.domElement);
+        Viewer.composer = new EffectComposer(Viewer.renderer);
+        Viewer.composer.addPass(new RenderPass(Viewer.scene, Viewer.camera));
+        Viewer.pixelatedPass = new RenderPixelatedPass(1, Viewer.scene, Viewer.camera);
+        Viewer.pixelatedPass.normalEdgeStrength = 0.0;
+        Viewer.pixelatedPass.depthEdgeStrength = 0.75;
+        Viewer.pixelatedPass.enabled = !!window.pixelEffectEnabled;
+        Viewer.composer.addPass(Viewer.pixelatedPass);
         Viewer.controls = new OrbitControls(Viewer.camera, Viewer.renderer.domElement);
         Viewer.controls.enableDamping = true;
         Viewer.controls.target.set(0, 0.9, 0);
@@ -9111,27 +9127,63 @@ export function startGame(CharacterClass) {
         Viewer.scene.add(viewerFloor);
 
         const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
-        new FBXLoader().load(baseUrl + 'StickMan.fbx', (object) => {
-            object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
-            object.traverse(child => {
-                if (child.isMesh) {
-                    child.material = new THREE.MeshToonMaterial({ color: 0xdddddd, gradientMap: threeTone });
-                    child.castShadow = true; child.receiveShadow = true;
-                }
+        const viewerCharacterLoader = (color, options = {}) => {
+            const { scale = 1, position = [0, 0, 0], rotationY = 0, parent = Viewer.scene } = options;
+            const group = new THREE.Group();
+            group.position.set(position[0], position[1], position[2]);
+            group.rotation.y = rotationY;
+            parent.add(group);
+            new FBXLoader().load(baseUrl + 'StickMan.fbx', (object) => {
+                object.scale.setScalar(scale * parseFloat(document.getElementById('scale-slider').value));
+                object.traverse(child => {
+                    if (child.isMesh) {
+                        child.material = new THREE.MeshToonMaterial({ color, gradientMap: threeTone });
+                        child.castShadow = true; child.receiveShadow = true;
+                    }
+                });
+                applyViewerHeadScale(object);
+                group.add(object);
+                new FBXLoader().load(baseUrl + 'Idle.fbx', (animObj) => {
+                    if (!animObj.animations.length) return;
+                    const mixer = new THREE.AnimationMixer(object);
+                    mixer.clipAction(animObj.animations[0]).play();
+                    Viewer.mixers.push(mixer);
+                });
             });
-            Viewer.scene.add(object);
-            Viewer.playerModel = object;
-            generatePlayerIcon();
-            // Idle, not the raw T-pose - same Idle.fbx clip the real
-            // character/companion/aiBot all use, just this model's own
-            // independent mixer (ticked in Viewer.render below, called
-            // from animate()'s Viewer.active branch).
-            new FBXLoader().load(baseUrl + 'Idle.fbx', (animObj) => {
-                if (!animObj.animations.length) return;
-                Viewer.mixer = new THREE.AnimationMixer(object);
-                Viewer.mixer.clipAction(animObj.animations[0]).play();
+            return group;
+        };
+
+        Viewer.playerModel = viewerCharacterLoader(0xdddddd, { scale: 1, position: [0, 0, 0] });
+        Viewer.playerModel.visible = true;
+        generatePlayerIcon();
+
+        Viewer.companionGroup = new THREE.Group();
+        Viewer.companionGroup.visible = false;
+        Viewer.scene.add(Viewer.companionGroup);
+        [0x7ec8ff, 0x6cc0a6, 0x7fa8ff].forEach((color, index) => {
+            const companion = viewerCharacterLoader(color, {
+                scale: 0.96,
+                position: [(index - 1) * 1.4, 0, index % 2 === 0 ? -0.4 : 0.5],
+                rotationY: index % 2 === 0 ? -0.55 : 0.55,
+                parent: Viewer.companionGroup,
             });
+            companion.visible = true;
         });
+
+        Viewer.enemyGroup = new THREE.Group();
+        Viewer.enemyGroup.visible = false;
+        Viewer.scene.add(Viewer.enemyGroup);
+        [0xf26b6b, 0xffa24d, 0xd65ae6].forEach((color, index) => {
+            const enemy = viewerCharacterLoader(color, {
+                scale: 0.95,
+                position: [(index - 1) * 1.5, 0, index % 2 === 0 ? 0.45 : -0.35],
+                rotationY: index % 2 === 0 ? 0.7 : -0.7,
+                parent: Viewer.enemyGroup,
+            });
+            enemy.visible = true;
+        });
+
+        setViewerCategory(Viewer.category);
     }
     // Same idea as DungeonGame.html's generateIcons(): render the model to
     // a small offscreen canvas from a flattering angle, once, and keep the
@@ -9305,15 +9357,26 @@ export function startGame(CharacterClass) {
             b.style.background = active ? '#2563eb' : 'transparent';
             b.style.color = active ? '#fff' : '#aaa';
         });
+
+        if (Viewer.playerModel) Viewer.playerModel.visible = cat === 'player';
+        if (Viewer.companionGroup) Viewer.companionGroup.visible = cat === 'companions';
+        if (Viewer.enemyGroup) Viewer.enemyGroup.visible = cat === 'enemies';
+        if (compassObjectModel) compassObjectModel.visible = cat === 'items';
+
         if (cat === 'player') {
-            if (Viewer.playerModel) Viewer.playerModel.visible = true;
-            if (compassObjectModel) compassObjectModel.visible = false;
             if (viewerLabelEl) viewerLabelEl.textContent = 'Player';
             Viewer.camera.position.set(2.5, 2.0, 5.0);
             Viewer.controls.target.set(0, 0.9, 0);
+        } else if (cat === 'companions') {
+            if (viewerLabelEl) viewerLabelEl.textContent = 'Companions';
+            Viewer.camera.position.set(3.8, 2.0, 6.5);
+            Viewer.controls.target.set(0, 0.9, 0);
+        } else if (cat === 'enemies') {
+            if (viewerLabelEl) viewerLabelEl.textContent = 'Enemies';
+            Viewer.camera.position.set(3.8, 2.0, 6.5);
+            Viewer.controls.target.set(0, 0.9, 0);
         } else {
-            if (Viewer.playerModel) Viewer.playerModel.visible = false;
-            if (viewerLabelEl) viewerLabelEl.textContent = 'Compass';
+            if (viewerLabelEl) viewerLabelEl.textContent = 'Items';
             loadCompassObject(obj => {
                 if (Viewer.category !== 'items') return; // tab may have been switched away while this was loading
                 if (obj.parent !== Viewer.scene) Viewer.scene.add(obj);
@@ -17085,22 +17148,43 @@ export function startGame(CharacterClass) {
         document.getElementById('fill-light-intensity-val').textContent = v.toFixed(2);
     });
 
-    document.getElementById('toggle-pixel-effect').addEventListener('change', e => {
-        window.pixelEffectEnabled = e.target.checked;
-    });
-    document.getElementById('pixel-size-slider').addEventListener('input', e => {
-        const v = parseInt(e.target.value, 10);
-        renderPixelatedPass.setPixelSize(v);
-        document.getElementById('pixel-size-val').textContent = v;
-    });
+    const pixelToggleEl = document.getElementById('toggle-pixel-effect');
+    const pixelSizeSliderEl = document.getElementById('pixel-size-slider');
+    const syncPixelatedPass = () => {
+        const enabled = !!(pixelToggleEl && pixelToggleEl.checked);
+        window.pixelEffectEnabled = enabled;
+        document.body.classList.toggle('pixelated-ui', enabled);
+        if (renderPixelatedPass) {
+            renderPixelatedPass.enabled = enabled;
+            const size = pixelSizeSliderEl ? parseInt(pixelSizeSliderEl.value, 10) : 1;
+            renderPixelatedPass.setPixelSize(enabled ? size : 1);
+        }
+        if (Viewer.pixelatedPass) {
+            Viewer.pixelatedPass.enabled = enabled;
+            const size = pixelSizeSliderEl ? parseInt(pixelSizeSliderEl.value, 10) : 1;
+            Viewer.pixelatedPass.setPixelSize(enabled ? size : 1);
+        }
+    };
+    if (pixelToggleEl) pixelToggleEl.addEventListener('change', syncPixelatedPass);
+    if (pixelSizeSliderEl) {
+        pixelSizeSliderEl.addEventListener('input', e => {
+            const v = parseInt(e.target.value, 10);
+            if (renderPixelatedPass) renderPixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
+            if (Viewer.pixelatedPass) Viewer.pixelatedPass.setPixelSize(window.pixelEffectEnabled ? v : 1);
+            document.getElementById('pixel-size-val').textContent = v;
+        });
+    }
+    syncPixelatedPass();
     document.getElementById('pixel-normal-edge-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
-        renderPixelatedPass.normalEdgeStrength = v;
+        if (renderPixelatedPass) renderPixelatedPass.normalEdgeStrength = v;
+        if (Viewer.pixelatedPass) Viewer.pixelatedPass.normalEdgeStrength = v;
         document.getElementById('pixel-normal-edge-val').textContent = v.toFixed(2);
     });
     document.getElementById('pixel-depth-edge-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
-        renderPixelatedPass.depthEdgeStrength = v;
+        if (renderPixelatedPass) renderPixelatedPass.depthEdgeStrength = v;
+        if (Viewer.pixelatedPass) Viewer.pixelatedPass.depthEdgeStrength = v;
         document.getElementById('pixel-depth-edge-val').textContent = v.toFixed(2);
     });
 
@@ -17283,8 +17367,19 @@ export function startGame(CharacterClass) {
         // can be opened regardless of editor state).
         if (Viewer.active) {
             Viewer.controls.update();
-            if (Viewer.mixer) Viewer.mixer.update(Viewer.clock.getDelta());
-            Viewer.renderer.render(Viewer.scene, Viewer.camera);
+            if (Viewer.mixers && Viewer.mixers.length) {
+                const delta = Viewer.clock.getDelta();
+                Viewer.mixers.forEach(mixer => mixer.update(delta));
+            }
+            if (Viewer.playerModel) applyViewerHeadScale(Viewer.playerModel);
+            if (Viewer.companionGroup) applyViewerHeadScale(Viewer.companionGroup);
+            if (Viewer.enemyGroup) applyViewerHeadScale(Viewer.enemyGroup);
+            if (compassObjectModel) applyViewerHeadScale(compassObjectModel);
+            if (Viewer.composer) {
+                Viewer.composer.render();
+            } else {
+                Viewer.renderer.render(Viewer.scene, Viewer.camera);
+            }
             return;
         }
         _frameToken++;

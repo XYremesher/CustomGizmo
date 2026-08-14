@@ -13,6 +13,25 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Climb Game</title>
     <style>
+        @font-face {
+           font-family: 'PixelButtonFont';
+           src: url('./vtf-misterpixel.regular.otf') format('opentype');
+           font-display: swap;
+        }
+        /* Repaired build of pix PixelFJVerdana12pt. The file as shipped has a
+           truncated 'Amacron' glyph plus overlong OS/2 and post tables, which
+           Chrome's OpenType sanitiser rejects outright - the font silently
+           never loaded and everything fell through to the Segoe UI fallback.
+           Rebuilt via fontTools (subset to the range the UI actually shows,
+           post dropped to v3, OS/2 rewritten as v4); the woff2 round-trip is
+           the proof it now parses cleanly. */
+        @font-face {
+           font-family: 'BubbleFont';
+           src: url('./PixelVerdana.woff2') format('woff2'),
+                url('./PixelVerdana.ttf') format('truetype');
+           font-display: swap;
+        }
+
         /* touch-action is NOT an inherited property - putting it on body does
            nothing for the canvas or the buttons, each element needs its own.
            Without it on the canvas, tapping punch fast enough to combo reads
@@ -20,35 +39,79 @@
            and the browser zooms the page in. */
         html { touch-action: none; -webkit-text-size-adjust: 100%; }
         body { margin: 0; overflow: hidden; background-color: #000; touch-action: none; user-select: none; -webkit-user-select: none; }
+        /* Lives here rather than in #dialogue-box's inline style attribute:
+           an inline declaration outranks any selector, so the .pixelated-ui
+           override below could never have switched its font. */
+        #dialogue-box { font-family: Verdana, sans-serif; font-size: 17px; }
+        .pixelated-ui .world-label .wl-box,
+        .pixelated-ui #dialogue-box {
+           font-family: 'BubbleFont', 'Segoe UI', sans-serif;
+           /* 16px is this font's native design size (a 12pt bitmap design,
+              and 12pt = 16px at 96dpi). 14px is the smallest step down that
+              still keeps the blocks readable as blocks - by 12px the strokes
+              start greying out and it stops looking like pixel art. */
+           font-size: 14px;
+           -webkit-font-smoothing: none;
+           font-smooth: never;
+           text-rendering: optimizeSpeed;
+        }
+        .pixelated-ui .wl-btn,
+        .pixelated-ui #dialogue-skip,
+        .pixelated-ui .start-btn,
+        .pixelated-ui #start-adv-toggle,
+        .pixelated-ui #start-server-input,
+        .pixelated-ui #viewer-btn,
+        .pixelated-ui #fullscreen-btn,
+        .pixelated-ui #close-viewer-btn,
+        .pixelated-ui #jump-btn,
+        .pixelated-ui #build-btn,
+        .pixelated-ui #hold-btn,
+        .pixelated-ui #carry-btn,
+        .pixelated-ui #drop-btn,
+        .pixelated-ui #throw-btn,
+        .pixelated-ui #reset-cam-btn,
+        .pixelated-ui #punch-btn,
+        .pixelated-ui .lock-btn,
+        .pixelated-ui .warp-btn {
+           font-family: 'PixelButtonFont', 'Segoe UI', sans-serif;
+           letter-spacing: 0.04em;
+        }
+        .pixelated-ui .world-label .wl-box { font-weight: normal; }
         #gameCanvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; touch-action: none; }
 
         /* Speech bubbles, as screen-space HTML. Below the dialogue box (200)
            and its tap catcher (199), above the game. pointer-events:none on
            the layer so a bubble over a control never eats the tap. */
         #world-labels { position: absolute; inset: 0; z-index: 150; pointer-events: none; overflow: hidden; }
-        .world-label { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
-        /* A tappable line gets a little more presence than an ambient one -
+       .world-label { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; align-items: center; will-change: transform; }
+       /* A tappable line gets a little more presence than an ambient one -
            it is asking to be pressed, so it should not look like scenery. */
-        .world-label[style*="pointer-events: auto"] .wl-box { border-color: rgba(255,255,255,0.9); }
-        .world-label .wl-box {
-            background: rgba(15, 15, 20, 0.92);
-            border: 2px solid rgba(255, 255, 255, 0.6);
-            border-radius: 10px;
-            color: #fff;
-            font-family: sans-serif;
-            font-weight: bold;
-            font-size: 16px;
-            line-height: 1.35;
-            padding: 8px 14px;
-            text-align: center;
-            /* pre-line, so the '
+       .world-label[style*="pointer-events: auto"] .wl-box { border-color: rgba(255,255,255,0.9); }
+       .world-label .wl-box {
+           background: rgba(15, 15, 20, 0.92);
+           border: 2px solid rgba(255, 255, 255, 0.6);
+           border-radius: 10px;
+           color: #fff;
+           font-family: Verdana, sans-serif;
+           font-weight: normal;
+           font-size: 16px;
+           line-height: 1.35;
+           padding: 8px 14px;
+           text-align: center;
+           /* pre-line, so the '
 ' the story lines are written with become
                real line breaks and long ones still wrap on their own. */
-            white-space: pre-line;
-            max-width: 40vw;
-            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
-        }
-        /* An on-screen button drawn inline in a bubble or the dialogue box.
+           white-space: pre-line;
+           max-width: 40vw;
+           box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+       }
+       .world-label .wl-tail {
+           width: 0; height: 0; margin-top: -1px;
+           border-left: 9px solid transparent;
+           border-right: 9px solid transparent;
+           border-top: 12px solid rgba(255, 255, 255, 0.6);
+       }
+       /* An on-screen button drawn inline in a bubble or the dialogue box.
            Same fill and white rim as the real control, so "tap this" points at
            something recognisable by sight rather than by reading a name.
            Deliberately NOT scoped to .world-label - the dialogue uses it too. */
@@ -82,20 +145,24 @@
             border-left: 9px solid transparent;
             border-right: 9px solid transparent;
             border-top: 12px solid rgba(255, 255, 255, 0.6);
+            transform: translateX(var(--tail-shift, 0px));
+            transition: transform 0.18s ease-out;
         }
-        /* The companion debug readout's bubble. It is a monospace table of
+        /* The companion debug readout's bubble. It is a table of
            mode/why/distance fields, not a line of dialogue, so the shared
            .wl-box's centered prose styling (and its 40vw wrap, meant for a
            sentence) is wrong for it here - left-aligned and no wrapping keeps
-           every row's columns lined up under the next frame's update. */
+           every row's columns lined up under the next frame's update.
+           The FONT deliberately stays whatever .wl-box already picked for the
+           current mode (Verdana / pixel Verdana), so every bubble on screen
+           reads as one family. */
         .wl-debug .wl-box {
-            font-family: 'Courier New', monospace;
             font-weight: normal;
-            font-size: 11px;
             line-height: 1.3;
             text-align: left;
             white-space: pre;
-            max-width: none;
+            max-width: calc(100vw - 24px);
+            overflow-x: auto;
             border-color: rgba(120, 200, 255, 0.7);
             background: rgba(10, 15, 25, 0.88);
         }
@@ -236,9 +303,9 @@
            that same center - matching the edge anchor instead (30px) would
            leave it visibly offset toward the corner, which is exactly what
            it did before this fix. */
-        #jump-btn { position: absolute; bottom: 55px; right: 55px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
+        #jump-btn { position: absolute; bottom: 55px; right: 55px; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 255, 100, 0.5); }
         /* Hidden by default for now - not part of the core control set yet. */
-        #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 14px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
+        #build-btn { position: absolute; bottom: 150px; right: 125px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: flex; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 150, 50, 0.7); }
         #hold-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(50, 150, 255, 0.7); }
         #hold-btn:active { background: rgba(50, 150, 255, 0.9); }
         /* Debug-only visualization of the look-drag pointerdown handler's
@@ -254,52 +321,52 @@
         .drag-deadzone { position: fixed; bottom: -200px; width: 400px; height: 400px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); pointer-events: none; z-index: 9; display: none; }
         #drag-deadzone-left { left: -200px; }
         #drag-deadzone-right { right: -200px; }
-        #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 11px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
-        
-        #drop-btn { position: absolute; bottom: 145px; right: 195px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
-        #throw-btn { position: absolute; bottom: 100px; right: 155px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 10px; touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
+        #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
+
+        #drop-btn { position: absolute; bottom: 145px; right: 195px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
+        #throw-btn { position: absolute; bottom: 100px; right: 155px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 50, 0.8); }
         #reset-cam-btn { position: absolute; bottom: 180px; left: 45px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.3); touch-action: none; cursor: pointer; z-index: 10; background: rgba(100, 100, 255, 0.15); }
         /* Hidden by default (see window.punchButtonEnabled in game_js.js,
            and the "UI" panel's "Show Punch Button" checkbox) - not part of
            the default control set until the teaching levels actually
            introduce the mechanic. */
-        /* The two combat toggles, stacked directly above PUNCH - they change
-           what that button does, so they belong on it rather than in a menu.
-           Dim when off, lit when on, so their state is readable at a glance
-           mid-fight without reading the label. */
+        /* The extra utility buttons live in a compact floating panel that can be
+           opened on demand. This keeps the main action cluster cleaner while
+           preserving the same toggles and warp shortcuts without crowding the
+           right edge. */
+        #right-tools-toggle {
+           position: absolute; right: 12px; bottom: 154px; width: 34px; height: 34px; border-radius: 50%;
+           border: 1px solid rgba(255,255,255,0.45); background: transparent; color: #fff;
+           display: flex; align-items: center; justify-content: center; font-size: 16px; line-height: 1;
+           touch-action: none; cursor: pointer; z-index: 12; user-select: none;
+        }
+        #right-tools-panel {
+           position: absolute; right: 12px; bottom: 196px; display: flex; flex-direction: column; gap: 8px;
+           align-items: center; z-index: 11; opacity: 0; pointer-events: none;
+           transform: translateX(12px); transition: opacity 0.18s ease, transform 0.18s ease;
+        }
+        #right-tools-panel.open { opacity: 1; pointer-events: auto; transform: translateX(0); }
+        .utility-stack {
+           display: flex; flex-direction: column; gap: 6px;
+           align-items: center;
+        }
         .lock-btn {
-            /* Out at the right edge, above JUMP, and small. They are set-and-
-               forget toggles - you flip one at the start of a fight and then
-               stop thinking about it - so they should not sit in the same
-               reachable band as PUNCH and JUMP, which are pressed constantly.
-               Being out of the thumb's normal arc is a feature here: it makes
-               them hard to hit by accident mid-combo. */
-            position: absolute; right: 12px;
-            width: 30px; height: 30px; border-radius: 50%;
-            border: 1.5px solid rgba(255, 255, 255, 0.35);
-            background: rgba(20, 20, 26, 0.6);
-            display: none; justify-content: center; align-items: center;
-            font-size: 12px; line-height: 1; color: rgba(255, 255, 255, 0.55);
-            touch-action: none; cursor: pointer; z-index: 11; user-select: none;
-            transition: background 0.15s, color 0.15s, border-color 0.15s;
+           position: static !important; right: auto !important; bottom: auto !important;
+           width: 30px; height: 30px; border-radius: 50%;
+           border: 1.5px solid rgba(255, 255, 255, 0.35);
+           background: rgba(20, 20, 26, 0.6);
+           display: flex !important; justify-content: center; align-items: center;
+           font-size: 12px; line-height: 1; color: rgba(255, 255, 255, 0.55);
+           touch-action: none; cursor: pointer; z-index: 11; user-select: none;
+           transition: background 0.15s, color 0.15s, border-color 0.15s;
         }
         .lock-btn.on {
-            background: rgba(200, 50, 50, 0.75);
-            border-color: rgba(255, 255, 255, 0.85);
-            color: #fff;
+           background: rgba(200, 50, 50, 0.75);
+           border-color: rgba(255, 255, 255, 0.85);
+           color: #fff;
         }
-        #lock-target-btn { bottom: 140px; }
-        #auto-punch-btn { bottom: 176px; }
-        #carry-lock-btn { bottom: 212px; }
-        #assist-grab-btn { bottom: 248px; }
-        #auto-jump-gap-btn { bottom: 284px; }
-        /* Warp buttons - one per companion/bot, stacked upward from just
-           above the topmost lock button. Same 30px circle so the whole right
-           edge reads as one column; the ring is the agent's own body colour,
-           which is the only label they need. Built by refreshWarpButtons(). */
         #warp-btns {
-            position: absolute; right: 12px; bottom: 320px;
-            display: flex; flex-direction: column-reverse; gap: 6px;
+           display: flex; flex-direction: column-reverse; gap: 6px; align-items: center;
             z-index: 11;
         }
         .warp-btn {
@@ -311,7 +378,7 @@
             transition: transform 0.1s, border-color 0.15s;
         }
         .warp-btn:active { transform: scale(0.88); border-color: #fff; }
-        #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
+        #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
         
         /* ---- Alternate control layout (body.ui-alt, ON by default) ----
            Wide-screen problem this solves: the two clusters are anchored to
@@ -331,21 +398,31 @@
         :root { --ui-alt-gap: 400px; }
         /* Portrait: move stick centred. It's 120px wide, so left: 50% - 60px centres it. */
         body.ui-alt #base-left { left: calc(50% - 60px); }
-        body.ui-alt #jump-btn  { bottom: 200px; right: 70px;  width: 70px; height: 70px; }
-        body.ui-alt #punch-btn { bottom: 120px; right: 60px; width: 60px; height: 60px; }
-        body.ui-alt #carry-btn { bottom: 115px; right: 60px; width: 50px; height: 50px; }
-        body.ui-alt #throw-btn { bottom: 115px; right: 60px; width: 45px; height: 45px; }
-        body.ui-alt #drop-btn  { bottom: 165px; right: 200px; width: 45px; height: 45px; }
+        /* Moved down to sit just above the FPS counter (fixed at bottom:8px), UI2 only. */
+        body.ui-alt #right-tools-toggle { bottom: 40px; }
+        body.ui-alt #right-tools-panel { bottom: 82px; }
+        body.ui-alt #jump-btn  { bottom: 165px; right: 20px;  width: 60px; height: 60px; }
+        /* Swapped with build-btn (UI2 only) - each keeps its own size, only position trades. */
+        body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
+        /* Charge-ring SVG is sized for the base 60px button (76 = 60 + 2*8px offset) -
+           without this it stays 76px against the shrunk 50px button and reads as an
+           off-centre border. Same size both orientations, so no landscape duplicate needed. */
+        body.ui-alt #punch-btn > svg { width: 66px !important; height: 66px !important; }
+        body.ui-alt #build-btn { bottom: 116px; right: 26px; width: 38px; height: 38px; }
+        body.ui-alt #carry-btn { bottom: 181px; right: 92px; width: 42px; height: 42px; }
+        body.ui-alt #throw-btn { bottom: 119px; right: 64px; width: 38px; height: 38px; }
+        body.ui-alt #drop-btn  { bottom: 169px; right: 204px; width: 38px; height: 38px; }
 
         /* Landscape mode: right thumb position is lower. Centre the move stick
            and position the buttons where the thumb naturally falls. */
         @media (orientation: landscape) {
             body.ui-alt #base-left { bottom: 20px; right: calc(50% - 80px); }
-            body.ui-alt #jump-btn  { bottom: 50px; right: calc(50% - 200px); width: 70px; height: 70px; }
-            body.ui-alt #punch-btn { bottom: 50px; right: calc(50% - 290px); width: 60px; height: 60px; }
-            body.ui-alt #carry-btn { bottom: 110px; right: calc(50% - 290px); width: 50px; height: 50px; }
-            body.ui-alt #throw-btn { bottom: 110px; right: calc(50% - 290px); width: 45px; height: 45px; }
-            body.ui-alt #drop-btn  { bottom: 160px; right: calc(50% - 320px); width: 45px; height: 45px; }
+            body.ui-alt #jump-btn  { bottom: 15px; right: calc(50% - 250px); width: 60px; height: 60px; }
+            body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
+            body.ui-alt #build-btn { bottom: 46px; right: calc(50% - 325px); width: 38px; height: 38px; }
+            body.ui-alt #carry-btn { bottom: 176px; right: calc(50% - 258px); width: 42px; height: 42px; }
+            body.ui-alt #throw-btn { bottom: 114px; right: calc(50% - 287px); width: 38px; height: 38px; }
+            body.ui-alt #drop-btn  { bottom: 164px; right: calc(50% - 317px); width: 38px; height: 38px; }
         }
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
 
@@ -501,7 +578,7 @@
          The icon/text row is a flex row rather than an inline image, which is
          what gives the hanging indent - wrapped lines resume under the START
          OF THE TEXT instead of running back under the icon. -->
-    <div id="dialogue-box" style="display:none; position:absolute; left:50%; bottom:70%; transform:translateX(-50%); width:88%; max-width:640px; min-height:70px; background:rgba(12,12,18,0.92); border:2px solid rgba(255,255,255,0.25); border-radius:10px; padding:18px 22px; color:#fff; font-family:sans-serif; font-size:17px; line-height:1.5; z-index:200; touch-action:none; cursor:pointer; box-sizing:border-box;">
+    <div id="dialogue-box" style="display:none; position:absolute; left:50%; bottom:70%; transform:translateX(-50%); width:88%; max-width:640px; min-height:70px; background:rgba(12,12,18,0.92); border:2px solid rgba(255,255,255,0.25); border-radius:10px; padding:18px 22px; color:#fff; line-height:1.5; z-index:200; touch-action:none; cursor:pointer; box-sizing:border-box;">
         <div style="display:flex; align-items:flex-start; gap:0.7em;">
             <img id="dialogue-icon" style="display:none; height:40px; width:auto; flex:0 0 auto; filter: drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff) drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff);">
             <div style="flex:1 1 auto; min-width:0;"><span id="dialogue-text"></span><span id="dialogue-continue" style="display:none; margin-left:8px; color:#fff; animation:dialogue-continue-bounce 0.8s infinite;">&#9660;</span></div>
@@ -545,10 +622,12 @@
     <div id="player-viewer-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background:#1a252c;">
         <div id="viewer-container" style="width:100%; height:100%;"></div>
         <button id="close-viewer-btn" style="position:absolute; top:14px; right:14px; width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.3); background:rgba(0,0,0,0.5); color:white; font-size:16px; cursor:pointer;">Ã—</button>
-        <div style="position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:280px; background:rgba(28,28,30,0.95); border:1px solid #3a3a3c; border-bottom:none; border-radius:12px 12px 0 0; padding:12px 15px; text-align:center; color:#eee; font-family:sans-serif; box-sizing:border-box;">
-            <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px;">
-                <button class="viewer-cat-btn active" data-cat="player" style="background:#2563eb; color:#fff; border:none; padding:5px 14px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Player</button>
-                <button class="viewer-cat-btn" data-cat="items" style="background:transparent; color:#aaa; border:none; padding:5px 14px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Items</button>
+        <div style="position:absolute; bottom:0; left:50%; transform:translateX(-50%); width:360px; max-width:calc(100vw - 24px); background:rgba(28,28,30,0.95); border:1px solid #3a3a3c; border-bottom:none; border-radius:12px 12px 0 0; padding:12px 15px; text-align:center; color:#eee; font-family:sans-serif; box-sizing:border-box;">
+            <div style="display:flex; gap:6px; justify-content:center; margin-bottom:8px; flex-wrap:wrap;">
+                <button class="viewer-cat-btn active" data-cat="player" style="background:#2563eb; color:#fff; border:none; padding:5px 12px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Player</button>
+                <button class="viewer-cat-btn" data-cat="companions" style="background:transparent; color:#aaa; border:none; padding:5px 12px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Companions</button>
+                <button class="viewer-cat-btn" data-cat="enemies" style="background:transparent; color:#aaa; border:none; padding:5px 12px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Enemies</button>
+                <button class="viewer-cat-btn" data-cat="items" style="background:transparent; color:#aaa; border:none; padding:5px 12px; border-radius:12px; font-weight:bold; font-size:12px; cursor:pointer;">Items</button>
             </div>
             <div id="viewer-label" style="font-size:11px; font-weight:800; color:#3b82f6; text-transform:uppercase; letter-spacing:2px; margin-bottom:4px;">Player</div>
             <div style="font-size:13px; color:#d1d1d6;">Drag to rotate.</div>
@@ -1138,12 +1217,17 @@
     <div id="drop-btn">DROP</div>
     <div id="throw-btn">THROW</div>
     
-    <div id="lock-target-btn" class="lock-btn" title="Lock on to a nearby enemy">&#128274;</div>
-    <div id="auto-punch-btn" class="lock-btn" title="Punch automatically while locked on">&#128274;&#9889;</div>
-    <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
-    <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
-    <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
-    <div id="warp-btns"></div>
+    <button id="right-tools-toggle" type="button" aria-label="Open utility panel" title="Utility panel" onclick="var panel=document.getElementById('right-tools-panel'); var open=panel.classList.toggle('open'); this.textContent=open ? '-' : '+'; this.setAttribute('aria-expanded', open ? 'true' : 'false');">+</button>
+    <div id="right-tools-panel">
+        <div class="utility-stack">
+            <div id="lock-target-btn" class="lock-btn" title="Lock on to a nearby enemy">&#128274;</div>
+            <div id="auto-punch-btn" class="lock-btn" title="Punch automatically while locked on">&#128274;&#9889;</div>
+            <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
+            <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
+            <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
+        </div>
+        <div id="warp-btns"></div>
+    </div>
     <div id="punch-btn">
         PUNCH
         <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">
