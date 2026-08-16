@@ -974,11 +974,13 @@
                     <label style="opacity:.75;font-size:11px;">Radius around the player that has shadows at all. Smaller =
                     sharper, better self-shadowing (head on shoulders, contact with the ground). Larger = shadows further
                     out but blurrier, and past roughly 150 too coarse to resolve the character onto itself.</label><br>
-                    <label>Shadow Update Interval: <span id="shadow-interval-val">2</span></label><br>
-                    <input type="range" id="shadow-interval-slider" min="1" max="6" step="1" value="2" style="width: 100%;"><br>
+                    <label>Shadow Update Interval: <span id="shadow-interval-val">1</span></label><br>
+                    <input type="range" id="shadow-interval-slider" min="1" max="6" step="1" value="1" style="width: 100%;"><br>
                     <label style="opacity:.75;font-size:11px;">Redraw the shadow map every N frames. The whole map is a
                     second pass over every caster in the scene, so this divides that cost directly - 1 is every frame,
-                    2 is half the work. Higher values let a moving shadow trail its caster by up to N-1 frames.
+                    2 is half the work. Costs shadow smoothness on moving objects, and how much depends on the frame
+                    rate it is a fraction of: at 40fps, 2 gives 20Hz shadows and they visibly tick rather than slide.
+                    Pixel mode hides this, so judge it with the effect off.
                     Tap the FPS counter to reset its min/average before comparing two settings.</label><br>
                 </div>
             </div>

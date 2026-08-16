@@ -581,15 +581,20 @@ export function startGame(CharacterClass) {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     // Left on, three.js redraws the whole 2048x2048 map every frame, which is
-    // a second full pass over every shadow caster in the scene - the single
-    // largest fixed cost in the frame. Driven manually from animate() instead,
-    // every Nth frame (see window.shadowUpdateInterval). The map persists
-    // between updates, so the only artifact is that a moving shadow lags its
-    // caster by up to N-1 frames; at 2 that is a handful of milliseconds and
-    // is not perceptible, and the light's texel snapping already means small
-    // player movements do not change the map's contents at all.
-    // Set to 1 to go back to updating every frame.
-    window.shadowUpdateInterval = 2;
+    // a second full pass over every shadow caster in the scene. Driven
+    // manually from animate() instead, every Nth frame - the map persists in
+    // between, so this divides that cost directly.
+    //
+    // Default 1, i.e. off. 2 was tried and the stepping is visible: the
+    // artifact is a moving shadow lagging its caster by up to N-1 frames, and
+    // how bad that looks depends entirely on the frame rate it is a fraction
+    // OF. At the 144fps this was reasoned about it is invisible; on a phone
+    // holding 40 it means 20Hz shadows under 40Hz motion, which reads as
+    // moving shadows ticking rather than sliding. Pixel mode hides it (it is
+    // both blockier and rendered at 0.75 scale), so it shows up worst with
+    // the effect off. Raise it from the Shadows panel if the trade is worth
+    // it on a given device.
+    window.shadowUpdateInterval = 1;
     renderer.shadowMap.autoUpdate = false;
     // The first frame has no map to persist from yet.
     renderer.shadowMap.needsUpdate = true;
