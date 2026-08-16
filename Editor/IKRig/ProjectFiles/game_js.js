@@ -17889,7 +17889,10 @@ export function startGame(CharacterClass) {
                     fx.mesh.material.opacity = t;
                     if (fx.life <= 0) {
                         if (window.gameScene) window.gameScene.remove(fx.mesh);
-                        fx.mesh.geometry.dispose();
+                        // Geometry deliberately NOT disposed: it is shared by
+                        // every hit effect (SHARED_HAND_HIT_GEO in
+                        // ClimbGame.html) and disposing it here would blank
+                        // every later one. Only the material is per-effect.
                         fx.mesh.material.dispose();
                         window.hitEffects.splice(i, 1);
                     }
@@ -17903,7 +17906,10 @@ export function startGame(CharacterClass) {
                             window.gameScene.remove(fx.visibleMesh);
                             window.gameScene.remove(fx.hiddenMesh);
                         }
-                        fx.visibleMesh.geometry.dispose();
+                        // Shared geometry (SHARED_HIT_SPARK_GEO), not disposed -
+                        // see the note on the other branch. Both meshes already
+                        // shared one instance, so only the two materials are
+                        // this effect's to release.
                         fx.visibleMesh.material.dispose();
                         fx.hiddenMesh.material.dispose();
                         window.hitEffects.splice(i, 1);

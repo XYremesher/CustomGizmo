@@ -1458,9 +1458,23 @@
         
         updateArrowSlidersUI();
 
+        // Built once and shared by every hit spark. The parameters never vary,
+        // so making a new one per hit was allocating a vertex buffer, handing
+        // it to the GPU and destroying it again a fifth of a second later -
+        // once per landed hit, and a full combo lands seven in quick
+        // succession. The materials still have to be per-effect because each
+        // one fades on its own timer.
+        //
+        // NOTE: shared, therefore never disposed. The cleanup loop in
+        // game_js.js disposes each effect's materials only, and must keep
+        // doing so - disposing this would blank every hit spark after the
+        // first one expires.
+        const SHARED_HIT_SPARK_GEO = new THREE.OctahedronGeometry(0.1, 0);
+        const SHARED_HAND_HIT_GEO = new THREE.SphereGeometry(0.35, 8, 8);
+
         window.createHitEffect = function(pos) {
             if (!window.gameScene) return;
-            const hitGeo = new THREE.OctahedronGeometry(0.1, 0);
+            const hitGeo = SHARED_HIT_SPARK_GEO;
 
             const visibleMat = new THREE.MeshBasicMaterial({
                 color: 0xffffff,
@@ -1491,7 +1505,7 @@
 
         window.createHandHitEffect = function(pos) {
             if (!window.gameScene) return;
-            const hitGeo = new THREE.SphereGeometry(0.35, 8, 8);
+            const hitGeo = SHARED_HAND_HIT_GEO;   // shared - see the note above
             const hitMat = new THREE.MeshBasicMaterial({
                 color: 0xffff00,
                 transparent: true,
