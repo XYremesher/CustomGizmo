@@ -1687,6 +1687,19 @@ export function startGame(CharacterClass) {
     // between two moments.
     const COMP_TRAIL_HZ = 30;
     const COMP_TRAIL_DT = 1 / COMP_TRAIL_HZ;
+    // Standing still lays no new crumbs - the newest one just has its
+    // timestamp carried forward instead, so it reads as "was here until t".
+    // Idling on the spot was otherwise worth a crumb every sample, all at the
+    // same point: 15 seconds of standing about filled the entire trail with
+    // one position, and every scan walked all of it.
+    //
+    // Carrying the timestamp rather than skipping outright is what keeps the
+    // replay honest. Skipping would leave a gap between the last idle crumb
+    // and the first moving one, and the lookup takes the first crumb at or
+    // after the time it wants - so a companion retracing the climb would
+    // arrive at the post-idle position early, cutting a corner the player
+    // never cut.
+    const COMP_TRAIL_MIN_MOVE = 0.05;   // metres; below this it is the same spot
     const COMP_TRAIL_KEEP = 15.0;   // seconds of trail kept - long enough that after a
                                     // fall the companion can walk back and re-replay the
                                     // same recorded climb instead of being stuck below
@@ -2773,7 +2786,18 @@ export function startGame(CharacterClass) {
         if (last && _companionTrailT - last.t < COMP_TRAIL_DT) return;
         const c = companion.group.position;
         const q = companion.group.quaternion;
-        if (last && Math.hypot(c.x - last.x, c.y - last.y, c.z - last.z) > 5) _companionTrail.length = 0; // teleport → reset
+        if (last) {
+            const moved = Math.hypot(c.x - last.x, c.y - last.y, c.z - last.z);
+            if (moved > 5) _companionTrail.length = 0;   // teleport → reset
+            // Idle companions hold station a lot - see the note on
+            // COMP_TRAIL_MIN_MOVE for why the timestamp is carried rather
+            // than the crumb skipped.
+            else if (moved < COMP_TRAIL_MIN_MOVE) {
+                last.t = _companionTrailT;
+                last.qx = q.x; last.qy = q.y; last.qz = q.z; last.qw = q.w;
+                return;
+            }
+        }
         _companionTrail.push({ t: _companionTrailT, x: c.x, y: c.y, z: c.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: 'walk' });
         while (_companionTrail.length > 2 && (_companionTrailT - _companionTrail[0].t) > COMP_TRAIL_KEEP) _companionTrail.shift();
     }
@@ -5046,7 +5070,19 @@ export function startGame(CharacterClass) {
         if (last && _compTrailT - last.t < COMP_TRAIL_DT) return;
         const q = char.group.quaternion;
         if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(char.group.position);
-        if (last && Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
+        if (last) {
+            const moved = Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z);
+            if (moved > 5) _compTrail.length = 0;      // teleport → reset
+            // Same spot as the last crumb: extend that one rather than adding
+            // another identical one. Facing is refreshed too, so turning on
+            // the spot is still recorded - it just does not cost an entry.
+            else if (moved < COMP_TRAIL_MIN_MOVE) {
+                last.t = _compTrailT;
+                last.qx = q.x; last.qy = q.y; last.qz = q.z; last.qw = q.w;
+                last.state = networkStateName;
+                return;
+            }
+        }
         _compTrail.push({ t: _compTrailT, x: _compVisPos.x, y: _compVisPos.y, z: _compVisPos.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
         while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
     }
