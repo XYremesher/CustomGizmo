@@ -1166,8 +1166,12 @@
                     <input type="range" id="pixel-depth-edge-slider" min="0.0" max="10.0" step="0.25" value="2.50" style="width: 100%;"><br>
                     <label>Depth Edge Sensitivity (relative step, lower = more edges): <span id="pixel-depth-sens-val">0.020</span></label><br>
                     <input type="range" id="pixel-depth-sens-slider" min="0.005" max="0.20" step="0.005" value="0.020" style="width: 100%;"><br>
-                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">1.00</span></label><br>
-                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
+                    <!-- 0.75 to match window.pixelRenderScale in game_js.js. This
+                         read 1.00 while the engine ran at 0.75: nothing pushes a
+                         slider's value at load, so the panel was reporting a
+                         resolution the composer was never rendering at. -->
+                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">0.75</span></label><br>
+                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="0.75" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
