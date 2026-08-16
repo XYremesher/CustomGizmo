@@ -577,7 +577,16 @@ export function startGame(CharacterClass) {
         antialias: false,
         powerPreference: 'high-performance'
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // Ceiling on the backing-store resolution, and the one quality knob that
+    // works in BOTH modes - pixelRenderScale only sizes the composer target,
+    // which is not in the path with the pixel effect off. Every pixel here is
+    // paid for by every full-screen shader in the frame, so this is the most
+    // direct control there is over fillrate, and therefore over heat.
+    //
+    // 1.5 on a phone reporting 2.625 is already a cut; dropping to 1.0 removes
+    // another 55% of the pixels. Live-tunable via applyRenderResolution below.
+    window.maxPixelRatio = 1.5;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, window.maxPixelRatio));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     // Left on, three.js redraws the whole 2048x2048 map every frame, which is
@@ -683,6 +692,17 @@ export function startGame(CharacterClass) {
         }
     };
     updateComposerRenderTarget();
+
+    // Re-applies window.maxPixelRatio. setPixelRatio alone does not resize the
+    // existing backing store, so setSize has to follow it, and the composer's
+    // target is derived from that size in turn - miss either and the canvas
+    // and the buffers it renders through disagree about how big they are.
+    function applyRenderResolution() {
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, window.maxPixelRatio));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        updateComposerRenderTarget();
+        if (levelEditor) levelEditor.setSize(window.innerWidth, window.innerHeight);
+    }
 
     // ---- Depth-edge fix ----
     // The stock pass differences the RAW depth buffer and thresholds it at a
@@ -16249,6 +16269,10 @@ export function startGame(CharacterClass) {
             const el = document.getElementById('max-fps-val');
             if (el) el.textContent = v > 0 ? String(v) : 'off';
         }, fix: 0, raw: true },
+        { id: 'max-pixel-ratio-slider', vId: 'max-pixel-ratio-val', func: v => {
+            window.maxPixelRatio = v;
+            applyRenderResolution();
+        }, fix: 2 },
         { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
         // Speech-bubble placement. Same slider table as everything else, so
@@ -21607,7 +21631,12 @@ if (leftArrow) {
     function handleViewportResize() {
         window.scrollTo(0, 0);
         camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
-        composer.setSize(window.innerWidth, window.innerHeight);
+        // Through updateComposerRenderTarget rather than composer.setSize
+        // directly: the composer's target is CSS size x pixelRenderScale, and
+        // sizing it to the plain CSS size here silently threw the render scale
+        // away on every resize - so rotating the phone quietly put the game
+        // back to full resolution until the slider was touched again.
+        updateComposerRenderTarget();
         updateOrthoFrustum();
         // Guarded: resize can happen before the editor has ever been
         // opened, since it's now loaded lazily (see ensureLevelEditorLoaded).

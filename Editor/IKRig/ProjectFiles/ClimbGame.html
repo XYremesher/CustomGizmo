@@ -993,6 +993,12 @@
                     the game is open, and on a phone the heat that builds up forces the device to throttle - which costs more
                     frames than the cap would. Try 30 if the phone gets hot; a steady 30 also reads better than an uncapped
                     rate drifting under thermal management.</label><br>
+                    <label>Resolution (max pixel ratio): <span id="max-pixel-ratio-val">1.50</span></label><br>
+                    <input type="range" id="max-pixel-ratio-slider" min="0.5" max="2.0" step="0.05" value="1.50" style="width: 100%;"><br>
+                    <label style="opacity:.75;font-size:11px;">Caps how many real pixels the canvas gets per CSS pixel. Unlike
+                    Render Scale above, this applies with the pixel effect OFF as well - that one only sizes the composer,
+                    which is not in the path then. Pixel count goes with the square, so 1.5 to 1.0 is 55% fewer pixels for
+                    every full-screen shader in the frame. The most direct control over fillrate, and so over heat.</label><br>
                 </div>
             </div>
 
