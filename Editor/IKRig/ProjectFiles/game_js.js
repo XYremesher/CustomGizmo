@@ -14189,26 +14189,42 @@ export function startGame(CharacterClass) {
     let _ditherTreeAmount = 0;
     function updateDitherOccluders(cam, playerPoint, delta) {
         _ditherScreenVec.copy(playerPoint).project(cam);
-        renderer.getDrawingBufferSize(_ditherDrawSize);
-        // Scale draw size to match the actual render target size when render scale < 1
-        const renderScale = window.pixelRenderScale || 1.0;
-        const scaledDrawSize = {
-            x: _ditherDrawSize.x * renderScale,
-            y: _ditherDrawSize.y * renderScale
-        };
         // The hole is measured in gl_FragCoord, i.e. in whatever buffer the
-        // scene is actually being drawn into. With the pixelation pass on that
-        // is NOT the drawing buffer - RenderPixelatedPass renders the scene at
-        // 1/pixelSize resolution and upscales afterwards.
+        // scene is actually being drawn into - so that buffer's real size is
+        // the only thing that can be used here.
+        //
+        // Which buffer it is depends on the mode, and conflating the two is
+        // what put the hole off-centre. With the pixel effect ON the scene
+        // goes into the composer's target, sized in raw pixels as CSS size x
+        // pixelRenderScale. With it OFF there is no composer in the path at
+        // all (see the render call at the end of animate) and the scene goes
+        // straight into the drawing buffer, which is CSS size x pixelRatio.
+        // Multiplying the drawing buffer by pixelRenderScale, as this did,
+        // describes neither: it was wrong by pixelRatio one way and by
+        // pixelRenderScale the other, and because the error is a SCALE the
+        // hole drifted further off the player the further they were from the
+        // bottom-left corner.
+        const usingComposer = !!window.pixelEffectEnabled;
+        const rt = usingComposer ? (composer.renderTarget1 || null) : null;
+        if (rt && rt.width > 0) {
+            _ditherDrawSize.set(rt.width, rt.height);
+        } else {
+            renderer.getDrawingBufferSize(_ditherDrawSize);
+        }
+        // Radius is authored in CSS pixels, so it needs the same buffer-to-CSS
+        // factor the coordinates above are already in.
+        const bufferScale = window.innerWidth > 0 ? _ditherDrawSize.x / window.innerWidth : 1;
+        // RenderPixelatedPass renders the scene at 1/pixelSize of that target
+        // and upscales afterwards, so gl_FragCoord is divided again by it.
         const pixelDiv = (window.pixelEffectEnabled && renderPixelatedPass.pixelSize > 0)
             ? renderPixelatedPass.pixelSize : 1;
         _ditherScreenUniform.value.set(
-            (_ditherScreenVec.x * 0.5 + 0.5) * scaledDrawSize.x / pixelDiv,
-            (_ditherScreenVec.y * 0.5 + 0.5) * scaledDrawSize.y / pixelDiv);
+            (_ditherScreenVec.x * 0.5 + 0.5) * _ditherDrawSize.x / pixelDiv,
+            (_ditherScreenVec.y * 0.5 + 0.5) * _ditherDrawSize.y / pixelDiv);
         // Matches vViewPosition.z in the shader: distance in front of the
         // camera, not straight-line distance to it.
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
-        _ditherRadiusUniform.value = window.ditherHoleRadius * renderScale / pixelDiv;
+        _ditherRadiusUniform.value = window.ditherHoleRadius * bufferScale / pixelDiv;
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
