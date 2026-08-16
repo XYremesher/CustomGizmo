@@ -10343,9 +10343,25 @@ export function startGame(CharacterClass) {
             // there, and idles.
             const m1 = forestMeetPoint(), m2 = forestMeetPoint2();
             spawnForestSandbag(m1.x + STORY_PAIR_HALF, m1.z);
+            // Where each sleeping bot ends up, worked out here rather than at
+            // the storyPlaceBot calls below because the companion sharing its
+            // clearing needs to be turned away from it.
+            const botAt = {
+                BotYellow: { x: m1.x + FREE_WAVE_SPREAD, z: m1.z + FREE_WAVE_SPREAD },
+                BotOrange: { x: m2.x + FREE_WAVE_SPREAD, z: m2.z + FREE_WAVE_SPREAD },
+            };
+            // Yaw that points +Z (the direction inVisionCone measures from)
+            // along ax,az -> bx,bz.
+            const yawTowards = (ax, az, bx, bz) => Math.atan2(bx - ax, bz - az);
             const spots = [
-                { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z },
-                { key: 'CompDark', x: m2.x, y: null, z: m2.z },
+                // Paired with a bot a few metres away, so each is turned to
+                // face directly away from it - back to back. The vision cone
+                // is 140 degrees, i.e. 70 either side of forward, so something
+                // at a full 180 is comfortably outside it and neither wakes up
+                // already fighting.
+                { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
+                { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
+                // No bot shares this ledge - keeps its original facing.
                 { key: 'CompPale', x: FOREST_EXIT_X + 4.0, y: forestFrameTopY(),
                   z: (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5 },
             ];
@@ -10353,9 +10369,11 @@ export function startGame(CharacterClass) {
             spots.forEach(sp => {
                 const y = sp.y === null ? storyGroundY(sp.x, sp.z, 0) : sp.y;
                 const at = new THREE.Vector3(sp.x, y, sp.z);
-                const comp = storyRecruit(sp.key, at, 0);
+                const yaw = sp.awayFrom ? yawTowards(sp.awayFrom.x, sp.awayFrom.z, sp.x, sp.z) : 0;
+                const comp = storyRecruit(sp.key, at, yaw);
                 if (!comp) return;
                 comp.group.position.copy(at);
+                comp.group.rotation.y = yaw;
                 comp.followOverride = at;   // stand here until spoken to
                 _freeRecruits.push({ comp, at });
             });
@@ -10366,8 +10384,12 @@ export function startGame(CharacterClass) {
             const topStepZ = FOREST_PLATFORM_Z0 - FOREST_STEP_SIZE * 0.5;
             const topStepY = Math.min(forestFrameTopY(),
                 Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE - 1) * FOREST_STEP_SIZE);
-            storyPlaceBot('BotYellow', m1.x + FREE_WAVE_SPREAD, storyGroundY(m1.x + FREE_WAVE_SPREAD, m1.z + FREE_WAVE_SPREAD, 0), m1.z + FREE_WAVE_SPREAD, true);
-            storyPlaceBot('BotOrange', m2.x + FREE_WAVE_SPREAD, storyGroundY(m2.x + FREE_WAVE_SPREAD, m2.z + FREE_WAVE_SPREAD, 0), m2.z + FREE_WAVE_SPREAD, true);
+            // Facing away from the companion in the same clearing - the other
+            // half of the back-to-back pairing set up in `spots` above.
+            storyPlaceBot('BotYellow', botAt.BotYellow.x, storyGroundY(botAt.BotYellow.x, botAt.BotYellow.z, 0), botAt.BotYellow.z, true,
+                yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow.x, botAt.BotYellow.z));
+            storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
+                yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
 
             storyStage = 'free';
@@ -10746,12 +10768,13 @@ export function startGame(CharacterClass) {
     // the yellow and orange are already in the level - somewhere far below,
     // very likely knocked out. Moving them is the only way to stage a fight up
     // here without duplicating characters the player has already met.
-    function storyPlaceBot(key, x, y, z, dormant) {
+    function storyPlaceBot(key, x, y, z, dormant, yaw) {
         const spec = AI_BOT_SPECS.find(sp => sp.key === key);
         if (!spec) return;
         const rec = aiBots.find(r => r.bot.id === spec.id);
         if (rec) {
             rec.bot.group.position.set(x, y, z);
+            if (yaw !== undefined) rec.bot.group.rotation.y = yaw;
             rec.state.target.set(x, y, z);
             rec.stuckAt.set(x, y, z);
             // Back on their feet for this one - a fight staged with two bodies
@@ -10769,6 +10792,13 @@ export function startGame(CharacterClass) {
         if (el) el.checked = true;
         syncSpawnedAgents();
         _aiBotSpawnOverride = null;
+        // After the spawn, not through an override: the bot is only in aiBots
+        // once syncSpawnedAgents has built it, and this path is the branch
+        // where it did not exist yet.
+        if (yaw !== undefined) {
+            const fresh = aiBots.find(r => r.bot.id === spec.id);
+            if (fresh) fresh.bot.group.rotation.y = yaw;
+        }
     }
 
     // The story-free forest's only rule: get close to one and it joins you.
