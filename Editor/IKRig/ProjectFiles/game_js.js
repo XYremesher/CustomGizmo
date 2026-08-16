@@ -17884,7 +17884,18 @@ export function startGame(CharacterClass) {
             fpsDisplayAccum += rawDelta;
             if (fpsDisplayAccum > 0.3) {
                 fpsDisplayAccum = 0;
-                fpsCounterEl.textContent = `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})`;
+                // Draw calls and triangles alongside the rate, because the two
+                // separate the only question worth asking when the frame rate
+                // changes with WHERE you are standing: the stream runs at 140
+                // and the forest at 67, and that is either the GPU drawing
+                // more (these numbers climb with it) or the CPU doing more
+                // raycasting and simulation against denser geometry (they do
+                // not). Read off the frame just rendered, so it costs nothing
+                // to collect.
+                const inf = renderer.info.render;
+                fpsCounterEl.textContent =
+                    `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})\n` +
+                    `draws ${inf.calls}  tris ${(inf.triangles / 1000).toFixed(0)}k`;
             }
         }
 
