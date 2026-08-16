@@ -851,6 +851,12 @@ export function startGame(CharacterClass) {
     // from `collidables` and reuse it for the rest of the frame compares
     // against this instead of rebuilding per call - see visionLosList.
     let _frameToken = 0;
+    let _lastFrameTime = 0;
+    // 0 = uncapped. See the limiter at the top of animate().
+    window.maxFps = 0;
+    // See updateCharacterShadowCulling. On by default: with this scene's
+    // vertical light it removes work without removing anything visible.
+    window.cullOffscreenShadows = true;
     window.collidables = collidables;
     const levelGroup = new THREE.Group();
     scene.add(levelGroup);
@@ -16221,6 +16227,12 @@ export function startGame(CharacterClass) {
         // is keyed to this same extent (see shadowSafe in buildGrass).
         { id: 'shadow-range-slider', vId: 'shadow-range-val', func: v => { window.shadowRange = v; applyShadowRange(); }, fix: 0, raw: true },
         { id: 'shadow-interval-slider', vId: 'shadow-interval-val', func: v => window.shadowUpdateInterval = v, fix: 0, raw: true },
+        // 0 reads as "off" rather than "0 fps", which would look like a bug.
+        { id: 'max-fps-slider', vId: 'max-fps-val', func: v => {
+            window.maxFps = v;
+            const el = document.getElementById('max-fps-val');
+            if (el) el.textContent = v > 0 ? String(v) : 'off';
+        }, fix: 0, raw: true },
         { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
         // Speech-bubble placement. Same slider table as everything else, so
@@ -16438,6 +16450,16 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
+    {
+        const el = document.getElementById('toggle-cull-offscreen-shadows');
+        if (el) {
+            // Read once here as well as on change - the box ships checked, and
+            // a default that only reaches the engine when someone touches the
+            // control is how the panel ends up describing a state nothing is in.
+            window.cullOffscreenShadows = el.checked;
+            el.addEventListener('change', e => { window.cullOffscreenShadows = e.target.checked; });
+        }
+    }
     // ---- UI panel: re-enable elements hidden from the default control set ----
     // Both start unchecked/off, matching how the game actually ships - these
     // exist purely so the elements can be brought back for testing without
@@ -17525,8 +17547,66 @@ export function startGame(CharacterClass) {
         _hangDbg.tex.needsUpdate = true;
     }
 
+    // Drops castShadow on characters the camera cannot see.
+    //
+    // Safe here only because this scene's sun is exactly vertical - see where
+    // dirLight's position and target are set, they share X and Z and differ
+    // only in Y. A vertical light puts every shadow directly underneath the
+    // thing casting it, so a character outside the view has its shadow outside
+    // the view too and removing it changes nothing on screen. This would NOT
+    // hold for an angled light, where an off-screen caster can throw a long
+    // shadow into shot.
+    //
+    // Worth doing for these specifically because they are skinned meshes: a
+    // skinned caster is skinned a second time for the shadow pass, so an
+    // off-screen character costs two skinning passes to contribute nothing.
+    const _shadowCullFrustum = new THREE.Frustum();
+    const _shadowCullMatrix = new THREE.Matrix4();
+    // Generous enough to cover a character's full height plus a ragdoll's
+    // sprawl, so nobody pops their shadow back in at the screen edge.
+    const _shadowCullSphere = new THREE.Sphere(new THREE.Vector3(), 2.5);
+    function updateCharacterShadowCulling(activeCamera) {
+        const on = !!window.cullOffscreenShadows;
+        if (on) {
+            _shadowCullMatrix.multiplyMatrices(activeCamera.projectionMatrix, activeCamera.matrixWorldInverse);
+            _shadowCullFrustum.setFromProjectionMatrix(_shadowCullMatrix);
+        }
+        const apply = (avatar) => {
+            if (!avatar || !avatar.bodyMeshes || !avatar.bodyMeshes.length) return;
+            let cast = true;
+            if (on) {
+                _shadowCullSphere.center.copy(avatar.group.position);
+                _shadowCullSphere.center.y += 1.0;
+                cast = _shadowCullFrustum.intersectsSphere(_shadowCullSphere);
+            }
+            // Assigning it unconditionally is what makes turning the option
+            // back off restore every caster without a separate pass.
+            for (let i = 0; i < avatar.bodyMeshes.length; i++) avatar.bodyMeshes[i].castShadow = cast;
+        };
+        for (let i = 0; i < companions.length; i++) apply(companions[i].comp);
+        for (let i = 0; i < aiBots.length; i++) apply(aiBots[i].bot);
+    }
+
     function animate() {
         requestAnimationFrame(animate);
+        // Frame limiter. Without one, requestAnimationFrame runs as fast as
+        // the display allows and the GPU sits at 100% for as long as the game
+        // is open - on a 120Hz phone that is double the work for smoothness
+        // nobody asked for, and the heat that comes with it eventually makes
+        // the device throttle, which costs more frames than the cap ever
+        // would. A steady capped rate also reads better than an uncapped one
+        // sliding around under thermal management.
+        //
+        // Returning BEFORE clock.getDelta() below is the point: the skipped
+        // time stays in the clock and lands in the next frame's delta, so
+        // physics and animation advance by wall-clock time either way.
+        if (window.maxFps > 0) {
+            const now = performance.now();
+            // 1ms of slack, or a cap at exactly the refresh rate drops every
+            // other frame to rounding.
+            if (now - _lastFrameTime < (1000 / window.maxFps) - 1) return;
+            _lastFrameTime = now;
+        }
         // Viewer modal owns its own scene/camera/renderer entirely - while
         // open, render only that and skip the whole game update below
         // (same "one or the other, not both" exclusivity as editor mode's
@@ -21477,6 +21557,9 @@ if (leftArrow) {
         // which is not always `camera` - the ortho toggle swaps it.
         updateWorldLabels(activeCamera, delta);
         updateAgentVisionCones();
+        // After every character has been moved for this frame, and against the
+        // camera actually being rendered - the ortho toggle can swap it.
+        updateCharacterShadowCulling(activeCamera);
         if (window.pixelEffectEnabled) {
             renderPixelatedPass.camera = activeCamera;
             // Linearising depth needs the camera's own near/far, and which

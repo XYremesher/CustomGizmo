@@ -982,6 +982,17 @@
                     rate it is a fraction of: at 40fps, 2 gives 20Hz shadows and they visibly tick rather than slide.
                     Pixel mode hides this, so judge it with the effect off.
                     Tap the FPS counter to reset its min/average before comparing two settings.</label><br>
+                    <label><input type="checkbox" id="toggle-cull-offscreen-shadows" checked> Skip shadows for off-screen characters</label><br>
+                    <label style="opacity:.75;font-size:11px;">Characters the camera cannot see stop casting. They are skinned
+                    meshes, so each one costs a second skinning pass to draw its shadow. Free visually here because the sun
+                    is exactly vertical - a shadow lands under its caster, so an off-screen character's shadow is off-screen
+                    too.</label><br>
+                    <label>Max FPS: <span id="max-fps-val">off</span></label><br>
+                    <input type="range" id="max-fps-slider" min="0" max="120" step="15" value="0" style="width: 100%;"><br>
+                    <label style="opacity:.75;font-size:11px;">0 = uncapped. Uncapped, the GPU runs flat out for as long as
+                    the game is open, and on a phone the heat that builds up forces the device to throttle - which costs more
+                    frames than the cap would. Try 30 if the phone gets hot; a steady 30 also reads better than an uncapped
+                    rate drifting under thermal management.</label><br>
                 </div>
             </div>
 
