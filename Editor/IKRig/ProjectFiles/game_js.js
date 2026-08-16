@@ -265,6 +265,16 @@ export function startGame(CharacterClass) {
     // every single frame despite never changing; Raycaster.set() copies
     // these values in rather than holding a reference, so reusing the same
     // 8 objects every frame is safe.
+    // See the call site in animate for why this is cached and what
+    // invalidates it.
+    let _groundScanCache = null, _groundScanSrc = null, _groundScanLen = -1;
+    function getGroundScanCollidables(src) {
+        if (_groundScanCache && _groundScanSrc === src && _groundScanLen === src.length) return _groundScanCache;
+        _groundScanCache = src.filter(c => !(c.userData && c.userData.isDecorativeBump));
+        _groundScanSrc = src;
+        _groundScanLen = src.length;
+        return _groundScanCache;
+    }
     const _penetrationRayDirs = [
         new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
         new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
@@ -18164,7 +18174,16 @@ export function startGame(CharacterClass) {
         // visibly jittering even with that smoothing in place. Every bump
         // contributing to standing height now flows through exactly one
         // path (the smoothed foot-boost), not two uncoordinated ones.
-        const groundScanCollidables = solidCollidables.filter(c => !(c.userData && c.userData.isDecorativeBump));
+        //
+        // Cached rather than refiltered every frame. isDecorativeBump is set
+        // when a bump is built and never changes afterwards, so the only thing
+        // that can alter this list is the set of collidables itself - which
+        // moves when a level is built or a carryable is picked up or put down.
+        // Both of those change the source length, so that is what the cache
+        // watches. (A single add paired with a single remove inside one frame
+        // would slip past; nothing does that, and the rebuild is one filter
+        // pass if it ever needs to.)
+        const groundScanCollidables = getGroundScanCollidables(solidCollidables);
 
         if (Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05) {
             cameraTheta -= input.right.x * 0.04;
