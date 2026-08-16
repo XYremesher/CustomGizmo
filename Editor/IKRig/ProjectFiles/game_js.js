@@ -1674,6 +1674,19 @@ export function startGame(CharacterClass) {
     // already inside the first two fallbacks, so their first "shorter" attempt
     // was actually further away than where they were trying to stand.
     const COMP_FOLLOW_FALLBACKS = [1.0, 0.72, 0.5, 0.39];
+    // Crumbs are laid on a clock rather than once per frame. Per frame, the
+    // trail's LENGTH tracked the frame rate - 15 seconds is ~450 crumbs at 30
+    // and ~2000 at 135 - and since the climb logic scans that array per
+    // companion per frame, the total work went up with the SQUARE of the frame
+    // rate. It also meant the recorded path a companion replays was a
+    // different shape on a fast machine than a slow one.
+    //
+    // 30Hz is what a phone was already sampling at, so the coarsest case is
+    // unchanged and only the over-sampling goes away. Every consumer reads
+    // crumbs by their .t timestamp, so nothing cares how many there are
+    // between two moments.
+    const COMP_TRAIL_HZ = 30;
+    const COMP_TRAIL_DT = 1 / COMP_TRAIL_HZ;
     const COMP_TRAIL_KEEP = 15.0;   // seconds of trail kept - long enough that after a
                                     // fall the companion can walk back and re-replay the
                                     // same recorded climb instead of being stuck below
@@ -2752,10 +2765,14 @@ export function startGame(CharacterClass) {
     let _companionTrailT = 0;
     function recordCompanionTrail(delta) {
         if (!companion || !companion.isLoaded || !companion.group.visible) return;
-        const c = companion.group.position;
-        const q = companion.group.quaternion;
         _companionTrailT += delta;
         const last = _companionTrail.length ? _companionTrail[_companionTrail.length - 1] : null;
+        // Same fixed-rate sampling as recordPlayerTrail - see COMP_TRAIL_HZ.
+        // This one is per companion, so the saving multiplies by however many
+        // are recruited.
+        if (last && _companionTrailT - last.t < COMP_TRAIL_DT) return;
+        const c = companion.group.position;
+        const q = companion.group.quaternion;
         if (last && Math.hypot(c.x - last.x, c.y - last.y, c.z - last.z) > 5) _companionTrail.length = 0; // teleport → reset
         _companionTrail.push({ t: _companionTrailT, x: c.x, y: c.y, z: c.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: 'walk' });
         while (_companionTrail.length > 2 && (_companionTrailT - _companionTrail[0].t) > COMP_TRAIL_KEEP) _companionTrail.shift();
@@ -5014,10 +5031,13 @@ export function startGame(CharacterClass) {
     // the compensated visual replays that SMOOTH climb-out instead of the raw
     // root snap.
     function recordPlayerTrail(delta) {
-        const q = char.group.quaternion;
-        if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(char.group.position);
+        // The clock keeps running every frame even when no crumb is laid -
+        // it is what every crumb's .t is measured against.
         _compTrailT += delta;
         const last = _compTrail.length ? _compTrail[_compTrail.length - 1] : null;
+        if (last && _compTrailT - last.t < COMP_TRAIL_DT) return;
+        const q = char.group.quaternion;
+        if (char.fbxModel) char.fbxModel.getWorldPosition(_compVisPos); else _compVisPos.copy(char.group.position);
         if (last && Math.hypot(_compVisPos.x - last.x, _compVisPos.y - last.y, _compVisPos.z - last.z) > 5) _compTrail.length = 0; // teleport → reset
         _compTrail.push({ t: _compTrailT, x: _compVisPos.x, y: _compVisPos.y, z: _compVisPos.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w, state: networkStateName });
         while (_compTrail.length > 2 && (_compTrailT - _compTrail[0].t) > COMP_TRAIL_KEEP) _compTrail.shift();
