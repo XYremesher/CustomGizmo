@@ -126,6 +126,20 @@ export function startGame(CharacterClass) {
     const _steepestNormalScratch = new THREE.Vector3();
     const _candidateNormalScratch = new THREE.Vector3();
     const _centerNormalScratch = new THREE.Vector3();
+    // The ground scan's own working set, hoisted out of animate() because it
+    // rebuilt all of it from scratch on every single frame. Both are written
+    // before they are read each frame and nothing downstream holds onto
+    // either past the frame that produced it (setSlopeTilt/setArrowTilt read
+    // the normal immediately, updateGroundRayDbg copies the offsets into its
+    // own scratch), so one instance can serve every frame.
+    const _groundNormalScratch = new THREE.Vector3(0, 1, 0);
+    const _ragdollRayOriginScratch = new THREE.Vector3();
+    // Values are re-set each frame rather than baked in once: the spread is
+    // a live-tunable (_groundSampleSpread) and can change between frames.
+    const _rayOffsetsScratch = [
+        new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(),
+        new THREE.Vector3(), new THREE.Vector3()
+    ];
     // Copy of the ground normal the slope logic settled on this frame, kept
     // for the _dbg readout at the end of animate (groundNormal itself is
     // scoped to the block that computes it).
@@ -566,6 +580,19 @@ export function startGame(CharacterClass) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
+    // Left on, three.js redraws the whole 2048x2048 map every frame, which is
+    // a second full pass over every shadow caster in the scene - the single
+    // largest fixed cost in the frame. Driven manually from animate() instead,
+    // every Nth frame (see window.shadowUpdateInterval). The map persists
+    // between updates, so the only artifact is that a moving shadow lags its
+    // caster by up to N-1 frames; at 2 that is a handful of milliseconds and
+    // is not perceptible, and the light's texel snapping already means small
+    // player movements do not change the map's contents at all.
+    // Set to 1 to go back to updating every frame.
+    window.shadowUpdateInterval = 2;
+    renderer.shadowMap.autoUpdate = false;
+    // The first frame has no map to persist from yet.
+    renderer.shadowMap.needsUpdate = true;
 
     // Pixelation post-processing test (https://threejs.org/examples/webgl_postprocessing_pixel.html)
     // - kept off by default to preserve FPS in the editor/game view. It is
@@ -17482,6 +17509,14 @@ export function startGame(CharacterClass) {
             return;
         }
         _frameToken++;
+        // Manual shadow pass scheduling - see renderer.shadowMap.autoUpdate at
+        // setup. Set here rather than next to the render call at the end of
+        // this function because the level editor shares this renderer and
+        // returns before reaching it; scheduling from the one point every
+        // render path passes through keeps its shadows updating too. three.js
+        // clears the flag itself once it acts on it.
+        const _shadowEvery = Math.max(1, Math.round(window.shadowUpdateInterval || 1));
+        renderer.shadowMap.needsUpdate = (_frameToken % _shadowEvery) === 0;
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
         // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
@@ -17920,7 +17955,7 @@ export function startGame(CharacterClass) {
         // alongside it below. Used later (see the animation state
         // selection) to face the character the way they're actually sliding.
         let slideDir = _slideDirScratch;
-        let groundNormal = _upVec.clone();
+        let groundNormal = _groundNormalScratch.copy(_upVec);
         // Mirrors the inner (else-block-scoped) groundHitObject once it's
         // settled each frame - needed outside that block too (e.g. to check
         // userData.isSlopeRamp for the WalkingUp.fbx animation swap), same
@@ -17930,7 +17965,7 @@ export function startGame(CharacterClass) {
 
         if (char.isRagdoll) {
             const hipsP = char.ragdollParticles.find(p => p.id === 'hips');
-            let rayOrigin = hipsP ? hipsP.pos.clone() : char.group.position.clone();
+            let rayOrigin = _ragdollRayOriginScratch.copy(hipsP ? hipsP.pos : char.group.position);
             rayOrigin.y += 0.5;
             rayDown.set(rayOrigin, _downVec);
             const dH = rayDown.intersectObjects(solidCollidables);
@@ -17947,10 +17982,12 @@ export function startGame(CharacterClass) {
             }
         } else {
             const sp = _groundSampleSpread;
-            const rayOffsets = [
-                new THREE.Vector3(0, 0, 0), new THREE.Vector3(sp, 0, 0), new THREE.Vector3(-sp, 0, 0),
-                new THREE.Vector3(0, 0, sp), new THREE.Vector3(0, 0, -sp)
-            ];
+            const rayOffsets = _rayOffsetsScratch;
+            rayOffsets[0].set(0, 0, 0);
+            rayOffsets[1].set(sp, 0, 0);
+            rayOffsets[2].set(-sp, 0, 0);
+            rayOffsets[3].set(0, 0, sp);
+            rayOffsets[4].set(0, 0, -sp);
             let hitAnything = false;
             let highestY = -Infinity;
             // Height each individual ray came back with, indexed to match
