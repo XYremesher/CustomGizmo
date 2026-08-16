@@ -886,6 +886,36 @@ export function startGame(CharacterClass) {
     // Bumped once per frame in animate(). Anything that wants to derive a list
     // from `collidables` and reuse it for the rest of the frame compares
     // against this instead of rebuilding per call - see visionLosList.
+    // ---- Raycast cost meter ----
+    // draws and triangles came back identical in a 144fps spot and an 85fps
+    // one, which rules the GPU out and puts the difference on the CPU. This
+    // measures the single biggest CPU candidate directly, before anything is
+    // done about it: three.js raycasts are a brute-force walk of every
+    // triangle of every candidate object, and the slow spot is the one with
+    // denser geometry.
+    //
+    // Wrapping Raycaster rather than timing call sites catches all of them -
+    // the ground scan, the 16 penetration rays, foot IK, the dither probes -
+    // including any this file does not own. performance.now() twice per call
+    // at ~30 calls a frame is not enough to distort what it is measuring.
+    let _rayMs = 0, _rayCalls = 0, _lastRayMs = 0, _lastRayCalls = 0;
+    {
+        const proto = THREE.Raycaster.prototype;
+        const wrap = (name) => {
+            const orig = proto[name];
+            proto[name] = function (...args) {
+                if (!window.rayMeterOn) return orig.apply(this, args);
+                const t0 = performance.now();
+                const out = orig.apply(this, args);
+                _rayMs += performance.now() - t0;
+                _rayCalls++;
+                return out;
+            };
+        };
+        wrap('intersectObject');
+        wrap('intersectObjects');
+    }
+    window.rayMeterOn = true;
     let _frameToken = 0;
     let _lastFrameTime = 0;
     // Whole-frame render totals, captured after the last render call and shown
@@ -17800,6 +17830,10 @@ export function startGame(CharacterClass) {
         // whatever is drawn below - game, composer passes, or the level
         // editor's own composer - all accumulates into one frame's total.
         renderer.info.reset();
+        // Same idea for the raycast meter: carry last frame's total to the
+        // readout, then start counting this one.
+        _lastRayMs = _rayMs; _lastRayCalls = _rayCalls;
+        _rayMs = 0; _rayCalls = 0;
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
         // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
@@ -17910,9 +17944,13 @@ export function startGame(CharacterClass) {
                 // raycasting and simulation against denser geometry (they do
                 // not). Totals for the whole of last frame - see where they
                 // are captured after the render.
+                // A 144fps frame is 6.9ms and an 85fps frame 11.8ms, so the
+                // ray line is directly comparable to the budget: if it grows
+                // by roughly the 5ms between them, that is the whole story.
                 fpsCounterEl.textContent =
                     `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})\n` +
-                    `draws ${_lastDrawCalls}  tris ${(_lastTriangles / 1000).toFixed(0)}k`;
+                    `draws ${_lastDrawCalls}  tris ${(_lastTriangles / 1000).toFixed(0)}k\n` +
+                    `rays ${_lastRayCalls}  ${_lastRayMs.toFixed(1)}ms`;
             }
         }
 
