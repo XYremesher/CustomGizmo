@@ -5087,7 +5087,7 @@ export function startGame(CharacterClass) {
                 e.preventDefault(); e.stopPropagation();
                 rec.compact = !rec.compact;
                 rec._h = null; rec._hw = null;
-                if (rec.compact) rec.box.textContent = '...';
+                if (rec.compact) { rec.box.textContent = '...'; rec.box._rows = -1; }
                 else renderDebugRows(rec.box, rec.text || text);
             });
         }
@@ -5106,7 +5106,10 @@ export function startGame(CharacterClass) {
             rec._h = null; rec._hw = null;
         }
         if (rec.debug) {
-            if (rec.compact) rec.box.textContent = '...';
+            // Collapsing throws the grid cells away, so the row cache has to
+            // go with them or expanding again would reuse spans that are no
+            // longer in the document.
+            if (rec.compact) { rec.box.textContent = '...'; rec.box._rows = -1; }
             else renderDebugRows(rec.box, rec.text);
         } else if (rec.box.textContent !== rec.text) {
             rec.box.textContent = rec.text;
@@ -5118,19 +5121,40 @@ export function startGame(CharacterClass) {
     // was monospace; it shares the bubbles' proportional font now, so that
     // padding no longer aligns anything and is used purely as the split point.
     // A line with no label (nothing but a value) spans both columns.
+    //
+    // The cells are reused between frames and only their text is rewritten.
+    // Rebuilding them outright - clearing the box and recreating every span -
+    // is what the first version did, and since this readout updates every
+    // frame for every companion being watched it meant a few thousand
+    // elements created and thrown away per second, with a layout
+    // invalidation behind each one. That landed exactly when companions were
+    // on screen. The structure only actually changes when the line count
+    // does, which happens on a mode transition.
     function renderDebugRows(box, text) {
-        box.textContent = '';
-        for (const line of text.split('\n')) {
-            const m = /^(\S+)\s+([\s\S]*)$/.exec(line);
-            const label = document.createElement('span');
-            label.textContent = m ? m[1] : line;
-            if (!m) label.style.gridColumn = '1 / -1';
-            box.appendChild(label);
-            if (m) {
+        const lines = text.split('\n');
+        if (box._rows !== lines.length) {
+            box.textContent = '';
+            box._cells = [];
+            for (let i = 0; i < lines.length; i++) {
+                const label = document.createElement('span');
                 const value = document.createElement('span');
-                value.textContent = m[2];
-                box.appendChild(value);
+                box.appendChild(label); box.appendChild(value);
+                box._cells.push([label, value]);
             }
+            box._rows = lines.length;
+        }
+        for (let i = 0; i < lines.length; i++) {
+            const m = /^(\S+)\s+([\s\S]*)$/.exec(lines[i]);
+            const [label, value] = box._cells[i];
+            const labelText = m ? m[1] : lines[i];
+            const valueText = m ? m[2] : '';
+            // Assigning identical text still dirties layout in some engines,
+            // and most of these fields hold steady for seconds at a time.
+            if (label.textContent !== labelText) label.textContent = labelText;
+            if (value.textContent !== valueText) value.textContent = valueText;
+            // A line with no label at all spans both columns.
+            const span = m ? '' : '1 / -1';
+            if (label.style.gridColumn !== span) label.style.gridColumn = span;
         }
     }
     // Debug bubbles do not belong to any story beat and must not outlive the
