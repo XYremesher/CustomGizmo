@@ -596,6 +596,12 @@ export function startGame(CharacterClass) {
     // 1.5 on a phone reporting 2.625 is already a cut; dropping to 1.0 removes
     // another 55% of the pixels. Live-tunable via applyRenderResolution below.
     window.maxPixelRatio = 1.5;
+    // Counters are reset by hand, once per frame, rather than by three.js at
+    // the top of every render() - the composer makes several render calls per
+    // frame and the automatic reset means whatever is read afterwards only
+    // describes the LAST of them. That is the full-screen output quad, which
+    // is why the readout said one draw call and no triangles for a forest.
+    renderer.info.autoReset = false;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, window.maxPixelRatio));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
@@ -882,6 +888,9 @@ export function startGame(CharacterClass) {
     // against this instead of rebuilding per call - see visionLosList.
     let _frameToken = 0;
     let _lastFrameTime = 0;
+    // Whole-frame render totals, captured after the last render call and shown
+    // by the FPS counter on the frame after. See renderer.info.autoReset.
+    let _lastDrawCalls = 0, _lastTriangles = 0;
     // 0 = uncapped. See the limiter at the top of animate().
     window.maxFps = 0;
     // See updateCharacterShadowCulling. On by default: with this scene's
@@ -17787,6 +17796,10 @@ export function startGame(CharacterClass) {
         // clears the flag itself once it acts on it.
         const _shadowEvery = Math.max(1, Math.round(window.shadowUpdateInterval || 1));
         renderer.shadowMap.needsUpdate = (_frameToken % _shadowEvery) === 0;
+        // Zeroed here, at the one point every render path passes through, so
+        // whatever is drawn below - game, composer passes, or the level
+        // editor's own composer - all accumulates into one frame's total.
+        renderer.info.reset();
         const rawDelta = clock.getDelta();
         const delta = Math.min(rawDelta, 0.1), time = Date.now()*0.001;
         // clock.elapsedTime (small, zero-based), NOT `time` (raw Date.now()
@@ -17874,6 +17887,11 @@ export function startGame(CharacterClass) {
         if (window.editorModeActive) {
             levelEditor.update(delta);
             levelEditor.render();
+            // Editor mode returns before the game's own capture at the bottom
+            // of animate, so the readout would otherwise freeze on whatever
+            // the last gameplay frame drew.
+            _lastDrawCalls = renderer.info.render.calls;
+            _lastTriangles = renderer.info.render.triangles;
             return;
         }
 
@@ -17890,12 +17908,11 @@ export function startGame(CharacterClass) {
                 // and the forest at 67, and that is either the GPU drawing
                 // more (these numbers climb with it) or the CPU doing more
                 // raycasting and simulation against denser geometry (they do
-                // not). Read off the frame just rendered, so it costs nothing
-                // to collect.
-                const inf = renderer.info.render;
+                // not). Totals for the whole of last frame - see where they
+                // are captured after the render.
                 fpsCounterEl.textContent =
                     `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})\n` +
-                    `draws ${inf.calls}  tris ${(inf.triangles / 1000).toFixed(0)}k`;
+                    `draws ${_lastDrawCalls}  tris ${(_lastTriangles / 1000).toFixed(0)}k`;
             }
         }
 
@@ -21752,6 +21769,10 @@ if (leftArrow) {
         } else {
             renderer.render(scene, activeCamera);
         }
+        // After everything this frame drew, since the counters no longer reset
+        // themselves. The FPS counter reads these on the next frame.
+        _lastDrawCalls = renderer.info.render.calls;
+        _lastTriangles = renderer.info.render.triangles;
     }
 
     animate();
