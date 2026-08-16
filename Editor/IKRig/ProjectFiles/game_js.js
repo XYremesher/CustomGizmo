@@ -4033,6 +4033,14 @@ export function startGame(CharacterClass) {
         // active `companion` binding and has no handle on the record.
         rec.comp.marker = group;
     }
+    // Recolours a companion's ground dot. Both of the marker's meshes carry
+    // their own material (one depth-tested, one drawn through geometry), so
+    // the tint has to be written to each - setting it on one leaves the
+    // see-through copy still showing the old colour through walls.
+    function setCompanionMarkerColor(comp, color) {
+        if (!comp || !comp.marker) return;
+        comp.marker.traverse(o => { if (o.material && o.material.color) o.material.color.setHex(color); });
+    }
     // How likely a hit is to be answered, and how long the answer runs. The
     // blue one hits back only sometimes and short; the pale one always does,
     // and throws the full three.
@@ -10818,6 +10826,11 @@ export function startGame(CharacterClass) {
             // Released: from here it follows you like any other companion.
             // Nothing is created or destroyed, so there is nothing to pop.
             r.comp.followOverride = null;
+            // The dot goes white on joining. Until then its colour is the
+            // companion's own, which is what tells three waiting figures
+            // apart at a distance; once one is yours that distinction has
+            // done its job, and a white dot is what marks it as collected.
+            setCompanionMarkerColor(r.comp, 0xffffff);
             released = true;
             // No spawning here any more - the enemy for this beat has been
             // standing in the clearing since the level was built, asleep. It
