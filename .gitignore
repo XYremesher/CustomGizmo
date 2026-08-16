@@ -5,3 +5,12 @@
 # it - this only stops the pile growing.
 backups/
 *.rar
+
+# Installed dependencies, restored with `npm install` in Multiplayer/server -
+# package.json and package-lock.json are tracked, so the tree is reproducible.
+# They were committed (2215 files) and every repo-wide search had to wade
+# through them to reach the handful of files anyone actually edits.
+node_modules/
+
+# Server run log, regenerated on every start.
+server.log

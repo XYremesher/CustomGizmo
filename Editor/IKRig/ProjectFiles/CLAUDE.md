@@ -50,8 +50,10 @@ server from this directory (e.g. `python -m http.server 8123`) and open
 - **Multiplayer/server/uws-server.js** — the WebSocket relay (Node +
   uWebSockets.js). Generic room relay: `joinRoom`, `broadcast` (room-wide),
   `send` (targeted, e.g. a punch hit only goes to the victim). Start with
-  `node uws-server.js` (port 8080 by default, dependencies already in
-  `Multiplayer/server/node_modules`).
+  `node uws-server.js` (port 8080 by default). `node_modules` is gitignored,
+  so a fresh clone needs `npm install` in `Multiplayer/server` first — note
+  that pulls uWebSockets.js straight from GitHub rather than the npm
+  registry, as its package.json entry spells out.
 - **ClimbGame_better ragdoll.html** — an alternate/experimental HTML, not
   the one actually deployed/played. Don't assume changes here matter unless
   asked specifically about it.
