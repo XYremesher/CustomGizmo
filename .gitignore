@@ -1,0 +1,7 @@
+# Local .rar snapshots of the Editor tree. Kept on disk, out of git: three of
+# them already account for roughly 200 MB, they are not diffable, and each new
+# one would add its full size to history permanently. The three that predate
+# this file are still in the history and untracking them here does not shrink
+# it - this only stops the pile growing.
+backups/
+*.rar

@@ -758,19 +758,22 @@ export function startGame(CharacterClass) {
     //     the near light down to ~10% and its detail stopped being visible.
     //
     // A single light removes the seam by construction and gets the whole
-    // budget, so its detail actually shows. The box is sized so the texel
-    // density MATCHES the old near light (0.039 world units) while covering
-    // twice the radius, because the map is 4096 rather than 2048 - 160/4096
-    // is the same as 80/2048. It is also one shadow pass instead of two.
+    // budget, so its detail actually shows, and it is one shadow pass
+    // instead of two.
+    //
+    // Map and range were both later halved from the 4096/160 this paragraph
+    // used to describe, down to 2048/80. Texel density is unchanged by that
+    // (160/4096 and 80/2048 are the same number); what it buys is a quarter
+    // of the shadow map's memory and fill cost, which matters because the
+    // map is re-rendered every frame. What it costs is half the radius.
     //
     // What is genuinely given up: beyond shadowRange from the player there
     // is no shadow at all, where the old far light reached 200 units. That
-    // edge is a cliff rather than a seam, and it sits twice as far out.
+    // edge is a cliff rather than a seam.
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.55);
     dirLight.position.set(0.1, 40, 0.1);
     dirLight.castShadow = true;
-    dirLight.shadow.mapSize.width = 4096; dirLight.shadow.mapSize.height = 4096;
     dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 200;
     // Live-tunable: the one meaningful knob now that there is a single
     // light. Smaller = sharper shadows and better self-shadowing over a
