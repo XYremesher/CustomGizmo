@@ -513,7 +513,12 @@
             position: fixed; bottom: 8px; right: 8px; z-index: 50;
             color: #0f0; font-family: monospace; font-size: 14px;
             background: rgba(0,0,0,0.5); padding: 4px 8px; border-radius: 6px;
-            pointer-events: none; white-space: pre;
+            /* Tappable, to reset the running min/average - see the handler in
+               game_js.js. It sits in the bottom corner clear of the controls,
+               so taking the tap back from the canvas costs nothing. */
+            pointer-events: auto; cursor: pointer; touch-action: none;
+            user-select: none; -webkit-user-select: none;
+            white-space: pre;
         }
         #loading-overlay {
             position: fixed; inset: 0; z-index: 1000;
@@ -961,11 +966,20 @@
             <div class="category">
                 <div class="category-header">Shadows</div>
                 <div class="category-content">
-                    <label>Shadow Range: <span id="shadow-range-val">120</span></label><br>
-                    <input type="range" id="shadow-range-slider" min="20" max="250" step="5" value="120" style="width: 100%;"><br>
+                    <!-- 80 to match window.shadowRange in game_js.js. This read
+                         120 while the engine ran at 80: a slider's value is only
+                         pushed by its input event, never at load. -->
+                    <label>Shadow Range: <span id="shadow-range-val">80</span></label><br>
+                    <input type="range" id="shadow-range-slider" min="20" max="250" step="5" value="80" style="width: 100%;"><br>
                     <label style="opacity:.75;font-size:11px;">Radius around the player that has shadows at all. Smaller =
                     sharper, better self-shadowing (head on shoulders, contact with the ground). Larger = shadows further
                     out but blurrier, and past roughly 150 too coarse to resolve the character onto itself.</label><br>
+                    <label>Shadow Update Interval: <span id="shadow-interval-val">2</span></label><br>
+                    <input type="range" id="shadow-interval-slider" min="1" max="6" step="1" value="2" style="width: 100%;"><br>
+                    <label style="opacity:.75;font-size:11px;">Redraw the shadow map every N frames. The whole map is a
+                    second pass over every caster in the scene, so this divides that cost directly - 1 is every frame,
+                    2 is half the work. Higher values let a moving shadow trail its caster by up to N-1 frames.
+                    Tap the FPS counter to reset its min/average before comparing two settings.</label><br>
                 </div>
             </div>
 

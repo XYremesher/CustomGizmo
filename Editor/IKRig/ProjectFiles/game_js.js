@@ -16191,6 +16191,7 @@ export function startGame(CharacterClass) {
         // Re-scatters grass as well: its 'near'/'far' shadow-receiving split
         // is keyed to this same extent (see shadowSafe in buildGrass).
         { id: 'shadow-range-slider', vId: 'shadow-range-val', func: v => { window.shadowRange = v; applyShadowRange(); }, fix: 0, raw: true },
+        { id: 'shadow-interval-slider', vId: 'shadow-interval-val', func: v => window.shadowUpdateInterval = v, fix: 0, raw: true },
         { id: 'dither-strength-slider', vId: 'dither-strength-val', func: v => window.ditherStrength = v, fix: 2 },
         { id: 'dither-hole-radius-slider', vId: 'dither-hole-radius-val', func: v => window.ditherHoleRadius = v, fix: 0 },
         // Speech-bubble placement. Same slider table as everything else, so
@@ -17391,6 +17392,17 @@ export function startGame(CharacterClass) {
     let fpsSmoothed = 60;
     let fpsMin = Infinity;
     let fpsDisplayAccum = 0;
+    // Tap the counter to restart both figures. Without this the minimum is
+    // set once by the load hitch and never recovers, so it reads as a
+    // permanent single-digit number that says nothing about how the frame is
+    // running now - and comparing a setting before and after a change is
+    // impossible while the worst frame of the session is still in the total.
+    if (fpsCounterEl) {
+        fpsCounterEl.addEventListener('pointerdown', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            fpsMin = Infinity; fpsSmoothed = 60; fpsDisplayAccum = 1;
+        });
+    }
 
     // Ledge hand-IK debug visualization (Debug Vis: 'Show Ledge Hand IK').
     // Lazily builds a set of scene markers/lines + a head-mounted text
