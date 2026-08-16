@@ -329,6 +329,59 @@ export function startGame(CharacterClass) {
             built++;
         }
     }
+    // ---- Broad phase for the player's short-range rays ----
+    // intersectObjects has no spatial index and no early-out on distance:
+    // three.js only uses raycaster.far to filter the hits it already found, so
+    // a 2-unit ground probe still pays a matrix inverse, a ray transform and a
+    // bounds test for every collidable in the level - including the ~193
+    // per-tree colliders standing a hundred units away. That is why the forest
+    // spends 145us a ray against the stream's 44us while casting FEWER rays,
+    // and it is object COUNT doing it, not triangle density.
+    //
+    // The player's own probes reach at most ~2 units, so they only ever need
+    // the collidables around the player. Rebuilt when the player has moved
+    // REBUILD_MOVE, and the radius carries enough slack over that to stay
+    // correct in between.
+    //
+    // Objects are tested by their WORLD bounding sphere, not their origin, so
+    // something huge and far-centred - the ground plane most of all - is kept
+    // when it reaches into the neighbourhood.
+    const NEAR_COLLIDER_RADIUS = 8;
+    const NEAR_REBUILD_MOVE = 2;
+    let _nearColliders = [];
+    const _nearAt = new THREE.Vector3(Infinity, Infinity, Infinity);
+    let _nearSrc = null, _nearSrcLen = -1, _nearFrame = -1;
+    // Movement alone is not enough to keep this honest: a collidable can come
+    // to the player rather than the other way round - a thrown jar, a carried
+    // box set down - and would be missing from the list until the player
+    // happened to walk 2 units. Rebuilding on a short timer as well bounds how
+    // stale it can be to a few frames, for one pass over the array.
+    const NEAR_REBUILD_FRAMES = 6;
+    const _nearSphere = new THREE.Sphere();
+    function getNearColliders(src, center) {
+        if (window.broadPhaseOff) return src;
+        if (_nearSrc === src && _nearSrcLen === src.length &&
+            _frameToken - _nearFrame < NEAR_REBUILD_FRAMES &&
+            center.distanceToSquared(_nearAt) < NEAR_REBUILD_MOVE * NEAR_REBUILD_MOVE) {
+            return _nearColliders;
+        }
+        _nearFrame = _frameToken;
+        const reach = NEAR_COLLIDER_RADIUS + NEAR_REBUILD_MOVE;
+        _nearColliders = [];
+        for (let i = 0; i < src.length; i++) {
+            const o = src[i];
+            const g = o && o.geometry;
+            if (!g) continue;
+            if (!g.boundingSphere) g.computeBoundingSphere();
+            if (!g.boundingSphere) { _nearColliders.push(o); continue; }
+            _nearSphere.copy(g.boundingSphere).applyMatrix4(o.matrixWorld);
+            if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) _nearColliders.push(o);
+        }
+        _nearAt.copy(center);
+        _nearSrc = src;
+        _nearSrcLen = src.length;
+        return _nearColliders;
+    }
     // See the call site in animate for why this is cached and what
     // invalidates it.
     let _groundScanCache = null, _groundScanSrc = null, _groundScanLen = -1;
@@ -18014,7 +18067,11 @@ export function startGame(CharacterClass) {
                 fpsCounterEl.textContent =
                     `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})\n` +
                     `draws ${_lastDrawCalls}  tris ${(_lastTriangles / 1000).toFixed(0)}k\n` +
-                    `rays ${_lastRayCalls}  ${_lastRayMs.toFixed(1)}ms`;
+                    `rays ${_lastRayCalls}  ${_lastRayMs.toFixed(1)}ms\n` +
+                    // near/total is the broad phase's whole story: the second
+                    // number is what every ray used to walk, the first is what
+                    // it walks now.
+                    `near ${_nearColliders.length}/${collidables.length}`;
             }
         }
 
@@ -18292,7 +18349,12 @@ export function startGame(CharacterClass) {
         }
 
         ensureBoundsTrees(collidables);
-        const solidCollidables = heldCarryable ? collidables.filter(c => c !== heldCarryable) : collidables;
+        // Everything below this line raycasts against the player's immediate
+        // surroundings rather than the whole level - see getNearColliders.
+        // Taken before the held-carryable filter so the near list is keyed on
+        // the stable `collidables` array rather than a per-frame copy.
+        const nearCollidables = getNearColliders(collidables, char.group.position);
+        const solidCollidables = heldCarryable ? nearCollidables.filter(c => c !== heldCarryable) : nearCollidables;
         // Ground-scan-only variant, excluding isDecorativeBump terrain
         // (see buildKneeBumpField) - those small bumps still need to be in
         // solidCollidables itself for the per-foot legIK raycasts
