@@ -296,13 +296,28 @@ export function startGame(CharacterClass) {
     // the level was built - carryables, anything placed in the editor -
     // without needing a hook in each of the places that add them.
     const BVH_BUILDS_PER_FRAME = 3;
+    // Below this many triangles a bounds tree costs more than it saves, and
+    // giving one to everything made the sparse parts of the game SLOWER than
+    // before it was added. Most collidables here are BoxGeometry - twelve
+    // triangles - and descending a tree to reach twelve triangles is strictly
+    // more work than testing twelve triangles. The win is only ever on the
+    // dense meshes, which is where the forest's cost was.
+    window.bvhMinTris = 250;
     function ensureBoundsTrees(list) {
+        const minTris = window.bvhMinTris;
         let built = 0;
         for (let i = 0; i < list.length && built < BVH_BUILDS_PER_FRAME; i++) {
             const o = list[i];
             const g = o && o.geometry;
-            if (!g || g.boundsTree || g.userData._bvhFailed) continue;
-            if (!g.attributes || !g.attributes.position) continue;
+            if (!g || !g.attributes || !g.attributes.position) continue;
+            const tris = (g.index ? g.index.count : g.attributes.position.count) / 3;
+            if (tris < minTris) {
+                // Also drops a tree built under a lower threshold, so the
+                // setting can be moved at runtime while measuring.
+                if (g.boundsTree) g.disposeBoundsTree();
+                continue;
+            }
+            if (g.boundsTree || g.userData._bvhFailed) continue;
             try {
                 g.computeBoundsTree();
             } catch (e) {
