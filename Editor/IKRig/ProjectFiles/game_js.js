@@ -13341,6 +13341,17 @@ export function startGame(CharacterClass) {
     // of the single flat/sloped surface every other test area so far
     // provides - a real single-obstacle raycast per foot has nowhere to
     // "average out" bumps here.
+    // One cube geometry per SIZE, shared by every bump of that size, rather
+    // than one per bump. Level 1 lays four 8x8 fields, so this was 256
+    // identical BoxGeometry instances - 256 lots of vertex data and 256
+    // separate GPU uploads for one distinct shape. They differ only in
+    // position, rotation and scale, none of which live in the geometry.
+    const _bumpGeoBySize = new Map();
+    function bumpGeoFor(size) {
+        let g = _bumpGeoBySize.get(size);
+        if (!g) { g = new THREE.BoxGeometry(size, size, size); _bumpGeoBySize.set(size, g); }
+        return g;
+    }
     function buildKneeBumpField(centerX, centerZ, rows, cols, spacing, size = 0.32, baseHeight = 0.256, heightSpread = 0.22) {
         const bumpMat = new THREE.MeshToonMaterial({ color: 0x77aa88, gradientMap: threeTone });
         const startX = centerX - (cols - 1) * spacing / 2;
@@ -13348,7 +13359,7 @@ export function startGame(CharacterClass) {
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 const peakHeight = baseHeight + THREE.MathUtils.randFloatSpread(heightSpread);
-                const bump = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), bumpMat);
+                const bump = new THREE.Mesh(bumpGeoFor(size), bumpMat);
                 bump.rotation.x = Math.PI / 4;
                 bump.rotation.y = Math.random() * Math.PI * 2;
                 const halfDiagonal = size * Math.SQRT2 / 2;
