@@ -188,6 +188,15 @@ implementation.
   is then used as a fallback; that fallback is the frame-one pose, mid
   pickup, so it must keep easing in with the ramp rather than locking at once.
 
+  DO NOT HOLD THE HIPS' POSITION. It was tried, to stop the jump clips'
+  large hip translation from carrying the locked torso around with it, and
+  it wrecks the lower body: the jump clips' leg ROTATIONS are authored
+  against a pelvis that crouches and extends, so pinning the pelvis leaves
+  those rotations flailing on their own. The hips' position track has to
+  keep playing. Absorbing its effect on the upper body without moving the
+  legs means bending the spine chain instead - the chest pin below - and
+  that has its own lever-arm problem. There is no free version of this.
+
   A HIT AND A PICKUP ARE NOT THE SAME EVENT, and the reset branch keeps them
   apart. A pickup/drop/throw clears the caches, because a new hold has to be
   built. A hit only drops `stabilizeWeight` and leaves the caches alone: a
