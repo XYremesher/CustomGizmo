@@ -16431,6 +16431,9 @@ export function startGame(CharacterClass) {
     // to have hardcoded.
     window.dropOnTopMaxHeight = 1.5;
     window.spineBlendValue = 1.00;
+    // Per-frame retention of the carry damping's low-pass, before frame-rate
+    // normalisation. Higher is steadier and slower to follow the clip.
+    window.carryDampStrength = 0.93;
     window.orangeRecoilForce = 60.0;
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
@@ -16691,6 +16694,7 @@ export function startGame(CharacterClass) {
         { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => { throwTrimStart = v; window.throwTrimStart = v; } },
         { id: 'throw-hit-force-slider', vId: 'throw-hit-force-val', func: v => window.throwHitForce = v, fix: 0 },
         { id: 'throw-hit-radius-slider', vId: 'throw-hit-radius-val', func: v => window.throwHitRadius = v, fix: 2 },
+        { id: 'carry-damp-slider', vId: 'carry-damp-val', func: v => window.carryDampStrength = v, fix: 2 },
         { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { window.spineBlendValue = v; char.buildClips(); } },
         { id: 'slip-dur-slider', vId: 'slip-dur-val', func: v => ledgeSlipDuration = v },
         { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v },
