@@ -1120,10 +1120,10 @@
                     <label style="opacity:.75;font-size:11px;">Holds the carried object still in front of you. The hands follow
                     the walk cycle, so an object pinned to them inherits every bob; this filters that out in the character's
                     own frame, so walking and turning still move it with no lag. 0 turns it off.</label><br>
-                    <label><input type="checkbox" id="toggle-carry-hold-steady" checked> Hold the carried torso still</label><br>
-                    <label style="opacity:.75;font-size:11px;">Flattens the carry clip's spine motion to one pose, so the
-                    upper body does not sway while walking. Removes the motion instead of damping it away, which costs no
-                    responsiveness. Arms and hands keep animating.</label><br>
+                    <label><input type="checkbox" id="toggle-carry-hold-steady" checked> Freeze the upper body while carrying</label><br>
+                    <label style="opacity:.75;font-size:11px;">Freezes the carry clip's spine, arms and hands at one pose,
+                    so the hands - and therefore the object held between them - stop moving with the walk cycle. Removes the
+                    motion rather than damping it, so it costs no responsiveness.</label><br>
                     <label>Carry Damping: <span id="carry-damp-val">0.85</span></label><br>
                     <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.85" style="width: 100%;"><br>
                     <label style="opacity:.75;font-size:11px;">How steadily the upper body is held while carrying. Higher is
@@ -2482,7 +2482,7 @@
             return new THREE.AnimationClip(originalClip.name + '_lower', originalClip.duration, tracks);
         }
 
-        // holdSpine flattens the spine tracks to a single pose instead of
+        // holdSpine freezes the whole upper body to a single pose instead of
         // letting them animate. Used for the carry clip: what it animates
         // there is a half-second sway of the torso, and the whole point of
         // the carried pose is that everything above the pelvis stays put.
@@ -2497,27 +2497,35 @@
         // and the last frame in particular is not the held pose at all -
         // clamping to it settles the character with its arms out.
         //
-        // Only the spine goes still. The arm and hand tracks keep animating,
-        // so the hold keeps whatever life it has in the grip.
+        // Arms and hands go still too. They have to: the carried object is
+        // placed from the hand bones, so leaving those animating leaves the
+        // object bobbing no matter what the torso does.
         function makeUpperBodyClip(originalClip, spineBlendFactor, holdSpine = false) {
             const tracks = [];
             originalClip.tracks.forEach(track => {
                 if (isUpperBodyTrack(track.name)) {
                     const clonedTrack = track.clone();
-                    if (track.name.toLowerCase().includes('spine') && clonedTrack.ValueTypeName === 'quaternion') {
-                        if (holdSpine && clonedTrack.values.length >= 4) {
-                            // Nearest keyframe to the clip's midpoint, copied
-                            // over every other one - the track still exists and
-                            // still owns the bone, it just never changes.
-                            const frames = clonedTrack.values.length / 4;
-                            const mid = Math.min(frames - 1, Math.max(0, Math.round((frames - 1) / 2))) * 4;
-                            for (let i = 0; i < clonedTrack.values.length; i += 4) {
-                                clonedTrack.values[i]     = clonedTrack.values[mid];
-                                clonedTrack.values[i + 1] = clonedTrack.values[mid + 1];
-                                clonedTrack.values[i + 2] = clonedTrack.values[mid + 2];
-                                clonedTrack.values[i + 3] = clonedTrack.values[mid + 3];
+                    // EVERY upper-body track, arms and hands included - not
+                    // just the spine. The carried object is positioned from the
+                    // hand bones, so as long as those keep animating the object
+                    // keeps moving with them however still the torso is.
+                    if (holdSpine) {
+                        // Whatever this track's stride is (4 for quaternions,
+                        // 3 for positions), copy the keyframe nearest the
+                        // clip's middle over all the others. The track still
+                        // exists and still owns the bone, it just never
+                        // changes.
+                        const n = clonedTrack.values.length;
+                        const stride = Math.max(1, Math.round(n / Math.max(1, clonedTrack.times.length)));
+                        const frames = Math.floor(n / stride);
+                        if (frames > 1) {
+                            const mid = Math.floor((frames - 1) / 2) * stride;
+                            for (let i = 0; i < n; i += stride) {
+                                for (let k = 0; k < stride; k++) clonedTrack.values[i + k] = clonedTrack.values[mid + k];
                             }
                         }
+                    }
+                    if (track.name.toLowerCase().includes('spine') && clonedTrack.ValueTypeName === 'quaternion') {
                         for (let i = 0; i < clonedTrack.values.length; i += 4) {
                             const x = clonedTrack.values[i];
                             const y = clonedTrack.values[i+1];
