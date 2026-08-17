@@ -108,7 +108,7 @@ implementation.
   punching after that empties it. Changing one of these numbers without
   re-deriving the total tends to break that balance in a non-obvious way -
   do the arithmetic, don't just nudge and guess.
-- **Carry-stabilise damping is in LOCAL space** (`Character.animate`, the
+- **Carry-stabilise damping is in ROOT space** (`Character.animate`, the
   `window.isCarryingObj` block). It smooths the carry clip's own bone
   motion so the upper body reads as steady while walking.
 
@@ -129,7 +129,12 @@ implementation.
   in COMBINATION - any single one left on can hold the fault by itself, so
   turning them off one at a time proves nothing.
 
-  A local rotation does not change when the character turns, so there is
-  nothing to compensate for and nothing to accumulate. `lastGroupQuat` is
-  therefore dead and only cleared, never read. RemoteAvatar still has the
-  old world-space version of this for companions and bots.
+  Local space was tried in between and is wrong for the job: local is
+  relative to the parent, so the hips' own swing is inherited by the whole
+  chain untouched and the torso sways with them. Root space - each bone
+  relative to `char.group` times `fbxModel` - keeps the hips inside the
+  damped space while leaving the character's turning outside it, exactly,
+  by construction. Nothing is integrated frame to frame, so there is
+  nothing to accumulate. `lastGroupQuat` is dead and only cleared, never
+  read. RemoteAvatar still has the old world-space version for companions
+  and bots.

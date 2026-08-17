@@ -16433,7 +16433,7 @@ export function startGame(CharacterClass) {
     window.spineBlendValue = 1.00;
     // Per-frame retention of the carry damping's low-pass, before frame-rate
     // normalisation. Higher is steadier and slower to follow the clip.
-    window.carryDampStrength = 0.97;
+    window.carryDampStrength = 0.85;
     window.orangeRecoilForce = 60.0;
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;

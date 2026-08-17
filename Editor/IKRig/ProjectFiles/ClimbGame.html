@@ -1115,8 +1115,8 @@
                     <input type="range" id="throw-hit-force-slider" min="5" max="100" step="1" value="35" style="width: 100%;"><br>
                     <label>Throw Hit Radius: <span id="throw-hit-radius-val">0.8</span></label><br>
                     <input type="range" id="throw-hit-radius-slider" min="0.3" max="2.0" step="0.05" value="0.8" style="width: 100%;"><br>
-                    <label>Carry Damping: <span id="carry-damp-val">0.97</span></label><br>
-                    <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.97" style="width: 100%;"><br>
+                    <label>Carry Damping: <span id="carry-damp-val">0.85</span></label><br>
+                    <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.85" style="width: 100%;"><br>
                     <label style="opacity:.75;font-size:11px;">How steadily the upper body is held while carrying. Higher is
                     steadier but slower to follow the animation; lower lets the carry clip's own sway through.</label><br>
                     <label>Spine Stabilize Blend: <span id="spine-blend-val">1.00</span></label><br>
@@ -2442,6 +2442,10 @@
         const _recoilSpineQ = new THREE.Quaternion();
         const _recoilSpine1Q = new THREE.Quaternion();
         const _recoilNeckQ = new THREE.Quaternion();
+        // Carry-damping working set: the character's root orientation and its
+        // inverse, rebuilt from scratch each frame rather than integrated.
+        const _dampRootQ = new THREE.Quaternion();
+        const _dampInvQ = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
         const _identityQuat = new THREE.Quaternion();
@@ -4205,14 +4209,11 @@ updateClimbing(delta) {
 
                 if (window.isCarryingObj && this.spine) {
                     const stabilizeBlend = window.spineBlendValue;
-                    // Raised from a flat 0.85 when the damping moved to local
-                    // space. The old world-space version smoothed each bone
-                    // against the world, so damping the spine already steadied
-                    // spine1 and neck before their own pass ran and the effect
-                    // compounded down the chain. Local rotations are
-                    // independent of each other, so the same 0.85 lands weaker
-                    // at the end of the chain and the carry clip's own sway
-                    // shows through. Tunable - see the Carry Damping slider.
+                    // Back to the originally tuned 0.85 now that damping is in
+                    // root space: the chain compounds again, since each bone's
+                    // updateMatrixWorld means the two above it are already
+                    // steadied before their own pass. Tunable all the same -
+                    // see the Carry Damping slider.
                     const dampFactor = stabilizeBlend * window.carryDampStrength;
 
                     // lastSpineWorld etc. is a low-pass filter on the bone's
@@ -4279,35 +4280,45 @@ updateClimbing(delta) {
                         // Scratch, not clones: this block runs every frame the
                         // character is carrying, and it was building four
                         // quaternions each time.
-                        // Damped in LOCAL space - the bone's rotation relative
-                        // to its parent, which is exactly what the clip
-                        // animates and what this is meant to smooth.
+                        // Damped in ROOT space - each bone's orientation
+                        // relative to the character's own root, rather than to
+                        // the world or to its parent.
                         //
-                        // It used to cache each bone's WORLD orientation and
-                        // undo the root's rotation from it every frame, which
-                        // is the same job done the hard way and brought two
-                        // failures with it. The compensation had to be exactly
-                        // right or a residue went into the cache and stayed
-                        // there; and because the bones were damped in order,
-                        // spine1 and neck were pulled toward their own cached
-                        // world orientations while their parent was being
-                        // pulled too, so the errors stacked down the chain.
-                        // Bisecting the carry-hit warping landed here: with
-                        // this block off the body recovers, with it on it does
-                        // not, even with the recoil never reaching the spine.
+                        // The job is to hold everything above the pelvis
+                        // steady while the walk cycle swings the hips. Damping
+                        // a bone's LOCAL rotation cannot do that: local is
+                        // relative to the parent, so whatever the hips do is
+                        // inherited by the whole chain untouched and the torso
+                        // sways with them. World space does hold it still, but
+                        // then the character's own turning has to be taken out
+                        // of it - and doing that by accumulating a frame-to-
+                        // frame delta is what used to leave a residue in the
+                        // cache and settle the body at an angle after a hit.
                         //
-                        // A local rotation does not change when the character
-                        // turns, so there is nothing to compensate for, no
-                        // residue to accumulate and no order dependency.
-                        const applyDamping = (bone, lastLocalRef) => {
+                        // Root space is both at once. The hips are inside it,
+                        // so their motion is still damped; the root is outside
+                        // it, so turning is excluded exactly, by construction,
+                        // with nothing to accumulate. fbxModel is folded into
+                        // the root as well, so slope and turn lean pass
+                        // through rather than being fought.
+                        const rootQ = _dampRootQ.copy(this.group.quaternion);
+                        if (this.fbxModel) rootQ.multiply(this.fbxModel.quaternion);
+                        const rootInv = _dampInvQ.copy(rootQ).invert();
+
+                        const applyDamping = (bone, lastRootRef) => {
                             if (!bone) return;
-                            if (!this[lastLocalRef]) this[lastLocalRef] = bone.quaternion.clone();
-                            _tempQuat.copy(bone.quaternion).slerp(this[lastLocalRef], activeDampFactor);
-                            bone.quaternion.copy(_tempQuat);
-                            // Kept so anything reading world transforms later
-                            // this frame sees the damped pose.
+                            bone.getWorldQuaternion(_tempQuat).premultiply(rootInv);
+                            if (!this[lastRootRef]) this[lastRootRef] = _tempQuat.clone();
+                            _tempQuat.slerp(this[lastRootRef], activeDampFactor);
+                            this[lastRootRef].copy(_tempQuat);
+
+                            _tempQuat.premultiply(rootQ);
+                            const parentWorld = bone.parent.getWorldQuaternion(_tempQuat2);
+                            bone.quaternion.copy(parentWorld.invert().multiply(_tempQuat));
+                            // Its children read this in the same pass, and
+                            // damping the spine is what steadies the two above
+                            // it before their own turn comes.
                             bone.updateMatrixWorld(true);
-                            this[lastLocalRef].copy(_tempQuat);
                         };
 
                         applyDamping(this.spine, 'lastSpineWorld');
@@ -4360,14 +4371,18 @@ updateClimbing(delta) {
                         this.spine.updateMatrixWorld(true);
                     }
                 } else {
-                    // LOCAL rotations, matching what applyDamping caches now.
-                    // Left as world quaternions these would hand the damping a
-                    // reference in the wrong space the moment it resumed, and
-                    // it would spend its first frames pulling the spine toward
-                    // a pose that was never a local rotation at all.
-                    if (this.spine && this.lastSpineWorld) this.lastSpineWorld.copy(this.spine.quaternion);
-                    if (this.spine1 && this.lastSpine1World) this.lastSpine1World.copy(this.spine1.quaternion);
-                    if (this.neck && this.lastNeckWorld) this.lastNeckWorld.copy(this.neck.quaternion);
+                    // ROOT space, matching what applyDamping caches - a
+                    // reference in any other space would have the damping
+                    // pulling toward a pose that was never one of these at all
+                    // on the frame it resumes.
+                    if (this.spine || this.spine1 || this.neck) {
+                        _dampRootQ.copy(this.group.quaternion);
+                        if (this.fbxModel) _dampRootQ.multiply(this.fbxModel.quaternion);
+                        _dampInvQ.copy(_dampRootQ).invert();
+                        if (this.spine && this.lastSpineWorld) this.spine.getWorldQuaternion(this.lastSpineWorld).premultiply(_dampInvQ);
+                        if (this.spine1 && this.lastSpine1World) this.spine1.getWorldQuaternion(this.lastSpine1World).premultiply(_dampInvQ);
+                        if (this.neck && this.lastNeckWorld) this.neck.getWorldQuaternion(this.lastNeckWorld).premultiply(_dampInvQ);
+                    }
 
                     // The COMPOSED root, matching what the damping branch
                     // stores - group yaw times fbxModel's own tilt. This used
