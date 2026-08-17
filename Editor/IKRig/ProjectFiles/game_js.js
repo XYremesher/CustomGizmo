@@ -18318,6 +18318,17 @@ export function startGame(CharacterClass) {
         }
 
         char.updateHitFlash(delta);
+        // Here, unconditionally, for the same reason updateHitFlash is: the
+        // recoil lean and impact twist are simulation state that decays with
+        // time, not animation state.
+        //
+        // It used to be driven from inside Character.animate, and the ragdoll
+        // and stand-up branches below never call that - they run updateRagdoll
+        // or updateStandUp and tick the mixer themselves. So a hit hard enough
+        // to knock the character down froze the lean at whatever it had
+        // reached, for as long as the body was on the floor and getting up,
+        // and it was still there afterwards: the "stays crooked" report.
+        char.updateRecoil(delta);
 
         // Hidden poise/stagger pool (see MultiplayerClient._applyPunchEvent):
         // regenerates back toward full once a bit of time has passed since

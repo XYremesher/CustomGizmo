@@ -3827,7 +3827,11 @@ updateClimbing(delta) {
                 if (this.mixer) this.mixer.update(delta);
                 if (!this.isLoaded) return;
 
-                this.updateRecoil(delta);
+                // updateRecoil is NOT called here any more - game_js.js's frame
+                // loop drives it next to updateHitFlash, so it keeps decaying
+                // through the ragdoll and stand-up branches, which never reach
+                // this method. Calling it here as well would decay it twice
+                // per frame in every ordinary state.
                 
                 if (this.isStandingUp) {
                     if (this.activeUpperAction) {
