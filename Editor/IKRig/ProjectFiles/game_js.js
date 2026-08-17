@@ -348,39 +348,45 @@ export function startGame(CharacterClass) {
     // when it reaches into the neighbourhood.
     const NEAR_COLLIDER_RADIUS = 8;
     const NEAR_REBUILD_MOVE = 2;
-    let _nearColliders = [];
-    const _nearAt = new THREE.Vector3(Infinity, Infinity, Infinity);
-    let _nearSrc = null, _nearSrcLen = -1, _nearFrame = -1;
     // Movement alone is not enough to keep this honest: a collidable can come
-    // to the player rather than the other way round - a thrown jar, a carried
-    // box set down - and would be missing from the list until the player
+    // to the agent rather than the other way round - a thrown jar, a carried
+    // box set down - and would be missing from the list until the agent
     // happened to walk 2 units. Rebuilding on a short timer as well bounds how
     // stale it can be to a few frames, for one pass over the array.
     const NEAR_REBUILD_FRAMES = 6;
     const _nearSphere = new THREE.Sphere();
-    function getNearColliders(src, center) {
+    // One cache per agent, since the player, each companion and each bot are
+    // in different places and each wants the collidables around ITSELF. A
+    // single shared list would have to be big enough to cover all of them at
+    // once, which on a spread-out party is most of the level again.
+    function makeNearCache() {
+        return { list: [], at: new THREE.Vector3(Infinity, Infinity, Infinity), src: null, len: -1, frame: -1 };
+    }
+    const _playerNearCache = makeNearCache();
+    function getNearColliders(src, center, cache) {
         if (window.broadPhaseOff) return src;
-        if (_nearSrc === src && _nearSrcLen === src.length &&
-            _frameToken - _nearFrame < NEAR_REBUILD_FRAMES &&
-            center.distanceToSquared(_nearAt) < NEAR_REBUILD_MOVE * NEAR_REBUILD_MOVE) {
-            return _nearColliders;
+        if (cache.src === src && cache.len === src.length &&
+            _frameToken - cache.frame < NEAR_REBUILD_FRAMES &&
+            center.distanceToSquared(cache.at) < NEAR_REBUILD_MOVE * NEAR_REBUILD_MOVE) {
+            return cache.list;
         }
-        _nearFrame = _frameToken;
+        cache.frame = _frameToken;
         const reach = NEAR_COLLIDER_RADIUS + NEAR_REBUILD_MOVE;
-        _nearColliders = [];
+        const out = [];
         for (let i = 0; i < src.length; i++) {
             const o = src[i];
             const g = o && o.geometry;
             if (!g) continue;
             if (!g.boundingSphere) g.computeBoundingSphere();
-            if (!g.boundingSphere) { _nearColliders.push(o); continue; }
+            if (!g.boundingSphere) { out.push(o); continue; }
             _nearSphere.copy(g.boundingSphere).applyMatrix4(o.matrixWorld);
-            if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) _nearColliders.push(o);
+            if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) out.push(o);
         }
-        _nearAt.copy(center);
-        _nearSrc = src;
-        _nearSrcLen = src.length;
-        return _nearColliders;
+        cache.list = out;
+        cache.at.copy(center);
+        cache.src = src;
+        cache.len = src.length;
+        return out;
     }
     // See the call site in animate for why this is cached and what
     // invalidates it.
@@ -5500,9 +5506,17 @@ export function startGame(CharacterClass) {
             else companion.fbxModel.position.lerp(_climbModelRest, Math.min(1, delta / _climbBlendT));
         }
 
-        // Ground-cast list for this frame's rays.
+        // Ground-cast list for this frame's rays. Only what is around THIS
+        // companion, for the same reason the player's rays were narrowed: the
+        // rays reach a couple of units and the level's whole collidable set,
+        // ~193 tree colliders included, was being walked for each of them - by
+        // every companion, every frame. The cache lives on the avatar so each
+        // one keeps its own neighbourhood; they can be spread right across the
+        // level and a shared list would have to span all of them.
+        if (!companion._nearCache) companion._nearCache = makeNearCache();
+        const compNear = getNearColliders(collidables, companion.group.position, companion._nearCache);
         _compGroundList.length = 0;
-        for (let i = 0; i < collidables.length; i++) _compGroundList.push(collidables[i]);
+        for (let i = 0; i < compNear.length; i++) _compGroundList.push(compNear[i]);
         // ...and the shared ground plane ONLY on levels that actually stand on
         // it. three.js raycasting ignores .visible (the same trap the player's
         // UI arrow documents), so on a level that switches the plane off and
@@ -18071,7 +18085,7 @@ export function startGame(CharacterClass) {
                     // near/total is the broad phase's whole story: the second
                     // number is what every ray used to walk, the first is what
                     // it walks now.
-                    `near ${_nearColliders.length}/${collidables.length}`;
+                    `near ${_playerNearCache.list.length}/${collidables.length}`;
             }
         }
 
@@ -18353,7 +18367,7 @@ export function startGame(CharacterClass) {
         // surroundings rather than the whole level - see getNearColliders.
         // Taken before the held-carryable filter so the near list is keyed on
         // the stable `collidables` array rather than a per-frame copy.
-        const nearCollidables = getNearColliders(collidables, char.group.position);
+        const nearCollidables = getNearColliders(collidables, char.group.position, _playerNearCache);
         const solidCollidables = heldCarryable ? nearCollidables.filter(c => c !== heldCarryable) : nearCollidables;
         // Ground-scan-only variant, excluding isDecorativeBump terrain
         // (see buildKneeBumpField) - those small bumps still need to be in
