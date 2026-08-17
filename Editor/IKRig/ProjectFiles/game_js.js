@@ -7925,6 +7925,11 @@ export function startGame(CharacterClass) {
 
                 const fadeMat = shinyJarMat.clone();
                 shard.material = fadeMat;
+                // ownGeometry deliberately absent: Object3D.clone shares the
+                // geometry rather than copying it, so these shards are drawing
+                // the TEMPLATE's buffers. See the cleanup in animate - it must
+                // not dispose them, or every shatter frees the geometry the
+                // next one needs and pays to upload it again.
                 shard.userData = { velocity: randomScatter, lifespan: 4.0, material: fadeMat };
                 activeShards.push(shard);
             });
@@ -7952,7 +7957,9 @@ export function startGame(CharacterClass) {
                 const randomScatter = new THREE.Vector3((Math.random() - 0.5) * 5.0, Math.random() * 5.0 + 2.5, (Math.random() - 0.5) * 5.0);
                 if (impactVelocity) randomScatter.addScaledVector(impactVelocity, 0.35);
 
-                shardMesh.userData = { velocity: randomScatter, lifespan: 3.5 + Math.random() * 1.0, material: fadeMat };
+                // This path DOES build a geometry per shard (jittered vertices
+                // on its own box), so this one owns it and must free it.
+                shardMesh.userData = { velocity: randomScatter, lifespan: 3.5 + Math.random() * 1.0, material: fadeMat, ownGeometry: true };
                 activeShards.push(shardMesh);
             }
         }
@@ -19299,7 +19306,11 @@ export function startGame(CharacterClass) {
 
             if (shard.userData.lifespan <= 0) {
                 scene.remove(shard);
-                if (shard.geometry) shard.geometry.dispose();
+                // Only the procedurally-built shards own their geometry. The
+                // ones cloned off brokenJarTemplate share ITS geometry, and
+                // disposing that here freed the template's GPU buffers on
+                // every shatter - the next one silently re-uploaded them.
+                if (shard.userData.ownGeometry && shard.geometry) shard.geometry.dispose();
                 if (shard.material) {
                     if (Array.isArray(shard.material)) shard.material.forEach(m => m.dispose());
                     else shard.material.dispose();
