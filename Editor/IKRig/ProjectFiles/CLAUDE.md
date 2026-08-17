@@ -168,6 +168,26 @@ implementation.
   and never lifted it. It is constructed at 0.0 for the same reason - 1.0
   asserted a settled hold that had never happened.
 
+  The held reference comes from the CARRY CLIP, not from the live character -
+  `Character.getCarryPoseRef`, sampled at `window.carryPoseTime` (default 0).
+  Sampling live meant the reference was whatever pose was on screen when the
+  ramp closed, and a looping clip is at an arbitrary phase by then, so the
+  same pickup came out upright once and leaning back the next time. From the
+  clip it is identical every carry, and the blend has a fixed target from
+  frame one rather than chasing a capture that is still moving.
+
+  It is returned in the YAW FRAME to match what `applyDamping` caches, and
+  the derivation is why no live transform is read: a bone's world
+  orientation is group * fbxModel * every local rotation down the chain,
+  `fbxModel` rests at `_identityQuat` and the group is pure yaw, so the
+  yaw-frame orientation is just the product of local rotations from
+  `fbxModel` down to the bone. Bones the clip does not animate use the bind
+  pose captured at load (`userData._restQuat`) - for the hips that means
+  standing straight, which is the right thing to hang an upright carry pose
+  off. `carryRefOk` is false if the clip is missing, and the old live capture
+  is then used as a fallback; that fallback is the frame-one pose, mid
+  pickup, so it must keep easing in with the ramp rather than locking at once.
+
   A HIT AND A PICKUP ARE NOT THE SAME EVENT, and the reset branch keeps them
   apart. A pickup/drop/throw clears the caches, because a new hold has to be
   built. A hit only drops `stabilizeWeight` and leaves the caches alone: a

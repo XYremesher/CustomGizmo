@@ -2790,6 +2790,12 @@
                             child.parent.add(outlineClone);
                         }
                         if (child.isBone) {
+                            // Bind pose, captured before a single frame of
+                            // animation has been applied. getCarryPoseRef needs
+                            // a local rotation for bones the carry clip has no
+                            // track for, and this is the only moment the real
+                            // rest value is readable.
+                            child.userData._restQuat = child.quaternion.clone();
                             const name = child.name.toLowerCase();
                             if (name.includes('hips') || name.includes('pelvis')) this.hips = child;
                             if (name.includes('spine1')) this.spine1 = child;
@@ -3056,6 +3062,8 @@
                     }
                 }
                 this.actions = {};
+                // Rebuilt clips mean the sampled carry pose is stale.
+                this._carryPose = null;
 
                 for (let name in this.originalClips) {
                     const clip = this.originalClips[name];
@@ -3281,6 +3289,74 @@
             // it reads fbxModel's own current tilt directly, so it's
             // naturally a no-op once that's back to identity.
             //
+            // The orientation a locked bone should be HELD at, taken from
+            // the carry clip itself rather than sampled off the live character.
+            //
+            // Sampling live meant the reference was whatever pose happened to
+            // be on screen at the instant the ramp closed, and a looping clip
+            // is at an arbitrary phase by then - so the carry came out upright
+            // on one pickup and leaning back on the next, from identical
+            // inputs. Read from the clip at a fixed time it is the same pose
+            // every time, and the blend has a fixed target from the first
+            // frame instead of chasing a capture that is still moving, which
+            // is most of what made it feel unsteady.
+            //
+            // Returned in the YAW FRAME, to match what applyDamping caches.
+            // A bone's world orientation is group * fbxModel * every local
+            // rotation down the chain; fbxModel rests at identity and the
+            // group is pure yaw, so the yaw-frame orientation is exactly the
+            // product of the local rotations from fbxModel down to the bone.
+            // No live transform is read, so nothing about where the character
+            // is standing or which way it leans can get baked in.
+            getCarryPoseRef(bone) {
+                if (!bone || !this.fbxModel) return null;
+                const t = window.carryPoseTime !== undefined ? window.carryPoseTime : 0;
+                if (!this._carryPose || this._carryPoseTime !== t) {
+                    this._carryPoseTime = t;
+                    this._carryPose = null;
+                    this.carryRefOk = false;
+                    const clip = this.originalClips && this.originalClips['carry'];
+                    if (clip) {
+                        const pose = new Map();
+                        for (const track of clip.tracks) {
+                            if (!track.name.endsWith('.quaternion')) continue;
+                            const times = track.times;
+                            if (!times.length) continue;
+                            let i = 0;
+                            while (i < times.length - 1 && times[i + 1] <= t) i++;
+                            const v = track.values;
+                            pose.set(track.name.slice(0, -'.quaternion'.length),
+                                new THREE.Quaternion(v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]));
+                        }
+                        this._carryPose = pose;
+                        this.carryRefOk = pose.size > 0;
+                    }
+                }
+                if (!this.carryRefOk) return null;
+
+                // Bounded rather than while(true): a bone that is somehow not
+                // under fbxModel would otherwise walk to the scene root and
+                // multiply in the world's transform.
+                const chain = [];
+                let b = bone;
+                while (b && b !== this.fbxModel && chain.length < 24) {
+                    chain.unshift(b);
+                    b = b.parent;
+                }
+                if (b !== this.fbxModel) return null;
+
+                const q = new THREE.Quaternion();
+                for (const node of chain) {
+                    const fromClip = this._carryPose.get(node.name);
+                    // Rest for anything the clip does not animate - including
+                    // the hips, when carry has no hips track: that is the
+                    // character standing straight, which is the right thing to
+                    // hang an upright carry pose off.
+                    q.multiply(fromClip || node.userData._restQuat || node.quaternion);
+                }
+                return q;
+            }
+
             // Pins the CHEST in the character's own frame and bends the spine
             // joints between it and the pelvis to keep it there - a two-joint
             // CCD chain solved every frame while carrying.
@@ -4623,9 +4699,17 @@ updateClimbing(delta) {
                         const applyDamping = (bone, lastRootRef, retention) => {
                             if (!bone) return;
                             bone.getWorldQuaternion(_tempQuat).premultiply(rootInv);
-                            if (!this[lastRootRef]) this[lastRootRef] = _tempQuat.clone();
+                            if (!this[lastRootRef]) {
+                                // The clip's pose when it can be had, the live
+                                // one only as a fallback. Note which, because
+                                // a fallback reference is the frame-one pose -
+                                // mid-pickup - and must not be locked
+                                // immediately the way a clip reference can be.
+                                const ref = this.getCarryPoseRef(bone);
+                                this[lastRootRef] = ref || _tempQuat.clone();
+                            }
                             const held = this[lastRootRef];
-                            const keep = this.carryHoldSeeded
+                            const keep = (this.carryHoldSeeded || this.carryRefOk)
                                 ? Math.pow(retention, delta * 120)
                                 : Math.pow(retention, delta * 120) * this.stabilizeWeight;
                             if (keep < 1) held.slerp(_tempQuat, 1 - keep);
