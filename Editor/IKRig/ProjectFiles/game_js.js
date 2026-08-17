@@ -535,6 +535,37 @@ export function startGame(CharacterClass) {
         return actualSpeed;
     }
 
+    // Shared projectile geometry and materials.
+    //
+    // Every shot used to build its own SphereGeometry and MeshBasicMaterial,
+    // and the despawn path only did scene.remove - no dispose on either. So
+    // five turrets firing continuously leaked a geometry and a material per
+    // shot, and three.js never releases the GPU buffers for a geometry that
+    // is dropped without being disposed. That accumulates for as long as the
+    // level is open, which is what an intermittent stutter that gets worse
+    // the longer you play looks like.
+    //
+    // Shared instead of pooled-and-disposed: there are only ever a handful of
+    // distinct sizes and four colours, they are cheap to keep, and nothing
+    // that is shared can be freed by whichever projectile happens to expire
+    // first. Keyed by size because projSize is a live-tunable slider.
+    //
+    // 16x12 segments rather than the default 32x16 - a projectile this small
+    // was being drawn with ~960 triangles, and at this size on screen the
+    // difference is not visible.
+    const _projGeoBySize = new Map();
+    function projectileGeoFor(size) {
+        let g = _projGeoBySize.get(size);
+        if (!g) { g = new THREE.SphereGeometry(size, 16, 12); _projGeoBySize.set(size, g); }
+        return g;
+    }
+    const _projMatByColor = new Map();
+    function projectileMatFor(color) {
+        let m = _projMatByColor.get(color);
+        if (!m) { m = new THREE.MeshBasicMaterial({ color }); _projMatByColor.set(color, m); }
+        return m;
+    }
+
     class ShooterBox {
         constructor(parent, x, y, z, intensity = 'high', fireDir = new THREE.Vector3(-1, 0, 0)) {
             this.intensity = intensity;
@@ -574,7 +605,7 @@ export function startGame(CharacterClass) {
             else if (this.intensity === 'medium') color = 0xffff55;
             else if (this.intensity === 'medium_high') color = 0xffaa44;
 
-            const pMesh = new THREE.Mesh(new THREE.SphereGeometry(projSize), new THREE.MeshBasicMaterial({ color: color }));
+            const pMesh = new THREE.Mesh(projectileGeoFor(projSize), projectileMatFor(color));
             pMesh.position.copy(this.mesh.position);
             scene.add(pMesh);
 
@@ -19218,6 +19249,10 @@ export function startGame(CharacterClass) {
         const targetPos = _shooterTargetPos.copy(char.group.position).setY(char.group.position.y + 1.0);
         shooters.forEach(s => s.update(delta, targetPos, scene));
 
+        // The despawns below remove the mesh without disposing its geometry or
+        // material, and that is correct: both come from the shared caches by
+        // ShooterBox, so freeing them with the first projectile to expire
+        // would take them out from under every projectile still in flight.
         for (let i = projectiles.length - 1; i >= 0; i--) {
             let p = projectiles[i];
             p.lifespan -= delta;
