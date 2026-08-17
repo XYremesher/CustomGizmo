@@ -2453,10 +2453,6 @@
         const _ikAxis = new THREE.Vector3();
         const _ikWorldQ = new THREE.Quaternion();
         const _ikParentQ = new THREE.Quaternion();
-        // Its own root pair rather than sharing the damping's: the caller
-        // holds live references to those across the call.
-        const _ikRootQ = new THREE.Quaternion();
-        const _ikRootInv = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
         const _identityQuat = new THREE.Quaternion();
@@ -3324,12 +3320,23 @@
                 }
                 if (!this._spineChain) return;
 
-                const rootQ = _ikRootQ.copy(this.group.quaternion);
-                if (this.fbxModel) rootQ.multiply(this.fbxModel.quaternion);
-                const rootInv = _ikRootInv.copy(rootQ).invert();
+                const model = this.fbxModel;
+                if (!model) return;
 
-                this.spine.getWorldPosition(_ikChestNow);
-                _ikChestNow.sub(this.group.position).applyQuaternion(rootInv);
+                // worldToLocal/localToWorld rather than hand-rolled root maths.
+                // Composing group and fbxModel rotations by hand and measuring
+                // the offset from group.position looks equivalent and is not:
+                // fbxModel has its own position, actively rewritten every frame
+                // to hold the hips pivot (see the setSlopeTilt block), and its
+                // rotation pivots about ITS origin, not the group's. The chest
+                // sits ~1.4 units up, so a 10 degree lean turned into a 24cm
+                // error in the pin - which the solver then dutifully bent the
+                // spine double trying to reach. The matrix does all of it,
+                // scale included, and cannot drift out of agreement with the
+                // transform actually used to draw the model.
+                this.spine.getWorldPosition(_ikEffPos);
+                _ikChestNow.copy(_ikEffPos);
+                model.worldToLocal(_ikChestNow);
 
                 if (!this.chestPinLocal) {
                     this.chestPinLocal = _ikChestNow.clone();
@@ -3344,21 +3351,47 @@
                 const keep = Math.pow(0.98, delta * 120);
                 this.chestPinLocal.lerp(_ikChestNow, 1 - keep);
 
-                _ikTargetWorld.copy(this.chestPinLocal).applyQuaternion(rootQ).add(this.group.position);
+                // Hard leash, and the reason this can no longer deform anyone.
+                // The pin gets a few centimetres from where the animation
+                // actually has the chest - enough to swallow the hip bob, which
+                // is the whole job, and not enough to hold a stale pose.
+                // Without it the pin kept aiming at wherever it was first
+                // captured, and it was captured at the very start of the
+                // stabilize ramp with carry_upper still mid-transition and the
+                // chest not yet raised. It then spent the entire carry hauling
+                // the torso back down to a pose the character had already left:
+                // the doubling-over on pickup.
+                //
+                // A leash beats picking a better capture moment. The solver's
+                // lever arm is short, so a few centimetres of error already
+                // costs tens of degrees of bend - the safe range wants
+                // enforcing every frame, whatever put the error there.
+                //
+                // In WORLD units, not the model's: fbxModel is scaled to about
+                // 0.0065, so this written in local units would have meant 0.4mm
+                // and the solver would never have moved at all. The pin is
+                // still STORED local, since it has to ride with the model, but
+                // what counts as too far is a question about what the player
+                // sees.
+                const MAX_PIN_OFFSET = 0.06;
+                _ikTargetWorld.copy(this.chestPinLocal);
+                model.localToWorld(_ikTargetWorld);
+                _ikToTarget.subVectors(_ikTargetWorld, _ikEffPos);
+                const off = _ikToTarget.length();
+                if (off > MAX_PIN_OFFSET) {
+                    _ikTargetWorld.copy(_ikEffPos).addScaledVector(_ikToTarget, MAX_PIN_OFFSET / off);
+                    // Written back, so the leash actually holds instead of
+                    // being re-derived from a pin that keeps drifting further
+                    // out every frame behind it.
+                    this.chestPinLocal.copy(_ikTargetWorld);
+                    model.worldToLocal(this.chestPinLocal);
+                }
+
                 // Blend the target in rather than the result: partial weight
                 // means aiming part of the way, which is still a pose the
                 // solver reaches exactly, instead of leaving the chain
                 // half-solved somewhere it was never asked to be.
-                this.spine.getWorldPosition(_ikEffPos);
                 _ikTargetWorld.lerp(_ikEffPos, 1 - weight);
-
-                // Something has gone wrong - a teleport, a level load - and
-                // dragging the spine across the gap would look far worse than
-                // one frame of bob. Re-seed and let it settle from here.
-                if (_ikEffPos.distanceToSquared(_ikTargetWorld) > 0.25) {
-                    this.chestPinLocal.copy(_ikChestNow);
-                    return;
-                }
 
                 const chain = this._spineChain;
                 // Two passes over two joints. CCD converges fastest at the
@@ -3382,7 +3415,12 @@
                         // the effector happens to sit near its own joint and
                         // the required swing blows up.
                         const angle = 2 * Math.acos(Math.min(1, Math.abs(_ikSwing.w)));
-                        const MAX_STEP = 0.35;
+                        // Small, because it no longer has far to go: the leash
+                        // above caps the error at 6cm, which on this lever arm
+                        // is about 11 degrees, so two passes of 0.2 converge
+                        // with room to spare. Anything larger only widens the
+                        // damage a single bad frame could do.
+                        const MAX_STEP = 0.2;
                         if (angle > MAX_STEP) {
                             _ikAxis.set(_ikSwing.x, _ikSwing.y, _ikSwing.z);
                             if (_ikAxis.lengthSq() < 1e-8) continue;
