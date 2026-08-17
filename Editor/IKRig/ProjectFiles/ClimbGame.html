@@ -3130,22 +3130,6 @@
                     this.fbxModel.updateMatrixWorld(true);
                     this.hips.getWorldPosition(_hipsPivotAfter);
                     this.fbxModel.position.add(_hipsPivotBefore.sub(_hipsPivotAfter));
-                    // This ADDS a correction every frame and nothing here
-                    // takes it back - the only thing pulling the model home is
-                    // a lerp at 15/sec inside animate(), which runs earlier in
-                    // the frame and in a different method. While the model is
-                    // turning fast the per-frame correction outruns that pull
-                    // and the offset accumulates, which detaches the body from
-                    // its own root: the hit twist decaying and turn lean from
-                    // movement input at the same time is exactly that case.
-                    //
-                    // Keeping the hips pinned through a genuine tilt only ever
-                    // needs a few tenths - a 20 degree lean moves them about
-                    // 0.34 - so anything past this is drift, not correction.
-                    const MAX_MODEL_OFFSET = 0.5;
-                    if (this.fbxModel.position.lengthSq() > MAX_MODEL_OFFSET * MAX_MODEL_OFFSET) {
-                        this.fbxModel.position.setLength(MAX_MODEL_OFFSET);
-                    }
                 }
             }
 
