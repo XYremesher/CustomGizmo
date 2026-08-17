@@ -21832,6 +21832,52 @@ export function startGame(CharacterClass) {
                 handMidpoint.y += 0.5;
                 heldCarryable.position.copy(handMidpoint);
                 heldCarryable.quaternion.copy(char.group.quaternion);
+
+                // window.carryTickDebug = true to find where a jump's click
+                // comes from. Splits the object's frame-to-frame movement into
+                // the two things that can cause it and reports only the frames
+                // that actually jump, so one jump is enough to read.
+                //
+                //   group  - the character's own motion. A step here is the
+                //            jump arc or a landing snap, and the object is
+                //            just making it visible.
+                //   local  - the hands moving RELATIVE to the character, which
+                //            is the skeleton: a clip transition, the hips
+                //            position track, the hold engaging.
+                //
+                // Whichever one spikes on the click frame is the one to fix;
+                // there is no third option, since the object is placed from
+                // exactly these two.
+                if (window.carryTickDebug) {
+                    if (!window._ctPrevObj) {
+                        window._ctPrevObj = heldCarryable.position.clone();
+                        window._ctPrevLocal = heldCarryable.position.clone().sub(char.group.position);
+                        window._ctPrevGroup = char.group.position.clone();
+                    } else {
+                        const dObj = heldCarryable.position.distanceTo(window._ctPrevObj);
+                        const dGroup = char.group.position.distanceTo(window._ctPrevGroup);
+                        const local = heldCarryable.position.clone().sub(char.group.position);
+                        const dLocal = local.distanceTo(window._ctPrevLocal);
+                        // Per-frame distances scale with frame time, so the
+                        // threshold is a SPEED - otherwise a slow frame reads
+                        // as a spike on its own.
+                        if (delta > 0 && dLocal / delta > (window.carryTickThreshold || 2.0)) {
+                            console.log('[carry-tick]',
+                                'obj', dObj.toFixed(4),
+                                '= group', dGroup.toFixed(4),
+                                '+ local', dLocal.toFixed(4),
+                                '| localY', (local.y - window._ctPrevLocal.y).toFixed(4),
+                                '| yVel', yVelocity.toFixed(2),
+                                'grounded', isGrounded,
+                                'dt', delta.toFixed(4));
+                        }
+                        window._ctPrevObj.copy(heldCarryable.position);
+                        window._ctPrevLocal.copy(local);
+                        window._ctPrevGroup.copy(char.group.position);
+                    }
+                } else if (window._ctPrevObj) {
+                    window._ctPrevObj = null;
+                }
             }
 
             networkCarryUpper = false;
