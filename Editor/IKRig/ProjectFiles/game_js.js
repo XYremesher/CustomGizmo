@@ -16433,7 +16433,9 @@ export function startGame(CharacterClass) {
     window.spineBlendValue = 1.00;
     // Per-frame retention of the carry damping's low-pass, before frame-rate
     // normalisation. Higher is steadier and slower to follow the clip.
-    window.carryDampStrength = 0.91;
+    window.carryDampStrength = 0.85;
+    // See makeUpperBodyClip - the carry clip's spine is held at one pose.
+    window.carryHoldSteady = true;
     window.orangeRecoilForce = 60.0;
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
@@ -16950,6 +16952,15 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
+    {
+        const el = document.getElementById('toggle-carry-hold-steady');
+        if (el) {
+            window.carryHoldSteady = el.checked;
+            // The flattening happens when the clips are built, so changing it
+            // has to rebuild them - same as the spine blend slider.
+            el.addEventListener('change', e => { window.carryHoldSteady = e.target.checked; char.buildClips(); });
+        }
+    }
     {
         const el = document.getElementById('toggle-anim-debug');
         if (el) {

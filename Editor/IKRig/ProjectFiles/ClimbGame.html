@@ -1115,8 +1115,12 @@
                     <input type="range" id="throw-hit-force-slider" min="5" max="100" step="1" value="35" style="width: 100%;"><br>
                     <label>Throw Hit Radius: <span id="throw-hit-radius-val">0.8</span></label><br>
                     <input type="range" id="throw-hit-radius-slider" min="0.3" max="2.0" step="0.05" value="0.8" style="width: 100%;"><br>
-                    <label>Carry Damping: <span id="carry-damp-val">0.91</span></label><br>
-                    <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.91" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-carry-hold-steady" checked> Hold the carried torso still</label><br>
+                    <label style="opacity:.75;font-size:11px;">Flattens the carry clip's spine motion to one pose, so the
+                    upper body does not sway while walking. Removes the motion instead of damping it away, which costs no
+                    responsiveness. Arms and hands keep animating.</label><br>
+                    <label>Carry Damping: <span id="carry-damp-val">0.85</span></label><br>
+                    <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.85" style="width: 100%;"><br>
                     <label style="opacity:.75;font-size:11px;">How steadily the upper body is held while carrying. Higher is
                     steadier but slower to follow the animation; lower lets the carry clip's own sway through.</label><br>
                     <label>Spine Stabilize Blend: <span id="spine-blend-val">1.00</span></label><br>
@@ -2473,12 +2477,42 @@
             return new THREE.AnimationClip(originalClip.name + '_lower', originalClip.duration, tracks);
         }
 
-        function makeUpperBodyClip(originalClip, spineBlendFactor) {
+        // holdSpine flattens the spine tracks to a single pose instead of
+        // letting them animate. Used for the carry clip: what it animates
+        // there is a half-second sway of the torso, and the whole point of
+        // the carried pose is that everything above the pelvis stays put.
+        //
+        // Damping it away was the alternative and it is the worse one - a
+        // low-pass strong enough to flatten a 0.53s cycle also makes the
+        // upper body lag noticeably behind a turn. Removing the motion at
+        // source costs nothing, because there is nothing left to smooth.
+        //
+        // The pose is sampled at the middle of the clip rather than either
+        // end: the ends of a loop are where it is blending back into itself,
+        // and the last frame in particular is not the held pose at all -
+        // clamping to it settles the character with its arms out.
+        //
+        // Only the spine goes still. The arm and hand tracks keep animating,
+        // so the hold keeps whatever life it has in the grip.
+        function makeUpperBodyClip(originalClip, spineBlendFactor, holdSpine = false) {
             const tracks = [];
             originalClip.tracks.forEach(track => {
                 if (isUpperBodyTrack(track.name)) {
                     const clonedTrack = track.clone();
                     if (track.name.toLowerCase().includes('spine') && clonedTrack.ValueTypeName === 'quaternion') {
+                        if (holdSpine && clonedTrack.values.length >= 4) {
+                            // Nearest keyframe to the clip's midpoint, copied
+                            // over every other one - the track still exists and
+                            // still owns the bone, it just never changes.
+                            const frames = clonedTrack.values.length / 4;
+                            const mid = Math.min(frames - 1, Math.max(0, Math.round((frames - 1) / 2))) * 4;
+                            for (let i = 0; i < clonedTrack.values.length; i += 4) {
+                                clonedTrack.values[i]     = clonedTrack.values[mid];
+                                clonedTrack.values[i + 1] = clonedTrack.values[mid + 1];
+                                clonedTrack.values[i + 2] = clonedTrack.values[mid + 2];
+                                clonedTrack.values[i + 3] = clonedTrack.values[mid + 3];
+                            }
+                        }
                         for (let i = 0; i < clonedTrack.values.length; i += 4) {
                             const x = clonedTrack.values[i];
                             const y = clonedTrack.values[i+1];
@@ -3059,7 +3093,7 @@
                     }
 
                     if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'punch_walk', 'charge_back'].includes(name)) {
-                        const upperClip = makeUpperBodyClip(clip, spineBlend);
+                        const upperClip = makeUpperBodyClip(clip, spineBlend, name === 'carry' && window.carryHoldSteady !== false);
                         const upperAction = this.mixer.clipAction(upperClip);
                         this.setupActionProperties(name + '_upper', upperAction);
                         this.actions[name + '_upper'] = upperAction;
