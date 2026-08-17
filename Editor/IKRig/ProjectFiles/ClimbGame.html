@@ -3011,7 +3011,22 @@
                 // needs to keep looping for as long as the player keeps
                 // moving during a charge, not freeze on its last frame after
                 // one stride the way the stationary charge-hold pose should.
-                if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry_start', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'stop_sliding'].some(k => name.includes(k))) {
+                // 'carry' covers carry_upper, which is the held pose and has
+                // to settle on its last frame rather than cycle. It is a
+                // 0.53s clip and it was on LoopRepeat, sweeping its whole
+                // length continuously - the readout caught it running
+                // 0.00-0.52 of 0.53. The carry-stabilise damping smoothed
+                // that into an invisible sway, which is why it never showed:
+                // a hit switches the damping off while the recoil settles,
+                // and the bare loop underneath is the upper body folding and
+                // unfolding. That also explains why every procedural kill
+                // switch left it alone - the motion is in the clip, not in
+                // anything applying to it.
+                //
+                // carry_start matches this too and always did; playCarryStart
+                // reconfigures it by hand afterwards, so its behaviour is
+                // unchanged.
+                if (['jump_start', 'climb', 'land', 'standup_front', 'standup_back', 'throw', 'carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'stop_sliding'].some(k => name.includes(k))) {
                     action.setLoop(THREE.LoopOnce);
                     action.clampWhenFinished = true;
                 }
