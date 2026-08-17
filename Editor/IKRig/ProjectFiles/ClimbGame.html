@@ -2642,6 +2642,10 @@
                 // yet", which is the truth at construction - starting it at 1
                 // asserted a settled hold that had never happened.
                 this.stabilizeWeight = 0.0;
+                // Whether the carry hold has settled onto its pose yet. Until
+                // it has, the held reference still follows the animation;
+                // after, the reference is frozen and only the weight moves.
+                this.carryHoldSeeded = false;
                 this.climbLockedWorldPos = null;
                 this.lastGroupPos = null;
 
@@ -4465,8 +4469,25 @@ updateClimbing(delta) {
                     const RECOIL_SETTLE_THRESHOLD = 0.01;
                     const recoilStillSettling = recoilMag > RECOIL_SETTLE_THRESHOLD;
 
-                    if (window.isCarryStarting || window.isCarryDropping || (window.throwTimer && window.throwTimer > 0) || recoilStillSettling) {
+                    // A hit and a new pickup are NOT the same event, and
+                    // treating them as one is what brought the post-hit warp
+                    // back. Clearing the caches means the hold has to be
+                    // captured again from whatever pose exists when the recoil
+                    // finally falls under the threshold - a body still on its
+                    // way back up, quite possibly leaning wherever movement was
+                    // being pressed. A lock then keeps that forever. The old
+                    // 0.988 damping hid the same mistake by slowly creeping out
+                    // of a bad capture.
+                    //
+                    // A hit does not change what the carry pose IS. So the
+                    // caches survive it untouched and only the weight is
+                    // released: the body swings freely with the recoil, then
+                    // returns to precisely the pose it was holding before,
+                    // because that pose was never thrown away. There is no
+                    // capture left to get wrong.
+                    if (window.isCarryStarting || window.isCarryDropping || (window.throwTimer && window.throwTimer > 0)) {
                         this.stabilizeWeight = 0.0;
+                        this.carryHoldSeeded = false;
                         this.lastSpineWorld = null;
                         this.lastSpine1World = null;
                         this.lastNeckWorld = null;
@@ -4479,6 +4500,9 @@ updateClimbing(delta) {
                         if (this._armLockRefs) {
                             for (const ref of this._armLockRefs) this[ref] = null;
                         }
+                    } else if (recoilStillSettling) {
+                        // Released, not forgotten.
+                        this.stabilizeWeight = 0.0;
                     } else {
                         // Slower than the 5.0 it was, because the ramp is
                         // now the only thing standing between a pose and being
@@ -4489,6 +4513,11 @@ updateClimbing(delta) {
                         // At 3.0 the lock is not meaningfully closed for about
                         // a second and a half, which clears that comfortably.
                         this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 3.0 * delta);
+                        // Once the ramp is effectively closed the hold counts
+                        // as established, and from there the reference stops
+                        // following the animation at all for a locked bone.
+                        // Until then it is still settling onto the carry pose.
+                        if (this.stabilizeWeight > 0.99) this.carryHoldSeeded = true;
                     }
 
                     // Kill switch for isolating this. The damping is a
@@ -4568,30 +4597,39 @@ updateClimbing(delta) {
                             _worldUpVec, Math.atan2(_tempVec1.x, _tempVec1.z));
                         const rootInv = _dampInvQ.copy(rootQ).invert();
 
-                        // retention is the per-frame keep, already frame
-                        // normalised. 1 means LOCK: the slerp then returns the
-                        // cache untouched and the cache copies itself back, so
-                        // the bone simply holds its cached orientation in the
-                        // yaw frame and stops rotating altogether.
+                        // Two separate things, kept separate on purpose -
+                        // collapsing them into one factor is what let a hit
+                        // contaminate the hold.
                         //
-                        // stabilizeWeight is what makes a lock safe to use.
-                        // It multiplies in here, and it ramps up over about a
-                        // second after every re-seed, so while it is climbing
-                        // the effective retention is below 1 and the cache is
-                        // still tracking the live pose. The orientation that
-                        // ends up frozen is therefore the SETTLED carry pose,
-                        // not whatever half-finished transition happened to be
-                        // on screen the frame the cache was created. And since
-                        // the ramp only approaches 1 asymptotically, a lock is
-                        // never quite absolute - it keeps creeping toward the
-                        // truth, so a bad seed cannot outlive the carry.
+                        // `retention` is how fast the HELD REFERENCE follows
+                        // the animation. 1 means never: a true lock, the
+                        // reference frozen at the carry pose.
+                        //
+                        // `stabilizeWeight` is how much of that hold reaches
+                        // the bone RIGHT NOW, and nothing else. It drops to
+                        // zero for a hit so the body swings freely, and ramps
+                        // back afterwards. Because it no longer touches the
+                        // reference, the body returns to exactly the pose it
+                        // held before the hit - there is no re-capture to get
+                        // wrong. When the two were one number, a weight below 1
+                        // dragged the reference toward whatever the recoiling
+                        // body was doing, and the lock then kept that.
+                        //
+                        // carryHoldSeeded is the exception that makes a pickup
+                        // work: until the hold is established the reference
+                        // does still track the live pose, easing in with the
+                        // ramp, so what freezes is the settled carry pose and
+                        // not the half-finished pickup crouch.
                         const applyDamping = (bone, lastRootRef, retention) => {
                             if (!bone) return;
-                            const factor = Math.pow(retention, delta * 120) * this.stabilizeWeight;
                             bone.getWorldQuaternion(_tempQuat).premultiply(rootInv);
                             if (!this[lastRootRef]) this[lastRootRef] = _tempQuat.clone();
-                            _tempQuat.slerp(this[lastRootRef], factor);
-                            this[lastRootRef].copy(_tempQuat);
+                            const held = this[lastRootRef];
+                            const keep = this.carryHoldSeeded
+                                ? Math.pow(retention, delta * 120)
+                                : Math.pow(retention, delta * 120) * this.stabilizeWeight;
+                            if (keep < 1) held.slerp(_tempQuat, 1 - keep);
+                            _tempQuat.slerp(held, this.stabilizeWeight);
 
                             _tempQuat.premultiply(rootQ);
                             const parentWorld = bone.parent.getWorldQuaternion(_tempQuat2);

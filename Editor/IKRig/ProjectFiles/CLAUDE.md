@@ -168,6 +168,27 @@ implementation.
   and never lifted it. It is constructed at 0.0 for the same reason - 1.0
   asserted a settled hold that had never happened.
 
+  A HIT AND A PICKUP ARE NOT THE SAME EVENT, and the reset branch keeps them
+  apart. A pickup/drop/throw clears the caches, because a new hold has to be
+  built. A hit only drops `stabilizeWeight` and leaves the caches alone: a
+  hit does not change what the carry pose is. Clearing them on a hit means
+  re-capturing the hold from whatever pose exists when recoil falls under
+  the threshold - a body still on its way back up, quite possibly leaning
+  wherever movement was being pressed - and a lock then keeps that forever.
+  That is the post-hit warp, and it is the same mistake the old 0.988
+  damping hid by slowly creeping out of a bad capture.
+
+  `retention` and `stabilizeWeight` are therefore two different things and
+  must stay separate. `retention` is how fast the HELD REFERENCE follows the
+  animation (1 = never = lock). `stabilizeWeight` is how much of the hold
+  reaches the bone right now, and touches the reference only via
+  `carryHoldSeeded`. When they were multiplied into one factor, a weight
+  below 1 dragged the reference toward whatever the recoiling body was
+  doing, and the lock kept it. `carryHoldSeeded` is the one exception: until
+  the hold is established the reference does follow the live pose, easing in
+  with the ramp, so what freezes is the settled carry pose rather than the
+  half-finished pickup crouch.
+
   `stabilizeWeight` is what makes a lock safe, and is the reason not to
   "simplify" it away. It multiplies into the retention, and ramps up over
   about a second after every re-seed, so while it climbs the cache is still
