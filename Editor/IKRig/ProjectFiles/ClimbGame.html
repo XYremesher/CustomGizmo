@@ -2999,6 +2999,10 @@
             }
 
             setupActionProperties(name, action) {
+                // Tagged so the debug readout can say WHICH clips are playing
+                // when something looks wrong - the actions are otherwise only
+                // findable by scanning this.actions for a matching reference.
+                action._clipName = name;
                 // punch_walk deliberately excluded - it's a walk cycle that
                 // needs to keep looping for as long as the player keeps
                 // moving during a charge, not freeze on its last frame after
@@ -4122,6 +4126,24 @@ updateClimbing(delta) {
                     if (window.isHitRecoveryStepActive && this.activeAction) {
                         this.activeAction.setEffectiveTimeScale(window.hitRecoveryAnimSpeed || 1.0);
                     }
+                }
+
+                // Every action the mixer is actually running, with its weight.
+                // The warping survives every kill switch, which means nothing
+                // is writing the spine procedurally - so it is coming out of
+                // the clips themselves, and the question is which pair is
+                // playing together. A full-body clip running alongside
+                // carry_upper is the shape to look for: both own the spine,
+                // and only the "_lower" splits are built to leave it alone.
+                if (window.animDebugOn && this.mixer) {
+                    const live = [];
+                    for (const k in this.actions) {
+                        const a = this.actions[k];
+                        if (!a || !a.isRunning()) continue;
+                        const w = a.getEffectiveWeight();
+                        if (w > 0.001) live.push(`${a._clipName || k}:${w.toFixed(2)}`);
+                    }
+                    window.charAnimDebug = live.join(' ');
                 }
 
                 if (window.isCarryingObj && this.spine) {

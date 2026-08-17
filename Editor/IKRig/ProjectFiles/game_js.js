@@ -18259,7 +18259,8 @@ export function startGame(CharacterClass) {
                     // near/total is the broad phase's whole story: the second
                     // number is what every ray used to walk, the first is what
                     // it walks now.
-                    `near ${_playerNearCache.list.length}/${collidables.length}`;
+                    `near ${_playerNearCache.list.length}/${collidables.length}` +
+                    (window.animDebugOn && window.charAnimDebug ? `\n${window.charAnimDebug}` : '');
             }
         }
 
