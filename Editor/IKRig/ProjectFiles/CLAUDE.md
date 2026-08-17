@@ -147,6 +147,16 @@ implementation.
   swings it around. The neck keeps a real damping instead - a head welded
   rigidly to a rigid torso reads as a mannequin being slid along.
 
+  The ARMS are locked too, walked from each hand up to the chest and cached
+  parent-first. Locking the torso alone still reads as the chest moving,
+  because nothing above the spine had ever been damped and carry_upper went
+  on swinging the shoulders through the whole run. Flattening those tracks
+  in the clip cannot substitute: a clip holds LOCAL rotations, so the arms
+  just inherit whatever the torso does. Held in the yaw frame - the same
+  frame the torso is held in - they actually stop. This is also what steadies
+  the carried object, which is positioned from the midpoint of the two hand
+  bones, so no separate smoothing of the object is needed or wanted.
+
   `stabilizeWeight` is what makes a lock safe, and is the reason not to
   "simplify" it away. It multiplies into the retention, and ramps up over
   about a second after every re-seed, so while it climbs the cache is still

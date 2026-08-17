@@ -4460,6 +4460,11 @@ updateClimbing(delta) {
                         // Re-seeded with the caches, or the pin would drag the
                         // chest back toward wherever the last hold left it.
                         this.chestPinLocal = null;
+                        // Same for the arm locks, or a pickup after a hit
+                        // freezes them at the pose the previous carry ended on.
+                        if (this._armLockRefs) {
+                            for (const ref of this._armLockRefs) this[ref] = null;
+                        }
                     } else {
                         this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 5.0 * delta);
                     }
@@ -4600,6 +4605,53 @@ updateClimbing(delta) {
                         applyDamping(this.spine, 'lastSpineWorld', 1.0);
                         if (window.carryChestIKOff !== false) applyDamping(this.spine1, 'lastSpine1World', 1.0);
                         applyDamping(this.neck, 'lastNeckWorld', dampFactor);
+
+                        // The arms have to be locked as well, and this is why
+                        // locking the torso alone reads as the chest still
+                        // moving: nothing above the spine was ever damped, so
+                        // carry_upper went on swinging the shoulders through
+                        // the whole run and that swing is what the eye picks
+                        // up. Flattening those tracks in the clip - which was
+                        // tried - cannot do it either, because a clip holds
+                        // LOCAL rotations and the arms then inherit whatever
+                        // the torso does. Held in the yaw frame, the same
+                        // frame the torso is held in, they genuinely stop.
+                        //
+                        // Worth stating what this buys beyond the arms
+                        // themselves: the carried object is positioned from
+                        // the midpoint of the two hand bones, so freezing the
+                        // hands freezes the object, with no separate smoothing
+                        // of the object needed (three attempts at that are in
+                        // CLAUDE.md, all removed).
+                        //
+                        // Walked from each hand up to the chest rather than
+                        // matched by name, like the spine chain, and cached
+                        // parent-first so each bone is locked before the ones
+                        // hanging off it - applyDamping derives a local
+                        // rotation from the parent's world, which has to
+                        // already be final.
+                        if (this._armLockBones === undefined) {
+                            const collect = (hand) => {
+                                const out = [];
+                                let b = hand;
+                                while (b && b.isBone && b !== this.spine && out.length < 8) {
+                                    out.unshift(b);
+                                    b = b.parent;
+                                }
+                                // Only if the walk actually arrived at the
+                                // chest. A rig hanging its arms somewhere else
+                                // gets no lock rather than a wrong one.
+                                return b === this.spine ? out : [];
+                            };
+                            this._armLockBones = [
+                                ...collect(this.leftHandBone),
+                                ...collect(this.rightHandBone)
+                            ];
+                            this._armLockRefs = this._armLockBones.map((_, i) => 'lastArmLock' + i);
+                        }
+                        for (let i = 0; i < this._armLockBones.length; i++) {
+                            applyDamping(this._armLockBones[i], this._armLockRefs[i], 1.0);
+                        }
                     }
                 } else if (this.spine && this.hips &&
                     ((this.punchCorrectionNew && this.punchCorrectionNew.getEffectiveWeight() > 0.001) ||
