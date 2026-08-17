@@ -1789,7 +1789,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_forest";
+    let currentLevel = "local_stairs";   // Level 1
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -14429,7 +14429,9 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        select.value = 'local_forest_free'; currentLevel = select.value;
+        // Level 1 on load - it is the one the projectile turrets and the jar
+        // grid live in, so it is where hit/carry behaviour gets tested.
+        select.value = 'local_stairs'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
@@ -15137,7 +15139,8 @@ export function startGame(CharacterClass) {
     // The target comes from the existing carry targeting - carryTargetObj,
     // settled once a frame - so this adds no search of its own and cannot
     // disagree with what the CARRY button would have picked up.
-    window.autoCarryEnabled = false;
+    // Armed at startup - the button ships with class 'on' to match.
+    window.autoCarryEnabled = true;
     window.autoCarryTime = 0.6;      // seconds of standing next to it
     let _autoCarryT = 0;
     let _autoCarryFor = null;        // the object the current fill belongs to

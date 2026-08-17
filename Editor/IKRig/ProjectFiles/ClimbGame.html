@@ -244,8 +244,10 @@
         /* Third in the same right-edge column as #fullscreen-btn (55) and
            #viewer-btn (95). touch-action:none so the press-and-hold that opens
            the size slider isn't stolen by the browser's scroll/zoom gesture. */
+        /* In the drawer the + opens, so it sits in that column's flow rather
+           than placing itself. */
         #pixel-btn {
-            position: absolute; top: 135px; right: 10px; width: 34px; height: 34px; padding: 0;
+            position: static; width: 34px; height: 34px; padding: 0;
             background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3);
             border-radius: 4px; cursor: pointer; z-index: 100;
             display: flex; align-items: center; justify-content: center;
@@ -271,7 +273,7 @@
            something carryable, so the pickup reads as something that is
            happening rather than something that suddenly happened. */
         #auto-carry-btn {
-            position: absolute; right: 12px; width: 34px; height: 34px; padding: 0;
+            position: static; width: 34px; height: 34px; padding: 0;
             background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3);
             border-radius: 50%; cursor: pointer; z-index: 100;
             display: flex; align-items: center; justify-content: center;
@@ -494,10 +496,9 @@
            padding. At the old 40px this button sat inside it and could not be
            pressed. */
         body.ui-alt #right-tools-toggle { bottom: 92px; }
-        /* Stacked up the same edge: FPS panel, + , auto-carry, then the panel
-           the + opens - so nothing lands on top of anything else. */
-        body.ui-alt #auto-carry-btn { bottom: 134px; }
-        body.ui-alt #right-tools-panel { bottom: 180px; }
+        /* Only the + places itself now - the tools it opens are all inside the
+           drawer, which stacks them itself. */
+        body.ui-alt #right-tools-panel { bottom: 134px; }
         body.ui-alt #jump-btn  { bottom: 165px; right: 20px;  width: 60px; height: 60px; }
         /* Swapped with build-btn (UI2 only) - each keeps its own size, only position trades. */
         body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
@@ -715,30 +716,10 @@
     <button id="viewer-btn" title="Compendium" style="position:absolute; top:95px; right:10px; width:34px; height:34px; padding:0; background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3); border-radius:4px; cursor:pointer; z-index:100; display:flex; align-items:center; justify-content:center;">
         <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="8" r="3.5"></circle><path d="M4.5 20c0-4 3.5-6.5 7.5-6.5s7.5 2.5 7.5 6.5"></path></svg>
     </button>
-    <!-- Tap toggles the pixel effect, press-and-hold opens the size slider.
-         Both drive the Debug Vis panel's own #toggle-pixel-effect /
-         #pixel-size-slider rather than the pass directly, so the panel and
-         this button can never disagree about the current state. -->
-    <button id="pixel-btn" title="Pixelate (hold for size)">
-        <svg viewBox="0 0 24 24" fill="white"><path d="M3 3h6v6H3V3zm12 0h6v6h-6V3zM9 9h6v6H9V9zM3 15h6v6H3v-6zm12 0h6v6h-6v-6z"/></svg>
-    </button>
     <div id="pixel-size-popup">
         <span id="pixel-size-popup-val">1</span>
         <input type="range" id="pixel-size-popup-slider" min="1" max="16" step="1" value="1">
     </div>
-    <!-- Tap to arm. Armed, standing next to something carryable fills the ring
-         and picks it up when it completes - see updateAutoCarry in game_js.js.
-         stroke-dasharray is the circle's circumference (2*pi*20), and the fill
-         is driven by moving dashoffset from that down to 0. -->
-    <button id="auto-carry-btn" title="Auto carry: pick up nearby objects">
-        &#128230;
-        <svg viewBox="0 0 46 46">
-            <circle cx="23" cy="23" r="20" stroke="rgba(255,255,255,0.15)" stroke-width="3" fill="transparent" />
-            <circle id="auto-carry-ring-fill" cx="23" cy="23" r="20" stroke="#ff3296" stroke-width="3"
-                    fill="transparent" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" />
-        </svg>
-    </button>
-
     <!-- Player/Items compendium/viewer - a minimal port of
          DungeonGame.html's Viewer (that script's own prev/next paging is
          left out - each category only ever holds one entry so far). Own
@@ -1386,6 +1367,27 @@
             <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
             <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
             <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
+        </div>
+        <div class="utility-stack">
+    <!-- Tap toggles the pixel effect, press-and-hold opens the size slider.
+             Both drive the Debug Vis panel's own #toggle-pixel-effect /
+             #pixel-size-slider rather than the pass directly, so the panel and
+             this button can never disagree about the current state. -->
+        <button id="pixel-btn" title="Pixelate (hold for size)">
+            <svg viewBox="0 0 24 24" fill="white"><path d="M3 3h6v6H3V3zm12 0h6v6h-6V3zM9 9h6v6H9V9zM3 15h6v6H3v-6zm12 0h6v6h-6v-6z"/></svg>
+        </button>
+    <!-- Tap to arm. Armed, standing next to something carryable fills the ring
+             and picks it up when it completes - see updateAutoCarry in game_js.js.
+             stroke-dasharray is the circle's circumference (2*pi*20), and the fill
+             is driven by moving dashoffset from that down to 0. -->
+        <button id="auto-carry-btn" class="on" title="Auto carry: pick up nearby objects">
+            &#128230;
+            <svg viewBox="0 0 46 46">
+                <circle cx="23" cy="23" r="20" stroke="rgba(255,255,255,0.15)" stroke-width="3" fill="transparent" />
+                <circle id="auto-carry-ring-fill" cx="23" cy="23" r="20" stroke="#ff3296" stroke-width="3"
+                        fill="transparent" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" />
+            </svg>
+        </button>
         </div>
         <div id="warp-btns"></div>
     </div>
