@@ -4086,7 +4086,22 @@ updateClimbing(delta) {
                         if (this.activeUpperAction && !this.activeUpperAction.isRunning()) this.activeUpperAction = null;
                         if (this.activeAction && !this.activeAction.isRunning()) this.activeAction = null;
                         this.fadeToAction(baseMoveState, dur);
+                        // Where in the carry clip the pose is being read from,
+                        // captured before the re-trigger below can move it.
+                        //
+                        // fadeToUpperAction calls reset(), which rewinds time
+                        // to 0 - and frame 0 of the carry clip is the pickup
+                        // crouch, arms up, exactly the bent-over pose being
+                        // reported. Its "same action, do nothing" guard
+                        // normally prevents that, but the self-heal above
+                        // nulls activeUpperAction, so the very next call sees
+                        // a different action and rewinds. Restarting the clip
+                        // is the intent; restarting its TIME is not, because
+                        // the pose to resume is the held one at the end.
+                        const carryUpper = this.actions['carry_upper'];
+                        const resumeAt = (carryUpper && this.activeUpperAction === carryUpper) ? null : (carryUpper ? carryUpper.time : null);
                         this.fadeToUpperAction('carry_upper', dur);
+                        if (resumeAt !== null && carryUpper) carryUpper.time = resumeAt;
                     } else {
                         this.fadeToAction(baseMoveState, dur);
                         this.stopUpperAction(dur);
@@ -4141,7 +4156,11 @@ updateClimbing(delta) {
                         const a = this.actions[k];
                         if (!a || !a.isRunning()) continue;
                         const w = a.getEffectiveWeight();
-                        if (w > 0.001) live.push(`${a._clipName || k}:${w.toFixed(2)}`);
+                        // Time as well as weight: the clips playing turned out
+                        // to be exactly right, so what is left is WHERE in one
+                        // of them the pose is being read from. carry_upper
+                        // snapping back toward 0 is the crouch it starts on.
+                        if (w > 0.001) live.push(`${a._clipName || k}:${w.toFixed(2)}@${a.time.toFixed(2)}`);
                     }
                     window.charAnimDebug = live.join(' ');
                 }
