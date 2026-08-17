@@ -363,6 +363,38 @@ export function startGame(CharacterClass) {
         return { list: [], at: new THREE.Vector3(Infinity, Infinity, Infinity), src: null, len: -1, frame: -1 };
     }
     const _playerNearCache = makeNearCache();
+    // How far from the agent a query can be and still be answered from its
+    // near list. The list holds everything within RADIUS + MOVE of where it
+    // was built, and the agent may have drifted MOVE from that point, so a
+    // probe at distance d needs d + its own reach to stay inside RADIUS.
+    // Anything further gets the full set rather than a wrong answer - the
+    // point of the broad phase is speed, and a probe that reaches past what
+    // was gathered has to fall back or it will miss geometry that is there.
+    const NEAR_SAFE_QUERY = NEAR_COLLIDER_RADIUS - NEAR_REBUILD_MOVE;
+    // Collidables around the player. Same contract as aiBotNear: pass the
+    // probe point when it is not the player's own position and it falls back
+    // to the full set rather than answering from a list that may not reach.
+    function playerNear(qx, qz) {
+        if (!char || !char.group) return collidables;
+        const p = char.group.position;
+        if (qx !== undefined) {
+            const dx = qx - p.x, dz = qz - p.z;
+            if (dx * dx + dz * dz > NEAR_SAFE_QUERY * NEAR_SAFE_QUERY) return collidables;
+        }
+        return getNearColliders(collidables, p, _playerNearCache);
+    }
+    // Collidables around the currently-active bot (see activateAiBot). qx/qz
+    // are the point being probed when that is not the bot's own position.
+    function aiBotNear(qx, qz) {
+        if (!aiBot || !aiBot.group) return collidables;
+        const p = aiBot.group.position;
+        if (qx !== undefined) {
+            const dx = qx - p.x, dz = qz - p.z;
+            if (dx * dx + dz * dz > NEAR_SAFE_QUERY * NEAR_SAFE_QUERY) return collidables;
+        }
+        if (!aiBot._nearCache) aiBot._nearCache = makeNearCache();
+        return getNearColliders(collidables, p, aiBot._nearCache);
+    }
     function getNearColliders(src, center, cache) {
         if (window.broadPhaseOff) return src;
         if (cache.src === src && cache.len === src.length &&
@@ -2601,7 +2633,7 @@ export function startGame(CharacterClass) {
         let ny = pos.y;
         let blocked = false;
         rayDown.set(_tempVec1.set(nx, pos.y + 2.0, nz), _downVec);
-        const groundHits = rayDown.intersectObjects(collidables);
+        const groundHits = rayDown.intersectObjects(aiBotNear());
         if (groundHits.length > 0) {
             const newY = groundHits[0].point.y;
             // Too tall to step: refuse the HORIZONTAL move as well, don't just
@@ -2707,7 +2739,7 @@ export function startGame(CharacterClass) {
         aiBotSeparate(nextPos.x, nextPos.z, pos.y, delta, _aiSepOut);
         nextPos.x = _aiSepOut.x; nextPos.z = _aiSepOut.y;
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
-        const groundHits = rayDown.intersectObjects(collidables);
+        const groundHits = rayDown.intersectObjects(aiBotNear());
         if (groundHits.length > 0) {
             // A short thrown carryable (a box, jar, ...) landing directly in
             // the bot's path is too low for the horizontal avoidance rays
@@ -2816,7 +2848,7 @@ export function startGame(CharacterClass) {
     function aiBotSurfaceY(x, z, fromTopY) {
         _tempVec1.set(x, fromTopY, z);
         rayDown.set(_tempVec1, _downVec);
-        const hits = rayDown.intersectObjects(collidables, true);
+        const hits = rayDown.intersectObjects(aiBotNear(x, z), true);
         return hits.length ? hits[0].point.y : -Infinity;
     }
 
@@ -3008,7 +3040,7 @@ export function startGame(CharacterClass) {
         _aiHangFwd.set(fwdX, 0, fwdZ);
         _tempVec1.set(hang.x, hang.y + 0.4, hang.z);
         rayFwd.set(_tempVec1, _aiHangFwd);
-        const hits = rayFwd.intersectObjects(collidables);
+        const hits = rayFwd.intersectObjects(aiBotNear(hang.x, hang.z));
         if (!hits.length || hits[0].distance > COMP_LEDGE_WALL_REACH || !hits[0].face) return null;
         _aiHangNormal.copy(hits[0].face.normal).transformDirection(hits[0].object.matrixWorld);
         _aiHangNormal.y = 0;
@@ -3586,7 +3618,7 @@ export function startGame(CharacterClass) {
             // block, which is how it ended up inside them.
             _tempVec3.set(_aiUnstickDir.x, 0, _aiUnstickDir.z);
             rayFwd.set(_tempVec1.set(pos.x, pos.y + 0.5, pos.z), _tempVec3);
-            const uWall = rayFwd.intersectObjects(collidables);
+            const uWall = rayFwd.intersectObjects(aiBotNear());
             const uClear = !(uWall.length > 0 && uWall[0].distance < 0.6);
             // Only step somewhere it could stand: not into a wall, not up
             // one, not off a cliff. If this side is no good, try the other
@@ -3624,7 +3656,7 @@ export function startGame(CharacterClass) {
             const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
             rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
-            const groundHits = rayDown.intersectObjects(collidables);
+            const groundHits = rayDown.intersectObjects(aiBotNear());
             // Falls rather than snapping - see the companion's own stagger for
             // why. Hit in mid-air, an outright snap teleports it to the floor.
             if (groundHits.length > 0) {
@@ -3652,7 +3684,7 @@ export function startGame(CharacterClass) {
             _aiStuckT = 0; _aiStuckAt.copy(pos);
             let ry = pos.y;
             rayDown.set(_tempVec1.set(pos.x, pos.y + 2.0, pos.z), _downVec);
-            const settleHits = rayDown.intersectObjects(collidables);
+            const settleHits = rayDown.intersectObjects(aiBotNear());
             if (settleHits.length > 0) ry = settleHits[0].point.y;
             aiBot.group.position.set(pos.x, ry, pos.z);
             aiBot.setNetworkState([pos.x, ry, pos.z],
@@ -6411,7 +6443,10 @@ export function startGame(CharacterClass) {
             // starting/stopping) rather than a smooth, settled approach.
             _tempVec2.set(p.x, p.y + 0.9, p.z);
             rayFwd.set(_tempVec2, _compBehindDir);
-            const behindHits = rayFwd.intersectObjects(collidables);
+            // p is the player OR a pinned followOverride, which can be
+            // anywhere - so the point is handed over and the range check
+            // decides whether the player's near list actually reaches it.
+            const behindHits = rayFwd.intersectObjects(playerNear(p.x, p.z));
             if (behindHits.length > 0 && behindHits[0].distance < COMP_FOLLOW_DIST + 0.3) wantsBehind = false;
             else {
                 // Wall-clear isn't enough on its own - the spot also has to
@@ -19412,7 +19447,7 @@ export function startGame(CharacterClass) {
                 if (c._floorT <= 0 || c._floorY === undefined) {
                     c._floorT = 0.12;
                     rayDown.set(_tempVec1.set(c.mesh.position.x, c.mesh.position.y + 1.2, c.mesh.position.z), _downVec);
-                    const fh = rayDown.intersectObjects(collidables, true);
+                    const fh = rayDown.intersectObjects(playerNear(c.mesh.position.x, c.mesh.position.z), true);
                     let fy = 0;
                     for (let k = 0; k < fh.length; k++) {
                         const ud = fh[k].object.userData;
@@ -20283,7 +20318,7 @@ export function startGame(CharacterClass) {
             // Ground height straight down at a point, ignoring canopies.
             function autoJumpGroundAt(x, z, fromY) {
                 rayDown.set(_tempVec1.set(x, fromY, z), _downVec);
-                const hits = rayDown.intersectObjects(collidables, true);
+                const hits = rayDown.intersectObjects(playerNear(x, z), true);
                 for (let i = 0; i < hits.length; i++) {
                     if (hits[i].object.userData.isTreeCollider) continue;
                     return hits[i].point.y;
@@ -20369,7 +20404,7 @@ export function startGame(CharacterClass) {
 
                 _ajOrigin.copy(char.group.position).setY(char.group.position.y + 0.6);
                 rayFwd.set(_ajOrigin, _ajFwd);
-                const wallHits = rayFwd.intersectObjects(collidables, true);
+                const wallHits = rayFwd.intersectObjects(playerNear(), true);
                 let wall = null;
                 for (let i = 0; i < wallHits.length; i++) {
                     const ud = wallHits[i].object.userData;
@@ -20396,7 +20431,7 @@ export function startGame(CharacterClass) {
                 // the face, skipping canopies the same way.
                 const px = wall.point.x + _ajFwd.x * 0.35, pz = wall.point.z + _ajFwd.z * 0.35;
                 rayDown.set(_tempVec1.set(px, char.group.position.y + window.autoJumpMaxRise + 2.0, pz), _downVec);
-                const topHits = rayDown.intersectObjects(collidables, true);
+                const topHits = rayDown.intersectObjects(playerNear(px, pz), true);
                 let lipY = null;
                 for (let i = 0; i < topHits.length; i++) {
                     if (topHits[i].object.userData.isTreeCollider) continue;
