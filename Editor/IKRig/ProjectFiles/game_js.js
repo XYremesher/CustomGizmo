@@ -383,6 +383,20 @@ export function startGame(CharacterClass) {
         }
         return getNearColliders(collidables, p, _playerNearCache);
     }
+    // Collidables around a carryable, for its own collision resolution.
+    //
+    // That resolution is not a raycast, so it never showed up in the ray
+    // meter, and it was the one hot loop the broad phase had missed: each
+    // carryable takes 4 substeps and scans the whole collidable list 3 times
+    // per substep. Level 1 has a 3x3 jar grid and ~300 collidables once its
+    // four bump fields are counted, which is 108 full passes and some 32000
+    // box tests every frame - all so nine jars can find out what is touching
+    // them, when nothing more than a metre away ever can be.
+    function carryableNear(c) {
+        if (!c || !c.mesh) return collidables;
+        if (!c._nearCache) c._nearCache = makeNearCache();
+        return getNearColliders(collidables, c.mesh.position, c._nearCache);
+    }
     // Collidables around the currently-active bot (see activateAiBot). qx/qz
     // are the point being probed when that is not the bot's own position.
     function aiBotNear(qx, qz) {
@@ -19359,7 +19373,7 @@ export function startGame(CharacterClass) {
                 c.mesh.position.x += c.velocity.x * subDelta;
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
                 let earlyExit = false;
-                collidables.forEach(obj => {
+                carryableNear(c).forEach(obj => {
                     // Locks excluded too - otherwise a thrown key bounces
                     // off the lock's own solid hitbox before ever getting
                     // within KEY_INSERT_DISTANCE of its origin (a lock
@@ -19398,7 +19412,7 @@ export function startGame(CharacterClass) {
 
                 c.mesh.position.z += c.velocity.z * subDelta;
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
-                collidables.forEach(obj => {
+                carryableNear(c).forEach(obj => {
                     // Locks excluded too - otherwise a thrown key bounces
                     // off the lock's own solid hitbox before ever getting
                     // within KEY_INSERT_DISTANCE of its origin (a lock
@@ -19483,7 +19497,7 @@ export function startGame(CharacterClass) {
                 }
 
                 carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
-                collidables.forEach(obj => {
+                carryableNear(c).forEach(obj => {
                     // Locks excluded too - otherwise a thrown key bounces
                     // off the lock's own solid hitbox before ever getting
                     // within KEY_INSERT_DISTANCE of its origin (a lock
