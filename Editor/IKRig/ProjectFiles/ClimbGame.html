@@ -2800,6 +2800,7 @@
                             // track for, and this is the only moment the real
                             // rest value is readable.
                             child.userData._restQuat = child.quaternion.clone();
+                            child.userData._restPos = child.position.clone();
                             const name = child.name.toLowerCase();
                             if (name.includes('hips') || name.includes('pelvis')) this.hips = child;
                             if (name.includes('spine1')) this.spine1 = child;
@@ -3068,6 +3069,7 @@
                 this.actions = {};
                 // Rebuilt clips mean the sampled carry pose is stale.
                 this._carryPose = null;
+                this._carryHipsRef = undefined;
 
                 for (let name in this.originalClips) {
                     const clip = this.originalClips[name];
@@ -3359,6 +3361,59 @@
                     q.multiply(fromClip || node.userData._restQuat || node.quaternion);
                 }
                 return q;
+            }
+
+            // The hips' LOCAL POSITION as the carry clip has it. Same idea
+            // as getCarryPoseRef and the same sampled pose, for the one track
+            // that moves the upper body without rotating it.
+            //
+            // The rotation lock cannot reach this. A bone's world position is
+            // its parents' positions plus offsets, and everything above the
+            // pelvis hangs off the pelvis - so whatever the hips' position
+            // track does, the whole locked torso is carried along with it,
+            // rigid but relocated. While running that track is a small bob.
+            // The jump clips are the case where it stops being small:
+            // JumpStart crouches and extends, JumpMidAir tucks, and the lower
+            // splits keep the hips (isUpperBodyTrack counts it as lower), so
+            // the upper body gets thrown up and down by an animation it is
+            // supposed to be held out of. Fast, too - the crossfade is 0.2s
+            // for a large translation, which is the click.
+            //
+            // Held, the pelvis stays where the carry clip puts it, and the
+            // jump reads through the legs and through the group's actual arc
+            // instead of through the torso. The leg bones are untouched: they
+            // are driven by rotation, and none of that is affected.
+            getCarryHipsRef() {
+                if (!this.hips) return null;
+                // Cached against the same sampled pose, so the two references
+                // can never be taken from different frames of the clip.
+                if (this._carryHipsRef !== undefined && this._carryHipsPoseObj === this._carryPose) {
+                    return this._carryHipsRef;
+                }
+                // Populates _carryPose and carryRefOk as a side effect.
+                this.getCarryPoseRef(this.hips);
+                this._carryHipsPoseObj = this._carryPose;
+                this._carryHipsRef = null;
+                const clip = this.originalClips && this.originalClips['carry'];
+                if (clip) {
+                    const t = this._carryPoseTime || 0;
+                    for (const track of clip.tracks) {
+                        if (track.name !== this.hips.name + '.position') continue;
+                        const times = track.times;
+                        if (!times.length) break;
+                        let i = 0;
+                        while (i < times.length - 1 && times[i + 1] <= t) i++;
+                        const v = track.values;
+                        this._carryHipsRef = new THREE.Vector3(v[i * 3], v[i * 3 + 1], v[i * 3 + 2]);
+                        break;
+                    }
+                }
+                // No hips position track means the clip never moves the pelvis,
+                // and the bind pose is then the pose to hold.
+                if (!this._carryHipsRef && this.hips.userData._restPos) {
+                    this._carryHipsRef = this.hips.userData._restPos.clone();
+                }
+                return this._carryHipsRef;
             }
 
             // Pins the CHEST in the character's own frame and bends the spine
@@ -4799,6 +4854,21 @@ updateClimbing(delta) {
                         // of a lock. It is the one place a little residual
                         // motion is worth having: a head welded rigidly to a
                         // rigid torso reads as a mannequin being slid along.
+                        // Before the bones are read below, so their world
+                        // orientations are computed against a pelvis already
+                        // where it is going to stay for this frame.
+                        if (this.hips && !window.carryHipsHoldOff) {
+                            const hipsRef = this.getCarryHipsRef();
+                            // Same stabilizeWeight as the rotation lock, so the
+                            // pelvis releases for a hit and eases back with
+                            // everything else rather than being a second system
+                            // with its own timing to fall out of step.
+                            if (hipsRef) {
+                                this.hips.position.lerp(hipsRef, this.stabilizeWeight);
+                                this.hips.updateMatrixWorld(true);
+                            }
+                        }
+
                         applyDamping(this.spine, 'lastSpineWorld', 1.0);
                         if (window.carryChestIKOff !== false) applyDamping(this.spine1, 'lastSpine1World', 1.0);
                         applyDamping(this.neck, 'lastNeckWorld', dampFactor);
