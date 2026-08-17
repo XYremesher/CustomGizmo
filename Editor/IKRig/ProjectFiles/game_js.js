@@ -20029,7 +20029,7 @@ export function startGame(CharacterClass) {
                 if (lockedHintAngle === null) lockedHintAngle = hint;
                 const stickVec = new THREE.Vector2(curX, curY).normalize(), uiUp = new THREE.Vector2(Math.sin(lockedHintAngle), -Math.cos(lockedHintAngle)).normalize(), uiRgt = new THREE.Vector2(Math.cos(lockedHintAngle), Math.sin(lockedHintAngle)).normalize();
                 const pCD = stickVec.dot(uiUp), pS = stickVec.dot(uiRgt);
-                console.log(`[ledge-input-debug] keys w/a/s/d=${keys.w}/${keys.a}/${keys.s}/${keys.d} curX=${curX.toFixed(2)} curY=${curY.toFixed(2)} lockedHintAngle=${(lockedHintAngle*180/Math.PI).toFixed(1)}deg pCD=${pCD.toFixed(2)} pS=${pS.toFixed(2)} sidewaysGesture=${ledgeSidewaysGesture}`);
+                if (window.frameDebugLogs) console.log(`[ledge-input-debug] keys w/a/s/d=${keys.w}/${keys.a}/${keys.s}/${keys.d} curX=${curX.toFixed(2)} curY=${curY.toFixed(2)} lockedHintAngle=${(lockedHintAngle*180/Math.PI).toFixed(1)}deg pCD=${pCD.toFixed(2)} pS=${pS.toFixed(2)} sidewaysGesture=${ledgeSidewaysGesture}`);
 
                 if (!ledgeMoveLocked) currentPushS = pS;
 
@@ -20154,7 +20154,7 @@ export function startGame(CharacterClass) {
                         } else debugBranch = h.length > 0 ? 'wrap-failed-height' : 'wrap-failed-no-downhit';
                     } else if (isBlocked) debugBranch = 'blocked-close-wall';
                     else debugBranch = 'no-side-hit';
-                    console.log(`[ledge-corner-debug] sideHit=${sH.length > 0 ? sH[0].distance.toFixed(2) : 'none'} branch=${debugBranch} heightDiff=${debugHeightDiff !== null ? debugHeightDiff.toFixed(2) : 'n/a'}`);
+                    if (window.frameDebugLogs) console.log(`[ledge-corner-debug] sideHit=${sH.length > 0 ? sH[0].distance.toFixed(2) : 'none'} branch=${debugBranch} heightDiff=${debugHeightDiff !== null ? debugHeightDiff.toFixed(2) : 'n/a'}`);
                     if (!handled && !(sH.length > 0 && sH[0].distance < 0.65) && !isBlocked) {
                         _tempVec3.copy(char.group.position).addScaledVector(mDir, 4*delta);
                         const currentWallObj = (wallHits.length > 0 ? wallHits[0].object : null) || findNearestObstacle(char.group.position.x, char.group.position.y + 1.0, char.group.position.z, 0.6);
@@ -21526,7 +21526,13 @@ export function startGame(CharacterClass) {
                     const ceilHits = ceilRay.intersectObjects(solidCollidables);
                     const ceilThreshold = yVelocity*delta + 0.15;
                     if (ceilHits.length > 0 && ceilHits[0].distance < ceilThreshold + 2.0) {
-                        console.log('[ceil-debug]', 'blocked=', ceilHits[0].distance < ceilThreshold, 'dist=', ceilHits[0].distance.toFixed(3), 'threshold=', ceilThreshold.toFixed(3), 'obj=', ceilHits[0].object.name || ceilHits[0].object.uuid, 'headOrigin=', headOrigin.toArray().map(n=>n.toFixed(2)), 'hitPoint=', ceilHits[0].point.toArray().map(n=>n.toFixed(2)));
+                        // Left over from chasing a ceiling-collision bug, and it
+                    // ran unguarded in the frame loop - building a string with
+                    // five toFixed calls and two array maps every frame of
+                    // every jump's ascent that had anything within 2m overhead.
+                    // Gated rather than deleted; the guard also stops the
+                    // template arguments being evaluated at all.
+                    if (window.frameDebugLogs) console.log('[ceil-debug]', 'blocked=', ceilHits[0].distance < ceilThreshold, 'dist=', ceilHits[0].distance.toFixed(3), 'threshold=', ceilThreshold.toFixed(3), 'obj=', ceilHits[0].object.name || ceilHits[0].object.uuid, 'headOrigin=', headOrigin.toArray().map(n=>n.toFixed(2)), 'hitPoint=', ceilHits[0].point.toArray().map(n=>n.toFixed(2)));
                     }
                     if (ceilHits.length > 0 && ceilHits[0].distance < ceilThreshold) yVelocity = 0;
                 }
