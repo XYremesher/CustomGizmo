@@ -21895,11 +21895,27 @@ export function startGame(CharacterClass) {
                         if (!window._ctWorstAt || now - window._ctWorstAt > 4000 || worst > window._ctWorst) {
                             window._ctWorst = worst;
                             window._ctWorstAt = now;
+                            // Every clip carrying weight on the offending
+                            // frame. A 61cm one-frame drop of the hands is not
+                            // a clip playing, it is a clip's WEIGHT collapsing,
+                            // so what is worth seeing is which action was meant
+                            // to be holding the arms up and what its weight
+                            // actually was at that instant.
+                            const live = [];
+                            for (const k in char.actions) {
+                                const a = char.actions[k];
+                                if (!a) continue;
+                                const w = a.getEffectiveWeight();
+                                if (a.isRunning() || w > 0.001) {
+                                    live.push(`${a._clipName || k}=${w.toFixed(2)}@${a.time.toFixed(2)}${a.isRunning() ? '' : '(stopped)'}`);
+                                }
+                            }
                             window.carryTickReport =
                                 `TICK ${localA > groupA ? 'LOCAL(skeleton)' : 'GROUP(character)'} ` +
                                 `group ${Math.round(groupA)} local ${Math.round(localA)} u/s2\n` +
                                 `  localY ${(local.y - _ctPrevLocal.y).toFixed(3)}  yVel ${yVelocity.toFixed(1)}` +
-                                `  grnd ${isGrounded ? 1 : 0}  dt ${delta.toFixed(4)}`;
+                                `  grnd ${isGrounded ? 1 : 0}  dt ${delta.toFixed(4)}\n` +
+                                `  ${live.join(' ')}`;
                         }
                         _ctPrevGroupV.copy(groupV);
                         _ctPrevLocalV.copy(localV);
