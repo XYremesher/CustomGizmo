@@ -4545,9 +4545,10 @@ updateClimbing(delta) {
                     // treating recoil as "gone" once it's near-zero, and
                     // leaving the cache untouched (not even softly blended)
                     // until then, is what stops the drift.
+                    // No threshold derived from this any more - every use of
+                    // one turned into a step the eye could see. The magnitude is
+                    // used as a continuous quantity and nothing else.
                     const recoilMag = this.recoilRotation.length() + this.recoilVelocity.length();
-                    const RECOIL_SETTLE_THRESHOLD = 0.01;
-                    const recoilStillSettling = recoilMag > RECOIL_SETTLE_THRESHOLD;
 
                     // A hit and a new pickup are NOT the same event, and
                     // treating them as one is what brought the post-hit warp
@@ -4600,7 +4601,17 @@ updateClimbing(delta) {
                         // instead of a small hit barely dipping and a large one
                         // clipping at the bottom.
                         if (recoilMag > this.recoilPeakMag) this.recoilPeakMag = recoilMag;
-                        if (!recoilStillSettling) this.recoilPeakMag = 0;
+                        // Cleared at exactly zero, not at the settle threshold.
+                        // updateRecoil snaps recoil to a true zero once it is
+                        // under RECOIL_ZERO_EPS, so this moment is reachable and
+                        // `hold` is already exactly 1 when it arrives - clearing
+                        // the peak there changes nothing at all. Clearing it at
+                        // the threshold instead was a second discontinuity, and
+                        // a bad one for LIGHT hits: a peak barely above the
+                        // threshold makes the ratio at the crossing large, so
+                        // hold jumped from around a half straight to 1. The
+                        // gentler the blow, the worse the snap.
+                        if (recoilMag === 0) this.recoilPeakMag = 0;
                         let hold = this.recoilPeakMag > 0
                             ? 1 - Math.min(1, recoilMag / this.recoilPeakMag)
                             : 1;
@@ -4630,7 +4641,22 @@ updateClimbing(delta) {
                     // the mixer - so if the warping survives with this on, the
                     // cause is somewhere else entirely and the search should
                     // move. Costs nothing to leave here.
-                    if (!recoilStillSettling && !window.carryStabilizeOff) {
+                    // No recoil test here, and that absence is the point. This
+                    // gate used to carry `!recoilStillSettling`, which did not
+                    // scale the hold down during a hit - it switched the entire
+                    // thing OFF. Meanwhile the weight below was already climbing
+                    // back as the recoil decayed, so at the instant recoil
+                    // crossed the threshold the hold reappeared at whatever
+                    // weight it had reached by then, typically most of the way
+                    // to 1. An on/off switch at a fixed point in every hit's
+                    // decay, identical whatever the blow: exactly the click, and
+                    // why smoothing the weight curve alone could not remove it.
+                    //
+                    // stabilizeWeight is the one and only control now. It is
+                    // near zero at the peak of a hit, so running this every
+                    // frame writes back essentially the live pose and the recoil
+                    // reads exactly as it did - there is nothing to gate.
+                    if (!window.carryStabilizeOff) {
                         // A retention is PER FRAME - each frame the bone keeps
                         // that fraction of its cached pose - so as a raw
                         // constant its real-time strength depends entirely on

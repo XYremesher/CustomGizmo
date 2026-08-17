@@ -198,8 +198,23 @@ implementation.
   That is the post-hit warp, and it is the same mistake the old 0.988
   damping hid by slowly creeping out of a bad capture.
 
-  `stabilizeWeight`'s target tracks the RECOIL MAGNITUDE, and there is
-  deliberately no threshold left in it. Pinning the weight at zero until
+  THERE IS NO RECOIL THRESHOLD ANYWHERE IN THIS PATH, and every attempt to
+  keep one turned into a step the eye could see. The damping gate carried
+  `!recoilStillSettling` for a long time, which did not scale the hold down
+  during a hit - it switched the whole thing off, while the weight was
+  already climbing back as the recoil decayed. At the crossing the hold
+  reappeared at whatever weight it had reached, which is 65-83% of it inside
+  a single frame, identical for a heavy blow and a light one. That is the
+  click, and it is why smoothing the weight curve alone never removed it.
+  `stabilizeWeight` is the only control now; it is near zero at the peak of a
+  hit, so running the damping every frame writes back essentially the live
+  pose and the recoil reads exactly as before. `recoilPeakMag` clears at an
+  exact zero (updateRecoil snaps recoil to one under RECOIL_ZERO_EPS) rather
+  than at a threshold, where `hold` is already exactly 1 so nothing changes -
+  clearing it at a threshold was a second discontinuity, and worst for light
+  hits, whose peak is barely above it.
+
+  `stabilizeWeight`'s target tracks the RECOIL MAGNITUDE. Pinning the weight at zero until
   recoil crossed 0.01 and only then ramping made the return a discrete
   event - the body swung out, visibly stopped, and only then did the chest
   travel back to the held pose, which reads as a click. Two motions with a
