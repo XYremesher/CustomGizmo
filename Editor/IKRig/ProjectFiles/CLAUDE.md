@@ -108,42 +108,28 @@ implementation.
   punching after that empties it. Changing one of these numbers without
   re-deriving the total tends to break that balance in a non-obvious way -
   do the arithmetic, don't just nudge and guess.
-- **Upper body warps on a hit while carrying — STILL OPEN.** Repro: carry
-  something, take a hit, give movement input during it. The torso bends
-  into a pose no clip contains. Input at the moment of impact is enough;
-  the report is that the recoil "finishes toward the input direction".
+- **Carry-stabilise damping is in LOCAL space** (`Character.animate`, the
+  `window.isCarryingObj` block). It smooths the carry clip's own bone
+  motion so the upper body reads as steady while walking.
 
-  Ruled out by test, each with a kill switch left in the code for the
-  next attempt:
-  - `window.carryStabilizeOff` — the carry-stabilise damping, the only
-    thing in the carry path that writes the spine outside the mixer.
-  - `window.recoilVisualOff` — the block multiplying `recoilRotation`
-    onto spine/spine1/neck.
-  - `window.slopeTiltOff` — `setSlopeTilt` entirely, so the whole of
-    `fbxModel`'s own rotation, including the hips-pinning offset it
-    accumulates. `hitTwistOff` and `turnLeanOff` zero its two
-    contributions separately.
+  It used to cache each bone's WORLD orientation and subtract the root's
+  rotation from it every frame. That is the same job done the hard way and
+  it carried two failure modes: the compensation had to be exact or a
+  residue went into the cache and stayed, and because the bones are damped
+  in order, spine1 and neck were pulled toward their own cached world
+  orientations while their parent was being pulled too, so errors stacked
+  down the chain. The symptom was that a hit taken while carrying left the
+  body settled at an angle instead of returning to the held pose - it
+  leaned toward whatever direction was being pressed.
 
-  Also ruled out: a full-body clip fighting `carry_upper` for the spine.
-  `window.animDebugOn` prints every running action with its weight and
-  time, and the recorded sets are correct in every case — `carry_upper`
-  at 1.00 against `_lower` splits only. Clamping `carry_upper` to its
-  last frame was tried and is wrong: the clip does not end on the held
-  pose, so the character settles with its arms out.
+  Found by bisection with the kill switches, which are still in the code:
+  `window.carryStabilizeOff`, `window.recoilVisualOff`, `window.slopeTiltOff`.
+  All three off, the body recovers; only the damping back on, it does not,
+  and it does not even with the recoil never reaching the spine. Test them
+  in COMBINATION - any single one left on can hold the fault by itself, so
+  turning them off one at a time proves nothing.
 
-  Attempts that did NOT fix it, all reverted: holding the lean world-fixed
-  by counter-rotating it against the frame's yaw change; taking movement
-  and turning away for the whole hit rather than just the recovery step;
-  and widening the settle test so the damping also waited out
-  `hitTwistAngle`. The second made it worse — it then warped on held input
-  too, not only input at the moment of impact. The third is worth
-  remembering as a thing NOT to do: it leaves the upright-holding system
-  off for longer after a hit, which is the opposite of what this bug
-  wants.
-
-  What that leaves: with all of the above disabled the warp still happens,
-  so nothing procedural is bending the body and the clips are right. The
-  next thing to test is whether the spine is involved at all —
-  `window.spineBlendValue = 0` strips the spine tracks out of
-  `carry_upper` — and, if it is not, whether what looks like a bent torso
-  is actually the held object being placed wrongly.
+  A local rotation does not change when the character turns, so there is
+  nothing to compensate for and nothing to accumulate. `lastGroupQuat` is
+  therefore dead and only cleared, never read. RemoteAvatar still has the
+  old world-space version of this for companions and bots.

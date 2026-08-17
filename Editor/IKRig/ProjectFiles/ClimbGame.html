@@ -2438,10 +2438,6 @@
         const _recoilSpineQ = new THREE.Quaternion();
         const _recoilSpine1Q = new THREE.Quaternion();
         const _recoilNeckQ = new THREE.Quaternion();
-        // Carry-stabilise damping working set - see applyDamping.
-        const _dampRootQ = new THREE.Quaternion();
-        const _dampDeltaQ = new THREE.Quaternion();
-        const _dampInvQ = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
         const _identityQuat = new THREE.Quaternion();
@@ -4271,32 +4267,40 @@ updateClimbing(delta) {
                         // Scratch, not clones: this block runs every frame the
                         // character is carrying, and it was building four
                         // quaternions each time.
-                        const rootQuatNow = _dampRootQ.copy(this.group.quaternion);
-                        if (this.fbxModel) rootQuatNow.multiply(this.fbxModel.quaternion);
-                        if (!this.lastGroupQuat) this.lastGroupQuat = rootQuatNow.clone();
-                        const groupDeltaQuat = _dampDeltaQ.copy(rootQuatNow)
-                            .multiply(_dampInvQ.copy(this.lastGroupQuat).invert());
-
-                        const applyDamping = (bone, lastWorldRef) => {
+                        // Damped in LOCAL space - the bone's rotation relative
+                        // to its parent, which is exactly what the clip
+                        // animates and what this is meant to smooth.
+                        //
+                        // It used to cache each bone's WORLD orientation and
+                        // undo the root's rotation from it every frame, which
+                        // is the same job done the hard way and brought two
+                        // failures with it. The compensation had to be exactly
+                        // right or a residue went into the cache and stayed
+                        // there; and because the bones were damped in order,
+                        // spine1 and neck were pulled toward their own cached
+                        // world orientations while their parent was being
+                        // pulled too, so the errors stacked down the chain.
+                        // Bisecting the carry-hit warping landed here: with
+                        // this block off the body recovers, with it on it does
+                        // not, even with the recoil never reaching the spine.
+                        //
+                        // A local rotation does not change when the character
+                        // turns, so there is nothing to compensate for, no
+                        // residue to accumulate and no order dependency.
+                        const applyDamping = (bone, lastLocalRef) => {
                             if (!bone) return;
-                            if (!this[lastWorldRef]) this[lastWorldRef] = bone.getWorldQuaternion(new THREE.Quaternion());
-                            else this[lastWorldRef].premultiply(groupDeltaQuat);
-
-                            bone.getWorldQuaternion(_tempQuat);
-                            _tempQuat.slerp(this[lastWorldRef], activeDampFactor);
-
-                            const parentWorld = bone.parent.getWorldQuaternion(_tempQuat2);
-                            bone.quaternion.copy(parentWorld.invert().multiply(_tempQuat));
+                            if (!this[lastLocalRef]) this[lastLocalRef] = bone.quaternion.clone();
+                            _tempQuat.copy(bone.quaternion).slerp(this[lastLocalRef], activeDampFactor);
+                            bone.quaternion.copy(_tempQuat);
+                            // Kept so anything reading world transforms later
+                            // this frame sees the damped pose.
                             bone.updateMatrixWorld(true);
-
-                            this[lastWorldRef].copy(_tempQuat);
+                            this[lastLocalRef].copy(_tempQuat);
                         };
 
                         applyDamping(this.spine, 'lastSpineWorld');
                         applyDamping(this.spine1, 'lastSpine1World');
                         applyDamping(this.neck, 'lastNeckWorld');
-
-                        this.lastGroupQuat.copy(rootQuatNow);
                     }
                 } else if (this.spine && this.hips &&
                     ((this.punchCorrectionNew && this.punchCorrectionNew.getEffectiveWeight() > 0.001) ||
@@ -4344,9 +4348,14 @@ updateClimbing(delta) {
                         this.spine.updateMatrixWorld(true);
                     }
                 } else {
-                    if (this.spine && this.lastSpineWorld) this.spine.getWorldQuaternion(this.lastSpineWorld);
-                    if (this.spine1 && this.lastSpine1World) this.spine1.getWorldQuaternion(this.lastSpine1World);
-                    if (this.neck && this.lastNeckWorld) this.neck.getWorldQuaternion(this.lastNeckWorld);
+                    // LOCAL rotations, matching what applyDamping caches now.
+                    // Left as world quaternions these would hand the damping a
+                    // reference in the wrong space the moment it resumed, and
+                    // it would spend its first frames pulling the spine toward
+                    // a pose that was never a local rotation at all.
+                    if (this.spine && this.lastSpineWorld) this.lastSpineWorld.copy(this.spine.quaternion);
+                    if (this.spine1 && this.lastSpine1World) this.lastSpine1World.copy(this.spine1.quaternion);
+                    if (this.neck && this.lastNeckWorld) this.lastNeckWorld.copy(this.neck.quaternion);
 
                     // The COMPOSED root, matching what the damping branch
                     // stores - group yaw times fbxModel's own tilt. This used
@@ -4358,9 +4367,10 @@ updateClimbing(delta) {
                     // cached spine/spine1/neck world quaternions as a rotation
                     // that had not happened - the upper body shivering while
                     // carrying.
-                    if (!this.lastGroupQuat) this.lastGroupQuat = new THREE.Quaternion();
-                    this.lastGroupQuat.copy(this.group.quaternion);
-                    if (this.fbxModel) this.lastGroupQuat.multiply(this.fbxModel.quaternion);
+                    // lastGroupQuat is no longer read - the damping is in local
+                    // space and has no root rotation to subtract. Kept nulled
+                    // and unwritten rather than removed, since initRagdoll and
+                    // the recoil reset both still clear it.
                 }
 
                 if (this.spine) {
