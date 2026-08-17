@@ -108,8 +108,17 @@ implementation.
   punching after that empties it. Changing one of these numbers without
   re-deriving the total tends to break that balance in a non-obvious way -
   do the arithmetic, don't just nudge and guess.
-- **Spine/turn-lean settling** — a known unresolved bug where hit
-  recovery while carrying + turning can settle into a stale lean angle. A
-  root-quaternion fix was tried and didn't solve it; the actual lean is
-  applied to the spine bone (`char.setSlopeTilt`), not the root group,
-  which stays pure-yaw.
+- **Spine/turn-lean settling** — hit recovery while carrying used to
+  settle into a stale lean. The cause was an ordering one: the
+  carry-stabilise damping in `Character.animate` compensates for root tilt
+  by reading `fbxModel.quaternion`, but in the main movement path
+  `char.setSlopeTilt` — which writes that tilt, `hitTwistAngle` included —
+  is called *after* `char.animate`. The compensation is therefore always a
+  frame behind. Harmless for a slow tilt, but the twist spikes on impact
+  and decays fast, and the error went into the world-space bone caches
+  every frame of the decay. That is why an earlier root-quaternion attempt
+  did not help: the problem was when the tilt was read, not which
+  quaternion. The damping now waits out the twist the same way it already
+  waited out the spine recoil. If this resurfaces, the deeper fix is to
+  order setSlopeTilt before char.animate rather than to keep widening the
+  settle test.
