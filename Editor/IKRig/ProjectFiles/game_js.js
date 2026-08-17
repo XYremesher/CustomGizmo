@@ -16429,6 +16429,11 @@ export function startGame(CharacterClass) {
     window.dropOnTopMaxHeight = 1.5;
     window.spineBlendValue = 1.00;
     window.orangeRecoilForce = 60.0;
+    // Whether the input block outlasts the recovery timer and runs until the
+    // lean itself has decayed - see hitStunned in the frame loop. On by
+    // default: the timer ends well before the lean does, and the frames in
+    // between are exactly the ones where steering dragged the recoil around.
+    window.hitStunUntilSettled = true;
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
     window.recoveryStepSpeed = RECOVERY_STEP_SPEED_DEFAULT;
@@ -16943,6 +16948,13 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
+    {
+        const el = document.getElementById('toggle-hit-stun-settled');
+        if (el) {
+            window.hitStunUntilSettled = el.checked;
+            el.addEventListener('change', e => { window.hitStunUntilSettled = e.target.checked; });
+        }
+    }
     {
         const el = document.getElementById('toggle-anim-debug');
         if (el) {
@@ -18638,6 +18650,23 @@ export function startGame(CharacterClass) {
         // state name, so window.hitRecoveryAnimSpeed alone (which persists
         // stale between hits) isn't a reliable enough signal on its own.
         window.isHitRecoveryStepActive = hitRecoveryStepActive;
+        // Steering is taken away for the whole of a hit, not just the step.
+        //
+        // The recovery step already overrode movement for its own 0.35s, but
+        // the delay before it and the lean decaying after it both left the
+        // player free to steer - and steering is what made the recoil resolve
+        // toward the input instead of away from the impact. Holding input off
+        // until the character has actually recovered separates the two rather
+        // than letting them fight over the same frames.
+        //
+        // hitStunUntilSettled extends the block past the timer to cover the
+        // lean's own decay, which outlasts it. On means "you get control back
+        // when you are upright again", off means "when the step ends".
+        const recoilSettling = (char.recoilRotation.lengthSq() + char.recoilVelocity.lengthSq()) > 1e-4
+            || Math.abs(char.hitTwistAngle) > 0.01 || Math.abs(char.hitTwistVelocity) > 0.01;
+        const hitStunned = !char.isRagdoll && !char.isStandingUp &&
+            (char.hitRecoveryTimer > 0 || (window.hitStunUntilSettled && recoilSettling));
+        window.isHitStunned = hitStunned;
 
         let floorY = 0;
         // Whether the ground scan found anything AT ALL this frame.
@@ -20871,7 +20900,11 @@ export function startGame(CharacterClass) {
                     }
                     effectiveMoveMag = isBuilding ? 0 : actualSpeed / 1.5;
                 }
-            } else if (moveMag > 0.1 || hitRecoveryStepActive) {
+            // hitStunned instead of the player's own input: while stunned the
+            // branch runs only for the recovery step's sake, and the step's
+            // own direction is used inside it - so pressing a direction during
+            // a hit moves nothing.
+            } else if ((moveMag > 0.1 && !hitStunned) || hitRecoveryStepActive) {
                 // A real hit (see applyProceduralRecoil) forces a short,
                 // fixed step in the direction it shoved the character,
                 // overriding whatever the player is actually pressing (or
@@ -21111,7 +21144,10 @@ export function startGame(CharacterClass) {
                 // walk-in direction for as long as that decay lasts, which
                 // is exactly the "player isn't facing the NPC" bug.
                 _lastMoveDir.copy(finalMoveDir);
-                if (!isSliding && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && !window.dialogueInputLocked) {
+                // hitStunned, not just isHitRecovering: the facing lock has to
+                // cover the whole stun for the same reason the movement does.
+                // Turning is what carries the lean around with the body.
+                if (!isSliding && !hitStunned && !isHitRecovering && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && !window.dialogueInputLocked) {
                     // Locked on: face the enemy, not the way you are walking.
                     // That inversion is the whole feature - the stick stops
                     // steering your facing and starts orbiting you around it.

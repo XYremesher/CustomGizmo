@@ -1296,6 +1296,10 @@
                     <input type="range" id="ragdoll-damping-slider" min="0.80" max="0.99" step="0.01" value="0.98" style="width: 100%;"><br>
                     <label>Hit Recovery Delay: <span id="hit-recovery-delay-val">0.02</span></label><br>
                     <input type="range" id="hit-recovery-delay-slider" min="0.0" max="0.3" step="0.01" value="0.02" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-hit-stun-settled" checked> Hold input until the lean has settled</label><br>
+                    <label style="opacity:.75;font-size:11px;">Movement and turning are taken away for the whole of a hit, so
+                    steering cannot drag the recoil around with the body. Ticked, the block lasts until the lean itself has
+                    decayed; unticked it ends with the recovery step, which finishes a good deal earlier.</label><br>
                     <label>Hit Recovery Duration: <span id="hit-recovery-duration-val">0.35</span></label><br>
                     <input type="range" id="hit-recovery-duration-slider" min="0.1" max="1.2" step="0.05" value="0.35" style="width: 100%;"><br>
                     <label>Recovery Step Speed: <span id="recovery-step-speed-val">3.5</span></label><br>
