@@ -2646,6 +2646,10 @@
                 // it has, the held reference still follows the animation;
                 // after, the reference is frozen and only the weight moves.
                 this.carryHoldSeeded = false;
+                // Largest recoil seen during the current hit, so the hold can
+                // fade back in against that hit's own scale rather than a
+                // constant that would suit one blow strength and not others.
+                this.recoilPeakMag = 0;
                 this.climbLockedWorldPos = null;
                 this.lastGroupPos = null;
 
@@ -4564,6 +4568,7 @@ updateClimbing(delta) {
                     if (window.isCarryStarting || window.isCarryDropping || (window.throwTimer && window.throwTimer > 0)) {
                         this.stabilizeWeight = 0.0;
                         this.carryHoldSeeded = false;
+                        this.recoilPeakMag = 0;
                         this.lastSpineWorld = null;
                         this.lastSpine1World = null;
                         this.lastNeckWorld = null;
@@ -4576,19 +4581,41 @@ updateClimbing(delta) {
                         if (this._armLockRefs) {
                             for (const ref of this._armLockRefs) this[ref] = null;
                         }
-                    } else if (recoilStillSettling) {
-                        // Released, not forgotten.
-                        this.stabilizeWeight = 0.0;
                     } else {
-                        // Slower than the 5.0 it was, because the ramp is
-                        // now the only thing standing between a pose and being
-                        // frozen in it. isCarryStarting clears at 40% of the
-                        // carry_start clip and fadeToAction still has a 0.2s
-                        // crossfade into the hold to run after that, so the
-                        // pose keeps moving for a beat past the gate opening.
-                        // At 3.0 the lock is not meaningfully closed for about
-                        // a second and a half, which clears that comfortably.
-                        this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 3.0 * delta);
+                        // The hold's weight tracks the RECOIL ITSELF, which is
+                        // what removes the click on the way back. Pinning the
+                        // weight at zero until recoil crossed a threshold and
+                        // only then starting a ramp made the return a discrete
+                        // event: at the instant of the crossing the pull toward
+                        // the held pose switched on, and an exponential ramp is
+                        // at its steepest the moment it starts, so the velocity
+                        // jumped from nothing to its maximum. That is the tick.
+                        // Nothing is left to cross now - the recoil decays
+                        // smoothly, so the hold fades back in smoothly, in step
+                        // with the very thing that displaced it.
+                        //
+                        // Scaled against the hit's OWN peak rather than a fixed
+                        // constant, so a light knock and a heavy one both
+                        // release fully and both come back over their own decay
+                        // instead of a small hit barely dipping and a large one
+                        // clipping at the bottom.
+                        if (recoilMag > this.recoilPeakMag) this.recoilPeakMag = recoilMag;
+                        if (!recoilStillSettling) this.recoilPeakMag = 0;
+                        let hold = this.recoilPeakMag > 0
+                            ? 1 - Math.min(1, recoilMag / this.recoilPeakMag)
+                            : 1;
+                        // Smoothstep, for zero rate of change at both ends. A
+                        // plain proportion still arrives with the recoil's own
+                        // exponential slope on it, which is small but is the
+                        // last thing that reads as a snap.
+                        hold = hold * hold * (3 - 2 * hold);
+                        // Fast out, slow in. The blow should land the instant
+                        // it lands - a leisurely release would have the hold
+                        // fighting the recoil through the part the player is
+                        // actually meant to see - while the recovery is the
+                        // part that wants to be unhurried.
+                        const rate = hold < this.stabilizeWeight ? 12.0 : 3.0;
+                        this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, hold, rate * delta);
                         // Once the ramp is effectively closed the hold counts
                         // as established, and from there the reference stops
                         // following the animation at all for a locked bone.

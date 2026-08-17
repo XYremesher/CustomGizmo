@@ -198,6 +198,18 @@ implementation.
   That is the post-hit warp, and it is the same mistake the old 0.988
   damping hid by slowly creeping out of a bad capture.
 
+  `stabilizeWeight`'s target tracks the RECOIL MAGNITUDE, and there is
+  deliberately no threshold left in it. Pinning the weight at zero until
+  recoil crossed 0.01 and only then ramping made the return a discrete
+  event - the body swung out, visibly stopped, and only then did the chest
+  travel back to the held pose, which reads as a click. Two motions with a
+  pause between them. Tracking the decay means the chest returns while the
+  recoil is still decaying: one continuous motion. Scaled against the hit's
+  own peak (`recoilPeakMag`) so light and heavy blows both release fully and
+  both recover over their own decay, smoothstepped for zero rate of change
+  at each end, and lerped fast out / slow in (12.0 vs 3.0) so the blow lands
+  instantly while the recovery stays unhurried.
+
   `retention` and `stabilizeWeight` are therefore two different things and
   must stay separate. `retention` is how fast the HELD REFERENCE follows the
   animation (1 = never = lock). `stabilizeWeight` is how much of the hold
