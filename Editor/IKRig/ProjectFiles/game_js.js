@@ -13574,6 +13574,18 @@ export function startGame(CharacterClass) {
             // same escape hatch the slider controls use.
             if (window.rebuildGrass) window.rebuildGrass();
             if (window.rebuildFlowers) window.rebuildFlowers();
+        }, undefined, (e) => {
+            // The loading overlay waits on _cubesLoaded and, unlike the cast
+            // it also waits for, had no timeout behind it - so a failed fetch
+            // of this one prop (it comes from raw.githubusercontent.com, so
+            // offline, rate-limited or simply slow all count) left the game on
+            // the loading screen for good.
+            //
+            // Releasing the gate on failure is the same trade the cast wait
+            // already makes: a level missing one test prop beats a level
+            // nobody can reach.
+            console.error('Cubes.glb load failed - starting without it:', e);
+            window._cubesLoaded = true;
         });
     }
 
@@ -18288,7 +18300,13 @@ export function startGame(CharacterClass) {
         _readyWaitT += rawDelta;
         const castReady = _readyWaitT > READY_WAIT_MAX ||
             (companions.every(r => r.comp.isLoaded) && aiBots.every(r => r.bot.isLoaded));
-        if (!gameReadyOverlayHidden && char.isLoaded && window._cubesLoaded && castReady) {
+        // The same timeout now covers the props too. Each loader that feeds
+        // this gate has its own error path, but a request that never resolves
+        // either way - a hung connection rather than a refused one - fires no
+        // callback at all, and this is the only thing standing between that
+        // and an overlay nobody can get past.
+        const propsReady = window._cubesLoaded || _readyWaitT > READY_WAIT_MAX;
+        if (!gameReadyOverlayHidden && char.isLoaded && propsReady && castReady) {
             gameReadyOverlayHidden = true;
             const overlay = document.getElementById('loading-overlay');
             if (overlay) overlay.classList.add('hidden');
