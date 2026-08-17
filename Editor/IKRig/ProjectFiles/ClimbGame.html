@@ -2373,6 +2373,9 @@
         const punchBtn = document.getElementById('punch-btn');
         punchBtn.addEventListener('pointerdown', (e) => {
             if (window.dialogueInputLocked) return;
+            // Hanging on a ledge or pulling up over it - see window.isClimbing
+            // in game_js.js. Both hands are on the wall.
+            if (window.isClimbing) return;
             if (!window.combat || window.combat.char.isRagdoll || window.combat.char.isStandingUp) return;
             e.preventDefault();
             isChargingPunch = false;
@@ -2389,6 +2392,19 @@
             if (charPunchButtonPressed) {
                 charPunchButtonPressed = false;
                 clearTimeout(punchPressTimer);
+                // A press that began on solid ground can be released after
+                // grabbing a ledge - the charge is abandoned rather than
+                // thrown, so reaching the wall cancels the punch instead of
+                // banking it for the moment you let go.
+                if (window.isClimbing) {
+                    // resetState is the existing "this punch is over" path -
+                    // it clears punchState, stops the charge effect and empties
+                    // the ring. Without it a charge abandoned on the wall would
+                    // leave the controller sitting in state 4 for good.
+                    if (isChargingPunch) window.combat.resetState();
+                    isChargingPunch = false;
+                    return;
+                }
                 if (isChargingPunch) {
                     window.combat.releaseChargePunch();
                 } else {

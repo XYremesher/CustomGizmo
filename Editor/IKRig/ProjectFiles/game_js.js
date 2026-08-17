@@ -434,6 +434,23 @@ export function startGame(CharacterClass) {
         cache.len = src.length;
         return out;
     }
+    // The near list minus whatever the player is holding - it moves with them
+    // and must not collide with them.
+    //
+    // Cached because the filter used to run every frame the player carried
+    // anything, and the array it produced was new each time. That mattered
+    // twice over: the allocation itself, and the fact that the ground-scan
+    // cache below keys on its source array's identity, so a fresh one every
+    // frame meant that filter re-ran every frame too. Carrying something was
+    // measurably heavier than not, for no reason anyone chose.
+    let _solidCache = null, _solidSrc = null, _solidHeld = null, _solidLen = -1;
+    function getSolidCollidables(near, held) {
+        if (!held) return near;
+        if (_solidSrc === near && _solidHeld === held && _solidLen === near.length) return _solidCache;
+        _solidCache = near.filter(c => c !== held);
+        _solidSrc = near; _solidHeld = held; _solidLen = near.length;
+        return _solidCache;
+    }
     // See the call site in animate for why this is cached and what
     // invalidates it.
     let _groundScanCache = null, _groundScanSrc = null, _groundScanLen = -1;
@@ -18525,7 +18542,7 @@ export function startGame(CharacterClass) {
         // Taken before the held-carryable filter so the near list is keyed on
         // the stable `collidables` array rather than a per-frame copy.
         const nearCollidables = getNearColliders(collidables, char.group.position, _playerNearCache);
-        const solidCollidables = heldCarryable ? nearCollidables.filter(c => c !== heldCarryable) : nearCollidables;
+        const solidCollidables = getSolidCollidables(nearCollidables, heldCarryable);
         // Ground-scan-only variant, excluding isDecorativeBump terrain
         // (see buildKneeBumpField) - those small bumps still need to be in
         // solidCollidables itself for the per-foot legIK raycasts
@@ -20405,7 +20422,16 @@ export function startGame(CharacterClass) {
             // (default false - see the "UI" panel's "Show Punch Button"
             // checkbox), since it's not part of the default control set
             // until a teaching level actually introduces the mechanic.
-            const punchUsable = (window.punchButtonEnabled && !isLedgeGrabbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping);
+            // Both halves of being on a wall: hanging AND the pull-up that
+            // follows it. Only the hang was checked, so a punch could still be
+            // thrown during the climb animation itself.
+            //
+            // Published on window because the punch handlers live in
+            // ClimbGame.html, where these two locals are not in scope - hiding
+            // the button is not enough on its own, since a press that started
+            // before the climb still releases into a punch.
+            window.isClimbing = isLedgeGrabbing || isClimbingUp;
+            const punchUsable = (window.punchButtonEnabled && !window.isClimbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping);
             if (punchBtnEl) punchBtnEl.style.display = punchUsable ? 'flex' : 'none';
             // The toggles live and die with the button they modify - a lock
             // control on screen while punching is impossible is a dead switch.
