@@ -3080,6 +3080,14 @@
             // both into one target and slerping once avoids that entirely.
             setSlopeTilt(normal, delta, slideDir, turnLeanAngle = 0, hitTwistAngle = 0, weight = 1.0) {
                 if (!this.fbxModel) return;
+                // Third kill switch - see window.carryStabilizeOff. Turning
+                // off the whole tilt costs slope lean and the impact twist,
+                // so this is a diagnostic rather than something to play with.
+                if (window.slopeTiltOff) return;
+                // Isolates the two contributions this composes, so the impact
+                // twist can be tested without giving up turn/slope lean.
+                if (window.hitTwistOff) hitTwistAngle = 0;
+                if (window.turnLeanOff) turnLeanAngle = 0;
                 let targetQuat;
                 if (Math.abs(normal.y) > 0.999 || !slideDir) {
                     targetQuat = _identityQuat;
@@ -4314,7 +4322,11 @@ updateClimbing(delta) {
                     this.defaultHipsQuat.copy(this.hips.quaternion);
                 }
 
-                if (this.spine) {
+                // Second kill switch, same purpose as window.carryStabilizeOff.
+                // This block and setSlopeTilt are the only two things left
+                // that bend the upper body while a hit decays; the damping has
+                // already been ruled out by test.
+                if (this.spine && !window.recoilVisualOff) {
                     _recoilEulerS.set(this.recoilRotation.x, this.recoilRotation.y, this.recoilRotation.z);
                     _recoilOffsetQ.setFromEuler(_recoilEulerS);
                     _recoilIdentityQ.identity();
