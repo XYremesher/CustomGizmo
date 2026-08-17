@@ -21800,6 +21800,34 @@ export function startGame(CharacterClass) {
                 char.applyLegIK(leftValid ? _leftFootIKTarget : null, rightValid ? _rightFootIKTarget : null, legIKWeight);
             }
 
+            // Re-place the carried object now the skeleton is actually posed
+            // for THIS frame.
+            //
+            // The placement far above runs before char.animate(), so it reads
+            // hand bones the mixer has not touched yet - the object has always
+            // been following the PREVIOUS frame's hands. At a constant speed
+            // that is a fixed sub-centimetre offset and invisible, which is why
+            // it never showed. A jump is the case that breaks it: vertical
+            // velocity changes in one step, so a whole frame of it appears at
+            // takeoff and disappears at landing - at 60fps and an ~8u/s launch
+            // that is ~13cm of the object detaching and snapping back, twice
+            // per jump.
+            //
+            // Placed after setSlopeTilt and applyLegIK too, not just after
+            // animate: setSlopeTilt rotates fbxModel and shifts its position to
+            // hold the hips pivot, and both move the hands in world space.
+            // Only the steady carry is corrected - carry_start lerps toward
+            // this midpoint over its own duration, where a frame of staleness
+            // in the target is genuinely immaterial.
+            if (window.isCarryingObj && heldCarryable && char.leftHandBone && char.rightHandBone) {
+                char.leftHandBone.getWorldPosition(leftHandPos);
+                char.rightHandBone.getWorldPosition(rightHandPos);
+                handMidpoint.addVectors(leftHandPos, rightHandPos).multiplyScalar(0.5);
+                handMidpoint.y += 0.5;
+                heldCarryable.position.copy(handMidpoint);
+                heldCarryable.quaternion.copy(char.group.quaternion);
+            }
+
             networkCarryUpper = false;
             if (window.isCarryStarting) networkStateName = 'carry_start';
             else if (window.isCarryDropping) networkStateName = 'carry_start';

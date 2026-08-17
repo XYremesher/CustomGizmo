@@ -262,6 +262,19 @@ implementation.
   held. Freezing the hand tracks fails the same way, the hands hanging off a
   chest the hips are carrying around.
 
+- **The carried object is placed TWICE per frame, and the second one is the
+  real one.** The placement in the carry block runs before `char.animate()`,
+  so it reads hand bones the mixer has not posed yet - it is always a frame
+  behind. At a constant speed that is a fixed sub-centimetre offset and
+  invisible; a jump changes vertical velocity in one step, so a whole frame
+  of it appears at takeoff and vanishes at landing (~13cm at 60fps and an
+  ~8u/s launch). The corrective re-place sits after `applyLegIK`, which is
+  after `setSlopeTilt` - that rotates `fbxModel` and shifts its position to
+  hold the hips pivot, both of which move the hands in world space, so
+  placing merely after `animate` would not be enough. Only the steady carry
+  is corrected; carry_start lerps toward the midpoint over its own duration
+  and does not care about a stale frame.
+
 - **Chest pin / spine CCD** (`Character.solveChestPin`) is the position half,
   and is OFF by default - `window.carryChestIKOff = false` enables it. It
   holds the chest at a fixed point in the model's local frame and bends the
