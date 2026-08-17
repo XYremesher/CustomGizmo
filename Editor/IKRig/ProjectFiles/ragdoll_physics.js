@@ -257,47 +257,6 @@ export const RagdollPhysics = {
     },
 
     updateRecoil(delta) {
-        // Hold the lean where the HIT put it, in world terms, while the body
-        // is free to turn under it.
-        //
-        // recoilVelocity/recoilRotation are body-local: applyProceduralRecoil
-        // builds them from the hit direction rotated into local space, and
-        // they are fed to the spine as local Euler angles. So a lean that
-        // outlives the recovery step - which it does, the step is 0.35s and
-        // the decay runs longer - turns with the character. Give movement
-        // input during that tail and the lean swings around to follow it, so
-        // a hit from behind finishes as a lean toward wherever you steered.
-        //
-        // Counter-rotating by the frame's yaw change cancels that: the lean
-        // stays pointing away from the impact and simply fades. The (x, z)
-        // pair is what carries its direction - x comes from the hit's local z
-        // and z from its local -x, which is a fixed 90 degree turn, and
-        // rotations commute with it, so the pair can be spun directly.
-        if (this.group && (this.recoilRotation.lengthSq() > 0 || this.recoilVelocity.lengthSq() > 0)) {
-            const q = this.group.quaternion;
-            const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x));
-            if (this._recoilYaw !== undefined) {
-                let d = yaw - this._recoilYaw;
-                // Shortest way round, so crossing the +/-pi seam does not read
-                // as a full turn and fling the lean.
-                if (d > Math.PI) d -= Math.PI * 2; else if (d < -Math.PI) d += Math.PI * 2;
-                if (Math.abs(d) > 1e-5) {
-                    const c = Math.cos(-d), s = Math.sin(-d);
-                    let x = this.recoilRotation.x, z = this.recoilRotation.z;
-                    this.recoilRotation.x = x * c - z * s;
-                    this.recoilRotation.z = x * s + z * c;
-                    x = this.recoilVelocity.x; z = this.recoilVelocity.z;
-                    this.recoilVelocity.x = x * c - z * s;
-                    this.recoilVelocity.z = x * s + z * c;
-                }
-            }
-            this._recoilYaw = yaw;
-        } else {
-            // Nothing to carry, so the next hit starts from this frame's
-            // facing rather than counter-rotating by however far the
-            // character turned while no lean was active.
-            this._recoilYaw = undefined;
-        }
         this.recoilVelocity.lerp(_zeroVec, 15 * delta);
         this.recoilRotation.lerp(_zeroVec, 10 * delta);
         this.recoilRotation.add(_recoilStep.copy(this.recoilVelocity).multiplyScalar(delta));
