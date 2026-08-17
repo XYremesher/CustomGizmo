@@ -4405,7 +4405,34 @@ updateClimbing(delta) {
 
                 if (window.isCarryingObj && this.spine) {
                     const stabilizeBlend = window.spineBlendValue;
-                    const dampFactor = stabilizeBlend * 0.85;
+                    // 0.85 was tuned to smooth POSE TRANSITIONS, and it was
+                    // then left in place to do a completely different job -
+                    // cancelling the walk cycle's own sway - which it is far
+                    // too weak for. Worth doing the arithmetic rather than
+                    // nudging this: the value is a per-frame retention against
+                    // a 120fps reference, so its time constant is
+                    //     tau = -1 / (120 * ln(dampFactor))
+                    // and a low-pass attenuates a sway of frequency f by
+                    //     1 / sqrt(1 + (2*pi*f*tau)^2).
+                    // At 0.85 that is tau = 51ms, and against the ~1.4Hz of a
+                    // walk cycle it removed 9% of it. Nine percent. The chest
+                    // swaying "despite" the damping was the damping barely
+                    // being switched on.
+                    //
+                    // 0.988 is tau = 0.69s, which takes about 85% of that out,
+                    // and more of a RUN - the worst case, and the one actually
+                    // complained about - because a faster cycle is further past
+                    // the filter's corner: ~89% at 2Hz, ~92% at 3Hz. If any is
+                    // still visible, this one number is the thing to move, and
+                    // the formulas above say by how much.
+                    // The cost is that a genuine pose change is followed over
+                    // roughly that same 0.7s, and that cost is small here
+                    // because it only ever applies mid-carry: every transition
+                    // worth seeing sharply - the pickup, the drop, the throw,
+                    // the recovery from a hit - already zeroes stabilizeWeight
+                    // and re-seeds the caches, so none of them are damped at
+                    // all.
+                    const dampFactor = stabilizeBlend * 0.988;
 
                     // lastSpineWorld etc. is a low-pass filter on the bone's
                     // world orientation: every frame it blends toward "current"
