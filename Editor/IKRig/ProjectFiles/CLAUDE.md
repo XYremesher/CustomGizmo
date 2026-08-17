@@ -138,3 +138,14 @@ implementation.
   nothing to accumulate. `lastGroupQuat` is dead and only cleared, never
   read. RemoteAvatar still has the old world-space version for companions
   and bots.
+
+  Three attempts at the separate complaint - the carried object visibly
+  swaying while walking - were built and all three removed as useless:
+  a `carryDampStrength` slider on the damping above, flattening the carry
+  clip's upper-body tracks to one pose (`holdSpine` in `makeUpperBodyClip`),
+  and low-pass filtering the hand midpoint in the character's own frame
+  (`carryObjectSteady` in game_js.js). Don't rebuild any of them without a
+  new idea about the cause - the sway survives the torso being held rigid
+  AND the hand bones being frozen AND the midpoint being filtered, which
+  says the source is not in the upper-body animation at all. Look at what
+  moves `char.group` itself.

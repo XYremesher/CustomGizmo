@@ -1115,19 +1115,6 @@
                     <input type="range" id="throw-hit-force-slider" min="5" max="100" step="1" value="35" style="width: 100%;"><br>
                     <label>Throw Hit Radius: <span id="throw-hit-radius-val">0.8</span></label><br>
                     <input type="range" id="throw-hit-radius-slider" min="0.3" max="2.0" step="0.05" value="0.8" style="width: 100%;"><br>
-                    <label>Carried Object Steadiness: <span id="carry-object-steady-val">0.92</span></label><br>
-                    <input type="range" id="carry-object-steady-slider" min="0.0" max="0.99" step="0.01" value="0.92" style="width: 100%;"><br>
-                    <label style="opacity:.75;font-size:11px;">Holds the carried object still in front of you. The hands follow
-                    the walk cycle, so an object pinned to them inherits every bob; this filters that out in the character's
-                    own frame, so walking and turning still move it with no lag. 0 turns it off.</label><br>
-                    <label><input type="checkbox" id="toggle-carry-hold-steady" checked> Freeze the upper body while carrying</label><br>
-                    <label style="opacity:.75;font-size:11px;">Freezes the carry clip's spine, arms and hands at one pose,
-                    so the hands - and therefore the object held between them - stop moving with the walk cycle. Removes the
-                    motion rather than damping it, so it costs no responsiveness.</label><br>
-                    <label>Carry Damping: <span id="carry-damp-val">0.85</span></label><br>
-                    <input type="range" id="carry-damp-slider" min="0.5" max="0.99" step="0.01" value="0.85" style="width: 100%;"><br>
-                    <label style="opacity:.75;font-size:11px;">How steadily the upper body is held while carrying. Higher is
-                    steadier but slower to follow the animation; lower lets the carry clip's own sway through.</label><br>
                     <label>Spine Stabilize Blend: <span id="spine-blend-val">1.00</span></label><br>
                     <input type="range" id="spine-blend-slider" min="0.0" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
                 </div>
@@ -2482,49 +2469,11 @@
             return new THREE.AnimationClip(originalClip.name + '_lower', originalClip.duration, tracks);
         }
 
-        // holdSpine freezes the whole upper body to a single pose instead of
-        // letting them animate. Used for the carry clip: what it animates
-        // there is a half-second sway of the torso, and the whole point of
-        // the carried pose is that everything above the pelvis stays put.
-        //
-        // Damping it away was the alternative and it is the worse one - a
-        // low-pass strong enough to flatten a 0.53s cycle also makes the
-        // upper body lag noticeably behind a turn. Removing the motion at
-        // source costs nothing, because there is nothing left to smooth.
-        //
-        // The pose is sampled at the middle of the clip rather than either
-        // end: the ends of a loop are where it is blending back into itself,
-        // and the last frame in particular is not the held pose at all -
-        // clamping to it settles the character with its arms out.
-        //
-        // Arms and hands go still too. They have to: the carried object is
-        // placed from the hand bones, so leaving those animating leaves the
-        // object bobbing no matter what the torso does.
-        function makeUpperBodyClip(originalClip, spineBlendFactor, holdSpine = false) {
+        function makeUpperBodyClip(originalClip, spineBlendFactor) {
             const tracks = [];
             originalClip.tracks.forEach(track => {
                 if (isUpperBodyTrack(track.name)) {
                     const clonedTrack = track.clone();
-                    // EVERY upper-body track, arms and hands included - not
-                    // just the spine. The carried object is positioned from the
-                    // hand bones, so as long as those keep animating the object
-                    // keeps moving with them however still the torso is.
-                    if (holdSpine) {
-                        // Whatever this track's stride is (4 for quaternions,
-                        // 3 for positions), copy the keyframe nearest the
-                        // clip's middle over all the others. The track still
-                        // exists and still owns the bone, it just never
-                        // changes.
-                        const n = clonedTrack.values.length;
-                        const stride = Math.max(1, Math.round(n / Math.max(1, clonedTrack.times.length)));
-                        const frames = Math.floor(n / stride);
-                        if (frames > 1) {
-                            const mid = Math.floor((frames - 1) / 2) * stride;
-                            for (let i = 0; i < n; i += stride) {
-                                for (let k = 0; k < stride; k++) clonedTrack.values[i + k] = clonedTrack.values[mid + k];
-                            }
-                        }
-                    }
                     if (track.name.toLowerCase().includes('spine') && clonedTrack.ValueTypeName === 'quaternion') {
                         for (let i = 0; i < clonedTrack.values.length; i += 4) {
                             const x = clonedTrack.values[i];
@@ -3106,7 +3055,7 @@
                     }
 
                     if (['carry', 'punch_left', 'punch_right', 'punch_combo', 'punch_charge_hold', 'punch_charge_punch', 'punch_walk', 'charge_back'].includes(name)) {
-                        const upperClip = makeUpperBodyClip(clip, spineBlend, name === 'carry' && window.carryHoldSteady !== false);
+                        const upperClip = makeUpperBodyClip(clip, spineBlend);
                         const upperAction = this.mixer.clipAction(upperClip);
                         this.setupActionProperties(name + '_upper', upperAction);
                         this.actions[name + '_upper'] = upperAction;
@@ -4280,12 +4229,7 @@ updateClimbing(delta) {
 
                 if (window.isCarryingObj && this.spine) {
                     const stabilizeBlend = window.spineBlendValue;
-                    // Back to the originally tuned 0.85 now that damping is in
-                    // root space: the chain compounds again, since each bone's
-                    // updateMatrixWorld means the two above it are already
-                    // steadied before their own pass. Tunable all the same -
-                    // see the Carry Damping slider.
-                    const dampFactor = stabilizeBlend * window.carryDampStrength;
+                    const dampFactor = stabilizeBlend * 0.85;
 
                     // lastSpineWorld etc. is a low-pass filter on the bone's
                     // world orientation: every frame it blends toward "current"

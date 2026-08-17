@@ -16410,13 +16410,6 @@ export function startGame(CharacterClass) {
     // jump, snapped back to 1.0 whenever grounded.
     let airControlMult = 1.0;
     let carryTargetObj = null;
-    // Carried-object steadying - see the hand midpoint in animate. Per-frame
-    // retention before frame-rate normalisation; 0 disables it entirely.
-    window.carryObjectSteady = 0.92;
-    const _carryLocalNow = new THREE.Vector3();
-    const _carryLocalSmoothed = new THREE.Vector3();
-    const _carryInvQuat = new THREE.Quaternion();
-    let _carryLocalHeld = false;
     let isSlipping = false;
     let slipTimer = 0;
     let ledgeSlipDuration = 0.05;
@@ -16438,11 +16431,6 @@ export function startGame(CharacterClass) {
     // to have hardcoded.
     window.dropOnTopMaxHeight = 1.5;
     window.spineBlendValue = 1.00;
-    // Per-frame retention of the carry damping's low-pass, before frame-rate
-    // normalisation. Higher is steadier and slower to follow the clip.
-    window.carryDampStrength = 0.85;
-    // See makeUpperBodyClip - the carry clip's spine is held at one pose.
-    window.carryHoldSteady = true;
     window.orangeRecoilForce = 60.0;
     window.hitRecoveryDelay = 0.02;
     window.hitRecoveryDuration = HIT_RECOVERY_DURATION_DEFAULT;
@@ -16703,8 +16691,6 @@ export function startGame(CharacterClass) {
         { id: 'throw-trim-slider', vId: 'throw-trim-val', func: v => { throwTrimStart = v; window.throwTrimStart = v; } },
         { id: 'throw-hit-force-slider', vId: 'throw-hit-force-val', func: v => window.throwHitForce = v, fix: 0 },
         { id: 'throw-hit-radius-slider', vId: 'throw-hit-radius-val', func: v => window.throwHitRadius = v, fix: 2 },
-        { id: 'carry-object-steady-slider', vId: 'carry-object-steady-val', func: v => window.carryObjectSteady = v, fix: 2 },
-        { id: 'carry-damp-slider', vId: 'carry-damp-val', func: v => window.carryDampStrength = v, fix: 2 },
         { id: 'spine-blend-slider', vId: 'spine-blend-val', func: v => { window.spineBlendValue = v; char.buildClips(); } },
         { id: 'slip-dur-slider', vId: 'slip-dur-val', func: v => ledgeSlipDuration = v },
         { id: 'drop-pushback-slider', vId: 'drop-pushback-val', func: v => ledgeDropPushback = v },
@@ -16960,15 +16946,6 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
-    {
-        const el = document.getElementById('toggle-carry-hold-steady');
-        if (el) {
-            window.carryHoldSteady = el.checked;
-            // The flattening happens when the clips are built, so changing it
-            // has to rebuild them - same as the spine blend slider.
-            el.addEventListener('change', e => { window.carryHoldSteady = e.target.checked; char.buildClips(); });
-        }
-    }
     {
         const el = document.getElementById('toggle-anim-debug');
         if (el) {
@@ -20725,37 +20702,6 @@ export function startGame(CharacterClass) {
                 char.rightHandBone.getWorldPosition(rightHandPos);
                 handMidpoint.addVectors(leftHandPos, rightHandPos).multiplyScalar(0.5);
                 handMidpoint.y += 0.5;
-                // The hands follow the walk cycle, so a carried object copying
-                // their midpoint inherits every bob and swing of it. That is
-                // the object visibly wobbling in front of you, and it is not
-                // something the spine damping can reach - the object is driven
-                // straight off the bones, not off the torso.
-                //
-                // Smoothed in the CHARACTER's frame, not the world's: the
-                // midpoint is expressed relative to the root, filtered there,
-                // and put back. Walking and turning move the root, so they are
-                // followed exactly with no lag; only the animation's own
-                // wobble, which is what shows up as movement WITHIN that
-                // frame, gets taken out.
-                if (window.carryObjectSteady > 0) {
-                    _carryLocalNow.copy(handMidpoint).sub(char.group.position)
-                        .applyQuaternion(_carryInvQuat.copy(char.group.quaternion).invert());
-                    if (!_carryLocalHeld || !window.isCarryingObj) {
-                        // Seeded on pickup rather than carried over, or the
-                        // object would swim in from wherever the last one was
-                        // held.
-                        _carryLocalSmoothed.copy(_carryLocalNow);
-                        _carryLocalHeld = true;
-                    } else {
-                        // Frame-rate normalised the same way the spine damping
-                        // is, so the smoothing lasts the same wall-clock time
-                        // whatever the frame rate.
-                        const keep = Math.pow(window.carryObjectSteady, delta * 120);
-                        _carryLocalSmoothed.lerp(_carryLocalNow, 1 - keep);
-                    }
-                    handMidpoint.copy(_carryLocalSmoothed)
-                        .applyQuaternion(char.group.quaternion).add(char.group.position);
-                }
             } else {
                 _tempVec3.set(0, 0, 1).applyQuaternion(char.group.quaternion);
                 handMidpoint.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + 0.5);
