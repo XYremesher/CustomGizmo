@@ -16947,6 +16947,20 @@ export function startGame(CharacterClass) {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
     {
+        const el = document.getElementById('toggle-carry-tick');
+        if (el) {
+            window.carryTickDebug = el.checked;
+            el.addEventListener('change', e => {
+                window.carryTickDebug = e.target.checked;
+                // Cleared both ways, so a stale worst-frame from a previous
+                // run cannot be mistaken for a fresh one.
+                window.carryTickReport = '';
+                window._ctWorst = 0;
+                window._ctPrevObj = null;
+            });
+        }
+    }
+    {
         const el = document.getElementById('toggle-anim-debug');
         if (el) {
             window.animDebugOn = el.checked;
@@ -18288,7 +18302,11 @@ export function startGame(CharacterClass) {
                     // number is what every ray used to walk, the first is what
                     // it walks now.
                     `near ${_playerNearCache.list.length}/${collidables.length}` +
-                    (window.animDebugOn && window.charAnimDebug ? `\n${window.charAnimDebug}` : '');
+                    (window.animDebugOn && window.charAnimDebug ? `\n${window.charAnimDebug}` : '') +
+                    // The carry-tick probe's worst frame, held on screen for a
+                    // few seconds - the spike itself lasts one frame and is
+                    // unreadable live.
+                    (window.carryTickDebug && window.carryTickReport ? `\n${window.carryTickReport}` : '');
             }
         }
 
