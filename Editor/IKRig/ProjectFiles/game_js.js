@@ -21901,21 +21901,29 @@ export function startGame(CharacterClass) {
                             // so what is worth seeing is which action was meant
                             // to be holding the arms up and what its weight
                             // actually was at that instant.
+                            // isRunning() is the filter, and it has to be:
+                            // getEffectiveWeight() returns 1.00 for a STOPPED
+                            // action too, since the weight property survives
+                            // the stop. Accepting either condition listed every
+                            // clip in the rig at "1.00@0.00(stopped)" and
+                            // pushed the handful that matter off the screen.
+                            // Sorted heaviest first and capped for the same
+                            // reason - the panel is one line wide.
                             const live = [];
                             for (const k in char.actions) {
                                 const a = char.actions[k];
-                                if (!a) continue;
+                                if (!a || !a.isRunning()) continue;
                                 const w = a.getEffectiveWeight();
-                                if (a.isRunning() || w > 0.001) {
-                                    live.push(`${a._clipName || k}=${w.toFixed(2)}@${a.time.toFixed(2)}${a.isRunning() ? '' : '(stopped)'}`);
-                                }
+                                if (w > 0.001) live.push([w, `${a._clipName || k}=${w.toFixed(2)}@${a.time.toFixed(2)}`]);
                             }
+                            live.sort((x, y) => y[0] - x[0]);
+                            const liveText = live.slice(0, 6).map(e => e[1]).join('\n  ');
                             window.carryTickReport =
                                 `TICK ${localA > groupA ? 'LOCAL(skeleton)' : 'GROUP(character)'} ` +
                                 `group ${Math.round(groupA)} local ${Math.round(localA)} u/s2\n` +
                                 `  localY ${(local.y - _ctPrevLocal.y).toFixed(3)}  yVel ${yVelocity.toFixed(1)}` +
                                 `  grnd ${isGrounded ? 1 : 0}  dt ${delta.toFixed(4)}\n` +
-                                `  ${live.join(' ')}`;
+                                `  ${liveText}`;
                         }
                         _ctPrevGroupV.copy(groupV);
                         _ctPrevLocalV.copy(localV);
