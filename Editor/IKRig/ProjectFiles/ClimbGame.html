@@ -1115,6 +1115,11 @@
                     <input type="range" id="throw-hit-force-slider" min="5" max="100" step="1" value="35" style="width: 100%;"><br>
                     <label>Throw Hit Radius: <span id="throw-hit-radius-val">0.8</span></label><br>
                     <input type="range" id="throw-hit-radius-slider" min="0.3" max="2.0" step="0.05" value="0.8" style="width: 100%;"><br>
+                    <label>Carried Object Steadiness: <span id="carry-object-steady-val">0.92</span></label><br>
+                    <input type="range" id="carry-object-steady-slider" min="0.0" max="0.99" step="0.01" value="0.92" style="width: 100%;"><br>
+                    <label style="opacity:.75;font-size:11px;">Holds the carried object still in front of you. The hands follow
+                    the walk cycle, so an object pinned to them inherits every bob; this filters that out in the character's
+                    own frame, so walking and turning still move it with no lag. 0 turns it off.</label><br>
                     <label><input type="checkbox" id="toggle-carry-hold-steady" checked> Hold the carried torso still</label><br>
                     <label style="opacity:.75;font-size:11px;">Flattens the carry clip's spine motion to one pose, so the
                     upper body does not sway while walking. Removes the motion instead of damping it away, which costs no
