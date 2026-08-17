@@ -139,13 +139,32 @@ implementation.
   read. RemoteAvatar still has the old world-space version for companions
   and bots.
 
-  Three attempts at the separate complaint - the carried object visibly
-  swaying while walking - were built and all three removed as useless:
-  a `carryDampStrength` slider on the damping above, flattening the carry
+  The separate complaint - the carried object visibly swaying while walking
+  - is NOT this damping's to fix, and three attempts to make it one were
+  built and removed: a `carryDampStrength` slider, flattening the carry
   clip's upper-body tracks to one pose (`holdSpine` in `makeUpperBodyClip`),
-  and low-pass filtering the hand midpoint in the character's own frame
-  (`carryObjectSteady` in game_js.js). Don't rebuild any of them without a
-  new idea about the cause - the sway survives the torso being held rigid
-  AND the hand bones being frozen AND the midpoint being filtered, which
-  says the source is not in the upper-body animation at all. Look at what
-  moves `char.group` itself.
+  and low-pass filtering the hand midpoint (`carryObjectSteady`). Don't
+  rebuild them. All three failed for one reason: everything above is
+  ROTATION, and the chest's world POSITION is not the chest's to decide -
+  it is the pelvis's position plus the chain, so the walk cycle's hip bob
+  translates the whole torso however rigid the rotations are held. Freezing
+  the hand tracks fails for the same reason, the hands hanging off a chest
+  that is being carried around by the hips.
+
+- **Chest pin / spine CCD** (`Character.solveChestPin`) is the position half,
+  and runs immediately before the damping above, in the same carry block.
+  It holds the chest at a fixed point in root space and bends the joints
+  strictly between pelvis and chest (Spine and Spine1 on a Mixamo rig,
+  found by walking parents rather than by name) to keep it there - two
+  joints, two CCD passes, per-joint step capped at 0.35rad.
+
+  Position first, orientation second, and never both on the same bone: the
+  solver owns the in-between joints, so `applyDamping` skips spine1 while
+  the pin is on. Damping the chest itself is still fine - it writes a local
+  rotation to reach a world orientation whatever the parent turned out to
+  be. The pelvis is deliberately not in the chain; the legs hang off it.
+
+  Kill switch `window.carryChestIKOff` restores the old spine1 damping.
+  `chestPinLocal` is re-seeded with the rotation caches whenever recoil is
+  settling, so a hit still visibly lands (recoil is applied after this) and
+  the pin resumes from wherever the body recovered to.

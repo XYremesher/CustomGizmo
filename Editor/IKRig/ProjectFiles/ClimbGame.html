@@ -2442,6 +2442,21 @@
         // inverse, rebuilt from scratch each frame rather than integrated.
         const _dampRootQ = new THREE.Quaternion();
         const _dampInvQ = new THREE.Quaternion();
+        // Chest-pin CCD working set - see solveChestPin.
+        const _ikJointPos = new THREE.Vector3();
+        const _ikEffPos = new THREE.Vector3();
+        const _ikToEff = new THREE.Vector3();
+        const _ikToTarget = new THREE.Vector3();
+        const _ikTargetWorld = new THREE.Vector3();
+        const _ikChestNow = new THREE.Vector3();
+        const _ikSwing = new THREE.Quaternion();
+        const _ikAxis = new THREE.Vector3();
+        const _ikWorldQ = new THREE.Quaternion();
+        const _ikParentQ = new THREE.Quaternion();
+        // Its own root pair rather than sharing the damping's: the caller
+        // holds live references to those across the call.
+        const _ikRootQ = new THREE.Quaternion();
+        const _ikRootInv = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
         const _identityQuat = new THREE.Quaternion();
@@ -3263,6 +3278,129 @@
             // it reads fbxModel's own current tilt directly, so it's
             // naturally a no-op once that's back to identity.
             //
+            // Pins the CHEST in the character's own frame and bends the spine
+            // joints between it and the pelvis to keep it there - a two-joint
+            // CCD chain solved every frame while carrying.
+            //
+            // The rotation damping below this handles the chest's ORIENTATION,
+            // and no amount of it can steady the carry: the chest's world
+            // POSITION is not the chest's to decide. It is the pelvis's
+            // position plus the chain, so the walk cycle's hip bob translates
+            // the whole torso - and the hands, and therefore the object held
+            // between them - however rigid the rotations are held. Freezing
+            // the arm and hand tracks doesn't help for the same reason. The
+            // position has to be solved for, which means IK.
+            //
+            // Rotating the pelvis is not an option (the legs hang off it), so
+            // the solver gets the bones strictly between pelvis and chest -
+            // Spine and Spine1 on a Mixamo rig. Two joints, three DOF each,
+            // against a three-DOF position target: plenty. The chest can only
+            // sit on a shell around the Spine joint, but a few centimetres of
+            // hip bob against ~40cm of spine stays well inside it, and the
+            // curl the solver puts in to absorb it is what a person carrying
+            // something heavy actually does.
+            //
+            // The target is held in ROOT space, for the reason spelled out on
+            // the damping below: walking and turning move the root, so they
+            // are followed exactly with zero lag, and only motion WITHIN the
+            // character - the animation's own bob, which is the complaint -
+            // is what the filter sees and removes.
+            solveChestPin(delta, weight) {
+                if (window.carryChestIKOff || !this.spine || !this.hips || weight <= 0.001) return;
+
+                // Walked once from the chest up to the pelvis rather than
+                // matched by name: "Spine/Spine1/Spine2" is one convention of
+                // several, and the parent links are the same on all of them.
+                if (this._spineChain === undefined) {
+                    const chain = [];
+                    let b = this.spine.parent;
+                    // The bound stops a rig whose chest is not actually under
+                    // the pelvis from walking to the scene root.
+                    while (b && b.isBone && b !== this.hips && chain.length < 6) {
+                        chain.unshift(b);
+                        b = b.parent;
+                    }
+                    this._spineChain = (b === this.hips && chain.length > 0) ? chain : null;
+                }
+                if (!this._spineChain) return;
+
+                const rootQ = _ikRootQ.copy(this.group.quaternion);
+                if (this.fbxModel) rootQ.multiply(this.fbxModel.quaternion);
+                const rootInv = _ikRootInv.copy(rootQ).invert();
+
+                this.spine.getWorldPosition(_ikChestNow);
+                _ikChestNow.sub(this.group.position).applyQuaternion(rootInv);
+
+                if (!this.chestPinLocal) {
+                    this.chestPinLocal = _ikChestNow.clone();
+                    return;
+                }
+                // A long time constant on purpose. The walk bob is ~1-2Hz and
+                // has to be gone; a genuine pose change (idle to walk, the
+                // crouch of a pickup) is slower and should still come through,
+                // just unhurried. Frame-rate normalised to a 120fps reference
+                // like everything else here, so it smooths over the same
+                // wall-clock time on a phone as on the PC it was tuned on.
+                const keep = Math.pow(0.98, delta * 120);
+                this.chestPinLocal.lerp(_ikChestNow, 1 - keep);
+
+                _ikTargetWorld.copy(this.chestPinLocal).applyQuaternion(rootQ).add(this.group.position);
+                // Blend the target in rather than the result: partial weight
+                // means aiming part of the way, which is still a pose the
+                // solver reaches exactly, instead of leaving the chain
+                // half-solved somewhere it was never asked to be.
+                this.spine.getWorldPosition(_ikEffPos);
+                _ikTargetWorld.lerp(_ikEffPos, 1 - weight);
+
+                // Something has gone wrong - a teleport, a level load - and
+                // dragging the spine across the gap would look far worse than
+                // one frame of bob. Re-seed and let it settle from here.
+                if (_ikEffPos.distanceToSquared(_ikTargetWorld) > 0.25) {
+                    this.chestPinLocal.copy(_ikChestNow);
+                    return;
+                }
+
+                const chain = this._spineChain;
+                // Two passes over two joints. CCD converges fastest at the
+                // end nearest the effector, and the distances here are
+                // centimetres, so this is already well past the point where
+                // more passes change anything visible.
+                for (let pass = 0; pass < 2; pass++) {
+                    for (let i = chain.length - 1; i >= 0; i--) {
+                        const joint = chain[i];
+                        joint.getWorldPosition(_ikJointPos);
+                        this.spine.getWorldPosition(_ikEffPos);
+                        _ikToEff.subVectors(_ikEffPos, _ikJointPos);
+                        _ikToTarget.subVectors(_ikTargetWorld, _ikJointPos);
+                        if (_ikToEff.lengthSq() < 1e-8 || _ikToTarget.lengthSq() < 1e-8) continue;
+                        _ikToEff.normalize();
+                        _ikToTarget.normalize();
+
+                        _ikSwing.setFromUnitVectors(_ikToEff, _ikToTarget);
+                        // Per-joint step cap. Without it a single frame's
+                        // correction can put a right angle in the spine when
+                        // the effector happens to sit near its own joint and
+                        // the required swing blows up.
+                        const angle = 2 * Math.acos(Math.min(1, Math.abs(_ikSwing.w)));
+                        const MAX_STEP = 0.35;
+                        if (angle > MAX_STEP) {
+                            _ikAxis.set(_ikSwing.x, _ikSwing.y, _ikSwing.z);
+                            if (_ikAxis.lengthSq() < 1e-8) continue;
+                            _ikAxis.normalize();
+                            if (_ikSwing.w < 0) _ikAxis.negate();
+                            _ikSwing.setFromAxisAngle(_ikAxis, MAX_STEP);
+                        }
+
+                        joint.getWorldQuaternion(_ikWorldQ).premultiply(_ikSwing);
+                        joint.parent.getWorldQuaternion(_ikParentQ).invert();
+                        joint.quaternion.copy(_ikParentQ.multiply(_ikWorldQ));
+                        // The next joint down, and the effector read at the
+                        // top of the next step, both need this immediately.
+                        joint.updateMatrixWorld(true);
+                    }
+                }
+            }
+
             // this.spine/this.spine1/this.neck already get overwritten by
             // the animation mixer and updateRecoil() every frame before
             // this runs (see animate()), so - unlike those two - nothing
@@ -4254,6 +4392,9 @@ updateClimbing(delta) {
                         this.lastSpine1World = null;
                         this.lastNeckWorld = null;
                         this.lastGroupQuat = null;
+                        // Re-seeded with the caches, or the pin would drag the
+                        // chest back toward wherever the last hold left it.
+                        this.chestPinLocal = null;
                     } else {
                         this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 5.0 * delta);
                     }
@@ -4336,8 +4477,17 @@ updateClimbing(delta) {
                             bone.updateMatrixWorld(true);
                         };
 
+                        // Position first, orientation second, and never both
+                        // on the same bone. The solver owns the joints between
+                        // pelvis and chest - damping those too would pull the
+                        // chain straight back off the target it was just put
+                        // on. Damping the CHEST is safe and still wanted: it
+                        // writes a local rotation to hit a world orientation,
+                        // whatever the parent underneath ended up as, so the
+                        // solver's work below it passes through untouched.
+                        this.solveChestPin(delta, this.stabilizeWeight);
                         applyDamping(this.spine, 'lastSpineWorld');
-                        applyDamping(this.spine1, 'lastSpine1World');
+                        if (window.carryChestIKOff) applyDamping(this.spine1, 'lastSpine1World');
                         applyDamping(this.neck, 'lastNeckWorld');
                     }
                 } else if (this.spine && this.hips &&
