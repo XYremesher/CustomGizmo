@@ -188,18 +188,6 @@ implementation.
   is then used as a fallback; that fallback is the frame-one pose, mid
   pickup, so it must keep easing in with the ramp rather than locking at once.
 
-  The HIPS' POSITION is held too (`getCarryHipsRef`, kill switch
-  `window.carryHipsHoldOff`), and it has to be, because the rotation lock
-  cannot reach it. Everything above the pelvis hangs off the pelvis, so
-  whatever the hips' position track does carries the whole locked torso with
-  it - rigid, but relocated. While running that track is a small bob. The
-  jump clips are where it stops being small: JumpStart crouches and extends,
-  JumpMidAir tucks, and `makeLowerBodyClip` keeps the hips (isUpperBodyTrack
-  counts it as lower), so the upper body gets thrown around by an animation
-  it is meant to be held out of - over a 0.2s crossfade, which reads as a
-  click. Held, the jump reads through the legs and through the group's own
-  arc instead. The leg bones are untouched: they are driven by rotation.
-
   A HIT AND A PICKUP ARE NOT THE SAME EVENT, and the reset branch keeps them
   apart. A pickup/drop/throw clears the caches, because a new hold has to be
   built. A hit only drops `stabilizeWeight` and leaves the caches alone: a
