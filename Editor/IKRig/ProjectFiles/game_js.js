@@ -16415,6 +16415,7 @@ export function startGame(CharacterClass) {
     const _ctPrevGroup = new THREE.Vector3(), _ctGroupV = new THREE.Vector3();
     const _ctLocalV = new THREE.Vector3(), _ctPrevGroupV = new THREE.Vector3();
     const _ctPrevLocalV = new THREE.Vector3(), _ctTmp = new THREE.Vector3();
+    const _ctInvYaw = new THREE.Quaternion();
     let _ctCarryAge = 0;
     let isSlipping = false;
     let slipTimer = 0;
@@ -16961,8 +16962,8 @@ export function startGame(CharacterClass) {
                 // Cleared both ways, so a stale worst-frame from a previous
                 // run cannot be mistaken for a fresh one.
                 window.carryTickReport = '';
-                window._ctWorst = 0;
-                window._ctWorstAt = 0;
+                window._ctA = 0; window._ctAAt = 0; window._ctAText = '';
+                window._ctG = 0; window._ctGAt = 0; window._ctGText = '';
                 window._ctInit = false;
             });
         }
@@ -21876,86 +21877,83 @@ export function startGame(CharacterClass) {
 
                 // The carry jump tick, measured instead of guessed at.
                 //
-                // A tick is not fast movement, it is a DISCONTINUITY - so what
-                // is measured is acceleration, the change in the object's
-                // per-frame velocity. A jump arc is fast but smooth: gravity
-                // holds it near 30 u/s^2. A one-frame step of a few centimetres
-                // shows up as hundreds. The first version of this thresholded on
-                // speed, and on the local component only, so it could not fire
-                // at all when the cause was the character's own motion. It
-                // printed nothing, which was a fault in the probe rather than an
-                // absence of the fault being hunted.
+                // A tick is a DISCONTINUITY, not fast movement, so what is
+                // measured is acceleration - the change in the object's
+                // per-frame velocity. A jump arc is fast but smooth and gravity
+                // holds it near 30 u/s^2; a one-frame step of a few centimetres
+                // reads in the thousands.
                 //
                 // Split into the only two things the object's position is built
-                // from, so the reading names the culprit outright:
-                //   group - the character's own movement (jump arc, landing snap)
-                //   local - the hands moving RELATIVE to the character (skeleton)
+                // from, so a reading names the culprit rather than narrowing it:
+                //   group - the character's own movement (jump arc, takeoff)
+                //   local - the hands moving relative to the character (skeleton)
                 //
-                // No threshold. The worst frame of the last few seconds is always
-                // on screen, so "nothing appeared" cannot happen and a quiet
-                // reading is itself an answer.
+                // local is taken in the character's OWN YAW FRAME. In world
+                // coordinates a turn swings the object - it rides ~2.4 units up
+                // and ahead - through a wide arc, and that registered as
+                // thousands of u/s^2 with nothing whatever wrong: one reading
+                // came back grounded and stationary at 8559 and was simply a
+                // turn. Dividing the yaw out leaves only motion WITHIN the
+                // character. Same frame, and the same reason, as the carry
+                // damping.
+                //
+                // Air and ground are kept as separate worst-frames. They were
+                // one, and a grounded turn or the pickup kept outranking the
+                // jump and hiding the very thing being looked for.
                 if (window.carryTickDebug && delta > 0) {
-                    // The pickup's own handoff and the 0.2s crossfade after it
-                    // dwarf everything else, and the probe keeps the worst
-                    // frame of a 4 second window - so picking up and jumping in
-                    // quick succession reported the pickup and hid the jump.
-                    // Ignore the first half second of a carry.
+                    // The pickup handoff and the crossfade after it dwarf
+                    // everything, so the first half second of a carry is skipped.
                     _ctCarryAge += delta;
                     if (_ctCarryAge < 0.5) {
                         window._ctInit = false;
                     } else {
-                    const local = _ctLocal.copy(heldCarryable.position).sub(char.group.position);
-                    if (!window._ctInit) {
-                        window._ctInit = true;
-                        _ctPrevGroupV.set(0, 0, 0);
-                        _ctPrevLocalV.set(0, 0, 0);
-                        _ctPrevGroup.copy(char.group.position);
-                        _ctPrevLocal.copy(local);
-                    } else {
-                        const groupV = _ctGroupV.subVectors(char.group.position, _ctPrevGroup).divideScalar(delta);
-                        const localV = _ctLocalV.subVectors(local, _ctPrevLocal).divideScalar(delta);
-                        const groupA = _ctTmp.subVectors(groupV, _ctPrevGroupV).length() / delta;
-                        const localA = _ctTmp.subVectors(localV, _ctPrevLocalV).length() / delta;
-                        const worst = Math.max(groupA, localA);
-                        const now = performance.now();
-                        if (!window._ctWorstAt || now - window._ctWorstAt > 4000 || worst > window._ctWorst) {
-                            window._ctWorst = worst;
-                            window._ctWorstAt = now;
-                            // Every clip carrying weight on the offending
-                            // frame. A 61cm one-frame drop of the hands is not
-                            // a clip playing, it is a clip's WEIGHT collapsing,
-                            // so what is worth seeing is which action was meant
-                            // to be holding the arms up and what its weight
-                            // actually was at that instant.
-                            // isRunning() is the filter, and it has to be:
-                            // getEffectiveWeight() returns 1.00 for a STOPPED
-                            // action too, since the weight property survives
-                            // the stop. Accepting either condition listed every
-                            // clip in the rig at "1.00@0.00(stopped)" and
-                            // pushed the handful that matter off the screen.
-                            // Sorted heaviest first and capped for the same
-                            // reason - the panel is one line wide.
-                            const live = [];
-                            for (const k in char.actions) {
-                                const a = char.actions[k];
-                                if (!a || !a.isRunning()) continue;
-                                const w = a.getEffectiveWeight();
-                                if (w > 0.001) live.push([w, `${a._clipName || k}=${w.toFixed(2)}@${a.time.toFixed(2)}`]);
+                        const local = _ctLocal.copy(heldCarryable.position).sub(char.group.position)
+                            .applyQuaternion(_ctInvYaw.copy(char.group.quaternion).invert());
+                        if (!window._ctInit) {
+                            window._ctInit = true;
+                            _ctPrevGroupV.set(0, 0, 0);
+                            _ctPrevLocalV.set(0, 0, 0);
+                            _ctPrevGroup.copy(char.group.position);
+                            _ctPrevLocal.copy(local);
+                        } else {
+                            const groupV = _ctGroupV.subVectors(char.group.position, _ctPrevGroup).divideScalar(delta);
+                            const localV = _ctLocalV.subVectors(local, _ctPrevLocal).divideScalar(delta);
+                            const groupA = _ctTmp.subVectors(groupV, _ctPrevGroupV).length() / delta;
+                            const localA = _ctTmp.subVectors(localV, _ctPrevLocalV).length() / delta;
+                            const worst = Math.max(groupA, localA);
+                            const now = performance.now();
+                            const slot = isGrounded ? 'G' : 'A';
+                            if (!window['_ct' + slot + 'At'] || now - window['_ct' + slot + 'At'] > 6000 || worst > window['_ct' + slot]) {
+                                window['_ct' + slot] = worst;
+                                window['_ct' + slot + 'At'] = now;
+                                // Only actions actually running: a stopped one
+                                // still reports weight 1.00, which once listed
+                                // every clip in the rig and pushed the few that
+                                // matter off the screen.
+                                const live = [];
+                                for (const k in char.actions) {
+                                    const a = char.actions[k];
+                                    if (!a || !a.isRunning()) continue;
+                                    const w = a.getEffectiveWeight();
+                                    if (w > 0.001) live.push([w, `${a._clipName || k}=${w.toFixed(2)}@${a.time.toFixed(2)}`]);
+                                }
+                                live.sort((x, y) => y[0] - x[0]);
+                                window['_ct' + slot + 'Text'] =
+                                    `${localA > groupA ? 'LOCAL' : 'GROUP'} g${Math.round(groupA)} l${Math.round(localA)}` +
+                                    ` dxz${Math.hypot(local.x - _ctPrevLocal.x, local.z - _ctPrevLocal.z).toFixed(3)}` +
+                                    ` dy${(local.y - _ctPrevLocal.y).toFixed(3)} yV${yVelocity.toFixed(1)}
+  ` +
+                                    live.slice(0, 4).map(e => e[1]).join(' ');
+                                window.carryTickReport =
+                                    (window._ctAText ? 'AIR ' + window._ctAText + '
+' : '') +
+                                    (window._ctGText ? 'GND ' + window._ctGText : '');
                             }
-                            live.sort((x, y) => y[0] - x[0]);
-                            const liveText = live.slice(0, 6).map(e => e[1]).join('\n  ');
-                            window.carryTickReport =
-                                `TICK ${localA > groupA ? 'LOCAL(skeleton)' : 'GROUP(character)'} ` +
-                                `group ${Math.round(groupA)} local ${Math.round(localA)} u/s2\n` +
-                                `  localY ${(local.y - _ctPrevLocal.y).toFixed(3)}  yVel ${yVelocity.toFixed(1)}` +
-                                `  grnd ${isGrounded ? 1 : 0}  dt ${delta.toFixed(4)}\n` +
-                                `  ${liveText}`;
+                            _ctPrevGroupV.copy(groupV);
+                            _ctPrevLocalV.copy(localV);
+                            _ctPrevGroup.copy(char.group.position);
+                            _ctPrevLocal.copy(local);
                         }
-                        _ctPrevGroupV.copy(groupV);
-                        _ctPrevLocalV.copy(localV);
-                        _ctPrevGroup.copy(char.group.position);
-                        _ctPrevLocal.copy(local);
-                    }
                     }
                 }
             }
