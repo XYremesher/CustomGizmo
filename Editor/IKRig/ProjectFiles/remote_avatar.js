@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { RagdollPhysics } from './ragdoll_physics.js';
 import { LegIK } from './leg_ik.js';
+import { ASSET_BASE } from './asset_base.js';
 
-const BASE_URL = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+const BASE_URL = ASSET_BASE;
 
 const REMOTE_ANIMS = [
     { name: 'idle', file: 'Idle.fbx' },

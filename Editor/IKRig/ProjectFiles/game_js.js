@@ -14,6 +14,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+import { ASSET_BASE } from './asset_base.js';
 
 // ---- Accelerated raycasting ----
 // Measured, not assumed: the readout showed a 144fps spot and an 85fps spot
@@ -714,7 +715,7 @@ export function startGame(CharacterClass) {
     scene.add(compassMesh);
     window.compassMesh = compassMesh;
     const compassGltfLoader = new GLTFLoader();
-    compassGltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Compass.glb', (gltf) => {
+    compassGltfLoader.load(ASSET_BASE + 'Compass.glb', (gltf) => {
         const model = gltf.scene;
         // The model's two halves (a yellow-tipped cone and a white-tipped
         // cone, base to base) are built pointing along local Y, spanning
@@ -1643,11 +1644,11 @@ export function startGame(CharacterClass) {
         if (flowerTemplates[0] && flowerTemplates[1] && pendingFlowerBuild) { pendingFlowerBuild = false; buildFlowers(); }
     }
     flowerLoader.load('Flower.glb', (g) => onFlowerLoaded(0, g), undefined, () => {
-        flowerLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Flower.glb',
+        flowerLoader.load(ASSET_BASE + 'ProjectFiles/Flower.glb',
             (g) => onFlowerLoaded(0, g), undefined, (e) => console.error('Flower.glb load failed:', e));
     });
     flowerLoader.load('Flower2.glb', (g) => onFlowerLoaded(1, g), undefined, () => {
-        flowerLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/Flower2.glb',
+        flowerLoader.load(ASSET_BASE + 'ProjectFiles/Flower2.glb',
             (g) => onFlowerLoaded(1, g), undefined, (e) => console.error('Flower2.glb load failed:', e));
     });
 
@@ -4285,7 +4286,7 @@ export function startGame(CharacterClass) {
             // server will hand out.
             const texLoad = new THREE.TextureLoader();
             _companionDotTex = texLoad.load('WhiteDot.png', undefined, undefined, () => {
-                texLoad.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteDot.png',
+                texLoad.load(ASSET_BASE + 'WhiteDot.png',
                     (t) => {
                         _companionDotTex.image = t.image;
                         _companionDotTex.needsUpdate = true;
@@ -6946,7 +6947,7 @@ export function startGame(CharacterClass) {
     let brokenJarTemplate = null;
     const fbxLoader = new FBXLoader();
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar.fbx', (object) => {
+    fbxLoader.load(ASSET_BASE + 'Interactables/Jar.fbx', (object) => {
         let originalMesh = null;
         object.traverse((child) => {
             if (child.isMesh && !originalMesh) originalMesh = child;
@@ -6984,7 +6985,7 @@ export function startGame(CharacterClass) {
         }
     });
 
-    fbxLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/Jar_Broken.fbx', (object) => {
+    fbxLoader.load(ASSET_BASE + 'Interactables/Jar_Broken.fbx', (object) => {
         object.traverse((child) => {
             if (child.isMesh) {
                 child.castShadow = true;
@@ -7050,7 +7051,7 @@ export function startGame(CharacterClass) {
         return flat;
     }
     const gltfLoader = new GLTFLoader();
-    gltfLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Interactables/StarKey.glb', (gltf) => {
+    gltfLoader.load(ASSET_BASE + 'Interactables/StarKey.glb', (gltf) => {
         const object = gltf.scene;
         let keyBase = null, keyStarContainer = null, star = null, lockBase = null, lockStarContainer = null;
         object.traverse((child) => {
@@ -7106,7 +7107,7 @@ export function startGame(CharacterClass) {
         if (pendingWaterLevelBuild) { pendingWaterLevelBuild = false; buildWaterTestLevel(); }
     };
     levelGlbLoader.load('LevelModel/Level.glb', onLevelGlbLoaded, undefined, () => {
-        levelGlbLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Level.glb',
+        levelGlbLoader.load(ASSET_BASE + 'LevelModel/Level.glb',
             onLevelGlbLoaded, undefined, (e) => console.error('Level.glb load failed:', e));
     });
 
@@ -7168,7 +7169,7 @@ export function startGame(CharacterClass) {
         if (pendingVillageLevelBuild && treeModel && mountainGeometry) { pendingVillageLevelBuild = false; buildVillageLevel(); }
     };
     villageLoader.load('VillageModel/Village.glb', onVillageLoaded, undefined, () => {
-        villageLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Village.glb',
+        villageLoader.load(ASSET_BASE + 'ProjectFiles/VillageModel/Village.glb',
             onVillageLoaded, undefined, (e) => console.error('Village.glb load failed:', e));
     });
 
@@ -7317,7 +7318,7 @@ export function startGame(CharacterClass) {
         }
     };
     villageTreeLoader.load('VillageModel/Tree.glb', onVillageTreeLoaded, undefined, () => {
-        villageTreeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/Tree.glb',
+        villageTreeLoader.load(ASSET_BASE + 'ProjectFiles/VillageModel/Tree.glb',
             onVillageTreeLoaded, undefined, (e) => console.error('Tree.glb load failed:', e));
     });
 
@@ -7395,7 +7396,7 @@ export function startGame(CharacterClass) {
         placeForestExitGate();
     };
     bridgeLoader.load('Bridge.glb', onBridgeLoaded, undefined, () => {
-        bridgeLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Bridge.glb',
+        bridgeLoader.load(ASSET_BASE + 'Bridge.glb',
             onBridgeLoaded, undefined, (e) => console.error('Bridge.glb load failed:', e));
     });
     const levelExitLoader = new GLTFLoader();
@@ -7417,7 +7418,7 @@ export function startGame(CharacterClass) {
         placeForestExitGate();
     };
     levelExitLoader.load('LevelExit.glb', onLevelExitLoaded, undefined, () => {
-        levelExitLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelExit.glb',
+        levelExitLoader.load(ASSET_BASE + 'LevelExit.glb',
             onLevelExitLoaded, undefined, (e) => console.error('LevelExit.glb load failed:', e));
     });
 
@@ -7447,7 +7448,7 @@ export function startGame(CharacterClass) {
         }
     };
     mountainLoader.load('VillageModel/mountains.glb', onMountainLoaded, undefined, () => {
-        mountainLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/ProjectFiles/VillageModel/mountains.glb',
+        mountainLoader.load(ASSET_BASE + 'ProjectFiles/VillageModel/mountains.glb',
             onMountainLoaded, undefined, (e) => console.error('mountains.glb load failed:', e));
     });
 
@@ -9588,7 +9589,7 @@ export function startGame(CharacterClass) {
         viewerFloor.rotation.x = -Math.PI / 2;
         Viewer.scene.add(viewerFloor);
 
-        const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+        const baseUrl = ASSET_BASE;
         const viewerCharacterLoader = (color, options = {}) => {
             const { scale = 1, position = [0, 0, 0], rotationY = 0, parent = Viewer.scene } = options;
             const group = new THREE.Group();
@@ -9697,7 +9698,7 @@ export function startGame(CharacterClass) {
         compassObjectReadyCallbacks.push(onReady);
         if (compassObjectLoading) return;
         compassObjectLoading = true;
-        new GLTFLoader().load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/CompassObject.glb', (gltf) => {
+        new GLTFLoader().load(ASSET_BASE + 'CompassObject.glb', (gltf) => {
             compassObjectModel = gltf.scene;
             // Same treatment as the in-world Compass.glb needle model
             // (compassGltfLoader above): 'CompassContainer' becomes a
@@ -13549,7 +13550,7 @@ export function startGame(CharacterClass) {
 
     function loadCubesProp(x, z) {
         const propLoader = new GLTFLoader();
-        propLoader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/LevelModel/Cubes.glb', (gltf) => {
+        propLoader.load(ASSET_BASE + 'LevelModel/Cubes.glb', (gltf) => {
             const model = gltf.scene;
             model.scale.setScalar(0.65);
             model.position.set(x, 0, z);

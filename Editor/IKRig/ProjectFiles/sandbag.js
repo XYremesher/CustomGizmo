@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { ASSET_BASE } from './asset_base.js';
 export class Sandbag {
             constructor(scene, position, collidables, debugHelpers, threeTone) {
                 this.group = new THREE.Group();
@@ -18,7 +19,7 @@ export class Sandbag {
                 this.flashStrength = 1.0;
 
                 const loader = new FBXLoader();
-                loader.load('https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/SandSack.fbx', (fbx) => {
+                loader.load(ASSET_BASE + 'Combat/SandSack.fbx', (fbx) => {
                     fbx.scale.setScalar(0.0065);
                     this.group.add(fbx);
                     fbx.updateMatrixWorld(true);

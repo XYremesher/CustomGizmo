@@ -1435,6 +1435,7 @@
     <script type="module">
         import * as THREE from 'three';
         import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { ASSET_BASE } from './asset_base.js';
         import { RagdollPhysics } from './ragdoll_physics.js';
         import { LegIK } from './leg_ik.js';
 
@@ -1576,10 +1577,10 @@
         window.speedParticles = [];
         let punchSpeedParticleGeometry = null;
         const punchSpeedParticleTexture = new THREE.TextureLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchProjectileParticle.png'
+            ASSET_BASE + 'Combat/PunchProjectileParticle.png'
         );
         new FBXLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/PunchSpeedParticle.fbx',
+            ASSET_BASE + 'Combat/PunchSpeedParticle.fbx',
             (obj) => {
                 obj.traverse(child => {
                     if (child.isMesh && !punchSpeedParticleGeometry) {
@@ -1619,7 +1620,7 @@
         // small per-hit swing particles every punch type spawns.
         window.chargeAttackProjectiles = [];
         const chargeAttackTexture = new THREE.TextureLoader().load(
-            'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/Combat/ChargeAttackProjectile.png'
+            ASSET_BASE + 'Combat/ChargeAttackProjectile.png'
         );
         window.spawnChargeAttackProjectile = function(position, direction, ownerId, extraVelocity) {
             if (!window.gameScene) return;
@@ -2645,7 +2646,7 @@
                     window.sacks.push(new Sandbag(scene, new THREE.Vector3(5, 0, 8), window.collidables || [], window.debugHelpers || [], threeTone));
                 }
 
-                const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
+                const baseUrl = ASSET_BASE;
                 const loader = new FBXLoader();
 
                 loader.load(baseUrl + 'StickMan.fbx', (object) => {
@@ -3659,7 +3660,7 @@ updateClimbing(delta) {
                     this.group.add(this.playerArrowGroup);
 
                     const textureLoader = new THREE.TextureLoader();
-                    const arrowTextureUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/WhiteArrow.png';
+                    const arrowTextureUrl = ASSET_BASE + 'WhiteArrow.png';
                     textureLoader.load(arrowTextureUrl, (texture) => {
                         const arrowGeo = new THREE.PlaneGeometry(2, 2);
                         
