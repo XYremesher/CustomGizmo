@@ -131,11 +131,15 @@ implementation.
   last frame was tried and is wrong: the clip does not end on the held
   pose, so the character settles with its arms out.
 
-  Attempts that did NOT fix it, both reverted: holding the lean world-fixed
-  by counter-rotating it against the frame's yaw change, and taking
-  movement and turning away for the whole hit rather than just the
-  recovery step. The second made it worse — it then warped on held input
-  too, not only input at the moment of impact.
+  Attempts that did NOT fix it, all reverted: holding the lean world-fixed
+  by counter-rotating it against the frame's yaw change; taking movement
+  and turning away for the whole hit rather than just the recovery step;
+  and widening the settle test so the damping also waited out
+  `hitTwistAngle`. The second made it worse — it then warped on held input
+  too, not only input at the moment of impact. The third is worth
+  remembering as a thing NOT to do: it leaves the upright-holding system
+  off for longer after a hit, which is the opposite of what this bug
+  wants.
 
   What that leaves: with all of the above disabled the warp still happens,
   so nothing procedural is bending the body and the clips are right. The

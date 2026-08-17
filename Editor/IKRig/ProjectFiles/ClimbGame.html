@@ -4218,28 +4218,7 @@ updateClimbing(delta) {
                     // treating recoil as "gone" once it's near-zero, and
                     // leaving the cache untouched (not even softly blended)
                     // until then, is what stops the drift.
-                    // hitTwistAngle counts here as much as the spine recoil
-                    // does, and leaving it out is what warped the upper body
-                    // when something hit you mid-carry.
-                    //
-                    // The twist is applied to fbxModel by setSlopeTilt, and in
-                    // the main movement path that call comes AFTER this method
-                    // - so the root compensation below is reading last frame's
-                    // tilt while working on this frame's bones. A slow-moving
-                    // tilt makes that lag invisible, but the twist spikes on
-                    // impact and decays fast, so for the whole decay the
-                    // compensation was short by one frame's worth of it, and
-                    // that error went straight into the world-space bone
-                    // caches and accumulated.
-                    //
-                    // Holding the damping off until the twist has settled -
-                    // exactly as it already does for the spine recoil - means
-                    // the lag has nothing fast to be wrong about. This is why
-                    // the root-quaternion attempt noted in CLAUDE.md did not
-                    // fix it: the problem was never which quaternion was read,
-                    // it was when.
-                    const recoilMag = this.recoilRotation.length() + this.recoilVelocity.length()
-                        + Math.abs(this.hitTwistAngle) + Math.abs(this.hitTwistVelocity);
+                    const recoilMag = this.recoilRotation.length() + this.recoilVelocity.length();
                     const RECOIL_SETTLE_THRESHOLD = 0.01;
                     const recoilStillSettling = recoilMag > RECOIL_SETTLE_THRESHOLD;
 
