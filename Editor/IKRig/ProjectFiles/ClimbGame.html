@@ -1148,12 +1148,12 @@
                     running. While carrying, the spine should come from carry_upper alone and its time should climb and then
                     hold - a time that keeps snapping back toward 0 means the clip is being rewound to its pickup crouch.</label><br>
                     <label><input type="checkbox" id="toggle-carry-tick"> Find the Carry Jump Tick</label><br>
-                    <label style="opacity:.75;font-size:11px;">Carry something and jump. Adds a TICK line to the FPS counter
-                    for the worst frame it saw, kept for a few seconds so it can be read or screenshotted. The object's motion
-                    is split into <b>group</b> (the character's own movement - the jump arc or a landing snap, the object only
-                    making it visible) and <b>local</b> (the hands moving relative to the character, which means the skeleton).
-                    Whichever is larger on that frame is the cause; there is no third option, the object is placed from exactly
-                    those two.</label><br>
+                    <label style="opacity:.75;font-size:11px;">Carry something and jump, then read the TICK line on the FPS
+                    counter - the worst frame of the last few seconds, always shown. It measures ACCELERATION, since a tick is a
+                    discontinuity rather than fast movement: a jump arc is fast but smooth and stays near 30, a one-frame step of
+                    a few centimetres reads in the hundreds. The label says which of the only two sources it came from -
+                    <b>GROUP</b> is the character's own movement and the object is merely making it visible, <b>LOCAL</b> is the
+                    hands moving relative to the character, which means the skeleton.</label><br>
                     <label><input type="checkbox" id="toggle-hang-ik-dbg"> Show Ledge Hand IK (targets + readout)</label><br>
                     <label><input type="checkbox" id="toggle-foot-ik-goals"> Show Foot IK Goals + Knees</label><br>
                     <label><input type="checkbox" id="toggle-side-ray"> Ray 1: Side Ray (cyan/magenta)</label><br>

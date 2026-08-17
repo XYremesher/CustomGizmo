@@ -16410,6 +16410,11 @@ export function startGame(CharacterClass) {
     // jump, snapped back to 1.0 whenever grounded.
     let airControlMult = 1.0;
     let carryTargetObj = null;
+    // carry-tick probe scratch - see the block that writes window.carryTickReport
+    const _ctLocal = new THREE.Vector3(), _ctPrevLocal = new THREE.Vector3();
+    const _ctPrevGroup = new THREE.Vector3(), _ctGroupV = new THREE.Vector3();
+    const _ctLocalV = new THREE.Vector3(), _ctPrevGroupV = new THREE.Vector3();
+    const _ctPrevLocalV = new THREE.Vector3(), _ctTmp = new THREE.Vector3();
     let isSlipping = false;
     let slipTimer = 0;
     let ledgeSlipDuration = 0.05;
@@ -16956,7 +16961,8 @@ export function startGame(CharacterClass) {
                 // run cannot be mistaken for a fresh one.
                 window.carryTickReport = '';
                 window._ctWorst = 0;
-                window._ctPrevObj = null;
+                window._ctWorstAt = 0;
+                window._ctInit = false;
             });
         }
     }
@@ -21851,50 +21857,55 @@ export function startGame(CharacterClass) {
                 heldCarryable.position.copy(handMidpoint);
                 heldCarryable.quaternion.copy(char.group.quaternion);
 
-                // window.carryTickDebug = true to find where a jump's click
-                // comes from. Splits the object's frame-to-frame movement into
-                // the two things that can cause it and reports only the frames
-                // that actually jump, so one jump is enough to read.
+                // The carry jump tick, measured instead of guessed at.
                 //
-                //   group  - the character's own motion. A step here is the
-                //            jump arc or a landing snap, and the object is
-                //            just making it visible.
-                //   local  - the hands moving RELATIVE to the character, which
-                //            is the skeleton: a clip transition, the hips
-                //            position track, the hold engaging.
+                // A tick is not fast movement, it is a DISCONTINUITY - so what
+                // is measured is acceleration, the change in the object's
+                // per-frame velocity. A jump arc is fast but smooth: gravity
+                // holds it near 30 u/s^2. A one-frame step of a few centimetres
+                // shows up as hundreds. The first version of this thresholded on
+                // speed, and on the local component only, so it could not fire
+                // at all when the cause was the character's own motion. It
+                // printed nothing, which was a fault in the probe rather than an
+                // absence of the fault being hunted.
                 //
-                // Whichever one spikes on the click frame is the one to fix;
-                // there is no third option, since the object is placed from
-                // exactly these two.
-                if (window.carryTickDebug) {
-                    if (!window._ctPrevObj) {
-                        window._ctPrevObj = heldCarryable.position.clone();
-                        window._ctPrevLocal = heldCarryable.position.clone().sub(char.group.position);
-                        window._ctPrevGroup = char.group.position.clone();
+                // Split into the only two things the object's position is built
+                // from, so the reading names the culprit outright:
+                //   group - the character's own movement (jump arc, landing snap)
+                //   local - the hands moving RELATIVE to the character (skeleton)
+                //
+                // No threshold. The worst frame of the last few seconds is always
+                // on screen, so "nothing appeared" cannot happen and a quiet
+                // reading is itself an answer.
+                if (window.carryTickDebug && delta > 0) {
+                    const local = _ctLocal.copy(heldCarryable.position).sub(char.group.position);
+                    if (!window._ctInit) {
+                        window._ctInit = true;
+                        _ctPrevGroupV.set(0, 0, 0);
+                        _ctPrevLocalV.set(0, 0, 0);
+                        _ctPrevGroup.copy(char.group.position);
+                        _ctPrevLocal.copy(local);
                     } else {
-                        const dObj = heldCarryable.position.distanceTo(window._ctPrevObj);
-                        const dGroup = char.group.position.distanceTo(window._ctPrevGroup);
-                        const local = heldCarryable.position.clone().sub(char.group.position);
-                        const dLocal = local.distanceTo(window._ctPrevLocal);
-                        // Per-frame distances scale with frame time, so the
-                        // threshold is a SPEED - otherwise a slow frame reads
-                        // as a spike on its own.
-                        if (delta > 0 && dLocal / delta > (window.carryTickThreshold || 2.0)) {
-                            console.log('[carry-tick]',
-                                'obj', dObj.toFixed(4),
-                                '= group', dGroup.toFixed(4),
-                                '+ local', dLocal.toFixed(4),
-                                '| localY', (local.y - window._ctPrevLocal.y).toFixed(4),
-                                '| yVel', yVelocity.toFixed(2),
-                                'grounded', isGrounded,
-                                'dt', delta.toFixed(4));
+                        const groupV = _ctGroupV.subVectors(char.group.position, _ctPrevGroup).divideScalar(delta);
+                        const localV = _ctLocalV.subVectors(local, _ctPrevLocal).divideScalar(delta);
+                        const groupA = _ctTmp.subVectors(groupV, _ctPrevGroupV).length() / delta;
+                        const localA = _ctTmp.subVectors(localV, _ctPrevLocalV).length() / delta;
+                        const worst = Math.max(groupA, localA);
+                        const now = performance.now();
+                        if (!window._ctWorstAt || now - window._ctWorstAt > 4000 || worst > window._ctWorst) {
+                            window._ctWorst = worst;
+                            window._ctWorstAt = now;
+                            window.carryTickReport =
+                                `TICK ${localA > groupA ? 'LOCAL(skeleton)' : 'GROUP(character)'} ` +
+                                `group ${Math.round(groupA)} local ${Math.round(localA)} u/s2\n` +
+                                `  localY ${(local.y - _ctPrevLocal.y).toFixed(3)}  yVel ${yVelocity.toFixed(1)}` +
+                                `  grnd ${isGrounded ? 1 : 0}  dt ${delta.toFixed(4)}`;
                         }
-                        window._ctPrevObj.copy(heldCarryable.position);
-                        window._ctPrevLocal.copy(local);
-                        window._ctPrevGroup.copy(char.group.position);
+                        _ctPrevGroupV.copy(groupV);
+                        _ctPrevLocalV.copy(localV);
+                        _ctPrevGroup.copy(char.group.position);
+                        _ctPrevLocal.copy(local);
                     }
-                } else if (window._ctPrevObj) {
-                    window._ctPrevObj = null;
                 }
             }
 
