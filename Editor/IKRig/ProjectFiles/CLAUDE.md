@@ -108,63 +108,71 @@ implementation.
   punching after that empties it. Changing one of these numbers without
   re-deriving the total tends to break that balance in a non-obvious way -
   do the arithmetic, don't just nudge and guess.
-- **Carry-stabilise damping is in ROOT space** (`Character.animate`, the
-  `window.isCarryingObj` block). It smooths the carry clip's own bone
-  motion so the upper body reads as steady while walking.
+- **Carry-stabilise damping runs in the character's YAW frame**
+  (`Character.animate`, the `window.isCarryingObj` block). It smooths the
+  carry clip's own bone motion so the upper body reads as steady and
+  upright while walking. The frame it damps in is the whole design, and it
+  has now been wrong twice in opposite directions - read this before
+  changing it.
 
-  It used to cache each bone's WORLD orientation and subtract the root's
-  rotation from it every frame. That is the same job done the hard way and
-  it carried two failure modes: the compensation had to be exact or a
-  residue went into the cache and stayed, and because the bones are damped
-  in order, spine1 and neck were pulled toward their own cached world
-  orientations while their parent was being pulled too, so errors stacked
-  down the chain. The symptom was that a hit taken while carrying left the
-  body settled at an angle instead of returning to the held pose - it
-  leaned toward whatever direction was being pressed.
+  Originally it cached each bone's WORLD orientation and took the
+  character's turning back out by accumulating a frame-to-frame delta.
+  World space holds the torso beautifully upright, but the accumulation
+  meant any imprecision stayed in the cache forever: a hit taken while
+  carrying left the body settled at an angle, leaning toward whatever
+  direction was being pressed.
 
-  Found by bisection with the kill switches, which are still in the code:
-  `window.carryStabilizeOff`, `window.recoilVisualOff`, `window.slopeTiltOff`.
-  All three off, the body recovers; only the damping back on, it does not,
-  and it does not even with the recoil never reaching the spine. Test them
-  in COMBINATION - any single one left on can hold the fault by itself, so
-  turning them off one at a time proves nothing.
+  The fix for that was root space - `char.group` times `fbxModel` - which
+  removed the accumulation and did stop the post-hit lean. It also folded
+  `fbxModel` into the frame on purpose, so slope and turn lean "passed
+  through rather than being fought". That quietly gave away the
+  uprightness: every lean the model has is handed straight back to the
+  torso, and the carry visibly sagged and rocked.
 
-  Local space was tried in between and is wrong for the job: local is
-  relative to the parent, so the hips' own swing is inherited by the whole
-  chain untouched and the torso sways with them. Root space - each bone
-  relative to `char.group` times `fbxModel` - keeps the hips inside the
-  damped space while leaving the character's turning outside it, exactly,
-  by construction. Nothing is integrated frame to frame, so there is
-  nothing to accumulate. `lastGroupQuat` is dead and only cleared, never
-  read. RemoteAvatar still has the old world-space version for companions
-  and bots.
+  Now it is the yaw of `char.group` alone, rebuilt from the group's forward
+  vector every frame. Yaw read fresh is the same subtraction as the delta
+  accumulation without anything integrated, so there is nothing that can
+  hold a residue; and with `fbxModel` outside the frame, its leans are
+  damped rather than inherited. Both properties at once - the earlier two
+  attempts each had one. Fighting those leans IS the job here: the legs may
+  tilt into a slope, the chest should stay level over them.
 
-  The separate complaint - the carried object visibly swaying while walking
-  - is NOT this damping's to fix, and three attempts to make it one were
-  built and removed: a `carryDampStrength` slider, flattening the carry
-  clip's upper-body tracks to one pose (`holdSpine` in `makeUpperBodyClip`),
-  and low-pass filtering the hand midpoint (`carryObjectSteady`). Don't
-  rebuild them. All three failed for one reason: everything above is
-  ROTATION, and the chest's world POSITION is not the chest's to decide -
-  it is the pelvis's position plus the chain, so the walk cycle's hip bob
-  translates the whole torso however rigid the rotations are held. Freezing
-  the hand tracks fails for the same reason, the hands hanging off a chest
-  that is being carried around by the hips.
+  Kill switches from the original bisection are still in: `window.carryStabilizeOff`,
+  `window.recoilVisualOff`, `window.slopeTiltOff`. Test them in COMBINATION -
+  any single one left on can hold the fault by itself, so turning them off
+  one at a time proves nothing. `lastGroupQuat` is dead and only cleared,
+  never read. RemoteAvatar still has the old world-space version for
+  companions and bots.
+
+  Do NOT try to fix the carry sway with more rotation work. Four attempts
+  were built and removed: a `carryDampStrength` slider, flattening the carry
+  clip's upper-body tracks (`holdSpine` in `makeUpperBodyClip`), low-pass
+  filtering the hand midpoint (`carryObjectSteady`), and the chest IK below.
+  The first three all failed for one reason - everything above is ROTATION,
+  and the chest's world POSITION is the pelvis's position plus the chain, so
+  the hip bob translates the whole torso however rigid the rotations are
+  held. Freezing the hand tracks fails the same way, the hands hanging off a
+  chest the hips are carrying around.
 
 - **Chest pin / spine CCD** (`Character.solveChestPin`) is the position half,
-  and runs immediately before the damping above, in the same carry block.
-  It holds the chest at a fixed point in root space and bends the joints
-  strictly between pelvis and chest (Spine and Spine1 on a Mixamo rig,
-  found by walking parents rather than by name) to keep it there - two
-  joints, two CCD passes, per-joint step capped at 0.35rad.
+  and is OFF by default - `window.carryChestIKOff = false` enables it. It
+  holds the chest at a fixed point in the model's local frame and bends the
+  joints strictly between pelvis and chest (Spine and Spine1 on a Mixamo
+  rig, found by walking parents rather than by name) to keep it there.
 
-  Position first, orientation second, and never both on the same bone: the
-  solver owns the in-between joints, so `applyDamping` skips spine1 while
-  the pin is on. Damping the chest itself is still fine - it writes a local
-  rotation to reach a world orientation whatever the parent turned out to
-  be. The pelvis is deliberately not in the chain; the legs hang off it.
+  It is off because it never looked right, not because it is wrong in
+  principle - the lever arm is the problem. The chest origin is ~30cm from
+  the Spine joint, so a few centimetres of correction costs tens of degrees
+  of bend through the entire upper body. Its position error has to be tiny
+  to be invisible, and the pin is leashed to 6cm for exactly that reason.
+  Anything revisiting this should start by shortening the lever, not by
+  tuning the leash.
 
-  Kill switch `window.carryChestIKOff` restores the old spine1 damping.
-  `chestPinLocal` is re-seeded with the rotation caches whenever recoil is
-  settling, so a hit still visibly lands (recoil is applied after this) and
-  the pin resumes from wherever the body recovered to.
+  If it is turned back on: position first, orientation second, never both on
+  the same bone. The solver owns the in-between joints, so `applyDamping`
+  skips spine1 while it is on. Use the model's own `worldToLocal` /
+  `localToWorld` rather than composing the frame by hand - `fbxModel` has its
+  own position, rewritten every frame to hold the hips pivot, and rotates
+  about its own origin, and getting that wrong turned a 10 degree lean into
+  a 24cm error. Note `fbxModel.scale` is ~0.0065, so any distance written in
+  local units is ~154x smaller than it reads.

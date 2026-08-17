@@ -3302,7 +3302,7 @@
             // character - the animation's own bob, which is the complaint -
             // is what the filter sees and removes.
             solveChestPin(delta, weight) {
-                if (window.carryChestIKOff || !this.spine || !this.hips || weight <= 0.001) return;
+                if (window.carryChestIKOff !== false || !this.spine || !this.hips || weight <= 0.001) return;
 
                 // Walked once from the chest up to the pelvis rather than
                 // matched by name: "Spine/Spine1/Spine2" is one convention of
@@ -4489,14 +4489,32 @@ updateClimbing(delta) {
                         // frame delta is what used to leave a residue in the
                         // cache and settle the body at an angle after a hit.
                         //
-                        // Root space is both at once. The hips are inside it,
-                        // so their motion is still damped; the root is outside
-                        // it, so turning is excluded exactly, by construction,
-                        // with nothing to accumulate. fbxModel is folded into
-                        // the root as well, so slope and turn lean pass
-                        // through rather than being fought.
-                        const rootQ = _dampRootQ.copy(this.group.quaternion);
-                        if (this.fbxModel) rootQ.multiply(this.fbxModel.quaternion);
+                        // The frame is the character's YAW and nothing else,
+                        // rebuilt from the group's own forward vector every
+                        // frame. That single choice is what decides how upright
+                        // the carry looks, and it was got wrong twice.
+                        //
+                        // Folding fbxModel into the frame - which this used to
+                        // do, deliberately, so that "slope and turn lean pass
+                        // through rather than being fought" - hands the torso
+                        // straight back to every lean the model has. Fighting
+                        // those leans IS the job while carrying something: the
+                        // legs can tilt into a slope all they like, the chest
+                        // should stay level over them. Excluding it holds the
+                        // upper body properly upright, which is the one thing
+                        // the very first world-space version did well.
+                        //
+                        // What that version did badly was take the turning out
+                        // by accumulating a frame-to-frame delta, so any
+                        // imprecision stayed in the cache forever and the body
+                        // settled at an angle after a hit. Yaw read fresh from
+                        // group.quaternion each frame is the same subtraction
+                        // with nothing integrated and therefore nothing to
+                        // accumulate - upright and residue-free at once, rather
+                        // than trading one for the other.
+                        _tempVec1.set(0, 0, 1).applyQuaternion(this.group.quaternion);
+                        const rootQ = _dampRootQ.setFromAxisAngle(
+                            _worldUpVec, Math.atan2(_tempVec1.x, _tempVec1.z));
                         const rootInv = _dampInvQ.copy(rootQ).invert();
 
                         const applyDamping = (bone, lastRootRef) => {
@@ -4525,7 +4543,7 @@ updateClimbing(delta) {
                         // solver's work below it passes through untouched.
                         this.solveChestPin(delta, this.stabilizeWeight);
                         applyDamping(this.spine, 'lastSpineWorld');
-                        if (window.carryChestIKOff) applyDamping(this.spine1, 'lastSpine1World');
+                        if (window.carryChestIKOff !== false) applyDamping(this.spine1, 'lastSpine1World');
                         applyDamping(this.neck, 'lastNeckWorld');
                     }
                 } else if (this.spine && this.hips &&
@@ -4579,8 +4597,11 @@ updateClimbing(delta) {
                     // pulling toward a pose that was never one of these at all
                     // on the frame it resumes.
                     if (this.spine || this.spine1 || this.neck) {
-                        _dampRootQ.copy(this.group.quaternion);
-                        if (this.fbxModel) _dampRootQ.multiply(this.fbxModel.quaternion);
+                        // Same frame as the damping above, or the caches get
+                        // re-expressed in a space the next frame will not read
+                        // them back in.
+                        _tempVec1.set(0, 0, 1).applyQuaternion(this.group.quaternion);
+                        _dampRootQ.setFromAxisAngle(_worldUpVec, Math.atan2(_tempVec1.x, _tempVec1.z));
                         _dampInvQ.copy(_dampRootQ).invert();
                         if (this.spine && this.lastSpineWorld) this.spine.getWorldQuaternion(this.lastSpineWorld).premultiply(_dampInvQ);
                         if (this.spine1 && this.lastSpine1World) this.spine1.getWorldQuaternion(this.lastSpine1World).premultiply(_dampInvQ);
