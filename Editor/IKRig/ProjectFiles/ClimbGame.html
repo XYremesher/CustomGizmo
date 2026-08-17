@@ -4160,13 +4160,34 @@ updateClimbing(delta) {
                         const a = this.actions[k];
                         if (!a || !a.isRunning()) continue;
                         const w = a.getEffectiveWeight();
-                        // Time as well as weight: the clips playing turned out
-                        // to be exactly right, so what is left is WHERE in one
-                        // of them the pose is being read from. carry_upper
-                        // snapping back toward 0 is the crouch it starts on.
                         if (w > 0.001) live.push(`${a._clipName || k}:${w.toFixed(2)}@${a.time.toFixed(2)}`);
                     }
                     window.charAnimDebug = live.join(' ');
+
+                    // A single frame's time is unreadable when the thing being
+                    // chased lasts a few frames, and it cannot tell a clip
+                    // looping from a clip being rewound - both just look like
+                    // "a small number". The range it covers over the last
+                    // couple of seconds separates them: a static hold sits at
+                    // one value, a loop sweeps the full duration, and a rewind
+                    // shows a wide span with the high end wherever it got to
+                    // before being sent back.
+                    const cu = this.actions['carry_upper'];
+                    if (cu && cu.isRunning() && window.isCarryingObj) {
+                        const now = performance.now();
+                        if (!this._cuWindow || now - this._cuWindow > 2000) {
+                            this._cuWindow = now; this._cuMin = cu.time; this._cuMax = cu.time; this._cuRewinds = 0;
+                        }
+                        // A drop of more than a tenth counts as going
+                        // backwards - normal playback only ever advances.
+                        if (this._cuLast !== undefined && cu.time < this._cuLast - 0.1) this._cuRewinds++;
+                        this._cuLast = cu.time;
+                        this._cuMin = Math.min(this._cuMin, cu.time);
+                        this._cuMax = Math.max(this._cuMax, cu.time);
+                        const dur = cu.getClip().duration;
+                        window.charAnimDebug += `\ncarry_upper ${this._cuMin.toFixed(2)}-${this._cuMax.toFixed(2)}` +
+                            ` of ${dur.toFixed(2)}  back:${this._cuRewinds}`;
+                    }
                 }
 
                 if (window.isCarryingObj && this.spine) {
