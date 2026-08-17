@@ -3831,6 +3831,30 @@ updateClimbing(delta) {
                 if (this.hips && this.defaultHipsQuat) this.hips.quaternion.copy(this.defaultHipsQuat);
 
                 if (this.mixer) this.mixer.update(delta);
+                // The animation's own output, captured before the damping and
+                // the recoil offset are laid on top of it - this is what the
+                // restore at the top of the next frame puts back.
+                //
+                // It used to be captured AFTER the damping, so the pose the
+                // restore reinstated already had a frame of damping in it. On
+                // any frame the mixer does not fully rewrite these bones, the
+                // filter was then reading back its own previous output: an
+                // exponential filter fed its own result has no restoring force
+                // and simply holds whatever it has, which is a body stuck at
+                // an angle. Capturing the mixer's pose gives the filter
+                // something independent to converge to every frame.
+                if (this.spine) {
+                    if (!this.defaultSpineQuat) this.defaultSpineQuat = new THREE.Quaternion();
+                    this.defaultSpineQuat.copy(this.spine.quaternion);
+                }
+                if (this.spine1) {
+                    if (!this.defaultSpine1Quat) this.defaultSpine1Quat = new THREE.Quaternion();
+                    this.defaultSpine1Quat.copy(this.spine1.quaternion);
+                }
+                if (this.neck) {
+                    if (!this.defaultNeckQuat) this.defaultNeckQuat = new THREE.Quaternion();
+                    this.defaultNeckQuat.copy(this.neck.quaternion);
+                }
                 if (!this.isLoaded) return;
 
                 // updateRecoil is NOT called here any more - game_js.js's frame
@@ -4400,18 +4424,9 @@ updateClimbing(delta) {
                     // the recoil reset both still clear it.
                 }
 
-                if (this.spine) {
-                    if (!this.defaultSpineQuat) this.defaultSpineQuat = new THREE.Quaternion();
-                    this.defaultSpineQuat.copy(this.spine.quaternion);
-                }
-                if (this.spine1) {
-                    if (!this.defaultSpine1Quat) this.defaultSpine1Quat = new THREE.Quaternion();
-                    this.defaultSpine1Quat.copy(this.spine1.quaternion);
-                }
-                if (this.neck) {
-                    if (!this.defaultNeckQuat) this.defaultNeckQuat = new THREE.Quaternion();
-                    this.defaultNeckQuat.copy(this.neck.quaternion);
-                }
+                // spine/spine1/neck are captured right after the mixer instead
+                // - see the note there. Hips stays here: it is not damped, and
+                // the correction it needs undoing is applied further down.
                 if (this.hips) {
                     if (!this.defaultHipsQuat) this.defaultHipsQuat = new THREE.Quaternion();
                     this.defaultHipsQuat.copy(this.hips.quaternion);
