@@ -4168,7 +4168,14 @@ updateClimbing(delta) {
                         this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 5.0 * delta);
                     }
 
-                    if (!recoilStillSettling) {
+                    // Kill switch for isolating this. The damping is a
+                    // world-space low-pass on the spine bones with a
+                    // root-rotation compensation bolted on, and it is the only
+                    // thing in the carry path that writes those bones outside
+                    // the mixer - so if the warping survives with this on, the
+                    // cause is somewhere else entirely and the search should
+                    // move. Costs nothing to leave here.
+                    if (!recoilStillSettling && !window.carryStabilizeOff) {
                         // dampFactor is a PER-FRAME retention (each frame the
                         // bone keeps `dampFactor` of the cached pose) - as a
                         // raw constant its real-time strength depends
