@@ -2421,6 +2421,16 @@
         const _tempQuat2 = new THREE.Quaternion();
         const _tempQuat3 = new THREE.Quaternion();
         const _tempQuat4 = new THREE.Quaternion();
+        // Recoil lean working set. The block that uses these runs every frame
+        // and was building six objects each time - a Euler, the offset
+        // quaternion, one per bone, and a fresh identity for each slerp to
+        // start from. None of them outlive the block.
+        const _recoilEulerS = new THREE.Euler();
+        const _recoilOffsetQ = new THREE.Quaternion();
+        const _recoilIdentityQ = new THREE.Quaternion();
+        const _recoilSpineQ = new THREE.Quaternion();
+        const _recoilSpine1Q = new THREE.Quaternion();
+        const _recoilNeckQ = new THREE.Quaternion();
         const _tempMat4 = new THREE.Matrix4();
         const _fwdVec = new THREE.Vector3(0, 0, 1);
         const _identityQuat = new THREE.Quaternion();
@@ -4258,16 +4268,23 @@ updateClimbing(delta) {
                 }
 
                 if (this.spine) {
-                    const qOffset = new THREE.Quaternion().setFromEuler(new THREE.Euler(this.recoilRotation.x, this.recoilRotation.y, this.recoilRotation.z));
-                    
-                    const spineQuat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.3);
-                    const spine1Quat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.5);
-                    const neckQuat = new THREE.Quaternion().slerpQuaternions(new THREE.Quaternion(), qOffset, 0.2);
+                    _recoilEulerS.set(this.recoilRotation.x, this.recoilRotation.y, this.recoilRotation.z);
+                    _recoilOffsetQ.setFromEuler(_recoilEulerS);
+                    _recoilIdentityQ.identity();
 
-                    this.spine.quaternion.multiply(spineQuat);
-                    if (this.spine1) this.spine1.quaternion.multiply(spine1Quat);
-                    if (this.neck) this.neck.quaternion.multiply(neckQuat);
-                    
+                    _recoilSpineQ.slerpQuaternions(_recoilIdentityQ, _recoilOffsetQ, 0.3);
+                    _recoilSpine1Q.slerpQuaternions(_recoilIdentityQ, _recoilOffsetQ, 0.5);
+                    _recoilNeckQ.slerpQuaternions(_recoilIdentityQ, _recoilOffsetQ, 0.2);
+
+                    this.spine.quaternion.multiply(_recoilSpineQ);
+                    if (this.spine1) this.spine1.quaternion.multiply(_recoilSpine1Q);
+                    if (this.neck) this.neck.quaternion.multiply(_recoilNeckQ);
+
+                    // Kept unconditional, unlike RemoteAvatar's version: the
+                    // hips restore a few lines up exists because the mixer
+                    // does not reliably rewrite hips.quaternion, and that
+                    // capture/restore cycle is entangled with this block. The
+                    // allocations were the safe half to remove.
                     this.spine.updateMatrixWorld(true);
                     if (this.spine1) this.spine1.updateMatrixWorld(true);
                     if (this.neck) this.neck.updateMatrixWorld(true);

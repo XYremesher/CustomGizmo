@@ -850,9 +850,14 @@ export class RemoteAvatar {
         // Undo last frame's recoil-offset multiply before the mixer recomputes
         // this frame's pose, otherwise the repeated quaternion.multiply calls
         // in applyRecoilVisual would permanently drift the bones over time.
-        if (this.spine && this.defaultSpineQuat) this.spine.quaternion.copy(this.defaultSpineQuat);
-        if (this.spine1 && this.defaultSpine1Quat) this.spine1.quaternion.copy(this.defaultSpine1Quat);
-        if (this.neck && this.defaultNeckQuat) this.neck.quaternion.copy(this.defaultNeckQuat);
+        // Gated on the offset actually having been applied - applyRecoilVisual
+        // skips itself while there is no recoil, and the stored defaults go
+        // stale the moment it does.
+        if (this._recoilApplied) {
+            if (this.spine && this.defaultSpineQuat) this.spine.quaternion.copy(this.defaultSpineQuat);
+            if (this.spine1 && this.defaultSpine1Quat) this.spine1.quaternion.copy(this.defaultSpine1Quat);
+            if (this.neck && this.defaultNeckQuat) this.neck.quaternion.copy(this.defaultNeckQuat);
+        }
 
         if (this.hasTarget) {
             const t = Math.min(1, delta * 12);
@@ -1040,6 +1045,23 @@ export class RemoteAvatar {
     // on top, purely visual - no bone stays permanently rotated.
     applyRecoilVisual() {
         if (!this.spine) return;
+
+        // Nothing to lean, nothing to do - and "nothing to do" is not free
+        // here. The three updateMatrixWorld(true) calls below each rebuild the
+        // world matrix of their bone AND everything under it, so spine covers
+        // the arms and hands, spine1 covers them again and neck covers the
+        // head: most of the skeleton, three times over, every frame, for every
+        // companion and bot on screen. Recoil is zero almost all of that time.
+        //
+        // The test is exact rather than approximate because updateRecoil snaps
+        // both values to zero once they fall under RECOIL_ZERO_EPS.
+        //
+        // _recoilApplied tells the restore at the top of update() whether
+        // there is an offset to undo. Skipping without it would leave the
+        // stored default from the last frame recoil ran, and that stale pose
+        // would be copied back over the bones on every later frame.
+        if (this.recoilRotation.lengthSq() === 0) { this._recoilApplied = false; return; }
+        this._recoilApplied = true;
 
         if (!this.defaultSpineQuat) this.defaultSpineQuat = new THREE.Quaternion();
         this.defaultSpineQuat.copy(this.spine.quaternion);
