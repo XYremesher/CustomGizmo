@@ -4472,18 +4472,15 @@ updateClimbing(delta) {
                     // cause is somewhere else entirely and the search should
                     // move. Costs nothing to leave here.
                     if (!recoilStillSettling && !window.carryStabilizeOff) {
-                        // dampFactor is a PER-FRAME retention (each frame the
-                        // bone keeps `dampFactor` of the cached pose) - as a
-                        // raw constant its real-time strength depends
-                        // entirely on frame rate: at 30fps the spine got
-                        // dragged behind pose transitions far longer than on
-                        // a 120fps PC, visibly holding the carry_start crouch
-                        // into the hold pose on mobile. Math.pow rescales the
-                        // retention so the per-SECOND smoothing matches a
-                        // 120fps reference (~the PC this was tuned on) at any
-                        // frame rate.
-                        const frameNormalizedDamp = Math.pow(dampFactor, delta * 120);
-                        const activeDampFactor = frameNormalizedDamp * this.stabilizeWeight;
+                        // A retention is PER FRAME - each frame the bone keeps
+                        // that fraction of its cached pose - so as a raw
+                        // constant its real-time strength depends entirely on
+                        // frame rate: at 30fps the spine dragged behind pose
+                        // transitions far longer than on a 120fps PC, visibly
+                        // holding the carry_start crouch into the hold pose on
+                        // mobile. applyDamping's Math.pow rescales it so the
+                        // per-SECOND smoothing matches a 120fps reference
+                        // (~the PC this was tuned on) at any frame rate.
 
                         // Composed root = group yaw AND fbxModel's own tilt
                         // (turn lean / slope tilt / slide lean all live on
@@ -4544,11 +4541,29 @@ updateClimbing(delta) {
                             _worldUpVec, Math.atan2(_tempVec1.x, _tempVec1.z));
                         const rootInv = _dampInvQ.copy(rootQ).invert();
 
-                        const applyDamping = (bone, lastRootRef) => {
+                        // retention is the per-frame keep, already frame
+                        // normalised. 1 means LOCK: the slerp then returns the
+                        // cache untouched and the cache copies itself back, so
+                        // the bone simply holds its cached orientation in the
+                        // yaw frame and stops rotating altogether.
+                        //
+                        // stabilizeWeight is what makes a lock safe to use.
+                        // It multiplies in here, and it ramps up over about a
+                        // second after every re-seed, so while it is climbing
+                        // the effective retention is below 1 and the cache is
+                        // still tracking the live pose. The orientation that
+                        // ends up frozen is therefore the SETTLED carry pose,
+                        // not whatever half-finished transition happened to be
+                        // on screen the frame the cache was created. And since
+                        // the ramp only approaches 1 asymptotically, a lock is
+                        // never quite absolute - it keeps creeping toward the
+                        // truth, so a bad seed cannot outlive the carry.
+                        const applyDamping = (bone, lastRootRef, retention) => {
                             if (!bone) return;
+                            const factor = Math.pow(retention, delta * 120) * this.stabilizeWeight;
                             bone.getWorldQuaternion(_tempQuat).premultiply(rootInv);
                             if (!this[lastRootRef]) this[lastRootRef] = _tempQuat.clone();
-                            _tempQuat.slerp(this[lastRootRef], activeDampFactor);
+                            _tempQuat.slerp(this[lastRootRef], factor);
                             this[lastRootRef].copy(_tempQuat);
 
                             _tempQuat.premultiply(rootQ);
@@ -4569,9 +4584,22 @@ updateClimbing(delta) {
                         // whatever the parent underneath ended up as, so the
                         // solver's work below it passes through untouched.
                         this.solveChestPin(delta, this.stabilizeWeight);
-                        applyDamping(this.spine, 'lastSpineWorld');
-                        if (window.carryChestIKOff !== false) applyDamping(this.spine1, 'lastSpine1World');
-                        applyDamping(this.neck, 'lastNeckWorld');
+                        // The chest and the mid spine are LOCKED, not damped.
+                        // "Don't rotate" is a different instruction from
+                        // "rotate less", and no retention short of 1 satisfies
+                        // it - a low-pass always passes something, which at a
+                        // run is a visible amount however far the corner is
+                        // moved. Both spine bones, so the whole torso above the
+                        // pelvis is rigid rather than the chest being held
+                        // while the bone under it still swings it around.
+                        //
+                        // The neck keeps a real (very strong) damping instead
+                        // of a lock. It is the one place a little residual
+                        // motion is worth having: a head welded rigidly to a
+                        // rigid torso reads as a mannequin being slid along.
+                        applyDamping(this.spine, 'lastSpineWorld', 1.0);
+                        if (window.carryChestIKOff !== false) applyDamping(this.spine1, 'lastSpine1World', 1.0);
+                        applyDamping(this.neck, 'lastNeckWorld', dampFactor);
                     }
                 } else if (this.spine && this.hips &&
                     ((this.punchCorrectionNew && this.punchCorrectionNew.getEffectiveWeight() > 0.001) ||

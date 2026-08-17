@@ -137,6 +137,25 @@ implementation.
   attempts each had one. Fighting those leans IS the job here: the legs may
   tilt into a slope, the chest should stay level over them.
 
+  The two spine bones are LOCKED rather than damped - `applyDamping` takes a
+  per-frame retention and they pass 1.0, which makes the slerp return the
+  cache untouched, so they simply hold their cached orientation in the yaw
+  frame. "Don't rotate" is a different instruction from "rotate less", and
+  no retention short of 1 satisfies it; a low-pass always passes something,
+  and at a run that something is visible however far the corner is moved.
+  Both spine bones, or the chest is held while the bone under it still
+  swings it around. The neck keeps a real damping instead - a head welded
+  rigidly to a rigid torso reads as a mannequin being slid along.
+
+  `stabilizeWeight` is what makes a lock safe, and is the reason not to
+  "simplify" it away. It multiplies into the retention, and ramps up over
+  about a second after every re-seed, so while it climbs the cache is still
+  tracking the live pose: what freezes is the SETTLED carry pose, not
+  whatever half-finished transition was on screen when the cache was
+  created. The ramp only approaches 1 asymptotically, so the lock is never
+  quite absolute and keeps creeping toward the truth - a bad seed cannot
+  outlive the carry.
+
   Kill switches from the original bisection are still in: `window.carryStabilizeOff`,
   `window.recoilVisualOff`, `window.slopeTiltOff`. Test them in COMBINATION -
   any single one left on can hold the fault by itself, so turning them off
