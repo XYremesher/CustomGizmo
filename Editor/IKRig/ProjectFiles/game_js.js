@@ -16931,6 +16931,18 @@ export function startGame(CharacterClass) {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
     {
+        const el = document.getElementById('toggle-anim-debug');
+        if (el) {
+            window.animDebugOn = el.checked;
+            el.addEventListener('change', e => {
+                window.animDebugOn = e.target.checked;
+                // Otherwise the last line printed stays frozen on the counter
+                // after the box is unticked.
+                if (!e.target.checked) window.charAnimDebug = '';
+            });
+        }
+    }
+    {
         const el = document.getElementById('auto-carry-btn');
         if (el) {
             el.addEventListener('pointerdown', (e) => {
