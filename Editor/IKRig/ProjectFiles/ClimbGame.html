@@ -2638,7 +2638,10 @@
                 this.hitRecoveryAnimState = 'walk';
                 this.hitRecoveryStrength = 12.0;
 
-                this.stabilizeWeight = 1.0;
+                // 0, not 1. It means "no carry hold has been established
+                // yet", which is the truth at construction - starting it at 1
+                // asserted a settled hold that had never happened.
+                this.stabilizeWeight = 0.0;
                 this.climbLockedWorldPos = null;
                 this.lastGroupPos = null;
 
@@ -4403,7 +4406,18 @@ updateClimbing(delta) {
                     }
                 }
 
-                if (window.isCarryingObj && this.spine) {
+                // isCarryStarting is in the condition, and has to be: it and
+                // isCarryingObj are mutually exclusive - the pickup sets one
+                // false and the other true in the same statement - so for the
+                // whole of carry_start this block did not run at all. The
+                // isCarryStarting case in the reset below was therefore dead
+                // code, and stabilizeWeight arrived at the first carrying
+                // frame still holding 1.0. With a hard lock that froze the
+                // caches instantly, on the frame carry_start is cut off at 40%
+                // of its clip: the character crouched over the object and
+                // never lifted it. Running the block during the pickup as well
+                // lets the reset actually fire and the ramp start from zero.
+                if ((window.isCarryingObj || window.isCarryStarting) && this.spine) {
                     const stabilizeBlend = window.spineBlendValue;
                     // 0.85 was tuned to smooth POSE TRANSITIONS, and it was
                     // then left in place to do a completely different job -
@@ -4466,7 +4480,15 @@ updateClimbing(delta) {
                             for (const ref of this._armLockRefs) this[ref] = null;
                         }
                     } else {
-                        this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 5.0 * delta);
+                        // Slower than the 5.0 it was, because the ramp is
+                        // now the only thing standing between a pose and being
+                        // frozen in it. isCarryStarting clears at 40% of the
+                        // carry_start clip and fadeToAction still has a 0.2s
+                        // crossfade into the hold to run after that, so the
+                        // pose keeps moving for a beat past the gate opening.
+                        // At 3.0 the lock is not meaningfully closed for about
+                        // a second and a half, which clears that comfortably.
+                        this.stabilizeWeight = THREE.MathUtils.lerp(this.stabilizeWeight, 1.0, 3.0 * delta);
                     }
 
                     // Kill switch for isolating this. The damping is a

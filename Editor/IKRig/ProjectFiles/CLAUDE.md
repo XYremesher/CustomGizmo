@@ -157,6 +157,17 @@ implementation.
   the carried object, which is positioned from the midpoint of the two hand
   bones, so no separate smoothing of the object is needed or wanted.
 
+  The block's outer condition is `(isCarryingObj || isCarryStarting)`, and
+  both halves are load-bearing. The two flags are mutually exclusive - the
+  pickup sets one false and the other true in the same statement - so with
+  only `isCarryingObj` the block never ran during carry_start and the
+  `isCarryStarting` case in its own reset was dead code. `stabilizeWeight`
+  then reached the first carrying frame still at its old value, which froze
+  the caches instantly at the pose carry_start is cut off in (40% of the
+  clip, see `carryStartSpeedMult`): the character crouched over the object
+  and never lifted it. It is constructed at 0.0 for the same reason - 1.0
+  asserted a settled hold that had never happened.
+
   `stabilizeWeight` is what makes a lock safe, and is the reason not to
   "simplify" it away. It multiplies into the retention, and ramps up over
   about a second after every re-seed, so while it climbs the cache is still
