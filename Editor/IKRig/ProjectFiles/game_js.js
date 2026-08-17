@@ -16415,6 +16415,7 @@ export function startGame(CharacterClass) {
     const _ctPrevGroup = new THREE.Vector3(), _ctGroupV = new THREE.Vector3();
     const _ctLocalV = new THREE.Vector3(), _ctPrevGroupV = new THREE.Vector3();
     const _ctPrevLocalV = new THREE.Vector3(), _ctTmp = new THREE.Vector3();
+    let _ctCarryAge = 0;
     let isSlipping = false;
     let slipTimer = 0;
     let ledgeSlipDuration = 0.05;
@@ -20731,6 +20732,10 @@ export function startGame(CharacterClass) {
                 handMidpoint.copy(char.group.position).addScaledVector(_tempVec3, 0.15).setY(char.group.position.y + carryHeight + 0.5);
             }
 
+            // Reset here rather than in the probe: the probe only runs while
+            // carrying, so it can never see the carry end.
+            if (!window.isCarryingObj) _ctCarryAge = 0;
+
             if (window.isCarryStarting && heldCarryable) {
                 carryStartElapsed += delta;
                 // Was the raw carry_start clip's own length - reasonable
@@ -20757,7 +20762,19 @@ export function startGame(CharacterClass) {
                 const smoothFactor = factor * factor * (3 - 2 * factor);
 
                 const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(char.group.quaternion);
-                const offsetDistance = 0.8 * smoothFactor;
+                // Faded out with t, and it has to be. The offset swings the
+                // object out in front of the chest on the way up, which is the
+                // point of it - but smoothFactor is driven by how far the
+                // object is below head height, and at the top of the lift that
+                // is still ~0.75, leaving ~19cm of forward offset standing at
+                // t=1. The very next frame isCarryStarting flips and the object
+                // is placed at the plain hand midpoint, closing those 19cm in a
+                // single frame. Measured at 37629 u/s^2, by a wide margin the
+                // worst discontinuity in the carry path.
+                //
+                // (1 - t) makes the two placements agree exactly at the handoff
+                // rather than nearly, so there is nothing left to snap.
+                const offsetDistance = 0.8 * smoothFactor * (1 - t);
                 basePos.addScaledVector(fwd, offsetDistance);
 
                 heldCarryable.position.copy(basePos);
@@ -21878,6 +21895,15 @@ export function startGame(CharacterClass) {
                 // on screen, so "nothing appeared" cannot happen and a quiet
                 // reading is itself an answer.
                 if (window.carryTickDebug && delta > 0) {
+                    // The pickup's own handoff and the 0.2s crossfade after it
+                    // dwarf everything else, and the probe keeps the worst
+                    // frame of a 4 second window - so picking up and jumping in
+                    // quick succession reported the pickup and hid the jump.
+                    // Ignore the first half second of a carry.
+                    _ctCarryAge += delta;
+                    if (_ctCarryAge < 0.5) {
+                        window._ctInit = false;
+                    } else {
                     const local = _ctLocal.copy(heldCarryable.position).sub(char.group.position);
                     if (!window._ctInit) {
                         window._ctInit = true;
@@ -21929,6 +21955,7 @@ export function startGame(CharacterClass) {
                         _ctPrevLocalV.copy(localV);
                         _ctPrevGroup.copy(char.group.position);
                         _ctPrevLocal.copy(local);
+                    }
                     }
                 }
             }
