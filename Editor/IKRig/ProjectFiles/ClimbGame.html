@@ -254,13 +254,39 @@
         #pixel-btn:active { background: rgba(0, 0, 0, 0.7); }
         #pixel-btn.on { background: rgba(0, 150, 255, 0.7); border-color: rgba(255, 255, 255, 0.6); }
         #pixel-btn svg { width: 17px; height: 17px; pointer-events: none; }
+        /* Anchored from the BOTTOM, level with the button that opens it - it
+           used to be pinned to top:135px, which stopped lining up the moment
+           that button moved up to clear the FPS panel. */
         #pixel-size-popup {
-            display: none; position: absolute; top: 135px; right: 52px; z-index: 101;
+            display: none; position: absolute; bottom: 92px; right: 52px; z-index: 101;
             background: rgba(0, 0, 0, 0.85); border: 1px solid rgba(255, 255, 255, 0.25);
             border-radius: 6px; padding: 7px 10px; align-items: center; gap: 8px;
             font-family: monospace; font-size: 12px; color: #fff; touch-action: none;
         }
         #pixel-size-popup.open { display: flex; }
+
+        /* Auto-carry toggle, stacked above the pixel button in the same
+           right-edge column. The ring around it is the same idea as the punch
+           button's charge ring: it fills while the player stands next to
+           something carryable, so the pickup reads as something that is
+           happening rather than something that suddenly happened. */
+        #auto-carry-btn {
+            position: absolute; right: 12px; width: 34px; height: 34px; padding: 0;
+            background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%; cursor: pointer; z-index: 100;
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-family: monospace; font-size: 15px; line-height: 1;
+            touch-action: none; user-select: none; -webkit-user-select: none;
+        }
+        #auto-carry-btn:active { background: rgba(0, 0, 0, 0.7); }
+        #auto-carry-btn.on { background: rgba(255, 50, 150, 0.7); border-color: rgba(255, 255, 255, 0.6); }
+        /* Sized to sit just outside the 34px button, and rotated so the fill
+           starts at twelve o'clock rather than three - same trick the punch
+           ring uses. */
+        #auto-carry-btn svg {
+            position: absolute; top: -6px; left: -6px; width: 46px; height: 46px;
+            pointer-events: none; transform: rotate(-90deg);
+        }
         #pixel-size-popup-slider { width: 120px; touch-action: none; }
         #pixel-size-popup-val { min-width: 14px; text-align: right; }
 
@@ -463,8 +489,15 @@
         /* Portrait: move stick centred. It's 120px wide, so left: 50% - 60px centres it. */
         body.ui-alt #base-left { left: calc(50% - 60px); }
         /* Moved down to sit just above the FPS counter (fixed at bottom:8px), UI2 only. */
-        body.ui-alt #right-tools-toggle { bottom: 40px; }
-        body.ui-alt #right-tools-panel { bottom: 82px; }
+        /* Clear of #fps-counter, which is fixed at bottom:8px and is now four
+           lines tall (rate, draws/tris, rays, near) - about 76px with its
+           padding. At the old 40px this button sat inside it and could not be
+           pressed. */
+        body.ui-alt #right-tools-toggle { bottom: 92px; }
+        /* Stacked up the same edge: FPS panel, + , auto-carry, then the panel
+           the + opens - so nothing lands on top of anything else. */
+        body.ui-alt #auto-carry-btn { bottom: 134px; }
+        body.ui-alt #right-tools-panel { bottom: 180px; }
         body.ui-alt #jump-btn  { bottom: 165px; right: 20px;  width: 60px; height: 60px; }
         /* Swapped with build-btn (UI2 only) - each keeps its own size, only position trades. */
         body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
@@ -693,6 +726,18 @@
         <span id="pixel-size-popup-val">1</span>
         <input type="range" id="pixel-size-popup-slider" min="1" max="16" step="1" value="1">
     </div>
+    <!-- Tap to arm. Armed, standing next to something carryable fills the ring
+         and picks it up when it completes - see updateAutoCarry in game_js.js.
+         stroke-dasharray is the circle's circumference (2*pi*20), and the fill
+         is driven by moving dashoffset from that down to 0. -->
+    <button id="auto-carry-btn" title="Auto carry: pick up nearby objects">
+        &#128230;
+        <svg viewBox="0 0 46 46">
+            <circle cx="23" cy="23" r="20" stroke="rgba(255,255,255,0.15)" stroke-width="3" fill="transparent" />
+            <circle id="auto-carry-ring-fill" cx="23" cy="23" r="20" stroke="#ff3296" stroke-width="3"
+                    fill="transparent" stroke-linecap="round" stroke-dasharray="125.66" stroke-dashoffset="125.66" />
+        </svg>
+    </button>
 
     <!-- Player/Items compendium/viewer - a minimal port of
          DungeonGame.html's Viewer (that script's own prev/next paging is

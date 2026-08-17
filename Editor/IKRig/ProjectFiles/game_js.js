@@ -15097,6 +15097,52 @@ export function startGame(CharacterClass) {
         return hits.length > 0 && Math.abs(hits[0].point.y - referenceY) < 0.6;
     }
 
+    // ---- Auto carry ----
+    // Armed, standing next to something carryable fills a ring on the button
+    // and the pickup fires when it completes. The delay is the point: an
+    // instant grab the moment you brush past something takes the choice away,
+    // and the ring is what turns "it grabbed that" into "it is about to grab
+    // that, walk away if you meant to".
+    //
+    // The target comes from the existing carry targeting - carryTargetObj,
+    // settled once a frame - so this adds no search of its own and cannot
+    // disagree with what the CARRY button would have picked up.
+    window.autoCarryEnabled = false;
+    window.autoCarryTime = 0.6;      // seconds of standing next to it
+    let _autoCarryT = 0;
+    let _autoCarryFor = null;        // the object the current fill belongs to
+    const AUTO_CARRY_CIRCUM = 125.66;   // 2 * pi * r, r = 20 in the SVG
+    function updateAutoCarry(delta) {
+        const btn = document.getElementById('auto-carry-btn');
+        const ring = document.getElementById('auto-carry-ring-fill');
+        if (!btn) return;
+        // Same rule as the CARRY button's own guard - mid transition, hands
+        // full, or making room, there is nothing to arm against.
+        const busy = window.isCarryingObj || window.isCarryStarting || window.isCarryDropping || isMakingRoom;
+        const target = (window.autoCarryEnabled && !busy) ? carryTargetObj : null;
+        // Switching targets restarts the fill rather than inheriting the
+        // progress built up next to something else.
+        if (target !== _autoCarryFor) { _autoCarryFor = target; _autoCarryT = 0; }
+        if (target) {
+            _autoCarryT += delta;
+            if (_autoCarryT >= window.autoCarryTime) {
+                _autoCarryT = 0;
+                _autoCarryFor = null;
+                // Through the button's own handler rather than a copy of it:
+                // the pickup sets up a dozen fields (start pose, target
+                // rotation, cube symmetry pick) and a second implementation
+                // would drift from it the first time either changed.
+                carryBtn.dispatchEvent(new PointerEvent('pointerdown'));
+            }
+        } else {
+            _autoCarryT = 0;
+        }
+        if (ring) {
+            const t = target ? Math.min(1, _autoCarryT / Math.max(0.01, window.autoCarryTime)) : 0;
+            ring.style.strokeDashoffset = AUTO_CARRY_CIRCUM * (1 - t);
+        }
+    }
+
     carryBtn.addEventListener('pointerdown', () => {
         if (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && carryTargetObj) {
             window.isCarryStarting = true;
@@ -16867,6 +16913,19 @@ export function startGame(CharacterClass) {
     document.getElementById('toggle-fps').addEventListener('change', e => {
         if (fpsCounterEl) fpsCounterEl.style.display = e.target.checked ? 'block' : 'none';
     });
+    {
+        const el = document.getElementById('auto-carry-btn');
+        if (el) {
+            el.addEventListener('pointerdown', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                window.autoCarryEnabled = !window.autoCarryEnabled;
+                el.classList.toggle('on', window.autoCarryEnabled);
+                // Disarming mid-fill should not leave a part-drawn ring
+                // sitting there suggesting something is still counting down.
+                if (!window.autoCarryEnabled) updateAutoCarry(0);
+            });
+        }
+    }
     {
         const el = document.getElementById('toggle-cull-offscreen-shadows');
         if (el) {
@@ -20336,6 +20395,9 @@ export function startGame(CharacterClass) {
                 holdBtn.style.display = isHoldingMovable ? 'flex' : 'none';
                 carryBtn.style.display = 'none';
             }
+            // Here, not earlier: carryTargetObj has just been settled for this
+            // frame by the targeting above, and that is the whole input.
+            updateAutoCarry(delta);
             // Punch doesn't make sense with your hands full (carrying, or
             // mid carry-start/drop transition) or while hanging on a ledge -
             // hide the button entirely rather than just letting a press
