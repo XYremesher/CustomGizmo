@@ -19735,7 +19735,19 @@ export function startGame(CharacterClass) {
                         // Not tree canopies, and not the carryable's own
                         // collider - it is in `collidables` too, and a jar
                         // reading itself as its floor never lands at all.
-                        if (ud.isTreeCollider || fh[k].object === c.mesh) continue;
+                        // Matched by ANCESTRY, not identity. The ray is
+                        // recursive, so for a carryable that is a THREE.Group -
+                        // the StarKey - the hit lands on a child mesh while
+                        // c.mesh is the group, and a plain === missed it. The
+                        // key then read its own top face as its floor, rose to
+                        // sit on it, read itself again from higher up, and flew.
+                        // Jars are single meshes, which is why they never did.
+                        let _hitObj = fh[k].object, _isSelf = false;
+                        while (_hitObj) {
+                            if (_hitObj === c.mesh) { _isSelf = true; break; }
+                            _hitObj = _hitObj.parent;
+                        }
+                        if (ud.isTreeCollider || _isSelf) continue;
                         fy = fh[k].point.y; break;
                     }
                     c._floorY = fy;
