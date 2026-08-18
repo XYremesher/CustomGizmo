@@ -2150,8 +2150,10 @@ export function startGame(CharacterClass) {
     const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
     const COMP_CLIMB_INSET_TIGHT = 0.3; // ...but only this far when the next step starts immediately (stairs)
     const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
-    // Head height, for the buried-in-geometry check in the follow ground step.
-    const COMP_BODY_H = 1.8;
+    // How far above itself a companion looks for the surface it is buried
+    // under. Taller than the body on purpose: a climb can leave it a grip's
+    // drop (1.85) below the lip, so a head-height ray starts inside the block.
+    const COMP_UNSINK_PROBE = 2.6;
     const _compUnsinkOrigin = new THREE.Vector3();
     // How far above the companion the player must be before climbing an
     // obstacle is worth it at all. Matches the steering gate, so exactly one
@@ -5205,12 +5207,27 @@ export function startGame(CharacterClass) {
         // grip is still found, and only accepted if it is near the expected
         // level - a hit far below means the ray went off the edge, and the
         // original height is the better answer there.
-        _tempVec2.set(_climbTo.x, _climbTo.y + 1.8, _climbTo.z);
+        // Started 3.5 above, and that height is the whole point.
+        //
+        // target.y is _hangTop.y, which comes from the crumb - the player's
+        // body while HANGING, and a grip sits 1.85 under its lip. findLedgeLip
+        // corrects it to the real lip when it can, and when it cannot the
+        // height stays a grip's worth too low, so the climb ends 1.85 inside
+        // the block. Waist deep, which is what was being seen.
+        //
+        // Probing from 1.8 - a body - was therefore useless: it started at
+        // lip minus 0.05, INSIDE the block, and the ray missed the top surface
+        // entirely and corrected nothing. Anything meant to find the surface
+        // above a possibly-sunk point has to clear a grip's drop plus the body.
+        _tempVec2.set(_climbTo.x, _climbTo.y + 3.5, _climbTo.z);
         rayDown.set(_tempVec2, _downVec);
         const landHits = rayDown.intersectObjects(_compGroundList, true);
         for (let i = 0; i < landHits.length; i++) {
             if (landHits[i].object.userData.isTreeCollider) continue;
-            if (Math.abs(landHits[i].point.y - _climbTo.y) <= 1.5) _climbTo.y = landHits[i].point.y;
+            // Up to a grip's drop above, since that is exactly how wrong the
+            // inherited height can be, and a little below for an uneven lip.
+            const d = landHits[i].point.y - _climbTo.y;
+            if (d <= 2.2 && d >= -1.5) _climbTo.y = landHits[i].point.y;
             break;
         }
         _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
@@ -7155,14 +7172,18 @@ export function startGame(CharacterClass) {
         // something to step out of at walking pace, it is something to be
         // corrected. Detected by casting down from head height: a surface
         // between the feet and the head means the root is under it.
-        _compUnsinkOrigin.set(c.x, c.y + COMP_BODY_H, c.z);
+        // COMP_UNSINK_PROBE, not COMP_BODY_H: a companion can end a climb a
+        // grip's drop (1.85) under the surface, and a ray from head height
+        // starts below the top and never sees it - which is how the first
+        // version of this check silently did nothing.
+        _compUnsinkOrigin.set(c.x, c.y + COMP_UNSINK_PROBE, c.z);
         rayDown.set(_compUnsinkOrigin, _downVec);
         const sinkHits = rayDown.intersectObjects(_compGroundList, true);
         for (let i = 0; i < sinkHits.length; i++) {
             const h = sinkHits[i];
             // Canopies are not floors, here as everywhere else.
             if (h.object.userData.isTreeCollider) continue;
-            if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_BODY_H) {
+            if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_UNSINK_PROBE) {
                 // c IS companion.group.position, so this moves both.
                 companion.group.position.y = h.point.y;
                 gyHere = h.point.y;
