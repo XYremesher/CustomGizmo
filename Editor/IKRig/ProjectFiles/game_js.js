@@ -20485,12 +20485,25 @@ export function startGame(CharacterClass) {
                 _tempVec3.set(0,0,1).applyQuaternion(char.group.quaternion);
                 rayFwd.set(_tempVec2.copy(char.group.position).setY(char.group.position.y + 0.5), _tempVec3);
                 
-                const boxHits = rayFwd.intersectObjects(solidCollidables.filter(c => c.userData && c.userData.isMovable));
+                // recursive, both here and for the carryables below. An
+                // intersectObjects without it tests only the listed objects
+                // themselves, and a THREE.Group has no geometry - so anything
+                // registered as a group could never be hit, however close you
+                // stood to it. The StarKey is exactly that (buildStarAssembly
+                // returns a Group holding the base, container and star), which
+                // is why no key in the level was ever offered as a carry
+                // target while the jars, being plain meshes, always were.
+                //
+                // The walk up from the hit to its carryable ancestor a few
+                // lines below only makes sense if hits arrive on child meshes,
+                // so recursion was the intent here from the start. Every other
+                // ray of this kind in the file already passes true.
+                const boxHits = rayFwd.intersectObjects(solidCollidables.filter(c => c.userData && c.userData.isMovable), true);
                 if (boxHits.length > 0 && boxHits[0].distance < 1.2) {
                     holdBtn.style.display = 'flex'; carryBtn.style.display = 'none';
                 } else {
                     holdBtn.style.display = 'none';
-                    const carryHits = rayFwd.intersectObjects(solidCollidables.filter(c => c.userData && c.userData.isCarryable));
+                    const carryHits = rayFwd.intersectObjects(solidCollidables.filter(c => c.userData && c.userData.isCarryable), true);
                     if (carryHits.length > 0 && carryHits[0].distance < 1.5) {
                         carryBtn.style.display = 'flex';
                         let target = carryHits[0].object;

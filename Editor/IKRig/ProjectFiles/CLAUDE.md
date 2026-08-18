@@ -96,6 +96,16 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **Raycasts against carryables/collidables must pass `recursive = true`.**
+  `intersectObjects(list)` defaults to non-recursive and tests only the listed
+  objects, and a `THREE.Group` has no geometry of its own - so anything
+  registered as a group is invisible to the ray however close you stand. The
+  StarKey is a group (`buildStarAssembly` returns one holding base, container
+  and star), which is why no key was ever offered as a carry target while the
+  jars, being plain meshes, always were. The tell is the walk from the hit up
+  to its carryable ancestor right after the ray: that only makes sense if hits
+  arrive on child meshes.
+
 - **Carry/drop/throw placement** — has to avoid landing an object
   overlapping a collidable, or the per-frame overlap-resolution physics
   shoves it sideways in one un-animated step next frame (reads as a
