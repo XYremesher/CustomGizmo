@@ -96,6 +96,18 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **`RemoteAvatar` adds its group to `scene`, not `levelGroup`.** So
+  `buildLevel`'s wipe (`while (levelGroup.children.length)`) does not touch
+  bots, companions or the village NPC - they survive every level change,
+  still in the scene and still driven by `updateAiBots`/`updateCompanions`
+  every frame. Switching from Level 1 into the forest ran Level 1's cast
+  alongside the forest's own, which is why that switch cost far more than
+  loading the forest directly and took so long to recover. `buildLevel`
+  clears them through `removeAiBot`/`removeCompanion` now (over copies - both
+  splice the live array). The `villageNpcAvatar` dispose a few lines below was
+  the same bug already fixed for one avatar; anything else added straight to
+  `scene` belongs in this list too.
+
 - **The broad phase must never drop what it cannot measure.**
   `getNearColliders` culled on `o.geometry.boundingSphere` and skipped
   anything without geometry - which silently deleted every `THREE.Group`

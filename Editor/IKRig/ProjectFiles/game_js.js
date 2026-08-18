@@ -8377,6 +8377,24 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
+        // The cast, and it is not optional. RemoteAvatar puts its group
+        // straight into `scene` rather than levelGroup (remote_avatar.js), so
+        // the wipe at the top of this function does not touch a single bot or
+        // companion - they survive every level change, still in the scene,
+        // still animated and raycasting from updateAiBots/updateCompanions
+        // every frame. Switching from Level 1 into the forest therefore ran
+        // Level 1's cast alongside the forest's own, which is why that switch
+        // cost far more frame time than loading the forest first, and why it
+        // took so long to come back.
+        //
+        // Iterated over copies: both removers splice the live array.
+        // villageNpcAvatar right below is the same bug, already fixed for that
+        // one avatar - this is the general case it belongs to.
+        aiBots.slice().forEach(removeAiBot);
+        companions.slice().forEach(removeCompanion);
+        // Both hold per-level objects the wipe has already detached.
+        activeLockInstances.length = 0;
+        activeShards.forEach(sh => scene.remove(sh)); activeShards.length = 0;
 
         if(data.voxels) {
             data.voxels.forEach(v => {
