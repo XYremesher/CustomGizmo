@@ -15845,6 +15845,12 @@ export function startGame(CharacterClass) {
     // the two silently disagree until the user first touches the slider.
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 0.6, landingTimer = 0, initialLandingTimer = 0;
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
+    // Jump-chain feel, live-tunable because how smooth is smooth enough is a
+    // judgement made by watching it, not one that can be derived.
+    //   airFade       crossfade seconds for takeoff/apex/land/recover
+    //   landExitFrac  fraction of the landing timer that must remain
+    window.airFade = 0.2;
+    window.landExitFrac = 0.4;
     let ledgeCornerBufferApplied = false;
     let ledgeCornerRetreating = false;
     const ledgeCornerRetreatTarget = new THREE.Vector3();
@@ -21672,7 +21678,12 @@ export function startGame(CharacterClass) {
                     // it runs earlier this same frame and isn't aware of slopes.
                     char.group.quaternion.slerp(_tempQuat.setFromAxisAngle(_upVec, Math.atan2(slideDir.x, slideDir.z)), window.CHAR_TURN_RATE * delta);
                 }
-                else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > 0.4) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
+                // How much of the landing timer still has to be left for the
+                // land clip to keep playing. At 0.4 the pose is dropped with
+                // 40% of its own window still to run, which is the abrupt part
+                // of a landing - lower it to let the clip finish, raise it to
+                // get back on your feet sooner.
+                else if (landingTimer > 0 && (initialLandingTimer > 0 ? landingTimer / initialLandingTimer : 0) > (window.landExitFrac !== undefined ? window.landExitFrac : 0.4)) { char.animate(delta, 'landing', effectiveMoveMag, time, yVelocity, 0); networkStateName = 'land'; }
                 // Slidable-but-climbable ramps keep their dedicated
                 // 'runup' clip (a plain walk/run cycle was tried there and
                 // rejected) - unlike before, legIK now stays on during it.

@@ -4197,7 +4197,23 @@ updateClimbing(delta) {
                 // that actually avoids the clip, at the cost of feeling like
                 // a more noticeable snap - kept as the tradeoff that matters
                 // more here.
-                const dur = forceSnap ? 0 : 0.2;
+                // The jump chain gets its OWN crossfade length. One shared
+                // 0.2 covered every transition in the game, and it is a poor
+                // fit for this one: JumpStart.fbx is about a quarter second
+                // and Landing.fbx plays at landSpeed 2.4, so roughly a tenth -
+                // a 0.2 blend is as long as the clip it is blending into, and
+                // those poses never actually read, you mostly see the blend.
+                //
+                // Covers leaving the chain as well as entering it, by looking
+                // at what is currently playing: the land -> idle/walk handoff
+                // is a jump transition too, and tuning only the entries would
+                // leave the last one odd.
+                const _prevClip = (this.activeAction && this.activeAction._clipName)
+                    ? this.activeAction._clipName.replace(/_lower$/, '') : '';
+                const _inJumpChain = state === 'air' || state === 'landing'
+                    || _prevClip === 'jump_start' || _prevClip === 'fall' || _prevClip === 'land';
+                const dur = forceSnap ? 0
+                    : (_inJumpChain && window.airFade !== undefined ? window.airFade : 0.2);
                 let isPunching = window.combat && window.combat.punchState > 0;
 
                 if (state === 'climbing') {
