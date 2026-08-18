@@ -4291,7 +4291,7 @@ updateClimbing(delta) {
                 // that call only - see the ease block at the end of it.
                 this._wantApexEase = _atApex;
                 const dur = forceSnap ? 0
-                    : _atApex ? (window.apexFade !== undefined ? window.apexFade : 0.35)
+                    : _atApex ? (window.apexFade !== undefined ? window.apexFade : 0.15)
                     : (_inJumpChain && window.airFade !== undefined ? window.airFade : 0.2);
                 let isPunching = window.combat && window.combat.punchState > 0;
 

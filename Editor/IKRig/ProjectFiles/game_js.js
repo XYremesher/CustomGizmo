@@ -15851,10 +15851,14 @@ export function startGame(CharacterClass) {
     //   landExitFrac  fraction of the landing timer that must remain
     window.airFade = 0.2;
     window.landExitFrac = 0.4;
-    // The takeoff -> apex handover on its own. Longer than the rest of the
-    // chain on purpose: jump_start is clamped and static by then and fall
-    // loops, so there is no short clip being blended through.
-    window.apexFade = 0.35;
+    // The takeoff -> apex handover on its own, and SHORTER than the rest of
+    // the chain rather than longer, which is the opposite of where this
+    // started. 0.35 was picked while the blend was still linear, on the
+    // reasoning that a longer window hides a corner. It does not - it only
+    // spreads it, and what it buys instead is float. With the handover eased
+    // (see the _apexXf block in ClimbGame.html) there is no corner left to
+    // hide, so the blend wants to be short and the jump reads crisp.
+    window.apexFade = 0.15;
     let ledgeCornerBufferApplied = false;
     let ledgeCornerRetreating = false;
     const ledgeCornerRetreatTarget = new THREE.Vector3();
