@@ -356,6 +356,8 @@ export function startGame(CharacterClass) {
     // stale it can be to a few frames, for one pass over the array.
     const NEAR_REBUILD_FRAMES = 6;
     const _nearSphere = new THREE.Sphere();
+    // For collidables with no geometry of their own - see getNearColliders.
+    const _nearBox = new THREE.Box3();
     // One cache per agent, since the player, each companion and each bot are
     // in different places and each wants the collidables around ITSELF. A
     // single shared list would have to be big enough to cover all of them at
@@ -422,11 +424,35 @@ export function startGame(CharacterClass) {
         const out = [];
         for (let i = 0; i < src.length; i++) {
             const o = src[i];
-            const g = o && o.geometry;
-            if (!g) continue;
-            if (!g.boundingSphere) g.computeBoundingSphere();
-            if (!g.boundingSphere) { out.push(o); continue; }
-            _nearSphere.copy(g.boundingSphere).applyMatrix4(o.matrixWorld);
+            if (!o) continue;
+            const g = o.geometry;
+            if (g) {
+                if (!g.boundingSphere) g.computeBoundingSphere();
+                if (!g.boundingSphere) { out.push(o); continue; }
+                _nearSphere.copy(g.boundingSphere).applyMatrix4(o.matrixWorld);
+                if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) out.push(o);
+                continue;
+            }
+            // No geometry of its own - a THREE.Group holding meshes. These
+            // used to be dropped outright by a `continue` here, which is a
+            // culling test silently deleting things it cannot measure: the
+            // StarKey and the lock are both groups (buildStarAssembly /
+            // createLockInstance), so neither ever reached solidCollidables.
+            // No ray could hit them and no carry target could be found,
+            // however close you stood. A regression I introduced with the
+            // broad phase itself - before it, collidables was used directly
+            // and groups worked.
+            //
+            // Measured from the subtree instead. setFromObject walks children
+            // and is not free, but this whole function only runs on a rebuild
+            // (throttled by NEAR_REBUILD_FRAMES and NEAR_REBUILD_MOVE) and
+            // only groups take this path - keys and locks, a handful. An
+            // empty box means nothing renderable inside, and then the object
+            // is kept rather than culled: the one thing this must never do is
+            // lose a collidable it failed to measure.
+            _nearBox.setFromObject(o);
+            if (_nearBox.isEmpty()) { out.push(o); continue; }
+            _nearBox.getBoundingSphere(_nearSphere);
             if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) out.push(o);
         }
         cache.list = out;

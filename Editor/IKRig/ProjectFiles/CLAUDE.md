@@ -96,6 +96,17 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **The broad phase must never drop what it cannot measure.**
+  `getNearColliders` culled on `o.geometry.boundingSphere` and skipped
+  anything without geometry - which silently deleted every `THREE.Group`
+  collidable from the near list. The StarKey and the lock are both groups
+  (`buildStarAssembly` / `createLockInstance`), so neither reached
+  `solidCollidables` at all: no ray could hit them and no carry target could
+  be found however close you stood. It was a regression from adding the broad
+  phase; before it, `collidables` was used directly and groups worked.
+  Groups are measured with `Box3.setFromObject` now, and anything that still
+  cannot be measured is KEPT rather than culled.
+
 - **Raycasts against carryables/collidables must pass `recursive = true`.**
   `intersectObjects(list)` defaults to non-recursive and tests only the listed
   objects, and a `THREE.Group` has no geometry of its own - so anything
