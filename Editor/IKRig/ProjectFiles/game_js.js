@@ -6613,8 +6613,20 @@ export function startGame(CharacterClass) {
             // Gated on the post-climb hold as well, the same way leaping
             // already is - a companion that has just finished a climb should
             // not immediately commit to another route.
-            const dTkY = Math.abs(tk.y - c.y);
-            if (dTk < 0.55 && dTkY < 1.2 && _compJustClimbedT <= 0) {
+            // ASYMMETRIC, and the symmetric version was a regression: it
+            // stopped them climbing at all and left the pair standing at the
+            // foot of the wall.
+            //
+            // What this needs to rule out is re-entering the replay from ABOVE
+            // the takeoff - a companion that has just topped out is barely
+            // half a metre from the takeoff crumb in x/z while being metres
+            // over it, which read as "arrived" and sent it back down. Being
+            // BELOW the crumb is the normal case and must stay allowed:
+            // crumbs are recorded from fbxModel's world position rather than
+            // the group's, so there is a small standing offset even on flat
+            // ground, and Math.abs turned that into a refusal.
+            const aboveTakeoff = c.y - tk.y;
+            if (dTk < 0.55 && aboveTakeoff < 1.2 && _compJustClimbedT <= 0) {
                 _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1;
                 _compReplaySide = pickReplaySide();
                 return;
