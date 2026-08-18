@@ -15851,6 +15851,10 @@ export function startGame(CharacterClass) {
     //   landExitFrac  fraction of the landing timer that must remain
     window.airFade = 0.2;
     window.landExitFrac = 0.4;
+    // The takeoff -> apex handover on its own. Longer than the rest of the
+    // chain on purpose: jump_start is clamped and static by then and fall
+    // loops, so there is no short clip being blended through.
+    window.apexFade = 0.35;
     let ledgeCornerBufferApplied = false;
     let ledgeCornerRetreating = false;
     const ledgeCornerRetreatTarget = new THREE.Vector3();

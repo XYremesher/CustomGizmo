@@ -4212,7 +4212,16 @@ updateClimbing(delta) {
                     ? this.activeAction._clipName.replace(/_lower$/, '') : '';
                 const _inJumpChain = state === 'air' || state === 'landing'
                     || _prevClip === 'jump_start' || _prevClip === 'fall' || _prevClip === 'land';
+                // The apex - jump_start clamped at its last frame handing over
+                // to the looping fall - gets its own, longer fade, and it is
+                // the one transition in the chain that can afford one. The
+                // short-clip objection does not apply: nothing is being blended
+                // THROUGH here. jump_start is already finished and holding a
+                // static pose, and fall loops, so a wider window just makes the
+                // arc read as one movement instead of two poses.
+                const _atApex = state === 'air' && yVelocity <= 0 && _prevClip === 'jump_start';
                 const dur = forceSnap ? 0
+                    : _atApex ? (window.apexFade !== undefined ? window.apexFade : 0.35)
                     : (_inJumpChain && window.airFade !== undefined ? window.airFade : 0.2);
                 let isPunching = window.combat && window.combat.punchState > 0;
 
