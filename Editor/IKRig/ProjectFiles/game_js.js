@@ -2027,6 +2027,10 @@ export function startGame(CharacterClass) {
     // COMP_FOLLOW_FALLBACKS taking a shorter stand-off, so this only catches
     // "the landing spot is literally occupied".
     const COMP_TOPOUT_CLEAR = 0.6;
+    // The same test against the PLAYER - wider, because after a climb you tend
+    // to stand back from the lip rather than on it, and a companion topping
+    // out into you is worse than one waiting a moment and shimmying aside.
+    const COMP_TOPOUT_PLAYER_CLEAR = 1.8;
     // How far back in TIME the replay's "is this a real top-out" check looks
     // for evidence of an actual climb - see the blocked-crumb comment in the
     // replay branch.
@@ -5004,7 +5008,20 @@ export function startGame(CharacterClass) {
     }
     function companionTopOccupied(t, p, pad) {
         const r = COMP_TOPOUT_CLEAR + (pad || 0);
-        if (Math.hypot(t.x - p.x, t.z - p.z) < r && p.y >= t.y - 0.6) return true;
+        // The PLAYER gets a wider berth than another companion does, and the
+        // two are deliberately different numbers.
+        //
+        // COMP_TOPOUT_CLEAR is tight on purpose - between companions it is
+        // meant to catch "that exact landing is taken" and nothing more, so
+        // they can still come up close together. Applied to the player it was
+        // too tight to be useful: standing a metre and a half back from the
+        // edge, which is where you naturally end up after climbing, left the
+        // landing reading as clear and the companion pulled itself up into
+        // you. It has an answer for this already - wait a beat, then shimmy
+        // along to a stretch of ledge of its own - and it simply was not being
+        // reached.
+        const pr = COMP_TOPOUT_PLAYER_CLEAR + (pad || 0);
+        if (Math.hypot(t.x - p.x, t.z - p.z) < pr && p.y >= t.y - 0.6) return true;
         for (let i = 0; i < companions.length; i++) {
             const o = companions[i].comp;
             if (o === companion || !o.isLoaded) continue;
