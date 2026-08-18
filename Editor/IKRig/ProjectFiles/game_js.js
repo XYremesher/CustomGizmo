@@ -6471,7 +6471,23 @@ export function startGame(CharacterClass) {
                 // stretch is taken leaves the old behaviour exactly as it was -
                 // carry on replaying and let the separation push deal with it -
                 // so this can only ever improve on today, never do worse.
-                if (findFreeGrip(_hangTop, fx, fz)) {
+                // Only from BELOW the lip. A hang is something you arrive at by
+                // climbing or leaping up to it, never by dropping onto it, and
+                // the hang branch snaps the root onto the grip on its first
+                // frame - so handing over while the companion has already
+                // replayed its way up top reads as it teleporting back down.
+                //
+                // The hang branch's own comment describes exactly this entry
+                // ("from REPLAY that is the crumb up on top beside the
+                // player") and answers it by snapping, which makes the state
+                // consistent but keeps the teleport. Refusing the handover is
+                // the other half: if it is already up, there is nothing to
+                // hang from and follow can have it.
+                //
+                // A grip sits 1.85 below its lip, so anything within half a
+                // unit of the lip is standing on it, not under it.
+                const belowLip = c.y < _hangTop.y - 0.5;
+                if (belowLip && findFreeGrip(_hangTop, fx, fz)) {
                     // The grip actually chosen, which the side-step search may
                     // have moved along the ledge. Everything downstream - the
                     // shimmy search, the climb-up landing - measures from here.
