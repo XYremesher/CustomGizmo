@@ -11265,6 +11265,51 @@ export function startGame(CharacterClass) {
     // foot-plant like anything else - just pinned to a spot until you arrive.
     let _freeRecruits = [];
     const FREE_WAVE_SPREAD = 3.5;   // how far either side of the spot they land
+    // Drops the player at the END of the forest with two companions already
+    // collected, because reaching that state by playing takes a few minutes
+    // and the companion ledge behaviour only happens up there.
+    //
+    // Deliberately built out of the same moves the real game makes, not a
+    // parallel path: the recruits are the ones the level already placed, and
+    // they are released exactly the way walking up to them releases them
+    // (followOverride cleared, marker turned white). Nothing here exists that
+    // does not exist in a normal playthrough, so what gets debugged is the
+    // real thing.
+    //
+    // window.forestDebugEnd = false, then reload, for the normal start.
+    function forestDebugStartAtEnd() {
+        if (window.forestDebugEnd === false) return;
+        const x = FOREST_EXIT_X;
+        const z = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
+        const y = forestFrameTopY() + 0.1;
+        char.group.position.set(x, y, z);
+        // Facing back down the level, so the stairs and the canopy platform -
+        // the things worth looking at from up here - are in front of you.
+        char.group.rotation.y = Math.PI;
+        // Respawn point too: dying up here should not send you back to the
+        // corridor mouth, which would undo the whole point of this.
+        _forestSpawnPoint.set(x, y, z);
+        if (window.faceCameraAlongPlayer) window.faceCameraAlongPlayer();
+        if (window.resetPlayerMomentum) window.resetPlayerMomentum();
+
+        let taken = 0;
+        for (let i = 0; i < _freeRecruits.length && taken < 2; i++) {
+            const r = _freeRecruits[i];
+            if (!r.comp) continue;
+            r.comp.followOverride = null;
+            setCompanionMarkerColor(r.comp, 0xffffff);
+            // Side by side and slightly behind, where following would have
+            // left them - not stacked on the player, which is exactly the
+            // overlap being investigated and would muddy the first frame.
+            r.comp.group.position.set(x + (taken === 0 ? -1.2 : 1.2), y, z - 1.2);
+            r.comp.group.rotation.y = Math.PI;
+            taken++;
+        }
+        // Whatever is left uncollected keeps the compass; otherwise the star.
+        const next = _freeRecruits.find(o => o.comp && o.comp.followOverride);
+        window.compassTarget = next ? next.at : (star.visible ? star.position : null);
+    }
+
     function updateFreeRecruits() {
         if (currentLevel !== 'local_forest_free' || !_freeRecruits.length) return;
         const p = char.group.position;
@@ -12276,6 +12321,7 @@ export function startGame(CharacterClass) {
         // ...and the compass is immediately re-pointed at the first companion
         // by the story, which owns it from here.
         startForestStory();
+        forestDebugStartAtEnd();
         // The two numbers that decide raycast cost in this level: how many
         // objects every ray has to walk, and how many triangles each tree
         // contributes when one is hit. collidables is scanned by the player,
@@ -14567,7 +14613,9 @@ export function startGame(CharacterClass) {
         // measurements, and the gap between them is the whole question right
         // now. window.startLevel overrides this without an edit; set it to
         // 'local_forest_free' before the module runs to get the forest back.
-        select.value = window.startLevel || 'local_stairs'; currentLevel = select.value;
+        // Forest (no story) again - and see forestDebugStartAtEnd, which drops
+        // you at the top of it with two companions already collected.
+        select.value = window.startLevel || 'local_forest_free'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
