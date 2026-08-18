@@ -1837,7 +1837,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_stairs";   // Level 1
+    let currentLevel = "local_forest_free";   // Forest (no story)
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -14500,9 +14500,10 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        // Level 1 on load - it is the one the projectile turrets and the jar
-        // grid live in, so it is where hit/carry behaviour gets tested.
-        select.value = 'local_stairs'; currentLevel = select.value;
+        // Forest (no story) on load. Level 1 was the default because the
+        // turrets and the jar grid live there, which made it the place hit and
+        // carry behaviour got tested; the forest is where the work is now.
+        select.value = 'local_forest_free'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
