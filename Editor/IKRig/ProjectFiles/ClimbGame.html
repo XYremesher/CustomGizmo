@@ -3065,6 +3065,8 @@
                 if (!this.isLoaded) return;
                 const spineBlend = window.spineBlendValue;
 
+                // Points at actions about to be stopped and uncached.
+                this._apexXf = null;
                 for (let key in this.actions) {
                     const action = this.actions[key];
                     if (action) {
@@ -3731,7 +3733,36 @@
                 if (this.activeAction === this.actions['land']) this.activeAction.setEffectiveTimeScale(val);
             }
 
+            // Drives the one eased handover set up in fadeToAction. Bails the
+            // moment anything else takes the channel - a landing, a hit - and
+            // zeroes the outgoing weight on the way out, since stopFading left
+            // it with nothing to bring it down on its own.
+            updateApexEase(delta) {
+                const xf = this._apexXf;
+                if (!xf) return;
+                if (this.activeAction !== xf.to) {
+                    xf.from.setEffectiveWeight(0);
+                    this._apexXf = null;
+                    return;
+                }
+                xf.t += delta;
+                const p = xf.dur > 0 ? Math.min(1, xf.t / xf.dur) : 1;
+                const s = p * p * (3 - 2 * p);
+                xf.from.setEffectiveWeight(1 - s);
+                xf.to.setEffectiveWeight(s);
+                if (p >= 1) {
+                    xf.from.setEffectiveWeight(0);
+                    xf.to.setEffectiveWeight(1);
+                    this._apexXf = null;
+                }
+            }
+
             fadeToAction(name, duration = 0.2) {
+                // Read and cleared before any early return below, so a call
+                // that does nothing cannot leave the flag armed for the next
+                // unrelated transition.
+                const wantEase = this._wantApexEase;
+                this._wantApexEase = false;
                 if (!this.isLoaded) return;
 
                 const isCarrying = window.isCarryingObj;
@@ -3809,6 +3840,29 @@
                     this.activeAction.fadeIn(duration);
                 }
                 this.activeAction.play();
+
+                // The apex handover, and nothing else, is eased by hand.
+                //
+                // three.js schedules a LinearInterpolant on the weight (see
+                // AnimationMixer._lendControlInterpolant), so a crossfade runs
+                // at a constant rate and then stops dead: the pose starts
+                // moving at full speed the instant the blend begins and stops
+                // at full speed when it ends, a corner at each end. That is why
+                // making the fade longer changes the feel without smoothing it -
+                // the corners survive, they just move apart.
+                //
+                // Smoothstep has zero rate of change at both ends. Scoped to
+                // this single transition on purpose: taking weights away from
+                // three.js means owning every path that touches them, and
+                // doing that everywhere at once broke the whole state machine.
+                // Here it is two actions, one handover, and it clears itself.
+                if (wantEase && duration > 0 && previousAction && previousAction.isRunning()) {
+                    previousAction.stopFading();
+                    this.activeAction.stopFading();
+                    previousAction.setEffectiveWeight(1);
+                    this.activeAction.setEffectiveWeight(0);
+                    this._apexXf = { from: previousAction, to: this.activeAction, t: 0, dur: duration };
+                }
             }
 
             fadeToUpperAction(name, duration = 0.2) {
@@ -4129,6 +4183,7 @@ updateClimbing(delta) {
                 // shipped once as a continuous somersault while sliding).
                 if (this.hips && this.defaultHipsQuat) this.hips.quaternion.copy(this.defaultHipsQuat);
 
+                this.updateApexEase(delta);
                 if (this.mixer) this.mixer.update(delta);
                 // The animation's own output, captured before the damping and
                 // the recoil offset are laid on top of it - this is what the
@@ -4220,6 +4275,9 @@ updateClimbing(delta) {
                 // static pose, and fall loops, so a wider window just makes the
                 // arc read as one movement instead of two poses.
                 const _atApex = state === 'air' && yVelocity <= 0 && _prevClip === 'jump_start';
+                // Consumed by the first fadeToAction call after this, and by
+                // that call only - see the ease block at the end of it.
+                this._wantApexEase = _atApex;
                 const dur = forceSnap ? 0
                     : _atApex ? (window.apexFade !== undefined ? window.apexFade : 0.35)
                     : (_inJumpChain && window.airFade !== undefined ? window.airFade : 0.2);
