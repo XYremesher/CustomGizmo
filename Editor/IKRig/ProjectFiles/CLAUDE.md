@@ -271,6 +271,21 @@ implementation.
   held. Freezing the hand tracks fails the same way, the hands hanging off a
   chest the hips are carrying around.
 
+- **The carry branch's self-heal tests isScheduled(), never isRunning().**
+  `isRunning()` is false for a LoopOnce clip that has clamped, because
+  `clampWhenFinished` pauses it - but a clamped action is still scheduled and
+  still applying its last frame, which is the entire point of it. Reading
+  that as "the mixer dropped this" nulled `activeAction`, so the next
+  `fadeToAction` no longer matched its own same-action guard and reset the
+  clip to time 0. JumpStart.fbx is about a quarter second and a jump outlives
+  it, so the clip clamped mid-air and restarted from frame 0, snapping the
+  hips from the end of the jump animation back to its start: the carry jump
+  click. The probe caught it as jump_start_lower at time 0.01 with yVelocity
+  already down to 1.3 - a clip re-playing, not a clip playing.
+  `isScheduled()` asks the question actually intended (is it still in the
+  mixer's active list), is false only when the mixer has genuinely let go -
+  the fade race this was written for - and stays true through a clamp.
+
 - **fadeToAction/fadeToUpperAction only fadeIn when something is fading OUT.**
   `fadeIn` starts an action at weight 0, which is right against a
   simultaneous `fadeOut` (the two sum to 1 across the blend) and wrong when

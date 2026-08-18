@@ -4427,8 +4427,34 @@ updateClimbing(delta) {
                         // "stuck bent over, object at head height" state.
                         // Nulling the stale reference makes the two calls
                         // right below re-trigger them cleanly.
-                        if (this.activeUpperAction && !this.activeUpperAction.isRunning()) this.activeUpperAction = null;
-                        if (this.activeAction && !this.activeAction.isRunning()) this.activeAction = null;
+                        // isScheduled, NOT isRunning - and the difference is
+                        // the whole of the carry jump click.
+                        //
+                        // isRunning() is false for a LoopOnce clip that has
+                        // clamped, because clampWhenFinished pauses it. But a
+                        // clamped action is still scheduled and still applying
+                        // its last frame, which is exactly what it is for. This
+                        // self-heal read that as "the mixer dropped it" and
+                        // nulled the reference, so the very next fadeToAction
+                        // no longer matched its own "same action, do nothing"
+                        // guard and reset the clip to time 0.
+                        //
+                        // JumpStart.fbx is about a quarter second long, so a
+                        // jump outlives it: the clip clamped mid-air, was
+                        // nulled, and restarted from frame 0 - the hips
+                        // snapping from the end of the jump animation back to
+                        // its start, which is the click. The probe caught it
+                        // exactly: jump_start_lower at time 0.01 with yVelocity
+                        // already down to 1.3, a third of a second after
+                        // takeoff. Not a clip playing - a clip re-playing.
+                        //
+                        // isScheduled() answers the question actually being
+                        // asked: is this action still in the mixer's active
+                        // list. It is false only when the mixer has genuinely
+                        // let go, which is the fade race this was written for,
+                        // and stays true through a clamp.
+                        if (this.activeUpperAction && !this.activeUpperAction.isScheduled()) this.activeUpperAction = null;
+                        if (this.activeAction && !this.activeAction.isScheduled()) this.activeAction = null;
                         this.fadeToAction(baseMoveState, dur);
                         // Where in the carry clip the pose is being read from,
                         // captured before the re-trigger below can move it.
