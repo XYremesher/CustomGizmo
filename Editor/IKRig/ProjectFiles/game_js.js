@@ -18076,6 +18076,7 @@ export function startGame(CharacterClass) {
 
     let gameReadyOverlayHidden = false;
     let _readyWaitT = 0;
+    let _sceneObjT = 0, _sceneObjCount = 0;
     const READY_WAIT_MAX = 12;   // seconds before we show the game T-poses and all
     // Uses the RAW (unclamped) per-frame delta, not the 0.1s-capped `delta`
     // used everywhere else - the cap exists specifically to stop a slow
@@ -18412,7 +18413,7 @@ export function startGame(CharacterClass) {
                     // near/total is the broad phase's whole story: the second
                     // number is what every ray used to walk, the first is what
                     // it walks now.
-                    `near ${_playerNearCache.list.length}/${collidables.length}` +
+                    `near ${_playerNearCache.list.length}/${collidables.length}  obj ${_sceneObjCount}` +
                     (window.animDebugOn && window.charAnimDebug ? `\n${window.charAnimDebug}` : '') +
                     // The carry-tick probe's worst frame, held on screen for a
                     // few seconds - the spike itself lasts one frame and is
@@ -18430,6 +18431,19 @@ export function startGame(CharacterClass) {
         //
         // The timeout is not optional: an asset that 404s would otherwise hold
         // the overlay up forever, which is a worse failure than a T-pose.
+        // Total live objects in the scene graph, recounted about twice a
+        // second. One number that answers "is a level still being held onto":
+        // levelGroup's wipe only reaches its own children, and anything added
+        // straight to `scene` survives a level change (see RemoteAvatar, and
+        // the villageNpcAvatar note in buildLevel). If this does not come back
+        // down after switching away from a level, something did not go with it.
+        _sceneObjT += rawDelta;
+        if (_sceneObjT > 0.5) {
+            _sceneObjT = 0;
+            let n = 0;
+            scene.traverse(() => n++);
+            _sceneObjCount = n;
+        }
         _readyWaitT += rawDelta;
         const castReady = _readyWaitT > READY_WAIT_MAX ||
             (companions.every(r => r.comp.isLoaded) && aiBots.every(r => r.bot.isLoaded));
