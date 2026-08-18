@@ -21385,8 +21385,31 @@ export function startGame(CharacterClass) {
                         const hangX = wH[0].point.x + n.x*ledgeOffset;
                         const hangZ = wH[0].point.z + n.z*ledgeOffset;
                         const hangGroupY = lH[0].point.y - 1.85;
+                        // A hang has to actually lift you off the ground.
+                        //
+                        // Standing, remainingRise is 0, so maxLedgeY is only
+                        // feet + 1.85 - and hangGroupY is ledgeY - 1.85. Put
+                        // together, a grab made while grounded can never place
+                        // the body above where it already is: at best exactly
+                        // there, at worst 1.85 below. "Exactly there" is the
+                        // reported bug - standing on flat ground with the climb
+                        // and drop buttons up, hanging off nothing.
+                        //
+                        // So grounded grabs have to clear the ground by a real
+                        // margin, which by that same arithmetic means they stop
+                        // firing. Jumping at a ledge is untouched: that is the
+                        // !isGrounded branch, where remainingRise opens
+                        // maxLedgeY to about feet + 3.5. assistedGrab also
+                        // still widens the grab tolerance itself (see
+                        // ledgeGrabTolAssist), which is the rest of what it does.
+                        //
+                        // window.assistedGrabMinLift = -2 restores the old
+                        // behaviour if the ground path turns out to be
+                        // load-bearing somewhere I have not looked.
+                        const minLift = window.assistedGrabMinLift !== undefined ? window.assistedGrabMinLift : 0.2;
+                        const liftsOffGround = !grabFromGround || hangGroupY > char.group.position.y + minLift;
 
-                        if (isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
+                        if (liftsOffGround && isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
                             isLedgeGrabbing = true; ledgeMoveLocked = true; justGrabbedLedge = true;
                             // Clear any leftover corner-retreat from a PREVIOUS
                             // hang - if you shimmied into a corner (which arms
