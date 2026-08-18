@@ -3065,10 +3065,6 @@
                 if (!this.isLoaded) return;
                 const spineBlend = window.spineBlendValue;
 
-                // Both channels' crossfade records point at actions about to
-                // be stopped and uncached, so they have to go with them.
-                this._xfLower = null;
-                this._xfUpper = null;
                 for (let key in this.actions) {
                     const action = this.actions[key];
                     if (action) {
@@ -3735,55 +3731,6 @@
                 if (this.activeAction === this.actions['land']) this.activeAction.setEffectiveTimeScale(val);
             }
 
-            // Crossfades driven by hand, on a smoothstep, because three.js
-            // only does them linearly.
-            //
-            // fadeIn/fadeOut schedule a LinearInterpolant on the action's
-            // weight (see AnimationMixer._lendControlInterpolant), so the blend
-            // runs at a constant rate and then stops dead. The pose therefore
-            // starts moving at full speed the instant a transition begins and
-            // stops at full speed when it ends - a corner at each end. That is
-            // what reads as a hard cut between clips, and it is why making the
-            // fade LONGER does not help: the corners are still there, they are
-            // just further apart, which trades a snap for a float.
-            //
-            // Smoothstep has zero rate of change at both ends, so the pose eases
-            // out of the old clip and into the new one. Exactly the fix that
-            // took the click out of the recoil return.
-            //
-            // One record per channel, matching activeAction/activeUpperAction:
-            // the outgoing action is left scheduled at weight 0 rather than
-            // stopped, which is what three.js's own fadeOut leaves behind.
-            updateCrossfades(delta) {
-                const step = (xf) => {
-                    if (!xf) return null;
-                    xf.t += delta;
-                    const p = xf.dur > 0 ? Math.min(1, xf.t / xf.dur) : 1;
-                    const s = p * p * (3 - 2 * p);
-                    if (xf.from) xf.from.setEffectiveWeight(1 - s);
-                    xf.to.setEffectiveWeight(s);
-                    return p >= 1 ? null : xf;
-                };
-                this._xfLower = step(this._xfLower);
-                this._xfUpper = step(this._xfUpper);
-            }
-
-            // Starts one, replacing whatever that channel was doing. stopFading
-            // first, or three.js's own interpolant keeps overwriting the weight
-            // this sets every frame.
-            beginCrossfade(channel, from, to, duration) {
-                if (from) from.stopFading();
-                to.stopFading();
-                if (!from || duration <= 0) {
-                    to.setEffectiveWeight(1);
-                    this[channel] = null;
-                    return;
-                }
-                from.setEffectiveWeight(1);
-                to.setEffectiveWeight(0);
-                this[channel] = { from, to, t: 0, dur: duration };
-            }
-
             fadeToAction(name, duration = 0.2) {
                 if (!this.isLoaded) return;
 
@@ -3804,7 +3751,10 @@
                 const previousAction = this.activeAction;
                 this.activeAction = action;
 
-                if (previousAction && duration <= 0) previousAction.stop();
+                if (previousAction) {
+                    if (duration <= 0) previousAction.stop();
+                    else previousAction.fadeOut(duration);
+                }
 
                 let timeScale = 1.0;
                 if (targetActionName.includes('climb')) timeScale = this.climbSpeed;
@@ -3855,9 +3805,9 @@
                 // action is correct rather than merely safe: there is nothing
                 // to blend with, so a blend can only be with the bind pose.
                 this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
-                this.beginCrossfade('_xfLower',
-                    (previousAction && previousAction.isRunning()) ? previousAction : null,
-                    this.activeAction, duration);
+                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                    this.activeAction.fadeIn(duration);
+                }
                 this.activeAction.play();
             }
 
@@ -3871,29 +3821,24 @@
                 const previousAction = this.activeUpperAction;
                 this.activeUpperAction = action;
 
-                if (previousAction && duration <= 0) previousAction.stop();
+                if (previousAction) {
+                    if (duration <= 0) previousAction.stop();
+                    else previousAction.fadeOut(duration);
+                }
 
                 let timeScale = 1.0;
                 this.activeUpperAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
-                // Against nothing this snaps to full weight rather than ramping
-                // from zero - see beginCrossfade. Fading in with no outgoing
-                // action leaves the tracks under-weighted and three.js fills
-                // the gap from the bind pose.
-                this.beginCrossfade('_xfUpper',
-                    (previousAction && previousAction.isRunning()) ? previousAction : null,
-                    this.activeUpperAction, duration);
+                // See the note in fadeToAction - fading in against nothing
+                // leaves the tracks under-weighted and three.js fills the gap
+                // from the bind pose.
+                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                    this.activeUpperAction.fadeIn(duration);
+                }
                 this.activeUpperAction.play();
             }
 
             stopUpperAction(duration = 0.2) {
                 if (this.activeUpperAction) {
-                    // Cancel any managed crossfade on this channel FIRST.
-                    // updateCrossfades writes the weight of its target every
-                    // frame, so left in flight it would keep pushing the weight
-                    // back up against the fadeOut below and the action would
-                    // never actually leave.
-                    this._xfUpper = null;
-                    this.activeUpperAction.stopFading();
                     if (duration <= 0) this.activeUpperAction.stop();
                     else this.activeUpperAction.fadeOut(duration);
                     this.activeUpperAction = null;
@@ -4184,9 +4129,6 @@ updateClimbing(delta) {
                 // shipped once as a continuous somersault while sliding).
                 if (this.hips && this.defaultHipsQuat) this.hips.quaternion.copy(this.defaultHipsQuat);
 
-                // Before mixer.update, so the weights this sets are the ones
-                // the mixer blends with on this very frame.
-                this.updateCrossfades(delta);
                 if (this.mixer) this.mixer.update(delta);
                 // The animation's own output, captured before the damping and
                 // the recoil offset are laid on top of it - this is what the
