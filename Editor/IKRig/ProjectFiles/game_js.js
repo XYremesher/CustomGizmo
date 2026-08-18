@@ -5186,6 +5186,30 @@ export function startGame(CharacterClass) {
             if (hits.length && Math.abs(hits[0].point.y - target.y) <= 0.4) { standIn = d; break; }
         }
         _climbTo.set(target.x + fwdX * standIn, target.y, target.z + fwdZ * standIn);
+        // The landing's height is MEASURED where it actually lands, not
+        // inherited from the lip the grip was taken on.
+        //
+        // target.y comes from the recorded crumb, and the stand-in probe above
+        // only accepts a surface within 0.4 of it - but when no try passes it
+        // falls back to the last offset and keeps target.y anyway. Anything
+        // that moves the landing sideways then puts the root at the OLD lip's
+        // height over ground that is higher, and the companion finishes the
+        // climb buried in the block. Replay lanes made that routine, since the
+        // whole point of a lane is to land somewhere other than where the
+        // player did.
+        //
+        // Probed from a body's height above so a lip slightly taller than the
+        // grip is still found, and only accepted if it is near the expected
+        // level - a hit far below means the ray went off the edge, and the
+        // original height is the better answer there.
+        _tempVec2.set(_climbTo.x, _climbTo.y + 1.8, _climbTo.z);
+        rayDown.set(_tempVec2, _downVec);
+        const landHits = rayDown.intersectObjects(_compGroundList, true);
+        for (let i = 0; i < landHits.length; i++) {
+            if (landHits[i].object.userData.isTreeCollider) continue;
+            if (Math.abs(landHits[i].point.y - _climbTo.y) <= 1.5) _climbTo.y = landHits[i].point.y;
+            break;
+        }
         _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
         _climbQuat.setFromEuler(_compFaceEuler);
         const climbAction = companion.actions && companion.actions['climb'];
