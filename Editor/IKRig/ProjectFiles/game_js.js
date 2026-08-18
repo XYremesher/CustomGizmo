@@ -2064,6 +2064,8 @@ export function startGame(CharacterClass) {
     // of one separation each: far enough to clear a companion, near enough that
     // the pair still reads as going up the same wall together.
     const COMP_GRIP_SIDE_STEPS = [1, -1, 2, -2];
+    // Lanes a replayed climb can run in, nearest the player's own line first.
+    const COMP_REPLAY_LANES = [0, 1, -1, 2, -2];
     // How far apart two grips have to be to avoid overlap between companions
     const COMP_LEDGE_MIN_SEP = 0.9;
     // Only bodies within this much height of each other count as sharing a
@@ -2269,6 +2271,9 @@ export function startGame(CharacterClass) {
     // somewhere it had never checked, quite often inside the block.
     let _compShimmyT = 0;
     let _compShimmyOffset = 0;   // signed distance along the edge to the target
+    // Lane on a replayed climb: 0 is the player's own line, +-1 a body's width
+    // to either side. See pickReplaySide.
+    let _compReplaySide = 0;
     const COMP_SHIMMY_SEARCH_OFFSETS = [0.9, 1.8, 2.7];  // how far along to look
     const COMP_SHIMMY_SPEED = 1.6; // units/sec moving along ledge
     // Post-climb model offset: cancels the root placement's jump, then decays
@@ -4417,6 +4422,10 @@ export function startGame(CharacterClass) {
             // ground. That is what had them drifting side to side for no
             // reason.
             hangT: 0, shimmyT: 0, shimmyOffset: 0,
+            // Which lane of the replayed climb this one takes - see
+            // pickReplaySide. 0 is the player's own line, +-1 a body's width
+            // either side of it.
+            replaySide: 0,
             climbFrom: new THREE.Vector3(), climbTo: new THREE.Vector3(),
             climbQuat: new THREE.Quaternion(), climbT: 0, climbDur: 1.0,
             climbModelRest: new THREE.Vector3(), climbBlendT: 0,
@@ -4599,6 +4608,7 @@ export function startGame(CharacterClass) {
         _compMode = rec.mode; _replayStartT = rec.replayStartT; _replayT = rec.replayT;
         _hangPos = rec.hangPos; _hangQuat = rec.hangQuat; _hangTop = rec.hangTop; _hangFwd = rec.hangFwd;
         _compHangT = rec.hangT; _compShimmyT = rec.shimmyT;
+        _compReplaySide = rec.replaySide;
         _compShimmyOffset = rec.shimmyOffset;
         _climbFrom = rec.climbFrom; _climbTo = rec.climbTo; _climbQuat = rec.climbQuat; _climbT = rec.climbT; _climbDur = rec.climbDur;
         _climbModelRest = rec.climbModelRest; _climbBlendT = rec.climbBlendT;
@@ -4624,6 +4634,7 @@ export function startGame(CharacterClass) {
         // scalars, which the companion code reassigns rather than mutates.
         rec.mode = _compMode; rec.replayStartT = _replayStartT; rec.replayT = _replayT;
         rec.hangT = _compHangT; rec.shimmyT = _compShimmyT;
+        rec.replaySide = _compReplaySide;
         rec.shimmyOffset = _compShimmyOffset;
         rec.climbT = _climbT; rec.climbDur = _climbDur; rec.climbBlendT = _climbBlendT;
         rec.leapT = _compLeapT; rec.leapDur = _compLeapDur; rec.leapToHang = _compLeapToHang;
@@ -4920,6 +4931,48 @@ export function startGame(CharacterClass) {
     // Whoever asks second keeps hanging instead - a stable state now that the
     // hang has no give-up timeout - and goes up as soon as this clears. That is
     // a queue, not a retry loop: nobody lets go and re-approaches.
+    // A lane on the replayed climb that nobody else is using.
+    //
+    // A replay places the companion on the player's OWN recorded crumbs, frame
+    // by frame - so two companions replaying the same climb are in exactly the
+    // same place for the whole of it, by construction, whatever grip each
+    // eventually settles on. That is the climbing-through-each-other, and no
+    // occupancy test on the grip can reach it: the overlap happens on the way
+    // up, before either has committed to anything.
+    //
+    // Serialising them was the other option and the code has already rejected
+    // it once (see the jump-grab's side-step comment - waiting "had them going
+    // up single file, one long pause apart"). Lanes keep them moving together
+    // and match what the grip search does at the top, so the pair arrives
+    // spread out rather than spreading out on arrival.
+    const _replayLaneVec = new THREE.Vector3();
+    const _replayLaneQuat = new THREE.Quaternion();
+    function replayLaneOffset(cr, out) {
+        if (!_compReplaySide) return out.set(0, 0, 0);
+        _replayLaneQuat.set(cr.qx, cr.qy, cr.qz, cr.qw);
+        out.set(1, 0, 0).applyQuaternion(_replayLaneQuat);
+        out.y = 0;
+        if (out.lengthSq() < 1e-6) return out.set(0, 0, 0);
+        return out.normalize().multiplyScalar(_compReplaySide * COMP_LEDGE_MIN_SEP);
+    }
+
+    function pickReplaySide() {
+        for (let lane = 0; lane < COMP_REPLAY_LANES.length; lane++) {
+            const want = COMP_REPLAY_LANES[lane];
+            let free = true;
+            for (let i = 0; i < companions.length && free; i++) {
+                const rec = companions[i];
+                if (rec.comp === companion) continue;
+                // Only whoever is actually on a climb holds a lane. Anyone
+                // following on the ground is not in the way.
+                if (rec.mode !== 'replay' && rec.mode !== 'hang' && rec.mode !== 'climbup') continue;
+                if (rec.replaySide === want) free = false;
+            }
+            if (free) return want;
+        }
+        return 0;
+    }
+
     function anotherCompanionIsClimbing() {
         for (let i = 0; i < companions.length; i++) {
             const rec = companions[i];
@@ -6350,7 +6403,12 @@ export function startGame(CharacterClass) {
                 const flen = Math.hypot(fx, fz);
                 if (flen < 1e-3) { fx = 0; fz = 1; } else { fx /= flen; fz /= flen; }
                 _hangFwd.set(fx, 0, fz);
-                _hangTop.set(cr.x, cr.y, cr.z);
+                // In this companion's lane too. Without it the climb runs
+                // offset the whole way and then snaps back onto the player's
+                // line for the grab, which is the overlap arriving late
+                // instead of not at all.
+                replayLaneOffset(cr, _replayLaneVec);
+                _hangTop.set(cr.x + _replayLaneVec.x, cr.y, cr.z + _replayLaneVec.z);
                 // The crumb is where the PLAYER stopped, not where the edge is.
                 // Walk out to the real lip first, so the grip is taken on the
                 // block's actual edge instead of being looked for in the middle
@@ -6411,8 +6469,16 @@ export function startGame(CharacterClass) {
                 }
                 }
             }
-            // Pure replay of the recorded climb - exact pose + state.
-            companion.group.position.set(cr.x, cr.y, cr.z);
+            // Pure replay of the recorded climb - exact pose + state, shifted
+            // sideways into this companion's own lane.
+            //
+            // The lateral axis comes from the CRUMB's own facing, not from any
+            // live geometry: the player faces the wall while climbing, so the
+            // right vector of the recorded quaternion runs along that wall.
+            // Flattened to the horizontal, since a lane is a sideways step and
+            // never a vertical one.
+            replayLaneOffset(cr, _replayLaneVec);
+            companion.group.position.set(cr.x + _replayLaneVec.x, cr.y, cr.z + _replayLaneVec.z);
             companion.group.quaternion.set(cr.qx, cr.qy, cr.qz, cr.qw);
             companion.setNetworkState([cr.x, cr.y, cr.z], [cr.qx, cr.qy, cr.qz, cr.qw], cr.state, false);
             companion.update(delta);
@@ -6491,7 +6557,9 @@ export function startGame(CharacterClass) {
             // not immediately commit to another route.
             const dTkY = Math.abs(tk.y - c.y);
             if (dTk < 0.55 && dTkY < 1.2 && _compJustClimbedT <= 0) {
-                _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1; return;
+                _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1;
+                _compReplaySide = pickReplaySide();
+                return;
             }
                 // Walk straight at the takeoff spot - deliberately no
                 // obstacle steering here. tk sits right at the base of the
