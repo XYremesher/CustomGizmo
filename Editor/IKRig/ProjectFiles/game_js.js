@@ -7352,6 +7352,10 @@ export function startGame(CharacterClass) {
         if (currentLevel === 'local_voxel' && voxelLevelScene) buildVoxelLevel();
         // The forest level is built entirely out of this one model, so it has
         // nothing else to wait on - retry as soon as it lands.
+        // Adds them onto the already-built level rather than rebuilding it -
+        // the same reasoning as the StarKey late-arrival path, which spells
+        // out why a full rebuild mid-play is not safe.
+        if (pendingStairsTrees && currentLevel === 'local_stairs') spawnStairsTrees();
         if (pendingForestLevelBuild) {
             pendingForestLevelBuild = false;
             buildForestLevel();
@@ -7545,6 +7549,16 @@ export function startGame(CharacterClass) {
     // ground) fills them, matching GrassGenerator's own tree-avoidance step
     // without a second implementation of it.
     let pendingForestLevelBuild = false;
+    // Same idea for Level 1's four standalone trees - see spawnStairsTrees.
+    let pendingStairsTrees = false;
+    function spawnStairsTrees() {
+        if (!treeModel) { pendingStairsTrees = true; return; }
+        pendingStairsTrees = false;
+        spawnStandaloneTree(7, 6, 0.4);
+        spawnStandaloneTree(-9, 8, 2.1);
+        spawnStandaloneTree(12, 11, 4.7);
+        spawnStandaloneTree(3, 13, 5.6);
+    }
     // Mathf.PerlinNoise stand-in - classic 2D Perlin with a seeded
     // permutation table, so `seed` reshuffles the whole field the way the
     // Unity version's seed offset does. Values land in 0..1 like Unity's,
@@ -14089,10 +14103,14 @@ export function startGame(CharacterClass) {
         // the hemisphere (centered (10,0,-10), r=6, so entirely -Z), the
         // stair columns (x -4.5..1.5, z -10..-28), and the bump fields
         // (starting at z=20).
-        spawnStandaloneTree(7, 6, 0.4);
-        spawnStandaloneTree(-9, 8, 2.1);
-        spawnStandaloneTree(12, 11, 4.7);
-        spawnStandaloneTree(3, 13, 5.6);
+        // Deferred if Tree.glb has not arrived yet. spawnStandaloneTree
+        // returns null with no model and says nothing, so starting DIRECTLY in
+        // this level built it before the download finished and the trees
+        // simply never appeared - reaching it by switching levels always
+        // worked, because by then the model was in. The forest already
+        // handles its own version of this (pendingForestLevelBuild); this is
+        // the same thing for the standalone ones.
+        spawnStairsTrees();
 
         // All four bump-test fields lined up along the same Z (20), packed
         // as close together (and to spawn at 0,0,0) as their own widths
