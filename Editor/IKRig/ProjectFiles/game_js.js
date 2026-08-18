@@ -17973,6 +17973,8 @@ export function startGame(CharacterClass) {
 
     let gameReadyOverlayHidden = false;
     let _readyWaitT = 0;
+    // Throttles the loading-gate readout to twice a second.
+    let _gateReportT = 0;
     const READY_WAIT_MAX = 12;   // seconds before we show the game T-poses and all
     // Uses the RAW (unclamped) per-frame delta, not the 0.1s-capped `delta`
     // used everywhere else - the cap exists specifically to stop a slow
@@ -18336,6 +18338,37 @@ export function startGame(CharacterClass) {
         // callback at all, and this is the only thing standing between that
         // and an overlay nobody can get past.
         const propsReady = window._cubesLoaded || _readyWaitT > READY_WAIT_MAX;
+        // While the overlay is still up, say WHY on the overlay itself.
+        //
+        // A stuck loading screen with no red text on it means no uncaught
+        // error - every animation load has its own .catch that logs to the
+        // console and swallows the rejection, so a failed clip is invisible
+        // here by construction. That left "it just says Loading" as the whole
+        // of the evidence, and three rounds of asking the user to go and read
+        // something that was never going to be there.
+        //
+        // These are the exact three conditions on the line below. Whichever
+        // reads 0 is the answer, and clipsLoaded against the number requested
+        // separates "a clip failed" from "the model never arrived".
+        if (!gameReadyOverlayHidden) {
+            _gateReportT += rawDelta;
+            if (_gateReportT > 0.5) {
+                _gateReportT = 0;
+                const el = document.getElementById('loading-error');
+                if (el) {
+                    const clips = char.originalClips ? Object.keys(char.originalClips).length : 0;
+                    el.style.display = 'block';
+                    el.textContent =
+                        `waited ${_readyWaitT.toFixed(1)}s of ${READY_WAIT_MAX}s
+` +
+                        `char.isLoaded ${char.isLoaded ? 1 : 0}   clips ${clips}
+` +
+                        `props ${propsReady ? 1 : 0} (cubes ${window._cubesLoaded ? 1 : 0})
+` +
+                        `cast ${castReady ? 1 : 0} (comp ${companions.length} bots ${aiBots.length})`;
+                }
+            }
+        }
         if (!gameReadyOverlayHidden && char.isLoaded && propsReady && castReady) {
             gameReadyOverlayHidden = true;
             const overlay = document.getElementById('loading-overlay');
