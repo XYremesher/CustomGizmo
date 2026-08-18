@@ -6476,7 +6476,23 @@ export function startGame(CharacterClass) {
                 _compWhy = "walk-to-takeoff";
             // Arrived - the latch has done its job, release it so the next
             // climb picks a fresh takeoff rather than inheriting this one.
-            if (dTk < 0.55) { _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1; return; }
+            // Height matters as much as distance, and leaving it out is what
+            // teleported a companion back down after it had already got up.
+            // dTk is HORIZONTAL only, and the takeoff crumb sits at the foot of
+            // the wall - so the moment one topped out it was standing barely
+            // half a metre from that spot in x/z while being metres above it,
+            // read as "arrived", re-entered the replay, and got placed back at
+            // the recorded grip. Then it shimmied and climbed the same wall
+            // again. The latch (_compTakeoffT) keeps the takeoff from before
+            // the climb, so nothing else caught that it was stale.
+            //
+            // Gated on the post-climb hold as well, the same way leaping
+            // already is - a companion that has just finished a climb should
+            // not immediately commit to another route.
+            const dTkY = Math.abs(tk.y - c.y);
+            if (dTk < 0.55 && dTkY < 1.2 && _compJustClimbedT <= 0) {
+                _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1; return;
+            }
                 // Walk straight at the takeoff spot - deliberately no
                 // obstacle steering here. tk sits right at the base of the
                 // wall the player is about to be replayed climbing, so a

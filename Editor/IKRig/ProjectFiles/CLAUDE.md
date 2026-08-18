@@ -96,6 +96,20 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **Companion "arrived at the takeoff" tests need HEIGHT, not just distance.**
+  `dTk` is horizontal only and the takeoff crumb sits at the foot of the wall,
+  so a companion that had just topped out was half a metre from it in x/z
+  while metres above it - read as arrived, re-entered the replay, and got
+  placed back at the recorded grip. It then shimmied and climbed the same wall
+  again. `_compTakeoffT` latches the takeoff found before the climb, so
+  nothing else noticed it had gone stale. The re-entry is gated on
+  `_compJustClimbedT` too now, the way leaping already was.
+
+  Note also that `_compMode` never takes the value `'shimmy'` - the sliding
+  along a ledge is implemented inside the `'hang'` branch via
+  `_compShimmyOffset`. The mode string in the union comment is vestigial; the
+  behaviour is real.
+
 - **Every path that commits a companion to a ledge grip goes through
   `findFreeGrip`.** `hangSpotTaken` on its own is not a guarantee - it used to
   be consulted from exactly one place, the ground jump-grab, while the path
