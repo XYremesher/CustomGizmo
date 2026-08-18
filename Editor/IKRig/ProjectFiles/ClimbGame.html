@@ -3836,7 +3836,19 @@
                 // action is correct rather than merely safe: there is nothing
                 // to blend with, so a blend can only be with the bind pose.
                 this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
-                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                // isScheduled, not isRunning - the same distinction that was
+                // wrong in the carry self-heal. A LoopOnce clip that has
+                // clamped reports isRunning() false because clampWhenFinished
+                // pauses it, yet it is still scheduled and still applying its
+                // last frame at full weight. It is therefore very much
+                // something to cross-fade against.
+                //
+                // JumpStart.fbx is about a quarter second and the ascent is
+                // about a third, so jump_start is ALWAYS clamped by the apex.
+                // Testing isRunning() there skipped the fade entirely and fall
+                // arrived at full weight in one frame - a hard cut, and the
+                // harshness on the jump-to-air handover.
+                if (duration > 0 && previousAction && previousAction.isScheduled()) {
                     this.activeAction.fadeIn(duration);
                 }
                 this.activeAction.play();
@@ -3856,7 +3868,7 @@
                 // three.js means owning every path that touches them, and
                 // doing that everywhere at once broke the whole state machine.
                 // Here it is two actions, one handover, and it clears itself.
-                if (wantEase && duration > 0 && previousAction && previousAction.isRunning()) {
+                if (wantEase && duration > 0 && previousAction && previousAction.isScheduled()) {
                     previousAction.stopFading();
                     this.activeAction.stopFading();
                     previousAction.setEffectiveWeight(1);
@@ -3885,7 +3897,7 @@
                 // See the note in fadeToAction - fading in against nothing
                 // leaves the tracks under-weighted and three.js fills the gap
                 // from the bind pose.
-                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                if (duration > 0 && previousAction && previousAction.isScheduled()) {
                     this.activeUpperAction.fadeIn(duration);
                 }
                 this.activeUpperAction.play();
