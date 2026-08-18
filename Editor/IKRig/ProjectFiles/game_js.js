@@ -4820,58 +4820,59 @@ export function startGame(CharacterClass) {
         return startCompanionJumpGrab(c, _ledgeSpotTop, dirX, dirZ);
     }
 
+    // A grip on this ledge that nobody else has: straight ahead if it is free,
+    // otherwise stepping along the edge until one is. Leaves the winner in
+    // _gripTryTop / _hangPos / _hangFwd, which is what every caller wants next.
+    //
+    // Lifted out of startCompanionJumpGrab, where it already existed and
+    // already worked - its own comment is "that is what makes a pair go up
+    // side by side". It was only ever reached by the ground jump-grab, and the
+    // path companions actually use to follow a climb is the REPLAY, which
+    // committed to whatever grip the recorded crumb implied with no occupancy
+    // test at all. Two of them retracing the same climb therefore always
+    // picked the same grip and hung inside each other. The replay's own
+    // lateral search de-conflicts the TOP-OUT landing, which is a different
+    // question and left the grips overlapping.
+    //
+    // fromPos/maxRise are the jump's reach limit and are optional - a replay
+    // is already at the wall and has nothing to clear.
+    function findFreeGrip(top, fwdX, fwdZ, fromPos, maxRise) {
+        const tryGrip = () => {
+            // No edge here means nothing to hold.
+            if (!computeLedgeHang(_gripTryTop, fwdX, fwdZ, _hangPos)) return false;
+            _hangFwd.set(fwdX, 0, fwdZ);
+            // Square up to the wall before committing, so the grab lands facing
+            // the face rather than however it happened to arrive. This can
+            // slide the grip along the ledge, so the tests below run after it.
+            squareHangToWall();
+            if (maxRise !== undefined && fromPos && _hangPos.y - fromPos.y > maxRise) return false;
+            return !hangSpotTaken(_hangPos.x, _hangPos.z, _hangPos.y, char.group.position);
+        };
+        _gripTryTop.copy(top);
+        if (tryGrip()) return true;
+        // The offsets run ALONG the edge: _hangFwd points out over it, so its
+        // perpendicular is the edge's own axis. Each candidate still has to
+        // pass the same tests, and the top surface has to continue at this
+        // height - past the end of the ledge there is nothing to hang from,
+        // however free the space is.
+        const sx = -fwdZ, sz = fwdX;
+        for (let i = 0; i < COMP_GRIP_SIDE_STEPS.length; i++) {
+            const off = COMP_GRIP_SIDE_STEPS[i] * COMP_LEDGE_MIN_SEP;
+            _gripTryTop.set(top.x + sx * off, top.y, top.z + sz * off);
+            _tempVec2.set(_gripTryTop.x, _gripTryTop.y + 1.0, _gripTryTop.z);
+            rayDown.set(_tempVec2, _downVec);
+            const surf = rayDown.intersectObjects(_compGroundList, true);
+            if (!surf.length || Math.abs(surf[0].point.y - top.y) > 0.4) continue;
+            if (tryGrip()) return true;
+        }
+        return false;
+    }
+
     // Jump from the ground and catch `top`'s ledge, ending in a hang.
     // Refuses anything the player's own jump could not reach, so the
     // companion is never doing something you could not.
     function startCompanionJumpGrab(c, top, fwdX, fwdZ) {
-        // One candidate grip: measure the hang off `_gripTryTop`, square it to
-        // the wall, and report whether it is reachable, free, and on a stretch
-        // of ledge that actually exists. Leaves _hangPos/_hangFwd holding the
-        // last candidate tried, which is what the accepted one wants anyway.
-        const tryGrip = () => {
-            // No edge here means nothing to hold - jumping at it would land the
-            // companion inside the block.
-            if (!computeLedgeHang(_gripTryTop, fwdX, fwdZ, _hangPos)) return false;
-            _hangFwd.set(fwdX, 0, fwdZ);
-            // Square up to the wall before committing, so the grab lands facing
-            // the face rather than facing however it happened to walk in. The
-            // player takes its hang facing from the wall normal too (its grab
-            // does lookAt(position - n)); taking it from the travel direction
-            // only matches when the approach was dead-on. This can slide the
-            // grip along the ledge, so every test below runs after it.
-            squareHangToWall();
-            if (_hangPos.y - c.y > COMP_LEAP_RISE_MAX) return false;
-            return !hangSpotTaken(_hangPos.x, _hangPos.z, _hangPos.y, char.group.position);
-        };
-        // The grip straight ahead is the one it wants.
-        _gripTryTop.copy(top);
-        let found = tryGrip();
-        // Taken - most often by the companion that got here first. Rather than
-        // refusing the climb (which left the second one milling about at the
-        // foot of the wall) or waiting for the grip to free up (which had them
-        // going up single file, one long pause apart), look along the ledge for
-        // a grip of its own. That is what makes a pair go up side by side.
-        //
-        // The offsets run along the edge: _hangFwd points out over it, so its
-        // perpendicular is the edge's own axis. Each candidate still has to
-        // pass the same reach and occupancy tests, and the top surface has to
-        // continue at this height - past the end of the ledge there is nothing
-        // to hang from, however free the space is.
-        if (!found) {
-            const sx = -fwdZ, sz = fwdX;
-            for (let i = 0; i < COMP_GRIP_SIDE_STEPS.length && !found; i++) {
-                const off = COMP_GRIP_SIDE_STEPS[i] * COMP_LEDGE_MIN_SEP;
-                _gripTryTop.set(top.x + sx * off, top.y, top.z + sz * off);
-                // Does the ledge still run this far? Probed from above, and the
-                // hit has to be THIS lip rather than a floor further down.
-                _tempVec2.set(_gripTryTop.x, _gripTryTop.y + 1.0, _gripTryTop.z);
-                rayDown.set(_tempVec2, _downVec);
-                const surf = rayDown.intersectObjects(_compGroundList, true);
-                if (!surf.length || Math.abs(surf[0].point.y - top.y) > 0.4) continue;
-                found = tryGrip();
-            }
-        }
-        if (!found) {
+        if (!findFreeGrip(top, fwdX, fwdZ, c, COMP_LEAP_RISE_MAX)) {
             _compWhy = 'ledge busy';
             return false;
         }
@@ -6389,8 +6390,17 @@ export function startGame(CharacterClass) {
                 // block's own top face, and the companion hung inside it. When
                 // there is no edge, carrying on with the replay and letting the
                 // separation push sort out the crowding is the lesser problem.
-                if (computeLedgeHang(_hangTop, fx, fz, _hangPos)) {
-                    squareHangToWall();
+                // findFreeGrip, not a bare computeLedgeHang: the edge existing
+                // is necessary but not sufficient, it also has to be a grip
+                // nobody else has. Falling through when every grip along this
+                // stretch is taken leaves the old behaviour exactly as it was -
+                // carry on replaying and let the separation push deal with it -
+                // so this can only ever improve on today, never do worse.
+                if (findFreeGrip(_hangTop, fx, fz)) {
+                    // The grip actually chosen, which the side-step search may
+                    // have moved along the ledge. Everything downstream - the
+                    // shimmy search, the climb-up landing - measures from here.
+                    _hangTop.copy(_gripTryTop);
                     _compFaceEuler.set(0, Math.atan2(_hangFwd.x, _hangFwd.z), 0);
                     _hangQuat.setFromEuler(_compFaceEuler);
                     _compMode = 'hang';

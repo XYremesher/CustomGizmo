@@ -96,6 +96,19 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **Every path that commits a companion to a ledge grip goes through
+  `findFreeGrip`.** `hangSpotTaken` on its own is not a guarantee - it used to
+  be consulted from exactly one place, the ground jump-grab, while the path
+  companions actually use to follow a climb is the REPLAY, which committed to
+  whatever grip the recorded crumb implied with no occupancy test at all. Two
+  companions retracing the same climb therefore always chose the same grip and
+  hung inside each other. The replay's own lateral search de-conflicts the
+  TOP-OUT landing, which is a different question, and left the grips
+  overlapping. `_compMode = 'shimmy'` is meanwhile never assigned anywhere:
+  the machinery, the save/restore, the debug row and `hangSpotTaken`'s own
+  branch for it all exist, but nothing enters the mode, so there is no sliding
+  along a ledge and `hang_left`/`hang_right` never play.
+
 - **`RemoteAvatar` adds its group to `scene`, not `levelGroup`.** So
   `buildLevel`'s wipe (`while (levelGroup.children.length)`) does not touch
   bots, companions or the village NPC - they survive every level change,
