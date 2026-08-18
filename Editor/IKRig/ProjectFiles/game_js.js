@@ -4947,6 +4947,7 @@ export function startGame(CharacterClass) {
     // spread out rather than spreading out on arrival.
     const _replayLaneVec = new THREE.Vector3();
     const _replayLaneQuat = new THREE.Quaternion();
+    const _replayQuatA = new THREE.Quaternion(), _replayQuatB = new THREE.Quaternion();
     function replayLaneOffset(cr, out) {
         if (!_compReplaySide) return out.set(0, 0, 0);
         _replayLaneQuat.set(cr.qx, cr.qy, cr.qz, cr.qw);
@@ -6505,10 +6506,39 @@ export function startGame(CharacterClass) {
             // right vector of the recorded quaternion runs along that wall.
             // Flattened to the horizontal, since a lane is a sideways step and
             // never a vertical one.
+            // Interpolated between the crumb before wantT and the one at or
+            // after it, which is what stops the climb juddering.
+            //
+            // The lookup takes the first crumb at or after the wanted time and
+            // used the position straight off it. Crumbs are laid at
+            // COMP_TRAIL_HZ (30), so at 144fps that holds one position for
+            // four or five frames and then jumps to the next: a 30Hz stepping
+            // motion inside a 144Hz picture. It shows worst on a climb, where
+            // the movement is fast and mostly vertical.
+            //
+            // Spacing is not even either - standing still merges crumbs by
+            // carrying the newest one's timestamp forward, so one crumb can
+            // span a long moment and the next arrives a long way off.
+            // Interpolating by TIME rather than by index handles that on its
+            // own: a wide gap is crossed at the speed the gap implies.
+            const prevCr = crIdx > 0 ? _compTrail[crIdx - 1] : null;
+            let rx = cr.x, ry = cr.y, rz = cr.z;
+            _replayQuatA.set(cr.qx, cr.qy, cr.qz, cr.qw);
+            if (prevCr && cr.t > prevCr.t) {
+                const a = Math.min(1, Math.max(0, (wantT - prevCr.t) / (cr.t - prevCr.t)));
+                rx = THREE.MathUtils.lerp(prevCr.x, cr.x, a);
+                ry = THREE.MathUtils.lerp(prevCr.y, cr.y, a);
+                rz = THREE.MathUtils.lerp(prevCr.z, cr.z, a);
+                _replayQuatB.set(prevCr.qx, prevCr.qy, prevCr.qz, prevCr.qw);
+                _replayQuatA.slerpQuaternions(_replayQuatB, _replayQuatA, a);
+            }
             replayLaneOffset(cr, _replayLaneVec);
-            companion.group.position.set(cr.x + _replayLaneVec.x, cr.y, cr.z + _replayLaneVec.z);
-            companion.group.quaternion.set(cr.qx, cr.qy, cr.qz, cr.qw);
-            companion.setNetworkState([cr.x, cr.y, cr.z], [cr.qx, cr.qy, cr.qz, cr.qw], cr.state, false);
+            rx += _replayLaneVec.x; rz += _replayLaneVec.z;
+            companion.group.position.set(rx, ry, rz);
+            companion.group.quaternion.copy(_replayQuatA);
+            // The animation STATE stays discrete - it is a clip name, and
+            // there is nothing to interpolate between walk and climb.
+            companion.setNetworkState([rx, ry, rz], [_replayQuatA.x, _replayQuatA.y, _replayQuatA.z, _replayQuatA.w], cr.state, false);
             companion.update(delta);
             if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow';
             return;
