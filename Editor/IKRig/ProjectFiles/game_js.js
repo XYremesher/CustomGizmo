@@ -7559,10 +7559,33 @@ export function startGame(CharacterClass) {
     window.forestClearingRadius = 9;
 
     function spawnTestKeyAndLock() {
-        // The free-standing key that used to sit out in the open here (no
-        // jar needed) was removed - the jar grid's own key (see
-        // spawnJarGrid, containsKey on the r===0,c===0 jar) is now the only
-        // way to get one.
+        // A free-standing carryable key, back by request. One used to sit out
+        // here and was removed so that the jar grid's key (spawnJarGrid,
+        // containsKey on the r===0,c===0 jar) would be the only way to get
+        // one; that jar is still the intended route, this is a second one
+        // that skips the jar for testing the carry itself.
+        //
+        // Built through createKeyInstance and registered exactly the way
+        // destroyJarCarryable registers the jar's key - same isCarryable and
+        // isKey flags, same collidables and carryables entries, its own
+        // netId - so it is the same object to the carry, throw and lock
+        // insertion code rather than a lookalike that behaves differently.
+        const freeKey = createKeyInstance();
+        if (freeKey) {
+            freeKey.userData.isCarryable = true;
+            freeKey.userData.isKey = true;
+            // floorOffset is measured before the keyScale multiplier is
+            // applied (see buildStarAssembly), so it has to be scaled here to
+            // sit the key ON the ground rather than half sunk into it - the
+            // lock placement below does the same. Off to the +x side of the
+            // lock and nearer the player start at z=0, on the flat platform
+            // before the stairs begin.
+            freeKey.position.set(3, freeKey.userData.floorOffset * window.keyScale, -5);
+            levelGroup.add(freeKey);
+            collidables.push(freeKey);
+            const carryFreeKey = { mesh: freeKey, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+            carryables.push(carryFreeKey); addCarryableDebugHelper(carryFreeKey);
+        }
 
         // Test-only lock instance - fixed in place (not
         // carryable), just to see it in the level; no unlock puzzle wired
