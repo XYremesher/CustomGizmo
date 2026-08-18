@@ -2150,6 +2150,9 @@ export function startGame(CharacterClass) {
     const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
     const COMP_CLIMB_INSET_TIGHT = 0.3; // ...but only this far when the next step starts immediately (stairs)
     const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
+    // Head height, for the buried-in-geometry check in the follow ground step.
+    const COMP_BODY_H = 1.8;
+    const _compUnsinkOrigin = new THREE.Vector3();
     // How far above the companion the player must be before climbing an
     // obstacle is worth it at all. Matches the steering gate, so exactly one
     // of "go around" and "go over" applies at any height difference.
@@ -7137,6 +7140,36 @@ export function startGame(CharacterClass) {
                 && tryCompanionClimbUp(c, probeX, probeZ, probeDx, probeDz)) return;
             nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
         }
+        // Buried in something - get out, whatever the step-up rule says.
+        //
+        // This is a trap state and cannot be escaped without a special case.
+        // companionGroundY refuses any surface more than COMP_STEP_UP (0.9)
+        // above where the companion currently is, on the reasoning that a
+        // taller rise wants a climb rather than a step. Sunk into a block by
+        // more than that, the block's own top is refused for exactly that
+        // reason and the function returns the last hit instead - the underside,
+        // or the floor far below - so the follow code reads "ground is beneath
+        // me", stays put, and the companion is waist-deep forever.
+        //
+        // Standing inside solid geometry is never a valid state, so it is not
+        // something to step out of at walking pace, it is something to be
+        // corrected. Detected by casting down from head height: a surface
+        // between the feet and the head means the root is under it.
+        _compUnsinkOrigin.set(c.x, c.y + COMP_BODY_H, c.z);
+        rayDown.set(_compUnsinkOrigin, _downVec);
+        const sinkHits = rayDown.intersectObjects(_compGroundList, true);
+        for (let i = 0; i < sinkHits.length; i++) {
+            const h = sinkHits[i];
+            // Canopies are not floors, here as everywhere else.
+            if (h.object.userData.isTreeCollider) continue;
+            if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_BODY_H) {
+                // c IS companion.group.position, so this moves both.
+                companion.group.position.y = h.point.y;
+                gyHere = h.point.y;
+            }
+            break;
+        }
+
         let ny = c.y; const dy = gyHere - c.y;
         // Falling stays uncapped in distance (only in speed) - dropping to
         // follow the player down is always legitimate, and it is only the
