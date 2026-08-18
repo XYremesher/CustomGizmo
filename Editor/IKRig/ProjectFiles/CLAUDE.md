@@ -271,6 +271,23 @@ implementation.
   held. Freezing the hand tracks fails the same way, the hands hanging off a
   chest the hips are carrying around.
 
+- **fadeToAction/fadeToUpperAction only fadeIn when something is fading OUT.**
+  `fadeIn` starts an action at weight 0, which is right against a
+  simultaneous `fadeOut` (the two sum to 1 across the blend) and wrong when
+  the outgoing action is already gone. It can be gone: a LoopOnce clip with
+  `clampWhenFinished` reports `isRunning() === false` once clamped, and the
+  carrying branch's self-heal nulls `activeAction` on exactly that, so the
+  next call has no `previousAction` to fade out. The tracks are then under-
+  weighted for a frame, and `PropertyMixer.apply()` blends a track toward its
+  BIND POSE by `1 - totalWeight` whenever the total is under 1. Measured on a
+  jump: lower-body total 0.03, hips ~97% bind for one frame, and since the
+  upper body is locked in rotation but hangs off the hips for POSITION, the
+  hands and the carried object dropped 60cm and sprang back - the carry jump
+  click. A landing frame in the same run had a healthy 0.93 + 0.07 and moved
+  0.039. Snapping to full weight with no outgoing action is correct, not just
+  safe: there is nothing to blend with, so a blend can only be with the bind
+  pose.
+
 - **The carried object is placed TWICE per frame, and the second one is the
   real one.** The placement in the carry block runs before `char.animate()`,
   so it reads hand bones the mixer has not posed yet - it is always a frame

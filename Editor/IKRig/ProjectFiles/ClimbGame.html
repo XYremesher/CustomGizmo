@@ -3778,8 +3778,36 @@
                     }
                 }
 
+                // fadeIn ONLY when there is something to cross-fade against.
+                //
+                // fadeIn starts an action's weight at 0 and ramps it. That is
+                // right when the outgoing action is simultaneously fading out,
+                // because the two sum to 1 the whole way across. It is wrong
+                // when the outgoing action is already gone - and it can be
+                // gone, because a LoopOnce clip with clampWhenFinished reports
+                // isRunning() === false once it has clamped, and the carrying
+                // branch's self-heal then nulls activeAction, so the next call
+                // has no previousAction to fade out.
+                //
+                // With nothing else on those tracks the total weight for the
+                // frame is whatever the new action has ramped to - measured at
+                // 0.03 on a jump - and three.js's PropertyMixer.apply() blends
+                // a track toward its BIND POSE by (1 - totalWeight) when the
+                // total is under 1. So the hips snapped ~97% to bind for one
+                // frame. The upper body is locked in rotation but its POSITION
+                // hangs off the hips, so the hands and the object dropped 60cm
+                // and sprang back the next frame. That is the carry jump click:
+                // measured localY -0.597 with the lower total at 0.03, against
+                // a landing frame in the same run whose lower total was a
+                // healthy 0.93 + 0.07 and which moved 0.039.
+                //
+                // Snapping straight to full weight when there is no outgoing
+                // action is correct rather than merely safe: there is nothing
+                // to blend with, so a blend can only be with the bind pose.
                 this.activeAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
-                if (duration > 0) this.activeAction.fadeIn(duration);
+                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                    this.activeAction.fadeIn(duration);
+                }
                 this.activeAction.play();
             }
 
@@ -3800,7 +3828,12 @@
 
                 let timeScale = 1.0;
                 this.activeUpperAction.reset().setEffectiveTimeScale(timeScale).setEffectiveWeight(1);
-                if (duration > 0) this.activeUpperAction.fadeIn(duration);
+                // See the note in fadeToAction - fading in against nothing
+                // leaves the tracks under-weighted and three.js fills the gap
+                // from the bind pose.
+                if (duration > 0 && previousAction && previousAction.isRunning()) {
+                    this.activeUpperAction.fadeIn(duration);
+                }
                 this.activeUpperAction.play();
             }
 
