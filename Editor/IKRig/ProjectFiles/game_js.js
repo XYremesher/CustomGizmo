@@ -358,6 +358,7 @@ export function startGame(CharacterClass) {
     const _nearSphere = new THREE.Sphere();
     // For collidables with no geometry of their own - see getNearColliders.
     const _nearBox = new THREE.Box3();
+    const _nearMat = new THREE.Matrix4();
     // One cache per agent, since the player, each companion and each bot are
     // in different places and each wants the collidables around ITSELF. A
     // single shared list would have to be big enough to cover all of them at
@@ -443,16 +444,37 @@ export function startGame(CharacterClass) {
             // broad phase itself - before it, collidables was used directly
             // and groups worked.
             //
-            // Measured from the subtree instead. setFromObject walks children
-            // and is not free, but this whole function only runs on a rebuild
-            // (throttled by NEAR_REBUILD_FRAMES and NEAR_REBUILD_MOVE) and
-            // only groups take this path - keys and locks, a handful. An
-            // empty box means nothing renderable inside, and then the object
-            // is kept rather than culled: the one thing this must never do is
-            // lose a collidable it failed to measure.
-            _nearBox.setFromObject(o);
-            if (_nearBox.isEmpty()) { out.push(o); continue; }
-            _nearBox.getBoundingSphere(_nearSphere);
+            // Measured from the subtree, but only ONCE. setFromObject walks
+            // every descendant, and doing that per rebuild is a cost that
+            // scales with how much of the level happens to be built out of
+            // groups - fine for the handful this was written for, not fine as
+            // a general rule.
+            //
+            // A sphere is rotation-invariant, so the same trick the mesh path
+            // above uses works here: derive the bound once, store it in the
+            // object's OWN space, and from then on just push it through
+            // matrixWorld like any geometry bounding sphere. Moving, turning
+            // and scaling all stay correct with no re-walk.
+            //
+            // An empty box means nothing renderable inside, and then the
+            // object is kept rather than culled: the one thing a culling test
+            // must never do is lose a collidable it could not measure.
+            let local = o.userData._nearLocalSphere;
+            if (local === undefined) {
+                _nearBox.setFromObject(o);
+                if (_nearBox.isEmpty()) {
+                    local = null;
+                } else {
+                    local = new THREE.Sphere();
+                    _nearBox.getBoundingSphere(local);
+                    // World -> local, so matrixWorld can be reapplied later.
+                    o.updateMatrixWorld(true);
+                    local.applyMatrix4(_nearMat.copy(o.matrixWorld).invert());
+                }
+                o.userData._nearLocalSphere = local;
+            }
+            if (!local) { out.push(o); continue; }
+            _nearSphere.copy(local).applyMatrix4(o.matrixWorld);
             if (_nearSphere.center.distanceTo(center) - _nearSphere.radius <= reach) out.push(o);
         }
         cache.list = out;
