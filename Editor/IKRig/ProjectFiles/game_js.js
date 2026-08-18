@@ -1837,7 +1837,7 @@ export function startGame(CharacterClass) {
     
     const char = new CharacterClass(scene, threeTone);
     window.localChar = char;
-    let currentLevel = "local_forest_free";   // Forest (no story)
+    let currentLevel = "local_stairs";   // set again from window.startLevel below
 
     const network = new MultiplayerClient(scene, threeTone);
     window.multiplayerClient = network;
@@ -14518,10 +14518,12 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        // Forest (no story) on load. Level 1 was the default because the
-        // turrets and the jar grid live there, which made it the place hit and
-        // carry behaviour got tested; the forest is where the work is now.
-        select.value = 'local_forest_free'; currentLevel = select.value;
+        // Level 1 on load, temporarily, to measure it as a FIRST level -
+        // reaching it through a level switch and starting in it are different
+        // measurements, and the gap between them is the whole question right
+        // now. window.startLevel overrides this without an edit; set it to
+        // 'local_forest_free' before the module runs to get the forest back.
+        select.value = window.startLevel || 'local_stairs'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
