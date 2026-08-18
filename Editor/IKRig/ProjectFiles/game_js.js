@@ -11279,13 +11279,19 @@ export function startGame(CharacterClass) {
     // window.forestDebugEnd = false, then reload, for the normal start.
     function forestDebugStartAtEnd() {
         if (window.forestDebugEnd === false) return;
-        const x = FOREST_EXIT_X;
-        const z = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
-        const y = forestFrameTopY() + 0.1;
+        // The FOOT of the stairs, not the landing. The stairs march south from
+        // FOREST_PLATFORM_Z0 in FOREST_STEP_SIZE rises, so one step's depth
+        // clear of the lowest one puts you on flat ground looking up at the
+        // whole run - which is the thing being debugged, rather than the top
+        // of it.
+        const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
+        const x = forestStepX();
+        const z = FOREST_PLATFORM_Z0 - (steps + 1) * FOREST_STEP_SIZE;
+        const y = storyGroundY(x, z, 0);
         char.group.position.set(x, y, z);
-        // Facing back down the level, so the stairs and the canopy platform -
-        // the things worth looking at from up here - are in front of you.
-        char.group.rotation.y = Math.PI;
+        // Facing +Z, up the stairs. rotation.y 0 IS +Z here, same convention
+        // as the corridor spawn above.
+        char.group.rotation.y = 0;
         // Respawn point too: dying up here should not send you back to the
         // corridor mouth, which would undo the whole point of this.
         _forestSpawnPoint.set(x, y, z);
@@ -11302,7 +11308,7 @@ export function startGame(CharacterClass) {
             // left them - not stacked on the player, which is exactly the
             // overlap being investigated and would muddy the first frame.
             r.comp.group.position.set(x + (taken === 0 ? -1.2 : 1.2), y, z - 1.2);
-            r.comp.group.rotation.y = Math.PI;
+            r.comp.group.rotation.y = 0;
             taken++;
         }
         // Whatever is left uncollected keeps the compass; otherwise the star.
