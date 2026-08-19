@@ -110,6 +110,19 @@ implementation.
   `_compShimmyOffset`. The mode string in the union comment is vestigial; the
   behaviour is real.
 
+- **Do NOT interpolate the companion replay between crumbs.** Tried twice,
+  and both times it cost the ledge grab outright. The replay snaps the
+  companion to whichever crumb is at or after the wanted moment, and every
+  decision downstream - `_hangTop`, `findFreeGrip`, the exit test - is
+  measured from that same crumb. Putting the BODY between two crumbs splits
+  the logic from the thing it is reasoning about, so the grip gets computed
+  for a place the companion is not. The stepping that interpolation was meant
+  to smooth is real (crumbs at `COMP_TRAIL_HZ`, picture at 144) and the
+  affordable half of the fix is a denser sample rate, which is why that
+  constant is 60. A proper fix means the companion simulating its own climb
+  rather than replaying samples - the replay is the ONE part of the wall
+  behaviour that is not already the player's own mechanism.
+
 - **Every path that commits a companion to a ledge grip goes through
   `findFreeGrip`.** `hangSpotTaken` on its own is not a guarantee - it used to
   be consulted from exactly one place, the ground jump-grab, while the path
