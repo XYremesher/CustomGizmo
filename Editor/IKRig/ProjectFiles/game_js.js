@@ -2150,11 +2150,6 @@ export function startGame(CharacterClass) {
     const COMP_CLIMB_INSET = 0.7;       // how far past the lip to land, so it ends up ON the surface not at its edge
     const COMP_CLIMB_INSET_TIGHT = 0.3; // ...but only this far when the next step starts immediately (stairs)
     const COMP_STEP_UP = 0.9;           // tallest rise it just walks up, no climb needed
-    // How far above itself a companion looks for the surface it is buried
-    // under. Taller than the body on purpose: a climb can leave it a grip's
-    // drop (1.85) below the lip, so a head-height ray starts inside the block.
-    const COMP_UNSINK_PROBE = 2.6;
-    const _compUnsinkOrigin = new THREE.Vector3();
     // How far above the companion the player must be before climbing an
     // obstacle is worth it at all. Matches the steering gate, so exactly one
     // of "go around" and "go over" applies at any height difference.
@@ -4952,7 +4947,6 @@ export function startGame(CharacterClass) {
     // spread out rather than spreading out on arrival.
     const _replayLaneVec = new THREE.Vector3();
     const _replayLaneQuat = new THREE.Quaternion();
-    const _replayQuatA = new THREE.Quaternion(), _replayQuatB = new THREE.Quaternion();
     function replayLaneOffset(cr, out) {
         if (!_compReplaySide) return out.set(0, 0, 0);
         _replayLaneQuat.set(cr.qx, cr.qy, cr.qz, cr.qw);
@@ -5191,45 +5185,6 @@ export function startGame(CharacterClass) {
             if (hits.length && Math.abs(hits[0].point.y - target.y) <= 0.4) { standIn = d; break; }
         }
         _climbTo.set(target.x + fwdX * standIn, target.y, target.z + fwdZ * standIn);
-        // The landing's height is MEASURED where it actually lands, not
-        // inherited from the lip the grip was taken on.
-        //
-        // target.y comes from the recorded crumb, and the stand-in probe above
-        // only accepts a surface within 0.4 of it - but when no try passes it
-        // falls back to the last offset and keeps target.y anyway. Anything
-        // that moves the landing sideways then puts the root at the OLD lip's
-        // height over ground that is higher, and the companion finishes the
-        // climb buried in the block. Replay lanes made that routine, since the
-        // whole point of a lane is to land somewhere other than where the
-        // player did.
-        //
-        // Probed from a body's height above so a lip slightly taller than the
-        // grip is still found, and only accepted if it is near the expected
-        // level - a hit far below means the ray went off the edge, and the
-        // original height is the better answer there.
-        // Started 3.5 above, and that height is the whole point.
-        //
-        // target.y is _hangTop.y, which comes from the crumb - the player's
-        // body while HANGING, and a grip sits 1.85 under its lip. findLedgeLip
-        // corrects it to the real lip when it can, and when it cannot the
-        // height stays a grip's worth too low, so the climb ends 1.85 inside
-        // the block. Waist deep, which is what was being seen.
-        //
-        // Probing from 1.8 - a body - was therefore useless: it started at
-        // lip minus 0.05, INSIDE the block, and the ray missed the top surface
-        // entirely and corrected nothing. Anything meant to find the surface
-        // above a possibly-sunk point has to clear a grip's drop plus the body.
-        _tempVec2.set(_climbTo.x, _climbTo.y + 3.5, _climbTo.z);
-        rayDown.set(_tempVec2, _downVec);
-        const landHits = rayDown.intersectObjects(_compGroundList, true);
-        for (let i = 0; i < landHits.length; i++) {
-            if (landHits[i].object.userData.isTreeCollider) continue;
-            // Up to a grip's drop above, since that is exactly how wrong the
-            // inherited height can be, and a little below for an uneven lip.
-            const d = landHits[i].point.y - _climbTo.y;
-            if (d <= 2.2 && d >= -1.5) _climbTo.y = landHits[i].point.y;
-            break;
-        }
         _compFaceEuler.set(0, Math.atan2(fwdX, fwdZ), 0);
         _climbQuat.setFromEuler(_compFaceEuler);
         const climbAction = companion.actions && companion.actions['climb'];
@@ -6550,39 +6505,10 @@ export function startGame(CharacterClass) {
             // right vector of the recorded quaternion runs along that wall.
             // Flattened to the horizontal, since a lane is a sideways step and
             // never a vertical one.
-            // Interpolated between the crumb before wantT and the one at or
-            // after it, which is what stops the climb juddering.
-            //
-            // The lookup takes the first crumb at or after the wanted time and
-            // used the position straight off it. Crumbs are laid at
-            // COMP_TRAIL_HZ (30), so at 144fps that holds one position for
-            // four or five frames and then jumps to the next: a 30Hz stepping
-            // motion inside a 144Hz picture. It shows worst on a climb, where
-            // the movement is fast and mostly vertical.
-            //
-            // Spacing is not even either - standing still merges crumbs by
-            // carrying the newest one's timestamp forward, so one crumb can
-            // span a long moment and the next arrives a long way off.
-            // Interpolating by TIME rather than by index handles that on its
-            // own: a wide gap is crossed at the speed the gap implies.
-            const prevCr = crIdx > 0 ? _compTrail[crIdx - 1] : null;
-            let rx = cr.x, ry = cr.y, rz = cr.z;
-            _replayQuatA.set(cr.qx, cr.qy, cr.qz, cr.qw);
-            if (prevCr && cr.t > prevCr.t) {
-                const a = Math.min(1, Math.max(0, (wantT - prevCr.t) / (cr.t - prevCr.t)));
-                rx = THREE.MathUtils.lerp(prevCr.x, cr.x, a);
-                ry = THREE.MathUtils.lerp(prevCr.y, cr.y, a);
-                rz = THREE.MathUtils.lerp(prevCr.z, cr.z, a);
-                _replayQuatB.set(prevCr.qx, prevCr.qy, prevCr.qz, prevCr.qw);
-                _replayQuatA.slerpQuaternions(_replayQuatB, _replayQuatA, a);
-            }
             replayLaneOffset(cr, _replayLaneVec);
-            rx += _replayLaneVec.x; rz += _replayLaneVec.z;
-            companion.group.position.set(rx, ry, rz);
-            companion.group.quaternion.copy(_replayQuatA);
-            // The animation STATE stays discrete - it is a clip name, and
-            // there is nothing to interpolate between walk and climb.
-            companion.setNetworkState([rx, ry, rz], [_replayQuatA.x, _replayQuatA.y, _replayQuatA.z, _replayQuatA.w], cr.state, false);
+            companion.group.position.set(cr.x + _replayLaneVec.x, cr.y, cr.z + _replayLaneVec.z);
+            companion.group.quaternion.set(cr.qx, cr.qy, cr.qz, cr.qw);
+            companion.setNetworkState([cr.x, cr.y, cr.z], [cr.qx, cr.qy, cr.qz, cr.qw], cr.state, false);
             companion.update(delta);
             if (cr.y >= p.y - 0.4 || wantT >= endCr.t) _compMode = 'follow';
             return;
@@ -6657,20 +6583,8 @@ export function startGame(CharacterClass) {
             // Gated on the post-climb hold as well, the same way leaping
             // already is - a companion that has just finished a climb should
             // not immediately commit to another route.
-            // ASYMMETRIC, and the symmetric version was a regression: it
-            // stopped them climbing at all and left the pair standing at the
-            // foot of the wall.
-            //
-            // What this needs to rule out is re-entering the replay from ABOVE
-            // the takeoff - a companion that has just topped out is barely
-            // half a metre from the takeoff crumb in x/z while being metres
-            // over it, which read as "arrived" and sent it back down. Being
-            // BELOW the crumb is the normal case and must stay allowed:
-            // crumbs are recorded from fbxModel's world position rather than
-            // the group's, so there is a small standing offset even on flat
-            // ground, and Math.abs turned that into a refusal.
-            const aboveTakeoff = c.y - tk.y;
-            if (dTk < 0.55 && aboveTakeoff < 1.2 && _compJustClimbedT <= 0) {
+            const dTkY = Math.abs(tk.y - c.y);
+            if (dTk < 0.55 && dTkY < 1.2 && _compJustClimbedT <= 0) {
                 _compMode = 'replay'; _replayStartT = tk.t; _replayT = 0; _compTakeoffT = -1;
                 _compReplaySide = pickReplaySide();
                 return;
@@ -7157,55 +7071,6 @@ export function startGame(CharacterClass) {
                 && tryCompanionClimbUp(c, probeX, probeZ, probeDx, probeDz)) return;
             nx = c.x; nz = c.z; gyHere = companionGroundY(c.x, c.z, c.y);
         }
-        // Buried in something - get out, whatever the step-up rule says.
-        //
-        // This is a trap state and cannot be escaped without a special case.
-        // companionGroundY refuses any surface more than COMP_STEP_UP (0.9)
-        // above where the companion currently is, on the reasoning that a
-        // taller rise wants a climb rather than a step. Sunk into a block by
-        // more than that, the block's own top is refused for exactly that
-        // reason and the function returns the last hit instead - the underside,
-        // or the floor far below - so the follow code reads "ground is beneath
-        // me", stays put, and the companion is waist-deep forever.
-        //
-        // Standing inside solid geometry is never a valid state, so it is not
-        // something to step out of at walking pace, it is something to be
-        // corrected. Detected by casting down from head height: a surface
-        // between the feet and the head means the root is under it.
-        // COMP_UNSINK_PROBE, not COMP_BODY_H: a companion can end a climb a
-        // grip's drop (1.85) under the surface, and a ray from head height
-        // starts below the top and never sees it - which is how the first
-        // version of this check silently did nothing.
-        // Gated on the ground reading BELOW the feet, and that gate is the
-        // difference between "buried" and "something is overhead".
-        //
-        // Without it this fired on any surface within reach above - a step, a
-        // ledge, a platform - and hoisted a companion standing at the foot of
-        // a wall straight up onto it. Which is worse than the problem, and is
-        // what stopped them reaching the ledge at all.
-        //
-        // Buried has a signature: companionGroundY refuses the surface the
-        // companion is under (more than COMP_STEP_UP above it) and returns
-        // the underside or the floor instead, so the reported ground comes
-        // back well BELOW the feet while the companion is not falling. Upright
-        // on a surface, gyHere sits at the feet and none of this runs.
-        if (gyHere < c.y - 0.5) {
-            _compUnsinkOrigin.set(c.x, c.y + COMP_UNSINK_PROBE, c.z);
-            rayDown.set(_compUnsinkOrigin, _downVec);
-            const sinkHits = rayDown.intersectObjects(_compGroundList, true);
-            for (let i = 0; i < sinkHits.length; i++) {
-                const h = sinkHits[i];
-                // Canopies are not floors, here as everywhere else.
-                if (h.object.userData.isTreeCollider) continue;
-                if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_UNSINK_PROBE) {
-                    // c IS companion.group.position, so this moves both.
-                    companion.group.position.y = h.point.y;
-                    gyHere = h.point.y;
-                }
-                break;
-            }
-        }
-
         let ny = c.y; const dy = gyHere - c.y;
         // Falling stays uncapped in distance (only in speed) - dropping to
         // follow the player down is always legitimate, and it is only the
