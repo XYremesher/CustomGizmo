@@ -6444,7 +6444,24 @@ export function startGame(CharacterClass) {
                 // Walk out to the real lip first, so the grip is taken on the
                 // block's actual edge instead of being looked for in the middle
                 // of the top face where there is none.
-                if (findLedgeLip(_hangTop, fx, fz, _ledgeSpotTop)) _hangTop.copy(_ledgeSpotTop);
+                //
+                // Falls back to the player's own line when the lane has none.
+                // A lane is a sideways step of COMP_LEDGE_MIN_SEP, and near the
+                // end of a ledge that step can land past where the edge runs -
+                // findLedgeLip then finds nothing, _hangTop keeps the crumb's
+                // height (the player's HANGING body, a grip's drop below the
+                // real lip), and the grab fails outright. That is the
+                // occasional "cannot quite get hold of it".
+                //
+                // The lane is a preference, not a requirement: better to share
+                // the player's line and let the grip search step aside from
+                // there than to miss the wall entirely.
+                if (findLedgeLip(_hangTop, fx, fz, _ledgeSpotTop)) {
+                    _hangTop.copy(_ledgeSpotTop);
+                } else if (_compReplaySide) {
+                    _hangTop.set(cr.x, cr.y, cr.z);
+                    if (findLedgeLip(_hangTop, fx, fz, _ledgeSpotTop)) _hangTop.copy(_ledgeSpotTop);
+                }
                 // That lip is the one directly below wherever the player is
                 // standing, so grabbing it puts the companion right under their
                 // feet - and then HANG spends a second noticing the top is
