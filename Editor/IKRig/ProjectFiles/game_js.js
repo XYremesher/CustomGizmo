@@ -7176,19 +7176,34 @@ export function startGame(CharacterClass) {
         // grip's drop (1.85) under the surface, and a ray from head height
         // starts below the top and never sees it - which is how the first
         // version of this check silently did nothing.
-        _compUnsinkOrigin.set(c.x, c.y + COMP_UNSINK_PROBE, c.z);
-        rayDown.set(_compUnsinkOrigin, _downVec);
-        const sinkHits = rayDown.intersectObjects(_compGroundList, true);
-        for (let i = 0; i < sinkHits.length; i++) {
-            const h = sinkHits[i];
-            // Canopies are not floors, here as everywhere else.
-            if (h.object.userData.isTreeCollider) continue;
-            if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_UNSINK_PROBE) {
-                // c IS companion.group.position, so this moves both.
-                companion.group.position.y = h.point.y;
-                gyHere = h.point.y;
+        // Gated on the ground reading BELOW the feet, and that gate is the
+        // difference between "buried" and "something is overhead".
+        //
+        // Without it this fired on any surface within reach above - a step, a
+        // ledge, a platform - and hoisted a companion standing at the foot of
+        // a wall straight up onto it. Which is worse than the problem, and is
+        // what stopped them reaching the ledge at all.
+        //
+        // Buried has a signature: companionGroundY refuses the surface the
+        // companion is under (more than COMP_STEP_UP above it) and returns
+        // the underside or the floor instead, so the reported ground comes
+        // back well BELOW the feet while the companion is not falling. Upright
+        // on a surface, gyHere sits at the feet and none of this runs.
+        if (gyHere < c.y - 0.5) {
+            _compUnsinkOrigin.set(c.x, c.y + COMP_UNSINK_PROBE, c.z);
+            rayDown.set(_compUnsinkOrigin, _downVec);
+            const sinkHits = rayDown.intersectObjects(_compGroundList, true);
+            for (let i = 0; i < sinkHits.length; i++) {
+                const h = sinkHits[i];
+                // Canopies are not floors, here as everywhere else.
+                if (h.object.userData.isTreeCollider) continue;
+                if (h.point.y > c.y + 0.05 && h.point.y <= c.y + COMP_UNSINK_PROBE) {
+                    // c IS companion.group.position, so this moves both.
+                    companion.group.position.y = h.point.y;
+                    gyHere = h.point.y;
+                }
+                break;
             }
-            break;
         }
 
         let ny = c.y; const dy = gyHere - c.y;
