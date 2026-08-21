@@ -1496,30 +1496,60 @@ export function startGame(CharacterClass) {
         // An empty array is truthy, and would send every collar attempt into a
         // read off index NaN.
         if (treeSpots && !treeSpots.length) treeSpots = null;
+
+        // ---- Collar plan: a ring per tree, sized to what actually FITS ----
+        //
+        // The collar used to take a random share of the global blade budget
+        // and hand each blade to a random tree, so a tree could draw fifteen
+        // or twenty cards into a ring with room for about four. At scale 1 the
+        // ring's mid-radius is 0.88 - 5.5 units of circumference - and an
+        // average collar card is 1.54 wide, so 3.6 of them touch shoulder to
+        // shoulder. Twenty is a solid wall, which is what a tree turns out to
+        // be full of once the x-ray dither makes it transparent.
+        //
+        // Spacing them evenly does not fix that; the count is the problem, so
+        // the count is derived from the geometry instead of from a budget.
+        const COLLAR_MIN = 3, COLLAR_MAX = 10;
+        let collarPlan = null, collarAt = 0;
+        if (treeSpots) {
+            const avgCard = window.grassSize *
+                (window.grassTreeSizeMin + window.grassTreeSizeMax) * 0.5;
+            const budget = Math.floor(total * window.grassTreeShare);
+            const counts = treeSpots.map(t => {
+                const mid = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
+                return THREE.MathUtils.clamp(
+                    Math.round(2 * Math.PI * mid / avgCard), COLLAR_MIN, COLLAR_MAX);
+            });
+            const most = counts.length ? Math.max.apply(null, counts) : 0;
+            collarPlan = [];
+            // Interleaved - every tree gets its first card before any gets its
+            // second - so a budget that runs out thins every collar evenly
+            // instead of finishing a few rings and leaving the rest bare.
+            for (let k = 0; k < most && collarPlan.length < budget; k++) {
+                for (let i = 0; i < treeSpots.length && collarPlan.length < budget; i++) {
+                    if (k < counts[i]) collarPlan.push({ t: treeSpots[i], k, n: counts[i] });
+                }
+            }
+        }
+
         while (placed < total && attempts++ < maxAttempts) {
             let x, z;
             let collarTree = null;
-            if (treeSpots && Math.random() < window.grassTreeShare) {
-                const t = treeSpots[(Math.random() * treeSpots.length) | 0];
+            if (collarPlan && collarAt < collarPlan.length) {
+                const slot = collarPlan[collarAt++];
+                const t = slot.t;
                 collarTree = t;
-                // A ring, not a disc: the inner radius scales with the tree so
-                // blades never sprout out of the middle of a trunk, and the
-                // sqrt keeps the remaining area evenly covered rather than
+                // A ring, not a disc: the inner radius clears the bark (see
+                // grassTreeInner) so blades never sprout out of the middle of a
+                // trunk, and the sqrt keeps the band evenly covered rather than
                 // bunching everything against the inner edge.
                 const inner = window.grassTreeInner * t.scale;
                 const outer = inner + window.grassTreeSpread * t.scale;
                 const rr = Math.sqrt(inner * inner + Math.random() * (outer * outer - inner * inner));
-                // Angle by GOLDEN ANGLE off a per-tree counter, not at random.
-                // A tree gets only a handful of tufts (grassTreeShare of the
-                // budget, split across every tree in the level), and a handful
-                // of uniform random angles clumps - two or three cards land on
-                // top of each other and leave most of the trunk bare, which is
-                // the "lots of them intersecting" look. 137.5 degrees apart
-                // spreads any number of successive samples evenly round the
-                // circle without needing to know the total in advance, so each
-                // tuft lands in the widest remaining gap.
-                t._collarN = (t._collarN || 0) + 1;
-                const a = t._collarN * 2.399963229728653;
+                // Even spacing round the ring, offset by the tree's own facing
+                // so neighbouring collars do not all start at the same bearing
+                // and read as a repeated pattern.
+                const a = (slot.k / slot.n) * Math.PI * 2 + (t.rotY || 0);
                 x = t.x + Math.cos(a) * rr;
                 z = t.z + Math.sin(a) * rr;
             } else {
