@@ -1389,6 +1389,25 @@ export function startGame(CharacterClass) {
         merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
         return merged;
     })();
+    // A SINGLE upright card, for the tree collar.
+    //
+    // The scattered grass is a cross of two quads, which is right for a tuft
+    // seen from any angle - but a ring of crosses around a trunk is a ring of
+    // X shapes cutting through each other, and that is what read as "lots of
+    // them intersecting" and filled a tree once the x-ray dither made it
+    // transparent. A collar is a fence: flat cards standing shoulder to
+    // shoulder, each turned to face out from the trunk, so it wants one quad.
+    //
+    // Same upward normals as the cross, for the same reason - so a card facing
+    // away from the light is not shaded darker than its neighbour beside it.
+    const grassCardGeo = (() => {
+        const g = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+        const n = g.attributes.position.count;
+        const normals = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) normals[i * 3 + 1] = 1;
+        g.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+        return g;
+    })();
     const grassMeshes = [];
     // 4000, up from 2000. Instanced, so the cost of the extra blades is a
     // bigger instance buffer and nothing else - and with 60% of the budget now
@@ -1425,9 +1444,16 @@ export function startGame(CharacterClass) {
     // with grass. 0.5 clears the bark with a little to spare.
     window.grassTreeInner = 0.5;    // ring starts this far from the trunk axis
     window.grassTreeSpread = 0.75;  // ...and extends this much further out
-    // Collar tufts vary more in size than the scattered ones - a uniform ring
-    // reads as a manufactured collar rather than as something growing there.
-    window.grassTreeSizeMin = 0.45, window.grassTreeSizeMax = 1.75;
+    // Collar CARD width, as a fraction of grassSize. Narrow and near-uniform:
+    // these are palings in a fence round the trunk, not tufts. Derived from
+    // the look being matched - about a dozen cards round a scale-1 trunk. The
+    // ring's radius there is 0.88, so 5.5 units of circumference; 5.5/12 is
+    // 0.46 wide, and 0.46/grassSize(1.4) is 0.33.
+    //
+    // This replaced a 0.45..1.75 range, i.e. widths from 0.63 to 2.45 - a
+    // near-four-to-one spread where a single average card already covered a
+    // quarter of the whole circumference.
+    window.grassTreeCardMin = 0.29, window.grassTreeCardMax = 0.37;
     // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
     // so this is a little past 45 degrees.
     const GRASS_MIN_UP = 0.72;
@@ -1475,7 +1501,10 @@ export function startGame(CharacterClass) {
         // units near the frustum boundary too (the PCF filter kernel reaches
         // past the edge), not just strictly outside it.
         const shadowSafe = (window._shadowCameraHalfExtent || 80) - 3;
-        const perMat = grassMats.map(() => ({ near: [], far: [] }));
+        // Collar cards use a different geometry from the scattered tufts (a
+        // single quad rather than a cross), so they cannot share an
+        // InstancedMesh with them - hence their own pair of buckets.
+        const perMat = grassMats.map(() => ({ near: [], far: [], nearC: [], farC: [] }));
         // Tallest a tuft can come out at the CURRENT Size/Height settings
         // (matches the s/h random ranges below: size up to *1.35, height up
         // to *1.3), plus a margin - see its use just below.
@@ -1509,11 +1538,11 @@ export function startGame(CharacterClass) {
         //
         // Spacing them evenly does not fix that; the count is the problem, so
         // the count is derived from the geometry instead of from a budget.
-        const COLLAR_MIN = 3, COLLAR_MAX = 10;
+        const COLLAR_MIN = 6, COLLAR_MAX = 22;
         let collarPlan = null, collarAt = 0;
         if (treeSpots) {
             const avgCard = window.grassSize *
-                (window.grassTreeSizeMin + window.grassTreeSizeMax) * 0.5;
+                (window.grassTreeCardMin + window.grassTreeCardMax) * 0.5;
             const budget = Math.floor(total * window.grassTreeShare);
             const counts = treeSpots.map(t => {
                 const mid = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
@@ -1539,13 +1568,15 @@ export function startGame(CharacterClass) {
                 const slot = collarPlan[collarAt++];
                 const t = slot.t;
                 collarTree = t;
-                // A ring, not a disc: the inner radius clears the bark (see
-                // grassTreeInner) so blades never sprout out of the middle of a
-                // trunk, and the sqrt keeps the band evenly covered rather than
-                // bunching everything against the inner edge.
-                const inner = window.grassTreeInner * t.scale;
-                const outer = inner + window.grassTreeSpread * t.scale;
-                const rr = Math.sqrt(inner * inner + Math.random() * (outer * outer - inner * inner));
+                // ONE radius, not a band. A fence's palings all stand on the
+                // same circle; scattering them through a 0.5..1.25 band put
+                // some against the bark and others most of a metre out, which
+                // is a thicket rather than a collar - and it is the depth of
+                // that thicket you look through when the tree goes
+                // transparent. A few centimetres of jitter keeps it from
+                // looking machined without breaking the ring.
+                const ringR = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
+                const rr = ringR + (Math.random() - 0.5) * 0.08 * t.scale;
                 // Even spacing round the ring, offset by the tree's own facing
                 // so neighbouring collars do not all start at the same bearing
                 // and read as a repeated pattern.
@@ -1640,10 +1671,17 @@ export function startGame(CharacterClass) {
                     }
                 }
             }
-            const sizeLo = collarTree ? window.grassTreeSizeMin : 0.65;
-            const sizeHi = collarTree ? window.grassTreeSizeMax : 1.35;
+            // Collar cards are narrow and near-uniform: they are palings in a
+            // fence, and a fence whose planks are three times each other's
+            // width is not a fence. The scattered tufts keep their wide random
+            // range, which is what stops open ground reading as a texture.
+            const sizeLo = collarTree ? window.grassTreeCardMin : 0.65;
+            const sizeHi = collarTree ? window.grassTreeCardMax : 1.35;
             const s = window.grassSize * (sizeLo + Math.random() * (sizeHi - sizeLo));
-            const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
+            // Height varies a little even in the collar - identical heights
+            // read as machined - but far less than the scatter's 0.8..1.3.
+            const h = s * window.grassHeight *
+                (collarTree ? (2.0 + Math.random() * 0.5) : (0.8 + Math.random() * 0.5));
             // Sunk below the ground plane, PROPORTIONAL to this instance's
             // own height rather than a fixed amount. The polygon's base is
             // exactly at local y=0 and the UVs are a plain untouched 0..1
@@ -1657,26 +1695,28 @@ export function startGame(CharacterClass) {
             // Grass Height could scale a tuft up to 3x. Sinking by a
             // fraction of h instead keeps the fix correct at any height.
             _grassPos.set(x, placeY - h * window.grassBaseSink, z);
-            // Collar tufts turn to face the trunk they belong to, so the ring
-            // reads as one thing wrapping the base rather than as scattered
-            // blades that happen to be nearby. The tuft is a CROSS of two
-            // quads, so facing is a 90-degree-periodic property - a small
-            // random skew stops the four cardinal directions from lining up
-            // into a visible pinwheel around the trunk.
+            // A collar card stands TANGENTIAL - its flat face turned to look
+            // out from the trunk - so the ring reads as one thing wrapping the
+            // base. Only a few degrees of skew: this is a single quad now, not
+            // a cross, so facing is 180-degree-periodic rather than 90, and
+            // the old half-radian wobble was enough to turn palings edge-on
+            // and leave gaps in the fence.
             _grassQuat.setFromAxisAngle(_upVec, collarTree
-                ? Math.atan2(collarTree.x - x, collarTree.z - z) + (Math.random() - 0.5) * 0.5
+                ? Math.atan2(collarTree.x - x, collarTree.z - z) + (Math.random() - 0.5) * 0.12
                 : Math.random() * Math.PI * 2);
             _grassScale.set(s, h, s);
-            const bucket = (Math.abs(x) < shadowSafe && Math.abs(z) < shadowSafe) ? 'near' : 'far';
+            const near = (Math.abs(x) < shadowSafe && Math.abs(z) < shadowSafe);
+            const bucket = collarTree ? (near ? 'nearC' : 'farC') : (near ? 'near' : 'far');
             perMat[placed % grassMats.length][bucket].push(
                 new THREE.Matrix4().compose(_grassPos, _grassQuat, _grassScale));
             placed++;
         }
         perMat.forEach((buckets, i) => {
-            ['near', 'far'].forEach(key => {
+            ['near', 'far', 'nearC', 'farC'].forEach(key => {
                 const mats = buckets[key];
                 if (!mats.length) return;
-                const inst = new THREE.InstancedMesh(grassCrossGeo, grassMats[i], mats.length);
+                const geo = key.endsWith('C') ? grassCardGeo : grassCrossGeo;
+                const inst = new THREE.InstancedMesh(geo, grassMats[i], mats.length);
                 mats.forEach((m, k) => inst.setMatrixAt(k, m));
                 inst.instanceMatrix.needsUpdate = true;
                 // Doesn't CAST shadows (1600+ crossed quads shadowing each
