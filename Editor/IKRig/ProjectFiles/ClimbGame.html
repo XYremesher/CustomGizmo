@@ -537,6 +537,63 @@
         #base-left.hold-mode { border-color: rgba(50, 150, 255, 0.5); background: rgba(50, 150, 255, 0.1); }
         #base-left.hold-mode #ledge-hint-container { opacity: 0 !important; }
 
+        /* Attract loop that points a new player at the move stick. Same
+           class-on-#base-left pattern as ledge-mode/hold-mode above.
+
+           The ring breathes and a GHOST thumb circles inside it - showing the
+           gesture instead of describing it, so it needs no text and no
+           translation. The ghost is its own element rather than the real
+           #stick-left because setupJoystick writes that one's transform every
+           frame; a CSS animation on it would be fighting JS for the same
+           property.
+
+           Nothing here animates layout or paints outside the joystick, so it
+           cannot cost frames during the one moment a first impression is
+           being made. */
+        #joy-attract-thumb {
+            position: absolute; width: 50px; height: 50px; border-radius: 50%;
+            background: rgba(255,255,255,0.35);
+            border: 2px solid rgba(255,255,255,0.75);
+            pointer-events: none; z-index: 6; opacity: 0;
+            transition: opacity 0.35s ease;
+        }
+        #base-left.attract #joy-attract-thumb {
+            opacity: 1; animation: joy-attract-orbit 2.4s ease-in-out infinite;
+        }
+        #base-left.attract {
+            border-color: rgba(255,255,255,0.85);
+            animation: joy-attract-ring 2.4s ease-in-out infinite;
+        }
+        /* Out and back on each axis in turn, with a pause at centre - reads as
+           a deliberate push rather than a spinning object. 40px matches
+           setupJoystick's maxR, so the ghost travels exactly as far as a real
+           thumb can. */
+        @keyframes joy-attract-orbit {
+            0%   { transform: translate(0, 0); }
+            15%  { transform: translate(0, -40px); }
+            30%  { transform: translate(0, 0); }
+            45%  { transform: translate(40px, 0); }
+            60%  { transform: translate(0, 0); }
+            75%  { transform: translate(-40px, 0); }
+            90%, 100% { transform: translate(0, 0); }
+        }
+        @keyframes joy-attract-ring {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.35); }
+            50%      { box-shadow: 0 0 18px 6px rgba(255,255,255,0.18); }
+        }
+        /* Anyone who has asked not to see motion gets the ring only. */
+        @media (prefers-reduced-motion: reduce) {
+            #base-left.attract #joy-attract-thumb,
+            #base-left.attract { animation: none; }
+        }
+        /* A real state beats an invitation. Two classes, so these win the
+           specificity tie against the .attract rules above rather than
+           depending on which was written last. */
+        #base-left.ledge-mode.attract,
+        #base-left.hold-mode.attract { animation: none; }
+        #base-left.ledge-mode.attract #joy-attract-thumb,
+        #base-left.hold-mode.attract #joy-attract-thumb { opacity: 0; animation: none; }
+
         #msg-overlay { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-family: monospace; font-weight: bold; font-size: 28px; text-shadow: 2px 2px #000; text-align: center; pointer-events: none; z-index: 20; }
         #standup-indicator { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff6600; font-family: monospace; font-weight: bold; font-size: 20px; text-shadow: 1px 1px #000; pointer-events: none; z-index: 20; background: rgba(0,0,0,0.5); padding: 8px 16px; border-radius: 8px; }
         #json-modal { display: none; position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 600px; background: rgba(0,0,0,0.9); padding: 20px; border: 1px solid #fff; z-index: 100; color: #fff; font-family: monospace; }
@@ -1427,6 +1484,7 @@
             <span class="ledge-hint up">PUSH</span>
             <span class="ledge-hint down">PULL</span>
         </div>
+        <div id="joy-attract-thumb"></div>
         <div id="stick-left" class="joystick-stick"></div>
     </div>
     <div id="base-right" class="joystick-base">

@@ -16158,6 +16158,52 @@ export function startGame(CharacterClass) {
         base.addEventListener('lostpointercapture', onEnd);
     }
     setupJoystick('base-left', 'stick-left', input.left); setupJoystick('base-right', 'stick-right', input.right);
+
+    // ---- Move-stick attract loop ----
+    // A first-time player has no way to know the left ring is a stick, and
+    // nothing else on screen says so. This pulses it and walks a ghost thumb
+    // through the gesture until they move.
+    //
+    // Dismissed by MOVEMENT, not by touching the stick, and it watches the one
+    // place joystick and keyboard have already been merged (see rawMag) - so a
+    // desktop player on WASD is not left with a hint about a control they are
+    // not using. Once dismissed it never returns: a hint you have already acted
+    // on is nagging, and re-showing it mid-level would read as a bug.
+    let _joyAttractState = 'idle';   // idle -> pending -> showing -> done
+    let _joyAttractT = 0;
+    // Long enough that it starts after the level has faded in and the player
+    // has looked around, short enough to still be the answer to "what do I do".
+    const JOY_ATTRACT_DELAY = 1.2;
+    // Gives up on its own. Someone reading a sign or watching the view is not
+    // stuck, and a hint that never stops is worse than none.
+    const JOY_ATTRACT_MAX = 10.0;
+    function updateJoystickAttract(dt) {
+        if (_joyAttractState === 'done' || _joyAttractState === 'idle') return;
+        const base = document.getElementById('base-left');
+        if (!base) return;
+        _joyAttractT += dt;
+        if (_joyAttractState === 'pending') {
+            if (_joyAttractT < JOY_ATTRACT_DELAY) return;
+            _joyAttractState = 'showing';
+            _joyAttractT = 0;
+            base.classList.add('attract');
+            return;
+        }
+        if (_joyAttractT > JOY_ATTRACT_MAX) dismissJoystickAttract();
+    }
+    function dismissJoystickAttract() {
+        if (_joyAttractState === 'done') return;
+        _joyAttractState = 'done';
+        const base = document.getElementById('base-left');
+        if (base) base.classList.remove('attract');
+    }
+    // Armed by the loading overlay coming down, not at setup: before that the
+    // player cannot act on it and the delay would burn during the load.
+    function armJoystickAttract() {
+        if (_joyAttractState !== 'idle') return;
+        _joyAttractState = 'pending';
+        _joyAttractT = 0;
+    }
     // Camera-rotate joystick (right stick): kept fully working in code, but
     // hidden by default now that screen-drag rotation (dragRotateSensitivity
     // above) is the primary way to turn the camera and a second, redundant
@@ -18844,6 +18890,7 @@ export function startGame(CharacterClass) {
             gameReadyOverlayHidden = true;
             const overlay = document.getElementById('loading-overlay');
             if (overlay) overlay.classList.add('hidden');
+            armJoystickAttract();
             // Otherwise the one-time asset-loading hitch (everything up to
             // this point) permanently poisons the min reading before actual
             // gameplay even starts.
@@ -19852,6 +19899,11 @@ export function startGame(CharacterClass) {
         const rawX = window.dialogueInputLocked ? 0 : (Math.abs(input.left.x) > 0.1 ? input.left.x : (keys.a ? -1 : (keys.d ? 1 : 0)));
         const rawY = window.dialogueInputLocked ? 0 : (Math.abs(input.left.y) > 0.1 ? input.left.y : (keys.w ? -1 : (keys.s ? 1 : 0)));
         const rawMag = Math.min(Math.sqrt(rawX*rawX + rawY*rawY), 1.0);
+        // Read here rather than off input.left, so keyboard counts too and the
+        // deadzone is the same one movement itself uses - a resting thumb or a
+        // drifting stick must not count as "they found it".
+        updateJoystickAttract(delta);
+        if (rawMag > 0.15) dismissJoystickAttract();
         // Keyboard input is inherently binary (a key is either down or not -
         // W alone gives exactly moveMag 1.0, always landing in the 'run'
         // clip), but the touch joystick is analog and can land anywhere in
