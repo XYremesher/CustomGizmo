@@ -16197,6 +16197,16 @@ export function startGame(CharacterClass) {
         const base = document.getElementById('base-left');
         if (base) base.classList.remove('attract');
     }
+    // Touching the stick ends the hint immediately, ahead of the movement
+    // test below. It has done its job the moment a thumb lands on it - and
+    // while it is up the REAL #stick-left is hidden behind the ghost, so
+    // waiting for the deadzone to be crossed would leave the player dragging
+    // an invisible stick for the first few millimetres.
+    (function dismissAttractOnTouch() {
+        const base = document.getElementById('base-left');
+        if (base) base.addEventListener('pointerdown', () => dismissJoystickAttract());
+    })();
+
     // GhostFinger.png sits in Editor/IKRig, one level above the served root,
     // so the path has to come from ASSET_BASE - '../' locally, a raw
     // .githubusercontent URL on Pages. Hardcoding either one 404s in the other

@@ -540,11 +540,17 @@
         /* Attract loop that points a new player at the move stick. Same
            class-on-#base-left pattern as ledge-mode/hold-mode above.
 
-           Two parts, and only one of them moves. A STATIC white disc marks
-           where the stick is - a target does not need to wave to be a target,
-           and animating it as well as the hand gave two things to follow. The
-           HAND is what moves: it comes in from off the bottom of the screen,
-           presses the stick each way, and leaves.
+           A ghost disc stands in for the stick and the hand pushes it. The
+           disc moves ONLY while the thumb is on it - it holds still through
+           the entrance and the exit, because a stick that slides around on its
+           own while the hand is still off-screen is not showing anything.
+
+           The real #stick-left is hidden for the duration and the ghost takes
+           its place, so the two do not drift apart into a pair of circles. It
+           is a stand-in rather than the real thing because setupJoystick owns
+           that element's transform, and a CSS animation outranks the inline
+           style it writes - so animating the real stick would mean the hint
+           could win an argument with the player's own thumb.
 
            Coming from off-screen is what makes it read as a hand rather than
            as another piece of HUD. It also means the gesture has a beginning,
@@ -561,7 +567,14 @@
             pointer-events: none; z-index: 6; opacity: 0;
             transition: opacity 0.35s ease;
         }
-        #base-left.attract #joy-attract-thumb { opacity: 1; }
+        #base-left.attract #joy-attract-thumb {
+            opacity: 1;
+            animation: joy-attract-disc 5.2s ease-in-out infinite;
+        }
+        /* The stand-in matches what it replaces, plus a rim so it reads as
+           lit rather than as a second object. */
+        #base-left.attract #stick-left { opacity: 0; }
+        #stick-left { transition: opacity 0.25s ease; }
         #base-left.attract {
             border-color: rgba(255,255,255,0.85);
             animation: joy-attract-ring 5.2s ease-in-out infinite;
@@ -629,6 +642,18 @@
             79%       { transform: translate(0, 0); }
             92%, 100% { transform: translate(120px, 260px); }
         }
+        /* The same beats as the hand, minus the travel: still at the ends
+           while the thumb is away, moving only where it is in contact. Same
+           duration, so the two cannot drift out of step. */
+        @keyframes joy-attract-disc {
+            0%,  16%  { transform: translate(0, 0); }
+            27%       { transform: translate(0, -40px); }
+            37%       { transform: translate(0, 0); }
+            48%       { transform: translate(40px, 0); }
+            58%       { transform: translate(0, 0); }
+            69%       { transform: translate(-40px, 0); }
+            79%, 100% { transform: translate(0, 0); }
+        }
         @keyframes joy-attract-ring {
             0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.35); }
             50%      { box-shadow: 0 0 18px 6px rgba(255,255,255,0.18); }
@@ -636,6 +661,7 @@
         /* Anyone who has asked not to see motion gets the disc only. */
         @media (prefers-reduced-motion: reduce) {
             #base-left.attract,
+            #base-left.attract #joy-attract-thumb,
             #base-left.attract.has-finger #joy-attract-hand { animation: none; }
         }
         /* A real state beats an invitation. Two classes, so these win the
@@ -644,7 +670,9 @@
         #base-left.ledge-mode.attract,
         #base-left.hold-mode.attract { animation: none; }
         #base-left.ledge-mode.attract #joy-attract-thumb,
-        #base-left.hold-mode.attract #joy-attract-thumb { opacity: 0; }
+        #base-left.hold-mode.attract #joy-attract-thumb { opacity: 0; animation: none; }
+        #base-left.ledge-mode.attract #stick-left,
+        #base-left.hold-mode.attract #stick-left { opacity: 1; }
         #base-left.ledge-mode.attract #joy-attract-hand,
         #base-left.hold-mode.attract #joy-attract-hand { display: none; }
 
