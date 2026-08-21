@@ -2269,6 +2269,31 @@ export function startGame(CharacterClass) {
         return -Infinity;
     }
     const _compSpotVec = new THREE.Vector3();
+    // A tree may hold a character up where it already IS, but it must never
+    // LIFT one.
+    //
+    // Every ground snap here takes hits[0] and moves the character there. A
+    // trunk flares at its base, so a downward ray beside a tree lands on that
+    // outward-sloping surface a few centimetres ABOVE the character's feet -
+    // inside the step-up allowance, so it is accepted as a step. Next frame
+    // the ray starts from higher up and finds the flare higher again, and the
+    // character ratchets up the trunk, walking into the tree as if the bark
+    // were a ramp. That is the "they slide up the tree body" case, and it
+    // happens while simply walking - no ragdoll involved.
+    //
+    // Rejecting trees outright would be wrong: canopy chunks are authored
+    // walkable surfaces and something standing on one legitimately would drop
+    // through. Refusing only the LIFT keeps that, and leaves getting onto a
+    // tree to the climb system, which is how the player does it.
+    const TREE_LIFT_EPS = 0.05;   // numeric slack, not a step allowance
+    function groundHitNoTreeLift(hits, currentY) {
+        for (let i = 0; i < hits.length; i++) {
+            const ud = hits[i].object.userData;
+            if (ud && ud.isTreeCollider && hits[i].point.y > currentY + TREE_LIFT_EPS) continue;
+            return hits[i];
+        }
+        return null;
+    }
     // How long the companion stands and collects itself after a hit before it
     // is willing to go anywhere again.
     let _compRecoverT = 0;
@@ -2808,9 +2833,9 @@ export function startGame(CharacterClass) {
         let ny = pos.y;
         let blocked = false;
         rayDown.set(_tempVec1.set(nx, pos.y + 2.0, nz), _downVec);
-        const groundHits = rayDown.intersectObjects(aiBotNear());
-        if (groundHits.length > 0) {
-            const newY = groundHits[0].point.y;
+        const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
+        if (groundHit) {
+            const newY = groundHit.point.y;
             // Too tall to step: refuse the HORIZONTAL move as well, don't just
             // decline the height change. Keeping xz while leaving y behind is
             // what buries the bot in a box - its feet stay below the block's
@@ -2914,8 +2939,8 @@ export function startGame(CharacterClass) {
         aiBotSeparate(nextPos.x, nextPos.z, pos.y, delta, _aiSepOut);
         nextPos.x = _aiSepOut.x; nextPos.z = _aiSepOut.y;
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
-        const groundHits = rayDown.intersectObjects(aiBotNear());
-        if (groundHits.length > 0) {
+        const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
+        if (groundHit) {
             // A short thrown carryable (a box, jar, ...) landing directly in
             // the bot's path is too low for the horizontal avoidance rays
             // above (cast at pos.y+0.5) to see as something to steer around,
@@ -2932,7 +2957,7 @@ export function startGame(CharacterClass) {
             // standing over the block's footprint with its feet still at the
             // old height - buried inside the box. Position and height must
             // agree.
-            const newY = groundHits[0].point.y;
+            const newY = groundHit.point.y;
             if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
             else { nextPos.x = pos.x; nextPos.z = pos.z; }
         } else {
@@ -3838,11 +3863,11 @@ export function startGame(CharacterClass) {
             const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
             rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
-            const groundHits = rayDown.intersectObjects(aiBotNear());
+            const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
             // Falls rather than snapping - see the companion's own stagger for
             // why. Hit in mid-air, an outright snap teleports it to the floor.
-            if (groundHits.length > 0) {
-                const gY = groundHits[0].point.y;
+            if (groundHit) {
+                const gY = groundHit.point.y;
                 if (gY < pos.y - 0.05) nextPos.y = pos.y + Math.max(gY - pos.y, -16 * delta);
                 else nextPos.y = gY;
             }
@@ -3866,8 +3891,8 @@ export function startGame(CharacterClass) {
             _aiStuckT = 0; _aiStuckAt.copy(pos);
             let ry = pos.y;
             rayDown.set(_tempVec1.set(pos.x, pos.y + 2.0, pos.z), _downVec);
-            const settleHits = rayDown.intersectObjects(aiBotNear());
-            if (settleHits.length > 0) ry = settleHits[0].point.y;
+            const settleHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
+            if (settleHit) ry = settleHit.point.y;
             aiBot.group.position.set(pos.x, ry, pos.z);
             aiBot.setNetworkState([pos.x, ry, pos.z],
                 [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w], 'idle', false);
@@ -4916,7 +4941,14 @@ export function startGame(CharacterClass) {
         // Hits come back top-down, so the first at or under the ceiling is the
         // highest qualifying surface.
         for (let i = 0; i < hits.length; i++) {
-            if (hits[i].point.y <= ceiling) return hits[i].point.y;
+            if (hits[i].point.y > ceiling) continue;
+            // Same rule the bots follow - see groundHitNoTreeLift. The ceiling
+            // already caps how far this may step up, but a trunk's flare sits
+            // comfortably inside that cap, which is exactly how a companion
+            // ends up walking up a tree.
+            const ud = hits[i].object.userData;
+            if (ud && ud.isTreeCollider && hits[i].point.y > fallbackY + TREE_LIFT_EPS) continue;
+            return hits[i].point.y;
         }
         // Everything here is overhead - nothing to stand on at this height.
         //
