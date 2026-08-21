@@ -1139,6 +1139,11 @@
                 <div class="category-content">
                     <label><input type="checkbox" id="toggle-hitbox"> Show Hitboxes</label><br>
                     <label><input type="checkbox" id="toggle-ragdoll-colliders"> Show Ragdoll Overlay</label><br>
+                    <label><input type="checkbox" id="toggle-trunk-colliders"> Show Tree Trunk Colliders</label><br>
+                    <label style="opacity:.75;font-size:11px;">The cylinder the ragdoll solver tests against, drawn from the
+                    same measurement the physics uses. If a flung enemy passes through a tree: no cylinder on that tree means
+                    it was never built, a cylinder in the wrong place or size means the fit is off. Counts are logged to the
+                    console.</label><br>
                     <label><input type="checkbox" id="toggle-angle-labels"> Show Angle Labels</label><br>
                     <label><input type="checkbox" id="toggle-step-labels"> Show Step Labels (A1/B2...)</label><br>
                     <label><input type="checkbox" id="toggle-speed-label"> Show Speed/Anim Label</label><br>
@@ -1168,7 +1173,7 @@
                     <label>Ground: facet <span id="ground-facet-display">-</span> / used <span id="ground-final-display">-</span></label><br>
                     <label><input type="checkbox" id="toggle-debug-joints"> Show Debug Joints</label><br>
                     <label><input type="checkbox" id="toggle-vision-cones"> Show Vision Cones (Companion/Enemy)</label><br>
-                    <label><input type="checkbox" id="toggle-comp-debug" checked> Companion State Readout (mode / why)</label><br>
+                    <label><input type="checkbox" id="toggle-comp-debug"> Companion State Readout (mode / why)</label><br>
                     <label><input type="checkbox" id="toggle-bot-debug"> Enemy State Readout (mode / why)</label>
                 </div>
             </div>

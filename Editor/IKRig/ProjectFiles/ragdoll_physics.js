@@ -46,9 +46,173 @@ const _ragdollAABB = new THREE.Box3();
 const _candidates = [];
 let _candidateCount = 0;
 function _candidate(i) {
-    if (!_candidates[i]) _candidates[i] = { obj: null, isSphere: false, radius: 0, box: new THREE.Box3() };
+    if (!_candidates[i]) _candidates[i] = {
+        obj: null, isSphere: false, isTrunk: false, radius: 0,
+        tris: null, triCount: 0, box: new THREE.Box3()
+    };
     return _candidates[i];
 }
+
+// ---- Tree trunks ----
+// A tree is the one obstacle whose bounding box is useless: the box wraps the
+// whole canopy, and the narrow phase resolves a penetration along the box's
+// SMALLEST overlap axis, which for that box means being shoved tens of units
+// to whichever outer face happens to be nearest. That is why trees are marked
+// softObstacle and skipped - but skipping left NOTHING in their place, so a
+// body sent flying by a charge punch went straight through.
+//
+// It collides against the trunk's REAL triangles. A cylinder was tried first
+// and is not enough: fitted to Tree.glb it comes out at radius 0.454 (0.568 on
+// a scale-1.25 tree), which is honest for the shaft but the trunk mesh carries
+// its branches too, and those reach past 2.0 - four times wider. A body
+// crossing the tree at branch height passed the cylinder by without touching
+// it. The mesh is only ~48 triangles, so testing it directly costs little and
+// is exactly right instead of approximately right.
+//
+// Triangles are baked to WORLD space once per collider and cached. The model
+// carries a baked rotation on its root node which the forest folds into its
+// merged geometry but the village trees keep on the node, so geometry space is
+// not the same frame for the two - world space is, and it folds in scale,
+// rotation and position for free. Lazy, so only a tree a ragdoll actually
+// reaches is ever baked, and only once. Trees never move (levelGroup has no
+// transform), so the cache cannot go stale.
+const _triV = new THREE.Vector3();
+function _bakeTrunkTris(obj) {
+    const geo = obj.userData.trunkGeo;
+    const pos = geo && geo.getAttribute && geo.getAttribute('position');
+    if (!pos || pos.count < 3) return null;
+    const idx = geo.index;
+    const triCount = ((idx ? idx.count : pos.count) / 3) | 0;
+    if (triCount < 1) return null;
+    const m = obj.matrixWorld;
+    const out = new Float32Array(triCount * 9);
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let t = 0; t < triCount; t++) {
+        for (let k = 0; k < 3; k++) {
+            const vi = idx ? idx.getX(t * 3 + k) : t * 3 + k;
+            _triV.fromBufferAttribute(pos, vi).applyMatrix4(m);
+            const o = t * 9 + k * 3;
+            out[o] = _triV.x; out[o + 1] = _triV.y; out[o + 2] = _triV.z;
+            if (_triV.x < minX) minX = _triV.x;
+            if (_triV.y < minY) minY = _triV.y;
+            if (_triV.z < minZ) minZ = _triV.z;
+            if (_triV.x > maxX) maxX = _triV.x;
+            if (_triV.y > maxY) maxY = _triV.y;
+            if (_triV.z > maxZ) maxZ = _triV.z;
+        }
+    }
+    return { tris: out, count: triCount, box: new THREE.Box3(
+        new THREE.Vector3(minX, minY, minZ), new THREE.Vector3(maxX, maxY, maxZ)) };
+}
+// The debug overlay draws from this, so what is on screen is the very shape
+// the solver tests against rather than a second implementation that could
+// agree with the art while disagreeing with the physics.
+export function trunkTrisOf(obj) {
+    if (!obj || !obj.userData) return null;
+    if (obj.userData._trunkTris === undefined) obj.userData._trunkTris = _bakeTrunkTris(obj);
+    return obj.userData._trunkTris;
+}
+// Live counters for the Debug Vis overlay - reading the solver cannot say
+// whether the branch FIRES, and "no candidate" and "candidate but no push" are
+// two different bugs that look identical in motion.
+export const trunkStats = { candidates: 0, pushes: 0, frame: 0 };
+
+// Closest point on triangle abc to p, written into out. Ericson, Real-Time
+// Collision Detection - the standard Voronoi-region walk, which is what makes
+// an edge-on or corner-on contact resolve correctly instead of snapping to the
+// face plane.
+const _ctA = new THREE.Vector3(), _ctB = new THREE.Vector3(), _ctC = new THREE.Vector3();
+const _trunkClosest = new THREE.Vector3(), _trunkDelta = new THREE.Vector3();
+const _trunkPush = new THREE.Vector3();
+const _triN = new THREE.Vector3(), _swDir = new THREE.Vector3();
+const _swE1 = new THREE.Vector3(), _swE2 = new THREE.Vector3();
+const _swP = new THREE.Vector3(), _swQ = new THREE.Vector3(), _swT = new THREE.Vector3();
+const _swHitN = new THREE.Vector3(), _swHitA = new THREE.Vector3();
+
+// Segment oldPos->pos against the trunk's triangles (Moller-Trumbore, both
+// faces). This exists because a shell test alone cannot hold a trunk: the wood
+// is ~0.57 wide and a torso particle is 0.22, so a particle in the middle has
+// NO triangle within its own radius and reports no contact at all - it simply
+// crosses. Catching the crossing itself is the only test that does not care how
+// thick the obstacle is or how fast the body is going.
+//
+// Returns true when it moved the particle.
+function _sweepTrunk(p, cand) {
+    _swDir.subVectors(p.pos, p.oldPos);
+    const travel = _swDir.length();
+    if (travel < 1e-6) return false;
+    const tris = cand.tris;
+    let bestT = Infinity;
+    for (let t = 0; t < cand.triCount; t++) {
+        const o = t * 9;
+        _ctA.set(tris[o], tris[o + 1], tris[o + 2]);
+        _ctB.set(tris[o + 3], tris[o + 4], tris[o + 5]);
+        _ctC.set(tris[o + 6], tris[o + 7], tris[o + 8]);
+        _swE1.subVectors(_ctB, _ctA);
+        _swE2.subVectors(_ctC, _ctA);
+        _swP.crossVectors(_swDir, _swE2);
+        const det = _swE1.dot(_swP);
+        // Parallel to the triangle - no crossing to find.
+        if (Math.abs(det) < 1e-12) continue;
+        const inv = 1 / det;
+        _swT.subVectors(p.oldPos, _ctA);
+        const u = _swT.dot(_swP) * inv;
+        if (u < 0 || u > 1) continue;
+        _swQ.crossVectors(_swT, _swE1);
+        const v = _swDir.dot(_swQ) * inv;
+        if (v < 0 || u + v > 1) continue;
+        const tt = _swE2.dot(_swQ) * inv;
+        if (tt < 0 || tt > 1 || tt >= bestT) continue;
+        bestT = tt;
+        _swHitN.crossVectors(_swE1, _swE2).normalize();
+        _swHitA.copy(_ctA);
+    }
+    if (bestT === Infinity) return false;
+    // Which side the particle STARTED on decides what to do, not which way it
+    // is travelling. Started outside: block it, that is the crossing this test
+    // exists to stop. Started inside: let it go - it is escaping, and holding
+    // it at the surface would seal it in. Getting an already-trapped particle
+    // out is the shell push's job, and it pushes outward.
+    _swT.subVectors(p.oldPos, _swHitA);
+    if (_swT.dot(_swHitN) < 0) return false;
+    _swT.copy(p.oldPos).addScaledVector(_swDir, bestT).addScaledVector(_swHitN, p.radius + 0.01);
+    p.pos.copy(_swT);
+    // Kill the velocity component heading into the surface, keep the rest so
+    // the body slides along the trunk rather than sticking to it.
+    _swDir.subVectors(p.pos, p.oldPos);
+    const into = _swDir.dot(_swHitN);
+    if (into < 0) _swDir.addScaledVector(_swHitN, -into);
+    p.oldPos.copy(p.pos).sub(_swDir);
+    return true;
+}
+
+const _ctAB = new THREE.Vector3(), _ctAC = new THREE.Vector3(), _ctAP = new THREE.Vector3();
+const _ctBP = new THREE.Vector3(), _ctCP = new THREE.Vector3();
+function _closestOnTri(p, a, b, c, out) {
+    _ctAB.subVectors(b, a);
+    _ctAC.subVectors(c, a);
+    _ctAP.subVectors(p, a);
+    const d1 = _ctAB.dot(_ctAP), d2 = _ctAC.dot(_ctAP);
+    if (d1 <= 0 && d2 <= 0) return out.copy(a);
+    _ctBP.subVectors(p, b);
+    const d3 = _ctAB.dot(_ctBP), d4 = _ctAC.dot(_ctBP);
+    if (d3 >= 0 && d4 <= d3) return out.copy(b);
+    const vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) return out.copy(a).addScaledVector(_ctAB, d1 / (d1 - d3));
+    _ctCP.subVectors(p, c);
+    const d5 = _ctAB.dot(_ctCP), d6 = _ctAC.dot(_ctCP);
+    if (d6 >= 0 && d5 <= d6) return out.copy(c);
+    const vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) return out.copy(a).addScaledVector(_ctAC, d2 / (d2 - d6));
+    const va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        return out.copy(b).addScaledVector(_ctCP.subVectors(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    const denom = 1 / (va + vb + vc);
+    return out.copy(a).addScaledVector(_ctAB, vb * denom).addScaledVector(_ctAC, vc * denom);
+}
+
 // How far a particle can travel during one frame's solve. The bounds are
 // measured once, before the iterations, so they have to cover where the
 // particles END UP too - anything less and a limb could swing into something
@@ -491,8 +655,24 @@ export const RagdollPhysics = {
                 const radius = obj.geometry.parameters.radius || 6;
                 // Sphere test is cheap enough to do exactly rather than via a box.
                 if (_ragdollAABB.distanceToPoint(obj.position) > radius) continue;
-                cand.obj = obj; cand.isSphere = true; cand.radius = radius;
+                cand.obj = obj; cand.isSphere = true; cand.isTrunk = false; cand.radius = radius;
                 _candidateCount++;
+                continue;
+            }
+            // A trunk is the one softObstacle whose real shape is known and
+            // cheap, so it collides against its own triangles instead of being
+            // dropped outright. See _bakeTrunkTris - skipping trees entirely is
+            // what let a charge punch send a body straight through them.
+            if (obj.userData && obj.userData.isTreeTrunk) {
+                const baked = trunkTrisOf(obj);
+                // The trunk's own bounds, not the whole tree's - this is the
+                // wood, canopy excluded, so the box IS roughly the shape here
+                // and is a fair broad-phase reject.
+                if (!baked || !baked.box.intersectsBox(_ragdollAABB)) continue;
+                cand.obj = obj; cand.isSphere = false; cand.isTrunk = true;
+                cand.tris = baked.tris; cand.triCount = baked.count;
+                _candidateCount++;
+                if (window.trunkVizOn) trunkStats.candidates++;
                 continue;
             }
             // softObstacle means "my bounding box is not my shape" - it is set
@@ -516,8 +696,22 @@ export const RagdollPhysics = {
             if (window.getObstacleBox) window.getObstacleBox(obj, cand.box);
             else continue;
             if (!cand.box.intersectsBox(_ragdollAABB)) continue;
-            cand.obj = obj; cand.isSphere = false;
+            cand.obj = obj; cand.isSphere = false; cand.isTrunk = false;
             _candidateCount++;
+        }
+
+        // ---- Swept pass, once per frame ----
+        // Before the iterations, while oldPos->pos is still this frame's actual
+        // motion (inside the loop the constraint solver has already moved
+        // things and the segment stops meaning "where the body travelled").
+        // This is what stops a body crossing a trunk outright; the per-iteration
+        // shell test below only handles resting against one.
+        for (let ci = 0; ci < _candidateCount; ci++) {
+            const cand = _candidates[ci];
+            if (!cand.isTrunk) continue;
+            for (let pi = 0; pi < this.ragdollParticles.length; pi++) {
+                if (_sweepTrunk(this.ragdollParticles[pi], cand) && window.trunkVizOn) trunkStats.pushes++;
+            }
         }
 
         const collisionIters = window.ragdollCollisionIters !== undefined ? window.ragdollCollisionIters : 8;
@@ -587,6 +781,68 @@ export const RagdollPhysics = {
                                 // velocity, horizontal contact should keep sliding.
                                 if (normal.y > 0.5) p.oldPos.y = p.pos.y;
                             }
+                            continue;
+                        }
+
+                        if (cand.isTrunk) {
+                            // Resting contact against the trunk's real
+                            // triangles. Two things here are not the obvious
+                            // choice, and both were bugs first:
+                            //
+                            // The direction is the triangle's own FACE NORMAL,
+                            // not (particle - closest point). For a closed
+                            // volume that vector points from the surface into
+                            // the interior whenever the particle is inside, so
+                            // pushing along it drives the particle DEEPER - and
+                            // a body squeezed along the inside of a trunk rides
+                            // up it, which is the "slides to the treetop" case.
+                            //
+                            // The SHALLOWEST overlap wins, not the deepest. The
+                            // depth here is measured along each face's normal,
+                            // so the smallest one is the nearest way out; taking
+                            // the largest would eject the body through the far
+                            // side of the trunk.
+                            const tris = cand.tris;
+                            let bestDepth = Infinity;
+                            for (let t = 0; t < cand.triCount; t++) {
+                                const o = t * 9;
+                                _ctA.set(tris[o], tris[o + 1], tris[o + 2]);
+                                _ctB.set(tris[o + 3], tris[o + 4], tris[o + 5]);
+                                _ctC.set(tris[o + 6], tris[o + 7], tris[o + 8]);
+                                // Cheap reject before the Voronoi walk.
+                                if (Math.min(_ctA.x, _ctB.x, _ctC.x) - p.pos.x > p.radius) continue;
+                                if (p.pos.x - Math.max(_ctA.x, _ctB.x, _ctC.x) > p.radius) continue;
+                                if (Math.min(_ctA.y, _ctB.y, _ctC.y) - p.pos.y > p.radius) continue;
+                                if (p.pos.y - Math.max(_ctA.y, _ctB.y, _ctC.y) > p.radius) continue;
+                                if (Math.min(_ctA.z, _ctB.z, _ctC.z) - p.pos.z > p.radius) continue;
+                                if (p.pos.z - Math.max(_ctA.z, _ctB.z, _ctC.z) > p.radius) continue;
+                                // Proximity still comes from the closest point,
+                                // so a particle beside a face rather than over
+                                // it is correctly left alone.
+                                _closestOnTri(p.pos, _ctA, _ctB, _ctC, _trunkClosest);
+                                if (_trunkDelta.subVectors(p.pos, _trunkClosest).lengthSq() >= p.radius * p.radius) continue;
+                                _triN.crossVectors(
+                                    _ctAB.subVectors(_ctB, _ctA), _ctAC.subVectors(_ctC, _ctA));
+                                if (_triN.lengthSq() < 1e-12) continue;
+                                _triN.normalize();
+                                const depth = p.radius - _trunkDelta.subVectors(p.pos, _ctA).dot(_triN);
+                                if (depth <= 0 || depth >= bestDepth) continue;
+                                bestDepth = depth;
+                                _trunkPush.copy(_triN);
+                            }
+                            if (bestDepth === Infinity) continue;
+                            const prevPos = _prevPos.copy(p.pos);
+                            p.pos.addScaledVector(_trunkPush, bestDepth);
+                            if (window.trunkVizOn) trunkStats.pushes++;
+                            // Carry the correction into oldPos so the contact
+                            // does not read as velocity next frame, same as
+                            // every other branch here.
+                            p.oldPos.add(_trunkDelta.subVectors(p.pos, prevPos));
+                            // Lying on a branch is a real resting contact, so
+                            // kill vertical velocity the way the floor and box
+                            // branches do - otherwise it bounces forever.
+                            if (_trunkPush.y > 0.5) p.oldPos.y = p.pos.y;
+                            particleBox.setFromCenterAndSize(p.pos, _boxSize);
                             continue;
                         }
 

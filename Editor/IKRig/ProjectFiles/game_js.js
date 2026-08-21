@@ -7,6 +7,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 import { MultiplayerClient } from './multiplayer.js';
 import { RemoteAvatar } from './remote_avatar.js';
+import { trunkTrisOf, trunkStats } from './ragdoll_physics.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { RenderPixelatedPass } from 'three/addons/postprocessing/RenderPixelatedPass.js';
@@ -5312,6 +5313,110 @@ export function startGame(CharacterClass) {
     let _compSteerDirValid = false;
     let _compSteerBlockedFor = 0;
     const COMP_STEER_HOLD = 0.12;
+    // ---- Trunk collider overlay (Debug Vis, off by default) ----
+    // Draws the cylinder the ragdoll solver actually tests against, straight
+    // from trunkTrisOf - the same call and the same cached triangles the
+    // physics uses, so a cylinder that looks wrong here IS wrong there. It
+    // exists because "bodies still go through trees" has two very different
+    // causes that look identical in motion: no cylinder was built at all
+    // (nothing drawn), or one was built in the wrong place or at the wrong
+    // size (drawn, but not around the trunk).
+    let _trunkVizGroup = null;
+    function setTrunkVizVisible(on) {
+        window.trunkVizOn = on;
+        if (!on) {
+            if (_trunkVizGroup) {
+                _trunkVizGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+                scene.remove(_trunkVizGroup);
+                _trunkVizGroup = null;
+            }
+            return;
+        }
+        if (_trunkVizGroup) return;
+        _trunkPeakCand = 0; _trunkPeakPush = 0;
+        _trunkVizGroup = new THREE.Group();
+        _trunkVizGroup.name = 'trunkViz';
+        const mat = new THREE.MeshBasicMaterial({ color: 0x00ff88, wireframe: true });
+        let drawn = 0, flagged = 0, unfitted = 0;
+        for (let i = 0; i < collidables.length; i++) {
+            const o = collidables[i];
+            if (!(o.userData && o.userData.isTreeTrunk)) continue;
+            flagged++;
+            const baked = trunkTrisOf(o);
+            if (!baked) { unfitted++; continue; }
+            // The baked triangles themselves, already in world space - so the
+            // overlay cannot drift from what the solver tests.
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.BufferAttribute(baked.tris, 3));
+            _trunkVizGroup.add(new THREE.Mesh(g, mat));
+            drawn++;
+        }
+        scene.add(_trunkVizGroup);
+        // Counted, not guessed at: "flagged" is how many colliders the level
+        // marked as having a trunk, "drawn" how many the fit succeeded on. The
+        // two disagreeing is the whole answer when bodies pass through trees.
+        _trunkVizCounts = { flagged, drawn, unfitted, total: collidables.length };
+        console.log('[trunkViz] flagged', flagged, ' drawn', drawn, ' fit failed', unfitted,
+                    ' of', collidables.length, 'collidables');
+    }
+    window.setTrunkVizVisible = setTrunkVizVisible;
+
+    // On screen rather than in the console, because the number that settles
+    // this is the fit of the tree you are STANDING NEXT TO - a radius read off
+    // a screenshot is a guess, and the console does not say which tree a line
+    // belongs to. Updated live so walking up to the tree that swallows bodies
+    // reads out that tree's own measurement.
+    let _trunkVizCounts = null;
+    function updateTrunkVizPanel() {
+        let el = document.getElementById('trunk-viz-panel');
+        if (!_trunkVizGroup) { if (el) el.remove(); return; }
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'trunk-viz-panel';
+            el.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);' +
+                'background:rgba(0,0,0,.85);color:#0f8;font:12px monospace;padding:8px;' +
+                'white-space:pre;text-align:left;z-index:99999;pointer-events:none;';
+            document.body.appendChild(el);
+        }
+        const p = char.group.position;
+        let best = null, bestD2 = Infinity;
+        for (let i = 0; i < collidables.length; i++) {
+            const o = collidables[i];
+            if (!(o.userData && o.userData.isTreeTrunk)) continue;
+            const baked = trunkTrisOf(o);
+            if (!baked) continue;
+            const d2 = baked.box.distanceToPoint(p);
+            if (d2 < bestD2) { bestD2 = d2; best = baked; }
+        }
+        const c = _trunkVizCounts;
+        // Anyone down right now, so the solver lines below can be read as
+        // "while a body is actually ragdolling" rather than in the abstract.
+        let downNow = 0;
+        for (let i = 0; i < aiBots.length; i++) if (aiBots[i].bot && aiBots[i].bot.isRagdoll) downNow++;
+        if (char.isRagdoll) downNow++;
+        // Peak-held: the moment that matters is the frame a flying body reaches
+        // the trunk, and a live per-frame number is back to 0 before it can be
+        // read. Reset by toggling the checkbox off and on.
+        _trunkPeakCand = Math.max(_trunkPeakCand, trunkStats.candidates);
+        _trunkPeakPush = Math.max(_trunkPeakPush, trunkStats.pushes);
+        el.textContent = [
+            'trunk colliders  flagged ' + (c ? c.flagged : '?') +
+                '   drawn ' + (c ? c.drawn : '?') +
+                '   fit failed ' + (c ? c.unfitted : '?'),
+            best
+                ? 'nearest  tris ' + best.count +
+                  '   dist ' + bestD2.toFixed(2) +
+                  '   y ' + best.box.min.y.toFixed(2) + '..' + best.box.max.y.toFixed(2)
+                : 'nearest  none',
+            'ragdolling ' + downNow +
+                '   solver saw (peak)  candidates ' + _trunkPeakCand +
+                '   pushes ' + _trunkPeakPush
+        ].join('\n');
+        trunkStats.candidates = 0;
+        trunkStats.pushes = 0;
+    }
+    let _trunkPeakCand = 0, _trunkPeakPush = 0;
+
     // The obstacle-avoidance rays are the most expensive thing either AI does,
     // so they get their own pruned list rather than walking `collidables`.
     //
@@ -12052,6 +12157,26 @@ export function startGame(CharacterClass) {
         });
         const treeCollisionGeo = collisionParts.length ? BufferGeometryUtils.mergeGeometries(collisionParts, false) : null;
         collisionParts.forEach(g => g.dispose());
+        // The TRUNK on its own, kept apart from the merged collider above.
+        // The ragdoll needs it separately: the merged mesh is trunk + four
+        // canopy chunks, and a body should be stopped by the wood, not caught
+        // in the leaves. It is the real low-poly TreeBody geometry (~48
+        // triangles), branches included - which is the whole point, since the
+        // branches are where a tree is widest and a shaft-width cylinder let
+        // flung bodies sail straight past them.
+        //
+        // noShadow identifies the trunk among the collidable parts; see
+        // treeCastsShadow for why that rule holds.
+        let treeTrunkGeo = null;
+        sources.forEach(src => {
+            if (src.visualOnly || treeTrunkGeo) return;
+            if (!(src.material && src.material.userData && src.material.userData.noShadow)) return;
+            const flat = src.geometry.index ? src.geometry.toNonIndexed() : src.geometry.clone();
+            treeTrunkGeo = new THREE.BufferGeometry();
+            treeTrunkGeo.setAttribute('position', flat.getAttribute('position').clone());
+            treeTrunkGeo.applyMatrix4(src.rel);
+            flat.dispose();
+        });
         // Invisible via the MATERIAL, deliberately not via object.visible -
         // three.js skips a material-hidden mesh at render time but still
         // raycasts it, which is exactly what an invisible collider needs.
@@ -12089,6 +12214,11 @@ export function startGame(CharacterClass) {
                 // instanced), so this is what the dither probes and the x-ray
                 // ghost test read to mean "a tree is in the way".
                 col.userData.isTreeCollider = true;
+                // What the ragdoll collides against - the trunk's own triangles
+                // in this tree's frame, read through col.matrixWorld. See
+                // _trunkTris in ragdoll_physics.js.
+                col.userData.isTreeTrunk = true;
+                col.userData.trunkGeo = treeTrunkGeo;
                 col.updateMatrixWorld(true);
                 levelGroup.add(col);
                 collidables.push(col);
@@ -13148,6 +13278,20 @@ export function startGame(CharacterClass) {
                 // not veto standing spots. See isVerticalSpaceClear.
                 c.userData.softObstacle = true;
                 c.userData.isTreeCollider = true;
+                // Unlike the forest's one merged collider per tree, here every
+                // part is its own collidable - so only the trunk gets the flag,
+                // or the ragdoll would fit a fat cylinder to each canopy blob
+                // and wall off the whole column of air under it. Among
+                // COLLIDABLE parts noShadow means the trunk: it is set on
+                // "TreeBody" and on "leave", and every "leave" mesh is
+                // cosmetic and already returned above. See treeCastsShadow.
+                if (mats.some(m => m && m.userData && m.userData.noShadow)) {
+                    c.userData.isTreeTrunk = true;
+                    // Already the trunk mesh itself, so it is its own collision
+                    // geometry - no separate copy needed the way the forest's
+                    // merged collider needs one.
+                    c.userData.trunkGeo = c.geometry;
+                }
                 collidables.push(c);
             });
             levelGroup.add(tree);
@@ -13951,6 +14095,15 @@ export function startGame(CharacterClass) {
             }
             c.userData.softObstacle = true;
             c.userData.isTreeCollider = true;
+            // Trunk only, same rule as the village trees above - see the
+            // comment there for why noShadow identifies it.
+            {
+                const cm = Array.isArray(c.material) ? c.material : [c.material];
+                if (cm.some(m => m && m.userData && m.userData.noShadow)) {
+                    c.userData.isTreeTrunk = true;
+                    c.userData.trunkGeo = c.geometry;
+                }
+            }
             collidables.push(c);
         });
         levelGroup.add(tree);
@@ -17205,6 +17358,8 @@ export function startGame(CharacterClass) {
     const ditherHoleToggleEl = document.getElementById('toggle-dither-hole');
     if (ditherHoleToggleEl) ditherHoleToggleEl.addEventListener('change', e => { window.ditherHoleEnabled = e.target.checked; });
     document.getElementById('toggle-ragdoll-colliders').addEventListener('change', e => char.toggleRagdollColliders(e.target.checked));
+    const trunkVizEl = document.getElementById('toggle-trunk-colliders');
+    if (trunkVizEl) trunkVizEl.addEventListener('change', e => setTrunkVizVisible(e.target.checked));
     document.getElementById('toggle-angle-labels').addEventListener('change', e => {
         const checked = e.target.checked;
         rampAngleLabels.forEach(l => { l.visible = checked; });
@@ -19056,9 +19211,18 @@ export function startGame(CharacterClass) {
             rayOrigin.y += 0.5;
             rayDown.set(rayOrigin, _downVec);
             const dH = rayDown.intersectObjects(solidCollidables);
-            if (dH.length > 0) {
-                floorY = dH[0].point.y;
-                groundNormal.copy(dH[0].face.normal).transformDirection(dH[0].object.matrixWorld);
+            // Skip tree canopies here too - a ragdoll flung near a tree's
+            // base can arc up past canopy height, and the first hit below it
+            // would then be the canopy's own top rather than the ground,
+            // standing the character back up in the treetop.
+            let dHit = null;
+            for (let dhi = 0; dhi < dH.length; dhi++) {
+                if (dH[dhi].object.userData.isTreeCollider) continue;
+                dHit = dH[dhi]; break;
+            }
+            if (dHit) {
+                floorY = dHit.point.y;
+                groundNormal.copy(dHit.face.normal).transformDirection(dHit.object.matrixWorld);
             } else {
                 // Nothing below. The ragdoll solver clamps its particles to
                 // this plane, so leaving floorY at its default 0 while falling
@@ -22755,6 +22919,9 @@ if (leftArrow) {
         // themselves. The FPS counter reads these on the next frame.
         _lastDrawCalls = renderer.info.render.calls;
         _lastTriangles = renderer.info.render.triangles;
+        // Reads the solver counters this frame just wrote, and clears them for
+        // the next one. Costs nothing while the overlay is off.
+        if (_trunkVizGroup) updateTrunkVizPanel();
     }
 
     animate();

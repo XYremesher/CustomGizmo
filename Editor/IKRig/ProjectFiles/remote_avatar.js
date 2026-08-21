@@ -1100,10 +1100,18 @@ export class RemoteAvatar {
         _ragdollRayOrigin.y += 0.5;
         _ragdollRaycaster.set(_ragdollRayOrigin, _ragdollDownVec);
         const hits = _ragdollRaycaster.intersectObjects(window.collidables || []);
+        // Skip tree canopies, same as every other ground read in the game -
+        // a knockback arcing a body up near canopy height (routine right at
+        // a tree's base) hit the canopy first and reported ITS top as the
+        // floor, standing the bot back up in the treetop.
+        for (let i = 0; i < hits.length; i++) {
+            if (hits[i].object.userData.isTreeCollider) continue;
+            return hits[i].point.y;
+        }
         // -Infinity, not 0, when there is nothing below: the solver clamps to
         // this plane, and answering "the floor is at the world origin" for a
         // body falling through open space snaps it back up to zero.
-        return hits.length > 0 ? hits[0].point.y : -Infinity;
+        return -Infinity;
     }
 
     // Positions the held carryable from this avatar's own hand bones every

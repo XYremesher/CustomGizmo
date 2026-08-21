@@ -96,6 +96,46 @@ implementation.
 
 ## Known-tricky areas (read the comments before changing)
 
+- **Ragdoll vs trees: a shell test cannot hold an obstacle thicker than the
+  particle.** Trees are `softObstacle` because their bounding box wraps the
+  canopy, so the box narrow phase would fling bodies at the nearest outer
+  face - but skipping them left nothing at all, and a charge punch sent bodies
+  straight through. Three attempts, three separate lessons:
+
+  1. A fitted CYLINDER is not enough. Measured off `Tree.glb` the trunk shaft
+     is radius 0.454 (0.568 on a scale-1.25 tree) and that number is correct,
+     but `TreeBody` carries its branches too and those reach past 2.0. A body
+     crossing at branch height missed the cylinder entirely. The mesh is only
+     48 triangles - test it directly instead of approximating it.
+  2. Push direction must come from the FACE NORMAL, never from
+     `particle - closestPoint`. For a closed volume that vector points from the
+     surface *into* the interior whenever the particle is inside, so the push
+     drives it deeper; a body squeezed along the inside of a trunk rides up it,
+     which is the "slides to the treetop" symptom. Depth then comes from the
+     signed plane distance, and the SHALLOWEST overlap wins - the deepest would
+     eject the body through the far side. (Winding is outward: 40 of 48 face
+     normals point away from the centroid, the other 8 being branch
+     concavities where that test is meaningless.)
+  3. Even correct per-triangle contact passes through. Trunk half-width is
+     0.57, the torso particle radius 0.22, so a particle in the middle has no
+     triangle within its own radius and reports no contact at all. The fix is a
+     SWEPT segment test (`_sweepTrunk`, Möller-Trumbore) run once per frame
+     *before* the solver iterations, while `oldPos -> pos` still means "where
+     the body travelled" - inside the loop the constraint solver has already
+     moved things. It blocks only ENTRY, decided by which side the particle
+     started on; blocking exit too would seal a trapped particle in.
+
+  Bake the triangles to WORLD space and cache per object. The model has a baked
+  rotation on its root node which the forest folds into its merged geometry but
+  the village trees keep on the node, so geometry space is not the same frame
+  for the two. `levelGroup` has no transform, so a world cache cannot go stale.
+
+- **Every ground raycast must skip `isTreeCollider`.** A canopy is a perfectly
+  good hit for a downward ray, so a body arcing up near a tree reads the
+  canopy's top as its floor and stands up in the treetop. `_ragdollFloorY`
+  (remote_avatar.js) and the player's own ragdoll floor scan both missed this;
+  the rest of the game already had the guard.
+
 - **Companion "arrived at the takeoff" tests need HEIGHT, not just distance.**
   `dTk` is horizontal only and the takeoff crumb sits at the foot of the wall,
   so a companion that had just topped out was half a metre from it in x/z
