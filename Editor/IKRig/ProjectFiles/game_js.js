@@ -15,7 +15,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import { ASSET_BASE } from './asset_base.js';
+import { ASSET_BASE, ASSET_BASE_REMOTE } from './asset_base.js';
 
 // ---- Accelerated raycasting ----
 // Measured, not assumed: the readout showed a 144fps spot and an 85fps spot
@@ -16197,6 +16197,28 @@ export function startGame(CharacterClass) {
         const base = document.getElementById('base-left');
         if (base) base.classList.remove('attract');
     }
+    // GhostFinger.png sits in Editor/IKRig, one level above the served root,
+    // so the path has to come from ASSET_BASE - '../' locally, a raw
+    // .githubusercontent URL on Pages. Hardcoding either one 404s in the other
+    // place. Local first, repo second, same shape as the WhiteDot.png loader.
+    //
+    // The plain disc is what shows until (and unless) the image arrives, so a
+    // missing, unpushed or unwanted file costs nothing - the hint still works,
+    // it just looks like a thumb-sized dot. window.ghostFingerOff = true keeps
+    // it that way deliberately.
+    (function loadGhostFinger() {
+        const img = document.getElementById('joy-attract-finger');
+        const base = document.getElementById('base-left');
+        if (!img || !base || window.ghostFingerOff) return;
+        img.addEventListener('load', () => base.classList.add('has-finger'));
+        img.addEventListener('error', () => {
+            if (img.dataset.triedRemote) return;
+            img.dataset.triedRemote = '1';
+            img.src = ASSET_BASE_REMOTE + 'GhostFinger.png';
+        });
+        img.src = ASSET_BASE + 'GhostFinger.png';
+    })();
+
     // Armed by the loading overlay coming down, not at setup: before that the
     // player cannot act on it and the delay would burn during the load.
     function armJoystickAttract() {
