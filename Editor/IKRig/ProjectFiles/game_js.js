@@ -1415,7 +1415,15 @@ export function startGame(CharacterClass) {
     // A collar hugging the trunk, not a wide apron: the point is to hide the
     // seam where the trunk meets the ground, which is what the soil patches
     // used to do.
-    window.grassTreeInner = 0.25;   // ring starts this far from the trunk axis
+    // Where the bark actually is. MEASURED off Tree.glb, not chosen by eye:
+    // the trunk shaft is radius 0.454 at scale 1 (sampled between 10% and 30%
+    // of the model's height, above the root flare and below the branches).
+    // This was 0.25 - INSIDE the wood - so the collar was planted in the
+    // trunk, and the same constant is what rejects scattered blades for being
+    // in a trunk, so that under-rejected by the same margin. Nothing showed
+    // until the x-ray dither made a tree see-through and revealed it stuffed
+    // with grass. 0.5 clears the bark with a little to spare.
+    window.grassTreeInner = 0.5;    // ring starts this far from the trunk axis
     window.grassTreeSpread = 0.75;  // ...and extends this much further out
     // Collar tufts vary more in size than the scattered ones - a uniform ring
     // reads as a manufactured collar rather than as something growing there.
@@ -1501,7 +1509,17 @@ export function startGame(CharacterClass) {
                 const inner = window.grassTreeInner * t.scale;
                 const outer = inner + window.grassTreeSpread * t.scale;
                 const rr = Math.sqrt(inner * inner + Math.random() * (outer * outer - inner * inner));
-                const a = Math.random() * Math.PI * 2;
+                // Angle by GOLDEN ANGLE off a per-tree counter, not at random.
+                // A tree gets only a handful of tufts (grassTreeShare of the
+                // budget, split across every tree in the level), and a handful
+                // of uniform random angles clumps - two or three cards land on
+                // top of each other and leave most of the trunk bare, which is
+                // the "lots of them intersecting" look. 137.5 degrees apart
+                // spreads any number of successive samples evenly round the
+                // circle without needing to know the total in advance, so each
+                // tuft lands in the widest remaining gap.
+                t._collarN = (t._collarN || 0) + 1;
+                const a = t._collarN * 2.399963229728653;
                 x = t.x + Math.cos(a) * rr;
                 z = t.z + Math.sin(a) * rr;
             } else {
