@@ -4673,6 +4673,22 @@ export function startGame(CharacterClass) {
         // Red winds up and throws one knockdown blow.
         { key: 'BotRed', id: 'ai-bot-3', color: 0xd42a2a, offset: [0, 0, -4.5], charge: true },
     ];
+    // Performance probe. Pads the roster out to window.enemyTestCount with
+    // PLAIN yellows - no combo, no charge - so what is being measured is the
+    // number of bots and not a change in what they do. Set it before the
+    // module runs (same as window.startLevel); the named four are the floor,
+    // so a smaller number is ignored rather than deleting the staged fight.
+    {
+        const want = Math.round(window.enemyTestCount || AI_BOT_SPECS.length);
+        for (let i = AI_BOT_SPECS.length; i < want; i++) {
+            AI_BOT_SPECS.push({
+                key: 'BotFill' + i, id: 'ai-bot-fill-' + i, color: 0xffd633,
+                // Only used when one is spawned next to the player from the
+                // panel; the forest places them itself.
+                offset: [Math.cos(i) * 4, 0, Math.sin(i) * 4],
+            });
+        }
+    }
     COMPANION_SPECS.concat(AI_BOT_SPECS).forEach(sp => { window['spawn' + sp.key] = false; });
 
     function removeCompanion(rec) {
@@ -11231,6 +11247,22 @@ export function startGame(CharacterClass) {
             storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
                 yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
+            // Anything past the staged four is a performance probe (see
+            // window.enemyTestCount). They go in a tight ring in the first
+            // clearing rather than spread across the wood: the ring's diameter
+            // is under WAKE_PACK_RADIUS, so collecting the first companion
+            // wakes every one of them at once, which is the worst case and
+            // therefore the only case worth measuring.
+            {
+                const fill = AI_BOT_SPECS.filter(sp => sp.key.startsWith('BotFill'));
+                const cx = m1.x + FREE_BOT_STANDOFF, cz = m1.z + FREE_BOT_STANDOFF;
+                fill.forEach((sp, i) => {
+                    const a = (i / Math.max(1, fill.length)) * Math.PI * 2;
+                    const bx = cx + Math.cos(a) * 4.5, bz = cz + Math.sin(a) * 4.5;
+                    storyPlaceBot(sp.key, bx, storyGroundY(bx, bz, 0), bz, true,
+                        yawTowards(bx, bz, m1.x, m1.z));
+                });
+            }
             // Staged, so none of them may start on their own. Each is released
             // by collecting the companion it shares a clearing with; the red
             // one at the top of the stairs comes with the last of them.
@@ -11639,9 +11671,17 @@ export function startGame(CharacterClass) {
         // After the spawn, not through an override: the bot is only in aiBots
         // once syncSpawnedAgents has built it, and this path is the branch
         // where it did not exist yet.
-        if (yaw !== undefined) {
-            const fresh = aiBots.find(r => r.bot.id === spec.id);
-            if (fresh) fresh.bot.group.rotation.y = yaw;
+        const fresh = aiBots.find(r => r.bot.id === spec.id);
+        if (fresh) {
+            if (yaw !== undefined) fresh.bot.group.rotation.y = yaw;
+            // The dormant argument was only ever applied on the OTHER branch,
+            // the one that reuses an existing bot. Nothing initialises the
+            // flag, so a bot created here started undefined - awake - and the
+            // whole staged level was placed by this path on a cold load. Every
+            // enemy was thinking from the first frame, which is both the
+            // "they come for you before you collect anyone" complaint and a
+            // standing performance cost nobody asked for.
+            fresh.bot.dormant = !!dormant;
         }
     }
 

@@ -1721,6 +1721,11 @@
         };
         
         window.activeCamera = null;
+        // How many enemies the forest stages. The four named ones are the
+        // staged fight; anything above that is padding for a performance
+        // measurement, plain yellows placed in one ring so they all wake
+        // together. Set back to 4 to return to the authored level.
+        window.enemyTestCount = 10;
         window.sacks = [];
         window.combat = null;
         window.hitEffects = [];
