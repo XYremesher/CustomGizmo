@@ -16173,7 +16173,7 @@ export function startGame(CharacterClass) {
     let _joyAttractT = 0;
     // Long enough that it starts after the level has faded in and the player
     // has looked around, short enough to still be the answer to "what do I do".
-    const JOY_ATTRACT_DELAY = 1.2;
+    const JOY_ATTRACT_DELAY = 0.8;
     // Gives up on its own. Someone reading a sign or watching the view is not
     // stuck, and a hint that never stops is worse than none.
     const JOY_ATTRACT_MAX = 10.0;

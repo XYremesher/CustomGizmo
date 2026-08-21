@@ -569,7 +569,7 @@
         }
         #base-left.attract #joy-attract-thumb {
             opacity: 1;
-            animation: joy-attract-disc 7s linear infinite;
+            animation: joy-attract-disc 3.6s linear infinite;
         }
         /* The stand-in matches what it replaces, plus a rim so it reads as
            lit rather than as a second object. */
@@ -577,7 +577,7 @@
         #stick-left { transition: opacity 0.25s ease; }
         #base-left.attract {
             border-color: rgba(255,255,255,0.85);
-            animation: joy-attract-ring 7s ease-in-out infinite;
+            animation: joy-attract-ring 3.6s ease-in-out infinite;
         }
 
         /* The animated anchor. The finger hangs off it and is never itself
@@ -589,7 +589,7 @@
             pointer-events: none; z-index: 7; display: none;
         }
         #base-left.attract.has-finger #joy-attract-hand {
-            display: block; animation: joy-attract-hand 7s linear infinite;
+            display: block; animation: joy-attract-hand 3.6s linear infinite;
         }
 
         /* GhostFinger.png.
@@ -626,116 +626,116 @@
             filter: drop-shadow(0 3px 10px rgba(0,0,0,0.5));
         }
 
-        /* In from off-screen, one push forward, a sweep left then right along
-           the rim, then out.
+        /* Fade up, one push forward, a sweep left then right along the rim,
+           then dissolve.
+
+           It fades in and out rather than flying in from off-screen: a hand
+           that has to travel spends most of the loop being nowhere near the
+           control it is pointing at, and at this speed you would barely see
+           the trip anyway. Appearing on the stick puts every frame of the
+           animation on the thing it is teaching.
+
+           It dissolves where it FINISHES, at the right-hand end of the sweep,
+           not back at the centre - the last thing seen is the stick held over
+           at full deflection, which is the position the hint exists to sell.
+           The reset to centre happens afterwards at zero opacity.
 
            The order is the lesson. A straight pull out of the centre says the
            stick moves at all; carrying it round the rim afterwards says it can
-           be HELD out and swung, which is what turning while running actually
-           is and what a push on its own never shows. The push is held for a
-           beat at the top so it registers as a separate act rather than as the
-           start of the sweep.
+           be HELD out and swung, which is what turning while running is. The
+           push is held for a beat at the top so it reads as its own act rather
+           than as the opening of the sweep.
 
            Every position sits on a radius of 39, inside setupJoystick's maxR
-           of 40 - a ghost travelling further than a real thumb can push would
-           be teaching a deflection the control cannot produce.
+           of 40 - a ghost reaching further than a real thumb can push teaches
+           a deflection the control cannot produce.
 
-           Angles are in screen space, where y grows downward: 270 is straight
-           up, and the sweep runs 170 -> 370 so it passes back over the top
-           between the two ends the arc was drawn between.
-
-           Linear timing - per-segment easing across forty-odd keyframes reads
-           as a stutter rather than as ease - with the entrance and exit
-           carrying their own easing on the keyframe each segment starts from.
-
-           Off-screen is +260px on Y: the ring centre sits 90px above the
-           bottom edge, so that clears it with room for the hand behind the
-           tip. */
+           Angles are screen-space, where y grows downward: 270 is straight up,
+           and the sweep runs 170 -> 370 so it passes back over the top between
+           the two ends. Linear timing; per-segment easing across forty-odd
+           keyframes reads as a stutter rather than as ease. */
         @keyframes joy-attract-hand {
-            0%       { transform: translate(120.0px, 260.0px); }
-            3%       { transform: translate(120.0px, 260.0px); animation-timing-function: ease-out; }
-            14%      { transform: translate(0.0px, 0.0px); }
-            24%      { transform: translate(-0.0px, -39.0px); }
-            27%      { transform: translate(-0.0px, -39.0px); }
-            28.7%    { transform: translate(-6.8px, -38.4px); }
-            30.4%    { transform: translate(-13.3px, -36.6px); }
-            32.1%    { transform: translate(-19.5px, -33.8px); }
-            33.8%    { transform: translate(-25.1px, -29.9px); }
-            35.5%    { transform: translate(-29.9px, -25.1px); }
-            37.2%    { transform: translate(-33.8px, -19.5px); }
-            38.9%    { transform: translate(-36.6px, -13.3px); }
-            40.6%    { transform: translate(-38.4px, -6.8px); }
-            42.3%    { transform: translate(-39.0px, 0.0px); }
-            44%      { transform: translate(-38.4px, 6.8px); }
-            47%      { transform: translate(-38.4px, 6.8px); }
-            48.5%    { transform: translate(-39.0px, 0.0px); }
-            50.1%    { transform: translate(-38.4px, -6.8px); }
-            51.6%    { transform: translate(-36.6px, -13.3px); }
-            53.2%    { transform: translate(-33.8px, -19.5px); }
-            54.8%    { transform: translate(-29.9px, -25.1px); }
-            56.3%    { transform: translate(-25.1px, -29.9px); }
-            57.9%    { transform: translate(-19.5px, -33.8px); }
-            59.4%    { transform: translate(-13.3px, -36.6px); }
-            61%      { transform: translate(-6.8px, -38.4px); }
-            62.5%    { transform: translate(-0.0px, -39.0px); }
-            64%      { transform: translate(6.8px, -38.4px); }
-            65.6%    { transform: translate(13.3px, -36.6px); }
-            67.2%    { transform: translate(19.5px, -33.8px); }
-            68.7%    { transform: translate(25.1px, -29.9px); }
-            70.2%    { transform: translate(29.9px, -25.1px); }
-            71.8%    { transform: translate(33.8px, -19.5px); }
-            73.3%    { transform: translate(36.6px, -13.3px); }
-            74.9%    { transform: translate(38.4px, -6.8px); }
-            76.5%    { transform: translate(39.0px, -0.0px); }
-            78%      { transform: translate(38.4px, 6.8px); }
-            81%      { transform: translate(38.4px, 6.8px); animation-timing-function: ease-in; }
-            88%      { transform: translate(0.0px, 0.0px); }
-            92%      { transform: translate(120.0px, 260.0px); }
-            100%     { transform: translate(120.0px, 260.0px); }
+            0%       { transform: translate(0.0px, 0.0px); opacity: 0; }
+            10%      { transform: translate(0.0px, 0.0px); opacity: 1; }
+            15%      { transform: translate(0.0px, 0.0px); opacity: 1; }
+            27%      { transform: translate(-0.0px, -39.0px); opacity: 1; }
+            33%      { transform: translate(-0.0px, -39.0px); opacity: 1; }
+            34.8%    { transform: translate(-6.8px, -38.4px); opacity: 1; }
+            36.6%    { transform: translate(-13.3px, -36.6px); opacity: 1; }
+            38.4%    { transform: translate(-19.5px, -33.8px); opacity: 1; }
+            40.2%    { transform: translate(-25.1px, -29.9px); opacity: 1; }
+            42%      { transform: translate(-29.9px, -25.1px); opacity: 1; }
+            43.8%    { transform: translate(-33.8px, -19.5px); opacity: 1; }
+            45.6%    { transform: translate(-36.6px, -13.3px); opacity: 1; }
+            47.4%    { transform: translate(-38.4px, -6.8px); opacity: 1; }
+            49.2%    { transform: translate(-39.0px, 0.0px); opacity: 1; }
+            51%      { transform: translate(-38.4px, 6.8px); opacity: 1; }
+            57%      { transform: translate(-38.4px, 6.8px); opacity: 1; }
+            58.4%    { transform: translate(-39.0px, 0.0px); opacity: 1; }
+            59.8%    { transform: translate(-38.4px, -6.8px); opacity: 1; }
+            61.2%    { transform: translate(-36.6px, -13.3px); opacity: 1; }
+            62.6%    { transform: translate(-33.8px, -19.5px); opacity: 1; }
+            64%      { transform: translate(-29.9px, -25.1px); opacity: 1; }
+            65.4%    { transform: translate(-25.1px, -29.9px); opacity: 1; }
+            66.8%    { transform: translate(-19.5px, -33.8px); opacity: 1; }
+            68.2%    { transform: translate(-13.3px, -36.6px); opacity: 1; }
+            69.6%    { transform: translate(-6.8px, -38.4px); opacity: 1; }
+            71%      { transform: translate(-0.0px, -39.0px); opacity: 1; }
+            72.4%    { transform: translate(6.8px, -38.4px); opacity: 1; }
+            73.8%    { transform: translate(13.3px, -36.6px); opacity: 1; }
+            75.2%    { transform: translate(19.5px, -33.8px); opacity: 1; }
+            76.6%    { transform: translate(25.1px, -29.9px); opacity: 1; }
+            78%      { transform: translate(29.9px, -25.1px); opacity: 1; }
+            79.4%    { transform: translate(33.8px, -19.5px); opacity: 1; }
+            80.8%    { transform: translate(36.6px, -13.3px); opacity: 1; }
+            82.2%    { transform: translate(38.4px, -6.8px); opacity: 1; }
+            83.6%    { transform: translate(39.0px, -0.0px); opacity: 1; }
+            85%      { transform: translate(38.4px, 6.8px); opacity: 1; }
+            93%      { transform: translate(38.4px, 6.8px); opacity: 0; }
+            100%     { transform: translate(0.0px, 0.0px); opacity: 0; }
         }
-        /* The stick under the thumb: identical path, identical clock, but
-           home whenever the hand is off-screen - a stick drifting about with
-           no hand near it shows nothing. */
+        /* The stick under the thumb: the same path on the same clock. It
+           never fades - it is the control standing in for #stick-left, not
+           part of the hint - and it springs home the moment the thumb lifts,
+           which is what the real one does. */
         @keyframes joy-attract-disc {
             0%       { transform: translate(0.0px, 0.0px); }
-            3%       { transform: translate(0.0px, 0.0px); animation-timing-function: ease-out; }
-            14%      { transform: translate(0.0px, 0.0px); }
-            24%      { transform: translate(-0.0px, -39.0px); }
+            10%      { transform: translate(0.0px, 0.0px); }
+            15%      { transform: translate(0.0px, 0.0px); }
             27%      { transform: translate(-0.0px, -39.0px); }
-            28.7%    { transform: translate(-6.8px, -38.4px); }
-            30.4%    { transform: translate(-13.3px, -36.6px); }
-            32.1%    { transform: translate(-19.5px, -33.8px); }
-            33.8%    { transform: translate(-25.1px, -29.9px); }
-            35.5%    { transform: translate(-29.9px, -25.1px); }
-            37.2%    { transform: translate(-33.8px, -19.5px); }
-            38.9%    { transform: translate(-36.6px, -13.3px); }
-            40.6%    { transform: translate(-38.4px, -6.8px); }
-            42.3%    { transform: translate(-39.0px, 0.0px); }
-            44%      { transform: translate(-38.4px, 6.8px); }
-            47%      { transform: translate(-38.4px, 6.8px); }
-            48.5%    { transform: translate(-39.0px, 0.0px); }
-            50.1%    { transform: translate(-38.4px, -6.8px); }
-            51.6%    { transform: translate(-36.6px, -13.3px); }
-            53.2%    { transform: translate(-33.8px, -19.5px); }
-            54.8%    { transform: translate(-29.9px, -25.1px); }
-            56.3%    { transform: translate(-25.1px, -29.9px); }
-            57.9%    { transform: translate(-19.5px, -33.8px); }
-            59.4%    { transform: translate(-13.3px, -36.6px); }
-            61%      { transform: translate(-6.8px, -38.4px); }
-            62.5%    { transform: translate(-0.0px, -39.0px); }
-            64%      { transform: translate(6.8px, -38.4px); }
-            65.6%    { transform: translate(13.3px, -36.6px); }
-            67.2%    { transform: translate(19.5px, -33.8px); }
-            68.7%    { transform: translate(25.1px, -29.9px); }
-            70.2%    { transform: translate(29.9px, -25.1px); }
-            71.8%    { transform: translate(33.8px, -19.5px); }
-            73.3%    { transform: translate(36.6px, -13.3px); }
-            74.9%    { transform: translate(38.4px, -6.8px); }
-            76.5%    { transform: translate(39.0px, -0.0px); }
-            78%      { transform: translate(38.4px, 6.8px); }
-            81%      { transform: translate(38.4px, 6.8px); animation-timing-function: ease-in; }
-            88%      { transform: translate(0.0px, 0.0px); }
-            92%      { transform: translate(0.0px, 0.0px); }
+            33%      { transform: translate(-0.0px, -39.0px); }
+            34.8%    { transform: translate(-6.8px, -38.4px); }
+            36.6%    { transform: translate(-13.3px, -36.6px); }
+            38.4%    { transform: translate(-19.5px, -33.8px); }
+            40.2%    { transform: translate(-25.1px, -29.9px); }
+            42%      { transform: translate(-29.9px, -25.1px); }
+            43.8%    { transform: translate(-33.8px, -19.5px); }
+            45.6%    { transform: translate(-36.6px, -13.3px); }
+            47.4%    { transform: translate(-38.4px, -6.8px); }
+            49.2%    { transform: translate(-39.0px, 0.0px); }
+            51%      { transform: translate(-38.4px, 6.8px); }
+            57%      { transform: translate(-38.4px, 6.8px); }
+            58.4%    { transform: translate(-39.0px, 0.0px); }
+            59.8%    { transform: translate(-38.4px, -6.8px); }
+            61.2%    { transform: translate(-36.6px, -13.3px); }
+            62.6%    { transform: translate(-33.8px, -19.5px); }
+            64%      { transform: translate(-29.9px, -25.1px); }
+            65.4%    { transform: translate(-25.1px, -29.9px); }
+            66.8%    { transform: translate(-19.5px, -33.8px); }
+            68.2%    { transform: translate(-13.3px, -36.6px); }
+            69.6%    { transform: translate(-6.8px, -38.4px); }
+            71%      { transform: translate(-0.0px, -39.0px); }
+            72.4%    { transform: translate(6.8px, -38.4px); }
+            73.8%    { transform: translate(13.3px, -36.6px); }
+            75.2%    { transform: translate(19.5px, -33.8px); }
+            76.6%    { transform: translate(25.1px, -29.9px); }
+            78%      { transform: translate(29.9px, -25.1px); }
+            79.4%    { transform: translate(33.8px, -19.5px); }
+            80.8%    { transform: translate(36.6px, -13.3px); }
+            82.2%    { transform: translate(38.4px, -6.8px); }
+            83.6%    { transform: translate(39.0px, -0.0px); }
+            85%      { transform: translate(38.4px, 6.8px); }
+            93%      { transform: translate(0.0px, 0.0px); }
             100%     { transform: translate(0.0px, 0.0px); }
         }
         @keyframes joy-attract-ring {
