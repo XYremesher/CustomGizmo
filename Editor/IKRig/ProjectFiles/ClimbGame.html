@@ -2256,7 +2256,16 @@
                     : Math.min(40, 16 + comboStep * 4));
 
                 sacks.forEach(sack => {
-                    if (sack.group.position.distanceTo(hitCenter) < hitRadius + 1.5) {
+                    // Both tests measure to the SAME point. The cheap gate used
+                    // to measure to sack.group.position, which sits on the
+                    // ground, while checkHit measures to colliderMesh, which
+                    // sits 1.2 up at chest height - so a hand that checkHit
+                    // would have accepted could be up to 2.4 from the base and
+                    // get thrown out by a 2.2 gate first. Punches that plainly
+                    // connected did nothing, which is not a threshold to tune
+                    // but two different reference points.
+                    const sackAt = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
+                    if (sackAt.distanceTo(hitCenter) < hitRadius + 1.5) {
                         if (sack.checkHit(hitCenter, hitRadius)) {
                             sack.applyHit(fwdDir, forceMagnitude);
                             // Counted here rather than inferred from the punch

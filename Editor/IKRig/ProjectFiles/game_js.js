@@ -1864,7 +1864,11 @@ export function startGame(CharacterClass) {
     // COMP_RUN_ENTER (3.5), which is the speed the gait picker switches to the
     // run clip at: any faster and the "walking alongside" band disappears
     // entirely and they only ever run.
-    const AI_WANDER_SPEED = 3.2, AI_CHASE_SPEED = 15.0;
+    // 2.2, not the 3.2 it was. AI_WALK_ANIM_REF is 2.6, so 3.2 ran the walk
+    // clip at 1.23x - still the walk, but a hurried one, and paired with a
+    // fully random new heading every few seconds it read as darting about
+    // rather than idling. See pickNewAiWanderTarget for the other half.
+    const AI_WANDER_SPEED = 2.2, AI_CHASE_SPEED = 15.0;
     // Bots push each other apart rather than occupying the same spot. They all
     // chase the same victim, so without this they converge on one point and
     // walk through one another - three overlapping bodies reading as one.
@@ -2651,7 +2655,18 @@ export function startGame(CharacterClass) {
     });
 
     function pickNewAiWanderTarget() {
-        const angle = Math.random() * Math.PI * 2;
+        // Biased toward where it is already facing rather than drawn from the
+        // whole circle. A uniform pick reverses direction half the time, and a
+        // bot that turns 180 degrees every couple of seconds looks like it is
+        // darting, not wandering - which is what "running left and right out
+        // of nowhere" was. +/-70 degrees keeps it meandering while still
+        // letting it work its way around over several legs.
+        // rotation.y is a yaw where 0 means +Z, but the target below is built
+        // with (cos, sin) as (x, z), where 0 means +X. Forward is therefore
+        // PI/2 - yaw in this parametrisation; using the yaw raw would have
+        // biased every bot 90 degrees to its own right instead of ahead.
+        const facing = Math.PI / 2 - aiBot.group.rotation.y;
+        const angle = facing + (Math.random() - 0.5) * (140 * Math.PI / 180);
         const dist = 3 + Math.random() * 6;
         aiBotState.target.set(
             aiBot.group.position.x + Math.cos(angle) * dist,
@@ -4631,6 +4646,10 @@ export function startGame(CharacterClass) {
     ];
     const AI_BOT_SPECS = [
         { key: 'BotYellow', id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] },
+        // A second plain one. Two of the simplest enemy at once is a different
+        // fight from one - you have to keep track of a flank - without adding
+        // a move the player has not been taught yet.
+        { key: 'BotYellow2', id: 'ai-bot-4', color: 0xffd633, offset: [5.5, 0, 1.5] },
         // Orange throws the five-hit combo instead of a single punch.
         { key: 'BotOrange', id: 'ai-bot-2', color: 0xff7a1a, offset: [-3.5, 0, 3.5], combo: true },
         // Red winds up and throws one knockdown blow.
@@ -11136,9 +11155,16 @@ export function startGame(CharacterClass) {
             // Where each sleeping bot ends up, worked out here rather than at
             // the storyPlaceBot calls below because the companion sharing its
             // clearing needs to be turned away from it.
+            // FREE_BOT_STANDOFF, not FREE_WAVE_SPREAD. The spread is how far
+            // companions land either side of their spot; reusing it put the
+            // enemy 3.5 units from the recruit, which is close enough to be
+            // in your face the moment you walk up. Standing them further back
+            // gives you time to see one coming, which is the whole point of
+            // waking them when a companion is collected.
             const botAt = {
-                BotYellow: { x: m1.x + FREE_WAVE_SPREAD, z: m1.z + FREE_WAVE_SPREAD },
-                BotOrange: { x: m2.x + FREE_WAVE_SPREAD, z: m2.z + FREE_WAVE_SPREAD },
+                BotYellow:  { x: m1.x + FREE_BOT_STANDOFF, z: m1.z + FREE_BOT_STANDOFF },
+                BotYellow2: { x: m1.x + FREE_BOT_STANDOFF + 4.0, z: m1.z + FREE_BOT_STANDOFF - 3.0 },
+                BotOrange:  { x: m2.x + FREE_BOT_STANDOFF, z: m2.z + FREE_BOT_STANDOFF },
             };
             // Yaw that points +Z (the direction inVisionCone measures from)
             // along ax,az -> bx,bz.
@@ -11182,6 +11208,8 @@ export function startGame(CharacterClass) {
             // half of the back-to-back pairing set up in `spots` above.
             storyPlaceBot('BotYellow', botAt.BotYellow.x, storyGroundY(botAt.BotYellow.x, botAt.BotYellow.z, 0), botAt.BotYellow.z, true,
                 yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow.x, botAt.BotYellow.z));
+            storyPlaceBot('BotYellow2', botAt.BotYellow2.x, storyGroundY(botAt.BotYellow2.x, botAt.BotYellow2.z, 0), botAt.BotYellow2.z, true,
+                yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow2.x, botAt.BotYellow2.z));
             storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
                 yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
@@ -11602,6 +11630,10 @@ export function startGame(CharacterClass) {
     let _freeRecruits = [];
     let _freeRecruitT = 0;   // beacon bob clock
     const FREE_WAVE_SPREAD = 3.5;   // how far either side of the spot they land
+    // How far the sleeping enemy stands from the recruit sharing its clearing.
+    // Deliberately outside enemyWakeRange's own 16, so it is wakeNearestSleeper
+    // that starts the fight rather than the bot noticing you first.
+    const FREE_BOT_STANDOFF = 11.0;
     // Drops the player at the END of the forest with two companions already
     // collected, because reaching that state by playing takes a few minutes
     // and the companion ledge behaviour only happens up there.
