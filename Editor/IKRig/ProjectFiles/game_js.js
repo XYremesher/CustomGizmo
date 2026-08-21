@@ -11513,9 +11513,17 @@ export function startGame(CharacterClass) {
     // does not exist in a normal playthrough, so what gets debugged is the
     // real thing.
     //
-    // window.forestDebugEnd = false, then reload, for the normal start.
+    // OFF by default - the forest now starts where the level starts, at the
+    // corridor mouth, with all three recruits still waiting to be found.
+    //
+    // window.forestDebugEnd = true, then reload, to jump back to the foot of
+    // the stairs with two companions already collected. That was the default
+    // while the companion ledge behaviour was being fixed, because reaching
+    // that state by playing takes a few minutes and the bugs only happen up
+    // there. It is kept whole rather than deleted for the next time that is
+    // the thing being worked on.
     function forestDebugStartAtEnd() {
-        if (window.forestDebugEnd === false) return;
+        if (window.forestDebugEnd !== true) return;
         // The FOOT of the stairs, not the landing. The stairs march south from
         // FOREST_PLATFORM_Z0 in FOREST_STEP_SIZE rises, so one step's depth
         // clear of the lowest one puts you on flat ground looking up at the
@@ -14899,13 +14907,11 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        // Level 1 on load, temporarily, to measure it as a FIRST level -
-        // reaching it through a level switch and starting in it are different
-        // measurements, and the gap between them is the whole question right
-        // now. window.startLevel overrides this without an edit; set it to
-        // 'local_forest_free' before the module runs to get the forest back.
-        // Forest (no story) again - and see forestDebugStartAtEnd, which drops
-        // you at the top of it with two companions already collected.
+        // The story-free forest on load, from its own start: the corridor
+        // mouth, with all three recruits still out there to be found.
+        // window.startLevel overrides this without an edit, and
+        // window.forestDebugEnd = true skips ahead to the foot of the stairs
+        // with two of them already collected (see forestDebugStartAtEnd).
         select.value = window.startLevel || 'local_forest_free'; currentLevel = select.value;
         buildLevel();
     }
