@@ -120,8 +120,30 @@ export class RemoteAvatar {
         this.activeAction = null;
         this.activeUpperAction = null;
         this.isLoaded = false;
-        this.freezeDistance = 18;
+        // Animation LOD. Two bounds, not one:
+        //   freezeDistance     - always animate this close, on screen or not.
+        //                        Something just off the edge of the view can be
+        //                        in shot a frame later, and a body frozen at
+        //                        the moment it enters is a visible pop.
+        //   farFreezeDistance  - never animate past this, on screen or not. A
+        //                        character this far off is a few pixels tall.
+        // Between the two it comes down to whether it is actually in frame -
+        // see `onScreen`, set from the frustum game_js.js already builds for
+        // shadow culling.
+        //
+        // It used to be distance alone at 18, which is nothing: bots give up a
+        // chase at 70 from the player and the camera sits up to 20 further
+        // back again, so a bot could be plainly on screen, still walking to a
+        // wander target, and frozen - which reads as sliding with no
+        // animation. The near bound is now 25 and the frustum covers the rest.
+        this.freezeDistance = 25;
         this.freezeDistanceSq = this.freezeDistance * this.freezeDistance;
+        this.farFreezeDistance = 95;
+        this.farFreezeDistanceSq = this.farFreezeDistance * this.farFreezeDistance;
+        // Assumed visible until something says otherwise, so an avatar nobody
+        // has culled yet (a fresh remote player, say) animates rather than
+        // standing frozen until the first cull pass reaches it.
+        this.onScreen = true;
 
         this.targetPos = new THREE.Vector3();
         this.targetQuat = new THREE.Quaternion();
@@ -770,7 +792,12 @@ export class RemoteAvatar {
         if (!this.isLoaded) return;
 
         const cameraPos = window.gameCamera && window.gameCamera.position ? window.gameCamera.position : null;
-        const shouldFreeze = cameraPos && this.group.position.distanceToSquared(cameraPos) > this.freezeDistanceSq;
+        let shouldFreeze = false;
+        if (cameraPos) {
+            const d2 = this.group.position.distanceToSquared(cameraPos);
+            shouldFreeze = d2 > this.farFreezeDistanceSq ||
+                           (d2 > this.freezeDistanceSq && !this.onScreen);
+        }
         if (shouldFreeze) {
             // Distant companions and bots keep their last pose but stop doing
             // heavy mixer/IK work. This is the same idea as a simple LOD: their

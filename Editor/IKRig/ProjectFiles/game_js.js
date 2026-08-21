@@ -2387,9 +2387,15 @@ export function startGame(CharacterClass) {
     window.companionEnabled = true;   // on by default - toggle stays available from the panel ('Companion' → Add Companion)
     // Wide enough that the bot actually follows rather than losing interest
     // the moment you walk away - 8/11 meant it gave up almost immediately and
-    // went back to wandering. Still bounded, so it does return to wandering
-    // if you get properly far from it.
-    const AI_CHASE_RADIUS = 35, AI_CHASE_GIVEUP_RADIUS = 45;
+    // went back to wandering, and 35/45 still let you stroll out of a fight.
+    // Still bounded, so it does return to wandering if you get properly far
+    // from it.
+    //
+    // These set the floor for the animation LOD: a bot can be this far from
+    // the PLAYER and still on screen, further again from the camera. See
+    // freezeDistance in remote_avatar.js, which is why widening these without
+    // touching that made bots slide around unanimated.
+    const AI_CHASE_RADIUS = 50, AI_CHASE_GIVEUP_RADIUS = 70;
     // How close a bot gets before it starts a swing. LIVE, not a constant -
     // I set this to 0.95 to make them close the last step first and they
     // stopped landing anything at all, because a bot cannot reliably stand
@@ -2407,7 +2413,14 @@ export function startGame(CharacterClass) {
     // ...and how far you get before it stops caring again. Deliberately wider
     // than the wake range: with one threshold a bot sitting right on it flips
     // between thinking and sleeping every frame.
-    window.enemySleepRange = 24;
+    //
+    // It must also be wider than AI_CHASE_GIVEUP_RADIUS, and that is not a
+    // preference. The dormancy check runs BEFORE the chase/wander mode
+    // transition, so a bot in 'wander' further than this goes straight back to
+    // sleep and never gets the chance to notice anyone - at 24 against a
+    // 70-unit chase, waking a sleeper (see wakeNearestSleeper) did nothing at
+    // all, because it was asleep again on the next frame.
+    window.enemySleepRange = 75;
 
     // ---- Assisted ledge grab ----
     // Widens the window in which a lip counts as grabbable. Forgiveness, not
@@ -4397,6 +4410,84 @@ export function startGame(CharacterClass) {
         // active `companion` binding and has no handle on the record.
         rec.comp.marker = group;
     }
+    // ---- "Come and get me" beacon ----
+    // A triangle hanging over a recruit who has not been collected yet,
+    // pointing down at them. The ground dot alone says where someone IS; this
+    // says they are still WAITING, which is the thing a player has to be told
+    // before they will walk over.
+    //
+    // Billboarded about Y ONLY, not a full sprite. A sprite would also tilt
+    // to face a camera looking down, and a triangle that pitches with the
+    // camera stops reading as "down there" - the whole job of the shape.
+    //
+    // Same two-material trick as the dot: one copy depth-tested and near
+    // opaque, one drawn through everything at low opacity, so a recruit behind
+    // a trunk is still findable. That is exactly when you need it, since this
+    // forest is mostly trunks.
+    const RECRUIT_BEACON_R = 0.42;
+    const RECRUIT_BEACON_Y = 2.5;    // clear of the head
+    const RECRUIT_BEACON_BOB = 0.12;
+    const _beaconToCam = new THREE.Vector3();
+    function attachRecruitBeacon(comp, color) {
+        if (!comp || comp._beacon) return;
+        // Defaults to whatever the ground dot is already wearing - the
+        // companion's own colour, which is what tells three waiting figures
+        // apart. Read back rather than passed in again, so the two markers
+        // cannot drift to different colours.
+        if (color === undefined && comp.marker) {
+            comp.marker.traverse(o => {
+                if (color === undefined && o.material && o.material.color) {
+                    color = o.material.color.getHex();
+                }
+            });
+        }
+        // CircleGeometry with 3 segments IS a triangle; thetaStart -90deg puts
+        // a vertex straight down so it points at the companion rather than
+        // sitting on a flat edge.
+        const geo = new THREE.CircleGeometry(RECRUIT_BEACON_R, 3, -Math.PI / 2);
+        const group = new THREE.Group();
+        const mk = (opacity, depthTest, order) => {
+            const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                color: color !== undefined ? color : 0xffffff,
+                transparent: true, opacity,
+                depthTest, depthWrite: false,
+                side: THREE.DoubleSide,
+            }));
+            m.renderOrder = order;
+            // Same trap the dot documents - a plane riding on a character is a
+            // very reliable way to "hit a wall" that is actually a UI marker.
+            m.raycast = () => {};
+            group.add(m);
+        };
+        mk(0.25, false, 1);
+        mk(0.95, true, 2);
+        group.position.y = RECRUIT_BEACON_Y;
+        comp.group.add(group);
+        comp._beacon = group;
+    }
+    function removeRecruitBeacon(comp) {
+        if (!comp || !comp._beacon) return;
+        comp._beacon.traverse(o => {
+            if (o.geometry) o.geometry.dispose();
+            if (o.material) o.material.dispose();
+        });
+        if (comp._beacon.parent) comp._beacon.parent.remove(comp._beacon);
+        comp._beacon = null;
+    }
+    // Turned to the camera and bobbed. The yaw is worked out in WORLD terms
+    // and then the companion's own rotation is subtracted, because the beacon
+    // hangs off its group and would otherwise turn with the body.
+    function updateRecruitBeacon(comp, tSec) {
+        if (!comp || !comp._beacon) return;
+        const cam = window.gameCamera;
+        if (cam) {
+            _beaconToCam.subVectors(cam.position, comp.group.position);
+            comp._beacon.rotation.y =
+                Math.atan2(_beaconToCam.x, _beaconToCam.z) - comp.group.rotation.y;
+        }
+        comp._beacon.position.y = RECRUIT_BEACON_Y + Math.sin(tSec * 2.2) * RECRUIT_BEACON_BOB;
+    }
+
     // Recolours a companion's ground dot. Both of the marker's meshes carry
     // their own material (one depth-tested, one drawn through geometry), so
     // the tint has to be written to each - setting it on one leaves the
@@ -4556,6 +4647,10 @@ export function startGame(CharacterClass) {
         disposeCompanionPathLines();
         saveCompanion(rec);
         if (rec.comp.marker && rec.comp.marker.parent) rec.comp.marker.parent.remove(rec.comp.marker);
+        // The beacon owns its own geometry and materials, unlike the dot which
+        // shares a cached texture - so a level rebuild that only detached the
+        // group would leak both.
+        removeRecruitBeacon(rec.comp);
         // Its debug bubble, if the readout was on - dispose() below only takes
         // down the avatar's own group/mixer, not a label that merely points at
         // it, so without this the bubble outlived the companion it was hovering
@@ -11070,6 +11165,10 @@ export function startGame(CharacterClass) {
                 comp.group.position.copy(at);
                 comp.group.rotation.y = yaw;
                 comp.followOverride = at;   // stand here until spoken to
+                // The beacon marks them as still-uncollected; releasing them
+                // takes it away again, so its presence and followOverride
+                // always agree.
+                attachRecruitBeacon(comp);
                 _freeRecruits.push({ comp, at });
             });
             // Every enemy in the level, placed now and asleep. One of them
@@ -11501,6 +11600,7 @@ export function startGame(CharacterClass) {
     // already real companions - updateCompanions drives them, so they idle and
     // foot-plant like anything else - just pinned to a spot until you arrive.
     let _freeRecruits = [];
+    let _freeRecruitT = 0;   // beacon bob clock
     const FREE_WAVE_SPREAD = 3.5;   // how far either side of the spot they land
     // Drops the player at the END of the forest with two companions already
     // collected, because reaching that state by playing takes a few minutes
@@ -11548,6 +11648,7 @@ export function startGame(CharacterClass) {
             const r = _freeRecruits[i];
             if (!r.comp) continue;
             r.comp.followOverride = null;
+            removeRecruitBeacon(r.comp);
             setCompanionMarkerColor(r.comp, 0xffffff);
             // Side by side and slightly behind, where following would have
             // left them - not stacked on the player, which is exactly the
@@ -11561,27 +11662,49 @@ export function startGame(CharacterClass) {
         window.compassTarget = next ? next.at : (star.visible ? star.position : null);
     }
 
-    function updateFreeRecruits() {
+    // The nearest bot still asleep, woken. Distance-ordered rather than
+    // "any of them", so collecting the recruit in the first clearing does not
+    // wake the one guarding the stairs on the far side of the wood.
+    function wakeNearestSleeper(near) {
+        let best = null, bestD2 = Infinity;
+        for (let i = 0; i < aiBots.length; i++) {
+            const b = aiBots[i].bot;
+            if (!b || !b.isLoaded || !b.dormant) continue;
+            const d2 = b.group.position.distanceToSquared(near);
+            if (d2 < bestD2) { bestD2 = d2; best = b; }
+        }
+        if (best) best.dormant = false;
+    }
+
+    function updateFreeRecruits(delta) {
         if (currentLevel !== 'local_forest_free' || !_freeRecruits.length) return;
+        _freeRecruitT += delta || 0;
         const p = char.group.position;
         let released = false;
         for (let i = 0; i < _freeRecruits.length; i++) {
             const r = _freeRecruits[i];
             if (!r.comp || !r.comp.followOverride) continue;
+            // Turned and bobbed every frame while it is still waiting.
+            updateRecruitBeacon(r.comp, _freeRecruitT);
             if (p.distanceTo(r.at) > STORY_REACH) continue;
             // Released: from here it follows you like any other companion.
             // Nothing is created or destroyed, so there is nothing to pop.
             r.comp.followOverride = null;
+            removeRecruitBeacon(r.comp);
             // The dot goes white on joining. Until then its colour is the
             // companion's own, which is what tells three waiting figures
             // apart at a distance; once one is yours that distinction has
             // done its job, and a white dot is what marks it as collected.
             setCompanionMarkerColor(r.comp, 0xffffff);
             released = true;
-            // No spawning here any more - the enemy for this beat has been
-            // standing in the clearing since the level was built, asleep. It
-            // wakes on its own when you get close enough, which is usually the
-            // same moment you reach the companion.
+            // Nothing is spawned - the enemy for this beat has been standing
+            // in the clearing since the level was built, asleep. It used to be
+            // left to notice you on its own, but enemyWakeRange is 16 and a
+            // recruit is not reliably that close to one, so collecting a
+            // companion could pass with nothing happening at all. Waking the
+            // nearest sleeper here ties the two together: you gain someone,
+            // and something comes for you.
+            wakeNearestSleeper(r.at);
         }
         // Nothing is spawned on reaching the top either - the red one has
         // been standing on that step since the level loaded.
@@ -12760,6 +12883,19 @@ export function startGame(CharacterClass) {
             const n = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
             if (n >= window.forestTreeThreshold) continue;
             const r = FOREST_LAKE_MIN_R + forestHash01(x * 1.7, z * 2.3) * (FOREST_LAKE_MAX_R - FOREST_LAKE_MIN_R);
+            // Never in or beside the ENTRANCE corridor. The spawn-pocket test
+            // above measures from the world origin, but the level does not
+            // start there - it starts halfway down the entry corridor at
+            // x = FOREST_ENTRY_X, tens of units away, so that test was leaving
+            // the one spot the player is guaranteed to stand completely
+            // unprotected. Measured against the bank's full reach, not the
+            // water's: the shore torus extends FOREST_LAKE_BANK past the
+            // radius, so a lake that merely looks clear can still lay a wet
+            // slope across the way in.
+            const [ez0, ez1] = forestCorridorZ(-1);
+            const keepOut = r + FOREST_LAKE_BANK + FOREST_SPAWN_CLEAR_ENOUGH;
+            if (Math.abs(x - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5 + keepOut &&
+                z < ez1 + keepOut && z > ez0 - keepOut) continue;
             let clash = false;
             for (let k = 0; k < lakes.length; k++) {
                 if (Math.hypot(x - lakes[k].x, z - lakes[k].z) < r + lakes[k].r + 10) { clash = true; break; }
@@ -18683,20 +18819,25 @@ export function startGame(CharacterClass) {
     // Generous enough to cover a character's full height plus a ragdoll's
     // sprawl, so nobody pops their shadow back in at the screen edge.
     const _shadowCullSphere = new THREE.Sphere(new THREE.Vector3(), 2.5);
+    // The frustum is now built every frame whether or not shadow culling is
+    // on, because the animation LOD reads it too (avatar.onScreen below). It
+    // is one matrix multiply and six plane extractions - cheaper than the
+    // second frustum the alternative would have needed.
     function updateCharacterShadowCulling(activeCamera) {
         const on = !!window.cullOffscreenShadows;
-        if (on) {
-            _shadowCullMatrix.multiplyMatrices(activeCamera.projectionMatrix, activeCamera.matrixWorldInverse);
-            _shadowCullFrustum.setFromProjectionMatrix(_shadowCullMatrix);
-        }
+        _shadowCullMatrix.multiplyMatrices(activeCamera.projectionMatrix, activeCamera.matrixWorldInverse);
+        _shadowCullFrustum.setFromProjectionMatrix(_shadowCullMatrix);
         const apply = (avatar) => {
             if (!avatar || !avatar.bodyMeshes || !avatar.bodyMeshes.length) return;
-            let cast = true;
-            if (on) {
-                _shadowCullSphere.center.copy(avatar.group.position);
-                _shadowCullSphere.center.y += 1.0;
-                cast = _shadowCullFrustum.intersectsSphere(_shadowCullSphere);
-            }
+            _shadowCullSphere.center.copy(avatar.group.position);
+            _shadowCullSphere.center.y += 1.0;
+            const visible = _shadowCullFrustum.intersectsSphere(_shadowCullSphere);
+            // Read by RemoteAvatar.update to decide whether it can afford to
+            // stop animating. A bot that is being LOOKED AT must animate
+            // however far off it is - distance alone was freezing bots that
+            // were plainly on screen, which is what made them slide about.
+            avatar.onScreen = visible;
+            const cast = on ? visible : true;
             // Assigning it unconditionally is what makes turning the option
             // back off restore every caster without a separate pass.
             for (let i = 0; i < avatar.bodyMeshes.length; i++) avatar.bodyMeshes[i].castShadow = cast;
@@ -22651,7 +22792,7 @@ export function startGame(CharacterClass) {
         window.playerIsLedgeGrabbing = isLedgeGrabbing || isClimbingUp;
         updateVillageGoal();
         updateForestStory(delta);
-        updateFreeRecruits();
+        updateFreeRecruits(delta);
         updateRiverLesson();
         recordPlayerTrail(delta);
         updateAiBots(delta);
