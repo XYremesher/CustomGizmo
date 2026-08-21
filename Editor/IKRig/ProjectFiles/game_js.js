@@ -506,7 +506,18 @@ export function startGame(CharacterClass) {
     let _groundScanCache = null, _groundScanSrc = null, _groundScanLen = -1;
     function getGroundScanCollidables(src) {
         if (_groundScanCache && _groundScanSrc === src && _groundScanLen === src.length) return _groundScanCache;
-        _groundScanCache = src.filter(c => !(c.userData && c.userData.isDecorativeBump));
+        // Sandbag colliders are excluded for the same reason decorative bumps
+        // are: they are not floors. The bag's collider is a 1.2 x 2.4 x 1.2 box
+        // sitting ON the ground, and this scan fires five rays around the
+        // character and keeps the HIGHEST hit - so standing beside a bag put
+        // one offset ray on its top face at y+2.4, lifted the player there,
+        // dropped them when they shifted, and lifted them again. That bounce
+        // is also why the bag could never be punched: you cannot stand still
+        // next to it long enough to land one. It still blocks horizontally,
+        // which is what isWall/isObstacle are for; it just cannot be walked
+        // on top of, which was never the intention.
+        _groundScanCache = src.filter(c => !(c.userData &&
+            (c.userData.isDecorativeBump || c.userData.isSandbagCollider)));
         _groundScanSrc = src;
         _groundScanLen = src.length;
         return _groundScanCache;
@@ -3629,7 +3640,14 @@ export function startGame(CharacterClass) {
         // clip; it just does not think, chase or swing.
         if (aiBot.dormant) {
             const dp = char.group.position;
-            if (dp.distanceTo(aiBot.group.position) < window.enemyWakeRange) {
+            // holdAsleep means proximity is NOT enough - only an explicit
+            // wake (wakeNearestSleeper, when you collect the companion this
+            // one is paired with) starts it. The bot stands 11 from its
+            // recruit and enemyWakeRange is 16, so without this it noticed you
+            // on the way IN and the fight began before you had picked anyone
+            // up, which is the wrong order: the reward should bring the
+            // trouble, not arrive with it already underway.
+            if (!aiBot.holdAsleep && dp.distanceTo(aiBot.group.position) < window.enemyWakeRange) {
                 aiBot.dormant = false;
             } else {
                 const q = aiBot.group.quaternion, bp = aiBot.group.position;
@@ -11213,6 +11231,10 @@ export function startGame(CharacterClass) {
             storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
                 yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
+            // Staged, so none of them may start on their own. Each is released
+            // by collecting the companion it shares a clearing with; the red
+            // one at the top of the stairs comes with the last of them.
+            aiBots.forEach(r => { if (r.bot) r.bot.holdAsleep = true; });
 
             storyStage = 'free';
             window.compassTarget = _freeRecruits.length ? _freeRecruits[0].at : null;
@@ -11697,6 +11719,11 @@ export function startGame(CharacterClass) {
     // The nearest bot still asleep, woken. Distance-ordered rather than
     // "any of them", so collecting the recruit in the first clearing does not
     // wake the one guarding the stairs on the far side of the wood.
+    // How close a second sleeper has to be to the one being woken to count as
+    // part of the same pack. The two yellows share a clearing a few units
+    // apart, and waking one of a pair leaves the other standing there asleep
+    // while its partner fights - which reads as a bug, not as staging.
+    const WAKE_PACK_RADIUS = 10.0;
     function wakeNearestSleeper(near) {
         let best = null, bestD2 = Infinity;
         for (let i = 0; i < aiBots.length; i++) {
@@ -11705,7 +11732,19 @@ export function startGame(CharacterClass) {
             const d2 = b.group.position.distanceToSquared(near);
             if (d2 < bestD2) { bestD2 = d2; best = b; }
         }
-        if (best) best.dormant = false;
+        if (!best) return;
+        const packR2 = WAKE_PACK_RADIUS * WAKE_PACK_RADIUS;
+        for (let i = 0; i < aiBots.length; i++) {
+            const b = aiBots[i].bot;
+            if (!b || !b.isLoaded || !b.dormant) continue;
+            if (b !== best && b.group.position.distanceToSquared(best.group.position) > packR2) continue;
+            // Both flags: dormant is "not thinking right now", holdAsleep is
+            // "and proximity must not change that". Clearing only the first
+            // would leave it liable to be put back to sleep and then unable to
+            // wake itself again.
+            b.dormant = false;
+            b.holdAsleep = false;
+        }
     }
 
     function updateFreeRecruits(delta) {

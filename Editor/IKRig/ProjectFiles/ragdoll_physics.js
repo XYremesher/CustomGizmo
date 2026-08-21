@@ -322,12 +322,28 @@ export const RagdollPhysics = {
 
         const getBone = (id) => this.getParticle(id)?.bone;
 
+        // Each link aims ONE bone along the segment p1 -> p2, and the bone it
+        // aims is the one that STARTS at p1. Four of these always did that;
+        // the two limb ends aimed the bone at p2 instead - the hand for
+        // elbow -> hand, the foot for knee -> foot.
+        //
+        // That is what left hands mangled. The forearm was then never rotated
+        // at all, so it stayed in whatever pose the last clip left it, and the
+        // hand - its child, so already carried to the wrong place - was given
+        // the rotation the FOREARM should have had. Wrong position and wrong
+        // orientation, on a bone that ends up right in front of the camera.
+        // beginStandUp bakes the pose it finds, so the break survived getting
+        // back up.
+        //
+        // The knee -> foot link had the identical mistake and is fixed with
+        // it; a shin that never rotates is the same defect, just less obvious
+        // at ankle height than at the wrists.
         this.ragdollLinks = [
             { p1: 'hips', p2: 'spine', bone: getBone('hips') }, { p1: 'spine', p2: 'head', bone: getBone('spine') },
-            { p1: 'lShoulder', p2: 'lElbow', bone: getBone('lShoulder') }, { p1: 'lElbow', p2: 'lHand', bone: getBone('lHand') },
-            { p1: 'rShoulder', p2: 'rElbow', bone: getBone('rShoulder') }, { p1: 'rElbow', p2: 'rHand', bone: getBone('rHand') },
-            { p1: 'lThigh', p2: 'lKnee', bone: getBone('lThigh') }, { p1: 'lKnee', p2: 'lFoot', bone: getBone('lFoot') },
-            { p1: 'rThigh', p2: 'rKnee', bone: getBone('rThigh') }, { p1: 'rKnee', p2: 'rFoot', bone: getBone('rFoot') }
+            { p1: 'lShoulder', p2: 'lElbow', bone: getBone('lShoulder') }, { p1: 'lElbow', p2: 'lHand', bone: getBone('lElbow') },
+            { p1: 'rShoulder', p2: 'rElbow', bone: getBone('rShoulder') }, { p1: 'rElbow', p2: 'rHand', bone: getBone('rElbow') },
+            { p1: 'lThigh', p2: 'lKnee', bone: getBone('lThigh') }, { p1: 'lKnee', p2: 'lFoot', bone: getBone('lKnee') },
+            { p1: 'rThigh', p2: 'rKnee', bone: getBone('rThigh') }, { p1: 'rKnee', p2: 'rFoot', bone: getBone('rKnee') }
         ];
 
         this.ragdollLinks.forEach(link => {
