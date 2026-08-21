@@ -895,7 +895,7 @@ export function startGame(CharacterClass) {
     // - kept off by default to preserve FPS in the editor/game view. It is
     // still available from the settings panel when a user explicitly wants it.
     window.pixelEffectEnabled = false;
-    window.pixelRenderScale = 0.75;
+    window.pixelRenderScale = 1.0;
     window.nearestNeighborUpscaling = false;
     window.sharpeningEnabled = false;
     window.sharpeningStrength = 0.50;

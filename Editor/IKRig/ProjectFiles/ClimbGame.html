@@ -502,9 +502,11 @@
         body.ui-alt #jump-btn  { bottom: 165px; right: 20px;  width: 60px; height: 60px; }
         /* Swapped with build-btn (UI2 only) - each keeps its own size, only position trades. */
         body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
-        /* Charge-ring SVG is sized for the base 60px button (76 = 60 + 2*8px offset) -
-           without this it stays 76px against the shrunk 50px button and reads as an
-           off-centre border. Same size both orientations, so no landscape duplicate needed. */
+        /* The ring is proportional to the button: 66/50 matches 76/60. Size is
+           all that needs overriding now - the SVG centres itself and its
+           viewBox scales the circle, so neither the offset nor the circle's
+           own radius has to be restated here. Same size both orientations, so
+           no landscape duplicate needed. */
         body.ui-alt #punch-btn > svg { width: 66px !important; height: 66px !important; }
         body.ui-alt #build-btn { bottom: 116px; right: 26px; width: 38px; height: 38px; }
         body.ui-alt #carry-btn { bottom: 181px; right: 92px; width: 42px; height: 42px; }
@@ -1468,8 +1470,8 @@
                          read 1.00 while the engine ran at 0.75: nothing pushes a
                          slider's value at load, so the panel was reporting a
                          resolution the composer was never rendering at. -->
-                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">0.75</span></label><br>
-                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="0.75" style="width: 100%;"><br>
+                    <label>Render Scale (fillrate): <span id="pixel-render-scale-val">1.00</span></label><br>
+                    <input type="range" id="pixel-render-scale-slider" min="0.25" max="1.0" step="0.05" value="1.0" style="width: 100%;"><br>
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
@@ -1628,7 +1630,16 @@
     </div>
     <div id="punch-btn">
         PUNCH
-        <svg style="position: absolute; top: -8px; left: -8px; width: 76px; height: 76px; pointer-events: none; transform: rotate(-90deg);">
+        <!-- Centred on the button by percentage, not by a hand-computed
+             offset. It used to sit at top/left -8px, which is only correct
+             while the SVG is exactly 16px wider than the button - so when
+             body.ui-alt shrank the button to 50px and the SVG to 66px, the
+             ring drifted 5px down-right. The viewBox makes the circle scale
+             WITH the element rather than staying at its authored 76px size,
+             which is the other half of the same bug: at 66px the r=32 ring
+             (68px across including the stroke) was also being clipped by the
+             SVG's own edge. -->
+        <svg viewBox="0 0 76 76" style="position: absolute; top: 50%; left: 50%; width: 76px; height: 76px; pointer-events: none; transform: translate(-50%, -50%) rotate(-90deg);">
             <circle cx="38" cy="38" r="32" stroke="rgba(255, 255, 255, 0.15)" stroke-width="4" fill="transparent" />
             <circle id="punch-ring-fill" cx="38" cy="38" r="32" stroke="#00ff00" stroke-width="4" fill="transparent" stroke-linecap="round" stroke-dasharray="201.06" stroke-dashoffset="201.06" />
         </svg>
