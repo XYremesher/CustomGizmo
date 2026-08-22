@@ -1430,7 +1430,18 @@ export function startGame(CharacterClass) {
     // where grass actually belongs, got no more of it than the bare paths did.
     // This share of the budget goes into a ring around a trunk instead, which
     // both thickens the green areas and puts grass against the trees.
-    window.grassTreeShare = 0.6;    // fraction of blades placed at tree bases
+    // The collar's OWN budget, in cards, rather than a slice of grassCount.
+    //
+    // It used to take 0.6 of the scatter's 4000, and with several hundred
+    // trees in the forest that worked out at about six cards per tree against
+    // the fifteen the two rings ask for - so the collar was set by the budget,
+    // not by grassTreeDensity, and turning the density up would have done
+    // nothing at all. Its own budget, added to grassCount rather than carved
+    // out of it, is what makes the density knob mean something.
+    //
+    // This is the number to lower if the grass costs too much: it is a hard
+    // cap on collar instances, and the rings thin evenly when it binds.
+    window.grassTreeBudget = 6000;
     // A collar hugging the trunk, not a wide apron: the point is to hide the
     // seam where the trunk meets the ground, which is what the soil patches
     // used to do.
@@ -1469,7 +1480,7 @@ export function startGame(CharacterClass) {
     // For scale, the bug this all started from was an effective density of 3
     // to 4 - a solid wall you could see through a tree once the x-ray dither
     // made it transparent.
-    window.grassTreeDensity = 1.5;
+    window.grassTreeDensity = 2.0;
     // TWO rings, not one. The inner one is the collar proper - full-size
     // cards, overlapping, hiding the seam where the trunk meets the ground.
     // The outer one is skirt: sparser, smaller, and turned about more, so the
@@ -1547,7 +1558,8 @@ export function startGame(CharacterClass) {
         // Fixed attempt budget so a level that is mostly platforms can't spin
         // here forever looking for open ground.
         let attempts = 0;
-        const maxAttempts = total * 6;
+        // Raised again once the collar plan is known - see below.
+        let maxAttempts = total * 6;
         let placed = 0;
         // Tree bases to cluster around, when there are any. _forestPlacements
         // is the scatter's own list, so the grass follows wherever the trees
@@ -1581,7 +1593,7 @@ export function startGame(CharacterClass) {
         if (treeSpots) {
             const avgCard = window.grassSize *
                 (window.grassTreeCardMin + window.grassTreeCardMax) * 0.5;
-            const budget = Math.floor(total * window.grassTreeShare);
+            const budget = Math.max(0, Math.round(window.grassTreeBudget));
             const rings = window.grassTreeRings;
             const baseMid = t => (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
             // [tree][ring] -> how many cards that ring gets on that tree.
@@ -1607,7 +1619,13 @@ export function startGame(CharacterClass) {
             }
         }
 
-        while (placed < total && attempts++ < maxAttempts) {
+        // The collar is ADDED to grassCount, not taken out of it, so turning
+        // the collar up does not quietly strip the open ground bare.
+        const collarCards = collarPlan ? collarPlan.length : 0;
+        const placeTotal = total + collarCards;
+        maxAttempts += collarCards * 6;
+
+        while (placed < placeTotal && attempts++ < maxAttempts) {
             let x, z;
             let collarTree = null, collarRing = null;
             if (collarPlan && collarAt < collarPlan.length) {
@@ -2867,6 +2885,8 @@ export function startGame(CharacterClass) {
     // Two extra rays offset sideways from the same origin, parallel to the
     // candidate direction, approximate a capsule sweep cheaply.
     const AI_AVOID_RADIUS = 0.45;
+    // Scratch for the stagger's wall check - see the hit-recovery step.
+    const _aiKnockDir = new THREE.Vector3(), _aiKnockFrom = new THREE.Vector3();
     const _aiAvoidPerp = new THREE.Vector3();
     const _aiAvoidSideOrigin = new THREE.Vector3();
 
@@ -4014,6 +4034,38 @@ export function startGame(CharacterClass) {
             const recoveryStrengthMult = THREE.MathUtils.clamp(aiBot.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
             const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
+            // Stop the stagger at whatever it is being knocked into.
+            //
+            // This step moves the bot DIRECTLY, and it had no horizontal check
+            // of any kind - the walking path has its avoidance bundle, this
+            // had nothing - so a punch drove a bot clean through a trunk and
+            // left it standing inside the tree. Not a ragdoll, just the
+            // knockback slide, which is why it looked unrelated to the ragdoll
+            // tree fixes.
+            //
+            // One ray at chest height along the horizontal part of the throw,
+            // reaching exactly as far as this frame's step plus a body radius.
+            // Chest height on purpose: a canopy chunk sits metres up and a
+            // trunk does not, so this stops at wood without ever catching
+            // leaves.
+            _aiKnockDir.copy(aiBot.hitRecoveryDir).setY(0);
+            const stepLen = _aiKnockDir.length() * stepSpeed * delta;
+            if (stepLen > 1e-5) {
+                _aiKnockDir.normalize();
+                _aiKnockFrom.copy(pos).setY(pos.y + 0.9);
+                rayFwd.set(_aiKnockFrom, _aiKnockDir);
+                const prevFar = rayFwd.far;
+                rayFwd.far = stepLen + AI_AVOID_RADIUS;
+                const wall = rayFwd.intersectObjects(aiBotNear())[0];
+                rayFwd.far = prevFar;
+                if (wall) {
+                    // Held a body radius off the surface rather than against
+                    // it, so the next frame's ray does not start inside.
+                    const allowed = Math.max(0, wall.distance - AI_AVOID_RADIUS);
+                    nextPos.x = pos.x + _aiKnockDir.x * allowed;
+                    nextPos.z = pos.z + _aiKnockDir.z * allowed;
+                }
+            }
             rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
             const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
             // Falls rather than snapping - see the companion's own stagger for
