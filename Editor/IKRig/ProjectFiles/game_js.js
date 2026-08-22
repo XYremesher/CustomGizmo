@@ -1447,20 +1447,29 @@ export function startGame(CharacterClass) {
     // painted onto the bark rather than growing round it.
     window.grassTreeInner = 0.62;   // ring starts this far from the trunk axis
     window.grassTreeSpread = 0.9;   // ...and extends this much further out
-    // Collar CARD width, as a fraction of grassSize. These are palings in a
-    // fence round the trunk, not tufts, so the MEAN is small - 0.33, about
-    // 0.46 wide, which is what puts a dozen-odd of them round a scale-1 trunk.
+    // Collar CARD size - now the SAME range as the scattered grass, because a
+    // collar of the same plant should not be a different size from the plant.
     //
-    // The spread about that mean is the scattered grass's own: 0.65..1.35 is
-    // 2.08:1, so 0.21..0.45 here. Matching the ratio rather than the absolute
-    // range is what matters - the two now vary by the same amount, so the
-    // collar looks like the same plant, while its cards stay narrow enough
-    // that a ring of them is a fence and not a hedge.
+    // Making it narrow instead was the wrong lever. The texture is a square
+    // holding two or three whole blades (measured: individual blades run
+    // 3.5:1 to 6:1, the sheet itself 1:1), so a narrow card does not show a
+    // narrow blade - it shows the whole clump squeezed, and stretching such a
+    // card tall enough to match the surrounding grass turns the blades into
+    // spaghetti. The card has to keep the sheet's proportions, which means
+    // matching the grass means matching its SIZE.
     //
-    // The mean is load-bearing: the card count is circumference over mean
-    // width (see the collar plan), so widening these thins the fence and
-    // narrowing them thickens it. Change one and the other follows on its own.
-    window.grassTreeCardMin = 0.21, window.grassTreeCardMax = 0.45;
+    // Density, below, is what buys back the ring the narrow cards were for.
+    window.grassTreeCardMin = 0.65, window.grassTreeCardMax = 1.35;
+    // How much collar cards may overlap. 1.0 is shoulder to shoulder; 1.5
+    // means each covers half again its share of the circle, so neighbours
+    // overlap by a third - which is how grass actually reads, and the reason
+    // full-size cards can still make a ring rather than a dotted line. This
+    // is the knob for "denser" or "sparser"; size is not.
+    //
+    // For scale, the bug this all started from was an effective density of 3
+    // to 4 - a solid wall you could see through a tree once the x-ray dither
+    // made it transparent.
+    window.grassTreeDensity = 1.5;
     // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
     // so this is a little past 45 degrees.
     const GRASS_MIN_UP = 0.72;
@@ -1545,11 +1554,10 @@ export function startGame(CharacterClass) {
         //
         // Spacing them evenly does not fix that; the count is the problem, so
         // the count is derived from the geometry instead of from a budget.
-        // The max is a safety rail, not a target - it should not be what
-        // decides a ring's size. At 22 the largest trees were hitting it and
-        // coming out 6% short of a full circle, so it goes to 26 and the
-        // geometry decides again.
-        const COLLAR_MIN = 6, COLLAR_MAX = 26;
+        // A safety rail, not a target - the geometry should be what decides a
+        // ring's size, so these are set wide enough not to bind at the sizes
+        // and densities actually in use (4 to 12 cards).
+        const COLLAR_MIN = 4, COLLAR_MAX = 20;
         let collarPlan = null, collarAt = 0;
         if (treeSpots) {
             const avgCard = window.grassSize *
@@ -1558,7 +1566,8 @@ export function startGame(CharacterClass) {
             const counts = treeSpots.map(t => {
                 const mid = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
                 return THREE.MathUtils.clamp(
-                    Math.round(2 * Math.PI * mid / avgCard), COLLAR_MIN, COLLAR_MAX);
+                    Math.round(window.grassTreeDensity * 2 * Math.PI * mid / avgCard),
+                    COLLAR_MIN, COLLAR_MAX);
             });
             const most = counts.length ? Math.max.apply(null, counts) : 0;
             collarPlan = [];
@@ -1682,17 +1691,15 @@ export function startGame(CharacterClass) {
                     }
                 }
             }
-            // Collar cards are narrow and near-uniform: they are palings in a
-            // fence, and a fence whose planks are three times each other's
-            // width is not a fence. The scattered tufts keep their wide random
-            // range, which is what stops open ground reading as a texture.
             const sizeLo = collarTree ? window.grassTreeCardMin : 0.65;
             const sizeHi = collarTree ? window.grassTreeCardMax : 1.35;
             const s = window.grassSize * (sizeLo + Math.random() * (sizeHi - sizeLo));
-            // Height varies a little even in the collar - identical heights
-            // read as machined - but far less than the scatter's 0.8..1.3.
-            const h = s * window.grassHeight *
-                (collarTree ? (2.0 + Math.random() * 0.5) : (0.8 + Math.random() * 0.5));
+            // Same height range as the scatter now. The collar used to be
+            // stretched (2.0..2.5 against the scatter's 0.8..1.3) to make
+            // narrow cards look like tall blades, and the result was a ring
+            // that stood 71% of the height of the grass around it - visibly
+            // stunted next to it. Same size, same height, same proportions.
+            const h = s * window.grassHeight * (0.8 + Math.random() * 0.5);
             // Sunk below the ground plane, PROPORTIONAL to this instance's
             // own height rather than a fixed amount. The polygon's base is
             // exactly at local y=0 and the UVs are a plain untouched 0..1
