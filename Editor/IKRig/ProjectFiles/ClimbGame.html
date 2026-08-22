@@ -2332,11 +2332,35 @@
                 if (window.friendlyFire && window.companions) {
                     for (const cmp of window.companions) enemies.push(cmp);
                 }
+                // A punch lands on ONE body, the nearest in reach.
+                //
+                // This loop used to hit everything within range, which was
+                // fine when a clearing held one enemy and became a cleave the
+                // moment it held several - four or five going down to a single
+                // jab. The comment that put it here was about the poise POOL
+                // being shared, not about the punch being area-of-effect; that
+                // is fixed independently (staggerPool lives on the avatar), so
+                // the loop no longer has to hit everyone to give everyone
+                // their own beating.
+                //
+                // Raise window.punchMaxTargets to bring the cleave back - it
+                // is the kind of thing a power-up should grant rather than
+                // something the first jab of the game already does.
+                const maxTargets = window.punchMaxTargets !== undefined ? window.punchMaxTargets : 1;
+                const inReach = [];
                 for (let bi = 0; bi < enemies.length; bi++) {
-                    const bot = enemies[bi];
-                    if (!bot || !bot.isLoaded || bot.isRagdoll) continue;
-                    const botHitPos = bot.getHitReferencePoint();
-                    if (botHitPos.distanceTo(hitCenter) < hitRadius + 1.0) {
+                    const cand = enemies[bi];
+                    if (!cand || !cand.isLoaded || cand.isRagdoll) continue;
+                    const d = cand.getHitReferencePoint().distanceTo(hitCenter);
+                    if (d < hitRadius + 1.0) inReach.push({ bot: cand, d });
+                }
+                // Nearest first, so a capped punch picks the one you actually
+                // swung at rather than whichever happens to be earlier in the
+                // spawn list.
+                inReach.sort((a, b) => a.d - b.d);
+                for (let bi = 0; bi < inReach.length && bi < maxTargets; bi++) {
+                    const bot = inReach[bi].bot;
+                    {
                         if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                         if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
                         const intensity = forceMagnitude >= 70 ? 'high' : (forceMagnitude >= 45 ? 'medium_high' : 'medium');

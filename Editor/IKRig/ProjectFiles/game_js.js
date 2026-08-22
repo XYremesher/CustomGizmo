@@ -2376,6 +2376,14 @@ export function startGame(CharacterClass) {
     // purpose - the spot itself moves constantly, so a tight radius means
     // never actually arriving.
     const COMP_ARRIVE_DEADZONE = 0.7;
+    // ...and how far it has to drift before setting off again. A SECOND,
+    // wider threshold, because one was not enough: circle a standing
+    // companion and the follow spot sweeps round it, so the distance to that
+    // spot crosses 0.7 over and over and the companion flickers between
+    // walking and standing. Same Schmitt trigger the locomotion states and
+    // the enemy wake/sleep pair already use - enter on the tight number,
+    // leave on the loose one, and an oscillation between them settles.
+    const COMP_LEAVE_DEADZONE = 1.15;
     // How fast a companion closes on its follow spot.
     //
     // This was a flat 7.5 - near the player's own full-tilt 8.0 - whatever the
@@ -2474,6 +2482,10 @@ export function startGame(CharacterClass) {
     // Cleared once the player has moved far enough that following again is
     // the point.
     let _compHitSettled = false;
+    // Latched arrive state - per companion, via the record below. A single
+    // shared flag would have three companions overwriting each other's
+    // stand/go decision every frame.
+    let _compArrived = false;
     const COMP_HIT_OK_DIST = 3.2;
     // How long this companion has been hanging. Only drives when the sideways
     // search starts - there is no give-up timeout, see the HANG block.
@@ -2943,28 +2955,50 @@ export function startGame(CharacterClass) {
     // moves it over a different surface without updating its height, which is
     // exactly how a bot ends up buried in a block.
     const _aiSepOut = new THREE.Vector2();
+    // Every body a character has to make room for: the player, the companions
+    // and the bots.
+    //
+    // Separation used to be blind across kinds - bots shoved only bots,
+    // companions only companions, and the player nobody - so the three walked
+    // straight through each other. They are all the same size and all standing
+    // on the same ground; which list they happen to live in is not a reason to
+    // ignore one another.
+    //
+    // The player is included as something to be pushed AWAY from but is never
+    // pushed itself: its movement is the one the person is holding a stick for,
+    // and shoving it would fight their input. Walking into a bot therefore
+    // reads as the bot giving way, which is what it should look like anyway.
+    function forEachOtherBody(self, cb) {
+        if (char && char.group && char !== self) cb(char.group.position, 0);
+        for (let i = 0; i < companions.length; i++) {
+            const o = companions[i].comp;
+            if (o && o !== self && o.isLoaded) cb(o.group.position, i + 1);
+        }
+        for (let i = 0; i < aiBots.length; i++) {
+            const o = aiBots[i].bot;
+            if (o && o !== self && o.isLoaded) cb(o.group.position, i + 101);
+        }
+    }
+
     function aiBotSeparate(x, z, y, delta, out) {
         out.set(x, z);
         const maxPush = AI_BOT_SEPARATION_MAX_SPEED * delta;
-        for (let i = 0; i < aiBots.length; i++) {
-            const other = aiBots[i].bot;
-            if (other === aiBot || !other.isLoaded) continue;
-            const op = other.group.position;
-            if (Math.abs(op.y - y) > AI_BOT_SEPARATION_DY) continue;
+        forEachOtherBody(aiBot, (op, seed) => {
+            if (Math.abs(op.y - y) > AI_BOT_SEPARATION_DY) return;
             let dx = out.x - op.x, dz = out.y - op.z;
             let d = Math.hypot(dx, dz);
-            if (d >= AI_BOT_SEPARATION) continue;
+            if (d >= AI_BOT_SEPARATION) return;
             // Exactly coincident (a shared spawn point, or both snapped to the
             // same wander target): no direction to separate along, so pick one
             // off their ids instead of leaving them welded together.
             if (d < 1e-4) {
-                const a = (i + 1) * 2.399963;   // golden angle, so ids fan out
+                const a = (seed + 1) * 2.399963;   // golden angle, so ids fan out
                 dx = Math.cos(a); dz = Math.sin(a); d = 1;
             }
             const push = Math.min((AI_BOT_SEPARATION - d) * AI_BOT_SEPARATION_PUSH, maxPush) / d;
             out.x += dx * push;
             out.y += dz * push;
-        }
+        });
     }
 
     // Straight at the target, no obstacle steering, same ground snap.
@@ -4806,7 +4840,7 @@ export function startGame(CharacterClass) {
             leapStart: new THREE.Vector3(), leapEnd: new THREE.Vector3(),
             leapFaceQuat: new THREE.Quaternion(), leapT: 0, leapDur: 0.35, leapToHang: false,
             stuckAt: new THREE.Vector3(), stuckT: 0,
-            why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false,
+            why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false, arrived: false,
             speedSmooth: 0, locoState: 'idle',
             avoidSide: 0, steerDirSmooth: new THREE.Vector3(),
             steerDirValid: false, steerBlockedFor: 0,
@@ -5016,7 +5050,7 @@ export function startGame(CharacterClass) {
         _compStuckAt = rec.stuckAt; _compStuckT = rec.stuckT;
         _compWhy = rec.why; _compRecoverT = rec.recoverT;
         _compJustClimbedT = rec.justClimbedT; _compTakeoffT = rec.takeoffT;
-        _compHitSettled = rec.hitSettled;
+        _compHitSettled = rec.hitSettled; _compArrived = rec.arrived;
         _compSpeedSmooth = rec.speedSmooth; _compLocoState = rec.locoState;
         _compAvoidSide = rec.avoidSide; _compSteerDirSmooth = rec.steerDirSmooth;
         _compSteerDirValid = rec.steerDirValid; _compSteerBlockedFor = rec.steerBlockedFor;
@@ -5038,7 +5072,7 @@ export function startGame(CharacterClass) {
         rec.stuckT = _compStuckT;
         rec.why = _compWhy; rec.recoverT = _compRecoverT;
         rec.justClimbedT = _compJustClimbedT; rec.takeoffT = _compTakeoffT;
-        rec.hitSettled = _compHitSettled;
+        rec.hitSettled = _compHitSettled; rec.arrived = _compArrived;
         rec.speedSmooth = _compSpeedSmooth; rec.locoState = _compLocoState;
         rec.avoidSide = _compAvoidSide; rec.steerDirValid = _compSteerDirValid;
         rec.steerBlockedFor = _compSteerBlockedFor;
@@ -5079,18 +5113,15 @@ export function startGame(CharacterClass) {
     function companionSeparate(x, z, y, delta, out) {
         out.set(x, z);
         const maxPush = COMP_SEPARATION_MAX_SPEED * delta;
-        for (let i = 0; i < companions.length; i++) {
-            const other = companions[i].comp;
-            if (other === companion || !other.isLoaded) continue;
-            const op = other.group.position;
-            if (Math.abs(op.y - y) > COMP_SEPARATION_DY) continue;
+        forEachOtherBody(companion, (op, seed) => {
+            if (Math.abs(op.y - y) > COMP_SEPARATION_DY) return;
             let dx = out.x - op.x, dz = out.y - op.z;
             let d = Math.hypot(dx, dz);
-            if (d >= COMP_SEPARATION) continue;
+            if (d >= COMP_SEPARATION) return;
             // Exactly coincident - no direction to separate along, so pick one
             // off the index rather than leaving them welded together.
             if (d < 1e-4) {
-                const a = (i + 1) * 2.399963;   // golden angle, so they fan out
+                const a = (seed + 1) * 2.399963;   // golden angle, so they fan out
                 dx = Math.cos(a); dz = Math.sin(a); d = 1;
             }
             const push = Math.min((COMP_SEPARATION - d) * COMP_SEPARATION_PUSH, maxPush) / d;
@@ -5105,10 +5136,10 @@ export function startGame(CharacterClass) {
             // The result was companions shoving each other sideways instead of
             // apart, which is what made a following pair drift into each other.
             const gy = companionGroundY(out.x + pushDx, out.y + pushDz, y);
-            if (gy === -Infinity || gy - y > COMP_STEP_UP || y - gy > 2.0) continue;
+            if (gy === -Infinity || gy - y > COMP_STEP_UP || y - gy > 2.0) return;
             out.x += pushDx;
             out.y += pushDz;
-        }
+        });
     }
 
     // Which breadcrumb trail retraces this victim's route up. A bot chasing a
@@ -7358,7 +7389,12 @@ export function startGame(CharacterClass) {
         // every small move the player makes, so without this the companion is
         // permanently making tiny corrections - which is the fidgeting back
         // and forth. Near enough is near enough: stand still and face them.
-        if (h < COMP_ARRIVE_DEADZONE && Math.abs(p.y - c.y) < 1.0) {
+        const sameLevel = Math.abs(p.y - c.y) < 1.0;
+        // Latched: once standing, it keeps standing until the spot is
+        // COMP_LEAVE_DEADZONE away, not merely past COMP_ARRIVE_DEADZONE.
+        _compArrived = sameLevel && (_compArrived ? h < COMP_LEAVE_DEADZONE
+                                                 : h < COMP_ARRIVE_DEADZONE);
+        if (_compArrived) {
             _compWhy = 'arrived';
             _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
             _compFaceQuat.setFromEuler(_compFaceEuler);
