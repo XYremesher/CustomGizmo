@@ -1470,6 +1470,25 @@ export function startGame(CharacterClass) {
     // to 4 - a solid wall you could see through a tree once the x-ray dither
     // made it transparent.
     window.grassTreeDensity = 1.5;
+    // TWO rings, not one. The inner one is the collar proper - full-size
+    // cards, overlapping, hiding the seam where the trunk meets the ground.
+    // The outer one is skirt: sparser, smaller, and turned about more, so the
+    // collar fades into the open grass instead of ending at a hard edge.
+    //
+    // Each entry is relative to the inner ring, so the two cannot drift apart
+    // when the base numbers are tuned:
+    //   rMul    ring radius, as a multiple of the inner ring's
+    //   density  multiplies grassTreeDensity - under 1 leaves visible gaps
+    //   size     multiplies the card size range
+    //   skew     how far a card may turn off tangential, in radians
+    //
+    // The outer radius (1.55) clears the inner ring's own outer edge: that
+    // sits at inner+spread = 1.52 against an inner mid of 1.07, so 1.07*1.55
+    // is 1.66 - just outside, with no overlap between the two bands.
+    window.grassTreeRings = [
+        { rMul: 1.0,  density: 1.0,  size: 1.0,  skew: 0.16 },
+        { rMul: 1.55, density: 0.55, size: 0.75, skew: 0.40 },
+    ];
     // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
     // so this is a little past 45 degrees.
     const GRASS_MIN_UP = 0.72;
@@ -1563,27 +1582,34 @@ export function startGame(CharacterClass) {
             const avgCard = window.grassSize *
                 (window.grassTreeCardMin + window.grassTreeCardMax) * 0.5;
             const budget = Math.floor(total * window.grassTreeShare);
-            const counts = treeSpots.map(t => {
-                const mid = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
-                return THREE.MathUtils.clamp(
-                    Math.round(window.grassTreeDensity * 2 * Math.PI * mid / avgCard),
-                    COLLAR_MIN, COLLAR_MAX);
-            });
-            const most = counts.length ? Math.max.apply(null, counts) : 0;
+            const rings = window.grassTreeRings;
+            const baseMid = t => (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
+            // [tree][ring] -> how many cards that ring gets on that tree.
+            const counts = treeSpots.map(t => rings.map(r => THREE.MathUtils.clamp(
+                Math.round(window.grassTreeDensity * r.density *
+                           2 * Math.PI * baseMid(t) * r.rMul / (avgCard * r.size)),
+                COLLAR_MIN, COLLAR_MAX)));
+            let most = 0;
+            counts.forEach(c => c.forEach(n => { if (n > most) most = n; }));
             collarPlan = [];
-            // Interleaved - every tree gets its first card before any gets its
-            // second - so a budget that runs out thins every collar evenly
-            // instead of finishing a few rings and leaving the rest bare.
+            // Interleaved across trees AND rings - every tree gets its first
+            // card of every ring before any gets its second - so a budget that
+            // runs out thins every collar evenly instead of finishing a few
+            // rings and leaving the rest bare.
             for (let k = 0; k < most && collarPlan.length < budget; k++) {
-                for (let i = 0; i < treeSpots.length && collarPlan.length < budget; i++) {
-                    if (k < counts[i]) collarPlan.push({ t: treeSpots[i], k, n: counts[i] });
+                for (let ri = 0; ri < rings.length && collarPlan.length < budget; ri++) {
+                    for (let i = 0; i < treeSpots.length && collarPlan.length < budget; i++) {
+                        if (k < counts[i][ri]) {
+                            collarPlan.push({ t: treeSpots[i], k, n: counts[i][ri], r: rings[ri] });
+                        }
+                    }
                 }
             }
         }
 
         while (placed < total && attempts++ < maxAttempts) {
             let x, z;
-            let collarTree = null;
+            let collarTree = null, collarRing = null;
             if (collarPlan && collarAt < collarPlan.length) {
                 const slot = collarPlan[collarAt++];
                 const t = slot.t;
@@ -1595,7 +1621,9 @@ export function startGame(CharacterClass) {
                 // that thicket you look through when the tree goes
                 // transparent. A few centimetres of jitter keeps it from
                 // looking machined without breaking the ring.
-                const ringR = (window.grassTreeInner + window.grassTreeSpread * 0.5) * t.scale;
+                collarRing = slot.r;
+                const ringR = (window.grassTreeInner + window.grassTreeSpread * 0.5)
+                    * t.scale * collarRing.rMul;
                 const rr = ringR + (Math.random() - 0.5) * 0.08 * t.scale;
                 // Even spacing round the ring, offset by the tree's own facing
                 // so neighbouring collars do not all start at the same bearing
@@ -1691,8 +1719,9 @@ export function startGame(CharacterClass) {
                     }
                 }
             }
-            const sizeLo = collarTree ? window.grassTreeCardMin : 0.65;
-            const sizeHi = collarTree ? window.grassTreeCardMax : 1.35;
+            const ringSize = collarRing ? collarRing.size : 1;
+            const sizeLo = (collarTree ? window.grassTreeCardMin : 0.65) * ringSize;
+            const sizeHi = (collarTree ? window.grassTreeCardMax : 1.35) * ringSize;
             const s = window.grassSize * (sizeLo + Math.random() * (sizeHi - sizeLo));
             // Same height range as the scatter now. The collar used to be
             // stretched (2.0..2.5 against the scatter's 0.8..1.3) to make
@@ -1720,7 +1749,8 @@ export function startGame(CharacterClass) {
             // the old half-radian wobble was enough to turn palings edge-on
             // and leave gaps in the fence.
             _grassQuat.setFromAxisAngle(_upVec, collarTree
-                ? Math.atan2(collarTree.x - x, collarTree.z - z) + (Math.random() - 0.5) * 0.12
+                ? Math.atan2(collarTree.x - x, collarTree.z - z)
+                    + (Math.random() - 0.5) * (collarRing ? collarRing.skew : 0.16)
                 : Math.random() * Math.PI * 2);
             _grassScale.set(s, h, s);
             const near = (Math.abs(x) < shadowSafe && Math.abs(z) < shadowSafe);
@@ -3151,11 +3181,27 @@ export function startGame(CharacterClass) {
     const AI_CLIMB_PROBE = 0.8;   // how far ahead to look for the wall
     const AI_CLIMB_INSET = 0.7;   // land this far past the lip, not balanced on it
 
+    // "What surface is there" - the probe behind every climb, hop and unstick
+    // decision a bot makes.
+    //
+    // Trees are excluded outright here, unlike the walking ground snap, which
+    // only refuses to be LIFTED by one (see groundHitNoTreeLift). The two want
+    // different things: standing on a canopy chunk you legitimately reached is
+    // fine, but a bot must never CHOOSE a tree as the thing to climb. Without
+    // this, a bot walking at a trunk probed ahead, met the bark a metre up,
+    // read it as a wall with a ledge, and leapt into the tree - ending up
+    // standing in the branches, which is the "they jump inside trees and stand
+    // where they cannot" case. Getting up a tree is the player's move.
     function aiBotSurfaceY(x, z, fromTopY) {
         _tempVec1.set(x, fromTopY, z);
         rayDown.set(_tempVec1, _downVec);
         const hits = rayDown.intersectObjects(aiBotNear(x, z), true);
-        return hits.length ? hits[0].point.y : -Infinity;
+        for (let i = 0; i < hits.length; i++) {
+            const ud = hits[i].object.userData;
+            if (ud && ud.isTreeCollider) continue;
+            return hits[i].point.y;
+        }
+        return -Infinity;
     }
 
 
