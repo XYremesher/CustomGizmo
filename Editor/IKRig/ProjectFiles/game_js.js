@@ -1442,18 +1442,25 @@ export function startGame(CharacterClass) {
     // in a trunk, so that under-rejected by the same margin. Nothing showed
     // until the x-ray dither made a tree see-through and revealed it stuffed
     // with grass. 0.5 clears the bark with a little to spare.
-    window.grassTreeInner = 0.5;    // ring starts this far from the trunk axis
-    window.grassTreeSpread = 0.75;  // ...and extends this much further out
-    // Collar CARD width, as a fraction of grassSize. Narrow and near-uniform:
-    // these are palings in a fence round the trunk, not tufts. Derived from
-    // the look being matched - about a dozen cards round a scale-1 trunk. The
-    // ring's radius there is 0.88, so 5.5 units of circumference; 5.5/12 is
-    // 0.46 wide, and 0.46/grassSize(1.4) is 0.33.
+    // 0.62, not the 0.5 this first cleared the bark at. The trunk is 0.454, so
+    // 0.5 hugged it with almost nothing to spare and the collar read as
+    // painted onto the bark rather than growing round it.
+    window.grassTreeInner = 0.62;   // ring starts this far from the trunk axis
+    window.grassTreeSpread = 0.9;   // ...and extends this much further out
+    // Collar CARD width, as a fraction of grassSize. These are palings in a
+    // fence round the trunk, not tufts, so the MEAN is small - 0.33, about
+    // 0.46 wide, which is what puts a dozen-odd of them round a scale-1 trunk.
     //
-    // This replaced a 0.45..1.75 range, i.e. widths from 0.63 to 2.45 - a
-    // near-four-to-one spread where a single average card already covered a
-    // quarter of the whole circumference.
-    window.grassTreeCardMin = 0.29, window.grassTreeCardMax = 0.37;
+    // The spread about that mean is the scattered grass's own: 0.65..1.35 is
+    // 2.08:1, so 0.21..0.45 here. Matching the ratio rather than the absolute
+    // range is what matters - the two now vary by the same amount, so the
+    // collar looks like the same plant, while its cards stay narrow enough
+    // that a ring of them is a fence and not a hedge.
+    //
+    // The mean is load-bearing: the card count is circumference over mean
+    // width (see the collar plan), so widening these thins the fence and
+    // narrowing them thickens it. Change one and the other follows on its own.
+    window.grassTreeCardMin = 0.21, window.grassTreeCardMax = 0.45;
     // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
     // so this is a little past 45 degrees.
     const GRASS_MIN_UP = 0.72;
@@ -1538,7 +1545,11 @@ export function startGame(CharacterClass) {
         //
         // Spacing them evenly does not fix that; the count is the problem, so
         // the count is derived from the geometry instead of from a budget.
-        const COLLAR_MIN = 6, COLLAR_MAX = 22;
+        // The max is a safety rail, not a target - it should not be what
+        // decides a ring's size. At 22 the largest trees were hitting it and
+        // coming out 6% short of a full circle, so it goes to 26 and the
+        // geometry decides again.
+        const COLLAR_MIN = 6, COLLAR_MAX = 26;
         let collarPlan = null, collarAt = 0;
         if (treeSpots) {
             const avgCard = window.grassSize *
