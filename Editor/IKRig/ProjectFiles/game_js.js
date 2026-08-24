@@ -2101,7 +2101,6 @@ export function startGame(CharacterClass) {
     // a step change, so sitting exactly at AI_CATCHUP_NEAR would otherwise
     // flip the speed every frame.
     let _aiChaseRunning = false;
-    let _aiCounterT = 0;   // per-bot; carried by the context switch like the rest
     // How long after YOUR attack ends a bot presses its counter, and how far
     // away it has to be to care. The window is what turns a fight from you
     // hitting a punchbag into an exchange: while you are swinging it eats the
@@ -2112,7 +2111,7 @@ export function startGame(CharacterClass) {
         // Countering overrides the walk band entirely. Normally a bot inside
         // AI_CATCHUP_NEAR strolls the last stretch, which is right for an
         // approach and wrong for a counter - it should be closing.
-        if (_aiCounterT > 0) return AI_RUN_SPEED;
+        if (aiBot.counterT > 0) return AI_RUN_SPEED;
         if (!_aiChaseRunning && dist > AI_CATCHUP_NEAR) _aiChaseRunning = true;
         else if (_aiChaseRunning && dist < AI_CATCHUP_NEAR - AI_CATCHUP_HYST) _aiChaseRunning = false;
         if (!_aiChaseRunning) return AI_CLOSE_SPEED;
@@ -3335,6 +3334,20 @@ export function startGame(CharacterClass) {
     // true. Longer than the 1.15s of early-outs by a wide margin, so it is
     // still looking when it finally gets to look.
     const AI_ALERT_TIME = 5.0;
+    // How long a bot presses its counter-attack after being hit.
+    //
+    // The machinery for this already existed - _aiCounterT was declared,
+    // ticked down, saved and restored, and read in two places (it grants full
+    // run speed and half a metre of extra reach). Nothing ever SET it, so it
+    // was zero for the whole life of the game and a punched bot simply carried
+    // on with whatever it had been doing. Same shape as comboHand: written,
+    // never wired.
+    //
+    // It lives on the AVATAR rather than in the per-bot context block, because
+    // the hit arrives through staggerBot - outside updateAiBot's own
+    // activate/save window - and a value written into that block from outside
+    // would be overwritten by the next save.
+    const AI_COUNTER_TIME = 2.5;
     // Sidestep used to break a wedge - see the watchdog.
     let _aiUnstickDir = new THREE.Vector3();
     let _aiUnstickT = 0;
@@ -3776,6 +3789,8 @@ export function startGame(CharacterClass) {
         // AI_ALERT_TIME. Set here rather than at the call sites because every
         // way of hurting a bot already funnels through this one function.
         bot.alertedT = AI_ALERT_TIME;
+        // ...and answer it. See AI_COUNTER_TIME.
+        bot.counterT = AI_COUNTER_TIME;
         const staggerMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
         const regenDelay = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
         bot.triggerHitFlash(flashStrength);
@@ -4001,7 +4016,7 @@ export function startGame(CharacterClass) {
 
     function updateAiBot(delta) {
         if (!aiBot || !aiBot.isLoaded) return;
-        if (_aiCounterT > 0) _aiCounterT -= delta;
+        if (aiBot.counterT > 0) aiBot.counterT = Math.max(0, aiBot.counterT - delta);
         // Asleep until you walk into its patch.
         //
         // Every bot is built when the LEVEL is, then frozen - constructing one
@@ -4263,7 +4278,11 @@ export function startGame(CharacterClass) {
 
         // Combat mode transitions - punch/cooldown run their own timers below
         // and aren't interrupted by distance checks mid-swing.
-        if (aiBotState.mode === 'wander' && victim && distToVictim < AI_CHASE_RADIUS) {
+        // Being hit ends a wander outright, whatever the chase radius says -
+        // something just punched you, and going back to strolling is the one
+        // response that cannot be right.
+        if (aiBotState.mode === 'wander' && victim &&
+            (distToVictim < AI_CHASE_RADIUS || aiBot.counterT > 0)) {
             aiBotState.mode = 'chase';
         } else if (aiBotState.mode === 'chase' && (!victim || distToVictim > AI_CHASE_GIVEUP_RADIUS)) {
             aiBotState.mode = 'wander';
@@ -4503,7 +4522,7 @@ export function startGame(CharacterClass) {
             // bot that was knocked back a step still answers instead of having
             // to walk in first and losing the moment.
             const reach = (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)
-                + (_aiCounterT > 0 ? 0.5 : 0);
+                + (aiBot.counterT > 0 ? 0.5 : 0);
 
             // ---- Break off, circle, or commit ----
             // Ahead of the swing decision, because both of these are reasons
@@ -4548,7 +4567,10 @@ export function startGame(CharacterClass) {
                 // Arriving in reach is a decision point, not automatically a
                 // punch: sometimes it circles for a moment first. Rolled here,
                 // once per arrival, so a bot cannot dither on the spot.
-                if (Math.random() < window.aiCircleChance) {
+                // Not while countering: the answer to being punched is to
+                // punch back, and sizing them up first reads as having
+                // forgotten about it.
+                if (aiBot.counterT <= 0 && Math.random() < window.aiCircleChance) {
                     aiBotState.circleT = AI_CIRCLE_MIN + Math.random() * (AI_CIRCLE_MAX - AI_CIRCLE_MIN);
                     aiBotState.circleDir = Math.random() < 0.5 ? -1 : 1;
                     aiBot.update(delta);
@@ -4713,7 +4735,6 @@ export function startGame(CharacterClass) {
             climbTop: new THREE.Vector3(), climbQuat: new THREE.Quaternion(),
             climbModelRest: new THREE.Vector3(), climbBlendT: 0,
             climbWhy: 'none', climbRise: 0, climbPhase: 'none', climbT: 0, climbDur: 0,
-            counterT: 0,
             goalLine: null, stepLine: null,
         };
         rec.bot.setColor(opts.color);
@@ -4753,7 +4774,6 @@ export function startGame(CharacterClass) {
         _aiClimbFrom = rec.climbFrom; _aiClimbHang = rec.climbHang;
         _aiClimbTop = rec.climbTop; _aiClimbQuat = rec.climbQuat;
         _aiClimbModelRest = rec.climbModelRest; _aiClimbBlendT = rec.climbBlendT;
-        _aiCounterT = rec.counterT;
         _aiClimbWhy = rec.climbWhy; _aiClimbRise = rec.climbRise;
         _aiClimbPhase = rec.climbPhase; _aiClimbT = rec.climbT; _aiClimbDur = rec.climbDur;
         aiBotGoalLine = rec.goalLine; aiBotStepLine = rec.stepLine;
@@ -4767,7 +4787,6 @@ export function startGame(CharacterClass) {
         rec.recoverT = _aiRecoverT;
         rec.unstickT = _aiUnstickT;
         rec.climbBlendT = _aiClimbBlendT;
-        rec.counterT = _aiCounterT;
         rec.climbWhy = _aiClimbWhy; rec.climbRise = _aiClimbRise;
         rec.climbPhase = _aiClimbPhase; rec.climbT = _aiClimbT; rec.climbDur = _aiClimbDur;
         rec.goalLine = aiBotGoalLine; rec.stepLine = aiBotStepLine;
@@ -6612,6 +6631,11 @@ export function startGame(CharacterClass) {
             // gets a frame of its own.
             if (_compStaggerCD > 0 && _compRecoverT <= 0) {
                 companion.hitRecoveryTimer = 0;
+                // Shrugged off - which makes this the best moment it will get
+                // to answer, since it is upright and free this frame. Without
+                // this, the hits that do NOT stagger were the ones that went
+                // completely unanswered.
+                _compRetaliate = true;
             } else {
             // Skip hit recovery if hanging/climbing - companions should be committed to the climb
             if (_compMode === 'hang' || _compMode === 'replay' || _compMode === 'climbup' || _compMode === 'leap') {
@@ -17338,14 +17362,18 @@ export function startGame(CharacterClass) {
         if (_lastPlayerPunchState > 0 && ps === 0) {
             const p = char.group.position;
             for (let i = 0; i < aiBots.length; i++) {
-                const rec = aiBots[i];
-                const b = rec.bot;
+                const b = aiBots[i].bot;
                 if (!b.isLoaded || b.isRagdoll || b.dormant || b.knockedOutT > 0) continue;
                 if (p.distanceTo(b.group.position) > window.aiCounterRange) continue;
-                // Written to the RECORD, not the live register: this runs
-                // outside the per-bot context switch, so the active bindings
-                // belong to whichever bot was updated last.
-                rec.counterT = window.aiCounterWindow;
+                // On the AVATAR, like every other counter timer now. This
+                // runs outside the per-bot context switch, and the old
+                // arrangement had to write to the record for exactly that
+                // reason - the avatar field sidesteps the whole question,
+                // which is also what let being HIT set it (see staggerBot;
+                // this hook only ever fired on a swing FINISHING nearby,
+                // connected or not, so a bot that took a punch and was left
+                // alone afterwards never countered at all).
+                b.counterT = window.aiCounterWindow;
             }
         }
         _lastPlayerPunchState = ps;
