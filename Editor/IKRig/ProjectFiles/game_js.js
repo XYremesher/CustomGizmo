@@ -12466,6 +12466,59 @@ export function startGame(CharacterClass) {
         window.compassTarget = next ? next.at : (star.visible ? star.position : null);
     }
 
+    // ---- Hint card ----
+    // One lesson at a time, shown when it becomes useful and taken away the
+    // moment it is acted on. Never a gate: the level is playable without any
+    // of this, and stopping the game to teach a move nobody needed yet is how
+    // tutorials get resented.
+    //
+    // It dismisses on the DEED, not on a timer or a tap - the player proving
+    // they can do it is the only honest reason to stop saying it. There is a
+    // give-up timer as well, because someone who is not interested should not
+    // be nagged for the rest of the level.
+    let _hintId = null, _hintT = 0, _hintDone = {};
+    const HINT_GIVE_UP = 22.0;
+    function showHintCard(id, html) {
+        if (_hintDone[id] || _hintId === id) return;
+        const card = document.getElementById('hint-card');
+        const text = document.getElementById('hint-text');
+        if (!card || !text) return;
+        _hintId = id; _hintT = 0;
+        text.innerHTML = html;
+        card.style.display = 'flex';
+        // Next frame, so the transition has a start state to animate from.
+        requestAnimationFrame(() => card.classList.add('show'));
+    }
+    function hideHintCard(learned) {
+        if (!_hintId) return;
+        if (learned) _hintDone[_hintId] = true;
+        _hintId = null;
+        const card = document.getElementById('hint-card');
+        if (!card) return;
+        card.classList.remove('show');
+        // Left in the layout until the fade is over, or it vanishes instantly.
+        setTimeout(() => { if (!_hintId) card.style.display = 'none'; }, 400);
+    }
+    // Watches for the lesson being performed. Baselined when the card goes up
+    // rather than read absolutely, so combos landed on the practice bag before
+    // this ever appeared do not dismiss it unearned.
+    let _hintComboFrom = 0;
+    function updateHintCard(delta) {
+        if (!_hintId) return;
+        _hintT += delta;
+        if (_hintId === 'combo' && (window.comboLandedCount || 0) > _hintComboFrom) {
+            hideHintCard(true);
+            addNotificationToast('Combo!', window.playerIconDataUrl);
+            return;
+        }
+        if (_hintT > HINT_GIVE_UP) hideHintCard(false);
+    }
+    function showComboHint() {
+        _hintComboFrom = window.comboLandedCount || 0;
+        showHintCard('combo',
+            'Keep tapping while the ring is <b>green</b> &mdash; each punch opens the next.');
+    }
+
     // The nearest bot still asleep, woken. Distance-ordered rather than
     // "any of them", so collecting the recruit in the first clearing does not
     // wake the one guarding the stairs on the far side of the wood.
@@ -12483,6 +12536,10 @@ export function startGame(CharacterClass) {
             if (d2 < bestD2) { bestD2 = d2; best = b; }
         }
         if (!best) return;
+        // The fight is the reason to know this, so it is taught here rather
+        // than on arrival - being told how to punch before anything wants to
+        // hit you is a lesson with nothing attached to it.
+        showComboHint();
         const packR2 = WAKE_PACK_RADIUS * WAKE_PACK_RADIUS;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
@@ -24057,6 +24114,7 @@ if (leftArrow) {
         // Reads the solver counters this frame just wrote, and clears them for
         // the next one. Costs nothing while the overlay is off.
         if (_trunkVizGroup) updateTrunkVizPanel();
+        updateHintCard(delta);
     }
 
     animate();

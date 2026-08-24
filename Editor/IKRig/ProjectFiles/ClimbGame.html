@@ -776,6 +776,63 @@
         #json-modal { display: none; position: absolute; top: 10%; left: 50%; transform: translateX(-50%); width: 80%; max-width: 600px; background: rgba(0,0,0,0.9); padding: 20px; border: 1px solid #fff; z-index: 100; color: #fff; font-family: monospace; }
         #json-modal textarea { width: 100%; height: 300px; background: #222; color: #0f0; font-family: monospace; margin-top: 10px; margin-bottom: 10px; }
         #json-modal button { padding: 5px 10px; margin-right: 10px; cursor: pointer; }
+
+        /* ---- Hint card ----
+           A persistent, one-line lesson: a demonstration on the left, a
+           sentence on the right. Deliberately not a dialogue box - it has to
+           sit there while you fight, so it cannot take the screen or wait for
+           a tap to dismiss.
+
+           The demo is a small PUNCH button running the combo window on loop,
+           and its colours are the real ones: the live ring goes GREEN while
+           the follow-up can be queued and BLUE once it is, which is already on
+           screen every time you throw a punch and is the thing nobody
+           notices. Teaching the player to read a signal the game already gives
+           beats inventing a new one. Timings come from the same numbers the
+           punch state machine uses - window 10%-90%, advance at 65%. */
+        #hint-card {
+            position: fixed; left: 50%; bottom: 190px; transform: translateX(-50%) translateY(16px);
+            display: none; align-items: center; gap: 12px; z-index: 60;
+            background: rgba(15,18,22,0.82); border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 12px; padding: 10px 14px 10px 10px;
+            font-family: monospace; color: #eef2f6; font-size: 13px; line-height: 1.35;
+            max-width: min(78vw, 420px); pointer-events: none;
+            opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
+        }
+        #hint-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        #hint-demo {
+            position: relative; flex: 0 0 auto; width: 54px; height: 54px; border-radius: 50%;
+            background: rgba(200,50,50,0.75); border: 2px solid rgba(255,255,255,0.5);
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-weight: bold; font-size: 10px; text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+        }
+        /* The tap: a quick press exactly where the window is open. */
+        #hint-card.show #hint-demo { animation: hint-tap 1.6s linear infinite; }
+        @keyframes hint-tap {
+            0%, 38%   { transform: scale(1); }
+            44%       { transform: scale(0.88); }
+            52%, 100% { transform: scale(1); }
+        }
+        #hint-demo svg { position: absolute; inset: -7px; width: 68px; height: 68px;
+            transform: rotate(-90deg); pointer-events: none; }
+        #hint-card.show #hint-demo .hint-ring-fill {
+            animation: hint-sweep 1.6s linear infinite, hint-colour 1.6s linear infinite;
+        }
+        /* One swing, 0 to full. */
+        @keyframes hint-sweep {
+            0%   { stroke-dashoffset: 176; }
+            100% { stroke-dashoffset: 0; }
+        }
+        /* Grey until the window opens at 10%, green while it is open, blue
+           from the tap at 44% - the same three states the real ring shows. */
+        @keyframes hint-colour {
+            0%, 9.9%    { stroke: #888888; }
+            10%, 43.9%  { stroke: #00ff00; }
+            44%, 100%   { stroke: #0088ff; }
+        }
+        #hint-text { flex: 1 1 auto; }
+        #hint-text b { color: #7CFC7C; }
+
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
             position: fixed; bottom: 8px; right: 8px; z-index: 50;
@@ -1676,6 +1733,17 @@
     </div>
     <div id="base-right" class="joystick-base">
         <div id="stick-right" class="joystick-stick"></div>
+    </div>
+    <!-- Filled and shown from game_js.js - see showHintCard. -->
+    <div id="hint-card">
+        <div id="hint-demo">PUNCH
+            <svg viewBox="0 0 68 68">
+                <circle cx="34" cy="34" r="28" stroke="rgba(255,255,255,0.15)" stroke-width="4" fill="transparent" />
+                <circle class="hint-ring-fill" cx="34" cy="34" r="28" stroke="#888" stroke-width="4"
+                        fill="transparent" stroke-linecap="round" stroke-dasharray="176" stroke-dashoffset="176" />
+            </svg>
+        </div>
+        <div id="hint-text"></div>
     </div>
     <div id="drag-deadzone-left" class="drag-deadzone"></div>
     <div id="drag-deadzone-right" class="drag-deadzone"></div>
