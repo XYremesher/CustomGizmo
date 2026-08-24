@@ -12488,6 +12488,28 @@ export function startGame(CharacterClass) {
         // The demo is a different gesture per lesson - a tap for the combo, a
         // hold for the charge - and the class is what selects it.
         card.classList.toggle('charge', id === 'charge');
+        // Sized from the REAL button, measured now rather than guessed in CSS.
+        // The card is pointing at a specific control, so the picture of it has
+        // to be that control - a demo that is a different size, with a
+        // different ring, is a picture of some other button. The live one is
+        // 60px normally and 50 under body.ui-alt, which no fixed number in a
+        // stylesheet can follow.
+        const realBtn = document.getElementById('punch-btn');
+        const demo = document.getElementById('hint-demo');
+        const svg = demo && demo.querySelector('svg');
+        if (realBtn && demo && svg) {
+            const r = realBtn.getBoundingClientRect();
+            const w = r.width || 60;
+            demo.style.width = demo.style.height = w + 'px';
+            // The live ring is the button plus 16 (76 against 60), centred on
+            // it - see the SVG in ClimbGame.html.
+            const ring = w + 16;
+            svg.style.width = svg.style.height = ring + 'px';
+            svg.style.inset = (-(ring - w) / 2) + 'px';
+            // Same label size relative to the button as the real one: 13px on
+            // 60.
+            demo.style.fontSize = (w * 13 / 60).toFixed(1) + 'px';
+        }
         card.style.display = 'flex';
         // Next frame, so the transition has a start state to animate from.
         requestAnimationFrame(() => card.classList.add('show'));
@@ -12532,6 +12554,13 @@ export function startGame(CharacterClass) {
         showHintCard('charge',
             '<b>Hold</b> the button &mdash; the ring fills purple. Let go when it is full: one hit puts them down, and it sweeps everyone in reach.');
     }
+    // For looking at either card without having to earn it first - the charge
+    // one only appears after a combo has actually landed, which makes it
+    // awkward to check. window.previewHint('charge') or ('combo').
+    window.previewHint = (id) => {
+        _hintDone[id] = false;
+        if (id === 'charge') showChargeHint(); else showComboHint();
+    };
     // One lesson per fight, in order: the combo first, and the charge only
     // once the combo has actually been landed. Stacking them would put two
     // cards' worth of reading in front of someone who is being punched.

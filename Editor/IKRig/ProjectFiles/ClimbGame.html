@@ -800,11 +800,16 @@
             opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
         }
         #hint-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        /* Body and border are the live #punch-btn's own values. Width,
+           height, ring size and font size are written from JS at show time
+           (see showHintCard) because the real button changes size with the
+           layout - these are only the fallback if that has not run yet. */
         #hint-demo {
-            position: relative; flex: 0 0 auto; width: 54px; height: 54px; border-radius: 50%;
-            background: rgba(200,50,50,0.75); border: 2px solid rgba(255,255,255,0.5);
+            position: relative; flex: 0 0 auto; width: 60px; height: 60px; border-radius: 50%;
+            background: rgba(200, 50, 50, 0.7); border: 2px solid rgba(255, 255, 255, 0.5);
             display: flex; align-items: center; justify-content: center;
-            color: #fff; font-weight: bold; font-size: 10px; text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+            color: white; font-family: monospace; font-weight: bold; font-size: 13px;
+            text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
         }
         /* The tap: a quick press exactly where the window is open. */
         #hint-card.show #hint-demo { animation: hint-tap 1.6s linear infinite; }
@@ -813,14 +818,14 @@
             44%       { transform: scale(0.88); }
             52%, 100% { transform: scale(1); }
         }
-        #hint-demo svg { position: absolute; inset: -7px; width: 68px; height: 68px;
+        #hint-demo svg { position: absolute; inset: -8px; width: 76px; height: 76px;
             transform: rotate(-90deg); pointer-events: none; }
         #hint-card.show #hint-demo .hint-ring-fill {
             animation: hint-sweep 1.6s linear infinite, hint-colour 1.6s linear infinite;
         }
         /* One swing, 0 to full. */
         @keyframes hint-sweep {
-            0%   { stroke-dashoffset: 176; }
+            0%   { stroke-dashoffset: 201.06; }
             100% { stroke-dashoffset: 0; }
         }
         /* Grey until the window opens at 10%, green while it is open, blue
@@ -848,9 +853,9 @@
             animation: hint-charge-sweep 2s linear infinite, hint-charge-colour 2s linear infinite;
         }
         @keyframes hint-charge-sweep {
-            0%, 10%   { stroke-dashoffset: 176; }
+            0%, 10%   { stroke-dashoffset: 201.06; }
             60%, 70%  { stroke-dashoffset: 0; }
-            71%, 100% { stroke-dashoffset: 176; }
+            71%, 100% { stroke-dashoffset: 201.06; }
         }
         /* MAGENTA while charging, red on the release. Those are the live
            ring's own colours for punchState 4 and 5 - the first demo used
@@ -1773,10 +1778,15 @@
     <!-- Filled and shown from game_js.js - see showHintCard. -->
     <div id="hint-card">
         <div id="hint-demo">PUNCH
-            <svg viewBox="0 0 68 68">
-                <circle cx="34" cy="34" r="28" stroke="rgba(255,255,255,0.15)" stroke-width="4" fill="transparent" />
-                <circle class="hint-ring-fill" cx="34" cy="34" r="28" stroke="#888" stroke-width="4"
-                        fill="transparent" stroke-linecap="round" stroke-dasharray="176" stroke-dashoffset="176" />
+            <!-- The real button's ring, copied exactly: same viewBox, same
+                 radius, same stroke, same dasharray (2*pi*32 = 201.06). The
+                 rendered size is set from JS to match the live button, and
+                 the viewBox scales this to fit. An approximation here would
+                 be a picture of a button that does not exist. -->
+            <svg viewBox="0 0 76 76">
+                <circle cx="38" cy="38" r="32" stroke="rgba(255,255,255,0.15)" stroke-width="4" fill="transparent" />
+                <circle class="hint-ring-fill" cx="38" cy="38" r="32" stroke="#888888" stroke-width="4"
+                        fill="transparent" stroke-linecap="round" stroke-dasharray="201.06" stroke-dashoffset="201.06" />
             </svg>
         </div>
         <div id="hint-text"></div>
