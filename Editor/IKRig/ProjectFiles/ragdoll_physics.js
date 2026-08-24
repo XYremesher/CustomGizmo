@@ -292,8 +292,21 @@ export const RagdollPhysics = {
             velocityModifier = 0.55;
         }
 
+        // How hard a knockdown may throw a body.
+        //
+        // Was a hardcoded 15, which put a knocked-down enemy 6.3 units away
+        // before it even landed - three body-widths, so a punch read as a
+        // cannon. 7.5 halves that to about 3.2: still clearly thrown, but it
+        // comes down where you can follow it up.
+        //
+        // Derived rather than dialled: the launch is written below as
+        // velocity * 0.016 per frame and the solver decays each step by
+        // ragdollDamping, so the horizontal travel is v * 0.016 / (1 - damping)
+        // until the body meets the floor - about 37 frames at 144fps for a
+        // hip-height fall.
+        const launchMax = window.ragdollLaunchMax !== undefined ? window.ragdollLaunchMax : 7.5;
         const modifiedVelocity = initialVelocity.clone().multiplyScalar(velocityModifier);
-        modifiedVelocity.clampLength(0.0, 15.0);
+        modifiedVelocity.clampLength(0.0, launchMax);
 
         this.ragdollParticles.forEach((p) => {
             if (p.bone) {
@@ -301,6 +314,20 @@ export const RagdollPhysics = {
                 const nX = (Math.random() - 0.5) * 2.0 * velocityModifier;
                 const nY = (Math.random() - 0.5) * 2.0 * velocityModifier;
                 const nZ = (Math.random() - 0.5) * 2.0 * velocityModifier;
+                // NOTE, and it is a real one: this 0.016 is a 60fps frame, and
+                // the solver's damping decays PER FRAME rather than per
+                // second. The two together make how far a body flies depend on
+                // the frame rate - the same hit throws it 1.7 units at 30fps,
+                // 3.2 at 60 and 6.3 at 144. A phone and a desktop are playing
+                // different games.
+                //
+                // Not changed here on purpose. Making it frame-rate
+                // independent means passing delta in AND making the damping
+                // time-based (Math.pow(damping, delta*60)), and that damping
+                // is documented as matching a known-stable reference build -
+                // every previous attempt to touch it made the joints jitter.
+                // It wants doing deliberately, with the ragdoll watched, not
+                // as a side effect of tuning a distance.
                 _tempVec1.set(nX, nY, nZ).add(modifiedVelocity).multiplyScalar(0.016);
                 p.oldPos.copy(p.pos).sub(_tempVec1);
             }
