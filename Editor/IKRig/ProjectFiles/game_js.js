@@ -785,8 +785,9 @@ export function startGame(CharacterClass) {
         // yellow tip becomes the end that ends up pointing at the star.
         model.rotation.x = Math.PI / 2;
         // Model's own bounding box is 4 units tall - scaled down to a
-        // small on-screen size.
-        model.scale.setScalar(0.032);
+        // small on-screen size. Shared with COMPASS_SIZE, which the camera
+        // offset is measured against, so the two cannot drift apart.
+        model.scale.setScalar(COMPASS_MODEL_SCALE);
         model.traverse(c => {
             if (!c.isMesh) return;
             const isContainer = c.name === 'CompassContainer';
@@ -832,7 +833,16 @@ export function startGame(CharacterClass) {
     // camera, so it keeps the same on-screen position (this ratio is what
     // determines where it lands on screen, not the absolute distance) but
     // sits closer.
-    const COMPASS_LOCAL_OFFSET = new THREE.Vector3(0, 1.05, -1.5);
+    // The needle's own size, so the drop below stays right if it is rescaled.
+    // The model spans y:[-2,2] before the lookAt rotation - 4 units - and is
+    // scaled to a small on-screen size where it is built.
+    const COMPASS_MODEL_SPAN = 4;
+    const COMPASS_MODEL_SCALE = 0.032;
+    const COMPASS_SIZE = COMPASS_MODEL_SPAN * COMPASS_MODEL_SCALE;   // 0.128
+    // Sits half its own length lower than it used to (1.05). Written as the
+    // subtraction rather than as 0.986 so the reason survives: it is half a
+    // compass, not a number somebody liked.
+    const COMPASS_LOCAL_OFFSET = new THREE.Vector3(0, 1.05 - COMPASS_SIZE * 0.5, -1.5);
     // Minimum height above the current floor the compass is allowed to
     // sit at, regardless of what the camera-local offset above would
     // otherwise compute - this is what actually stops it from ever

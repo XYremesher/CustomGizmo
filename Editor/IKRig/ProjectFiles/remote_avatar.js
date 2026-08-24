@@ -872,8 +872,20 @@ export class RemoteAvatar {
             // exactly where they are and skip the sim entirely. The visual is
             // identical (that is the point - it holds the pose it landed in)
             // and the cost goes to zero.
+            //
+            // The mixer is NOT ticked here, and that is the whole point of the
+            // branch rather than an oversight. initRagdoll stops every action,
+            // so nothing is playing - and a tick with nothing playing is
+            // exactly when three.js restores each binding's original state,
+            // which for a freshly loaded model is the BIND pose. The solver
+            // had been overwriting that every frame; stop the solver and keep
+            // ticking, and the body snaps to a T-pose while lying there.
+            //
+            // It survived a long time because knockedOutT was only set for a
+            // bot put down twice in quick succession. Holding a downed
+            // COMPANION here until the player comes to pick it up sends every
+            // knockdown through it.
             if (heldDown && this.ragdollTimer > this.ragdollMaxTime + 1.0) {
-                if (this.mixer) this.mixer.update(delta);
                 return;
             }
             if (!heldDown && this.ragdollTimer > this.ragdollMaxTime && (nearFloor || this.ragdollTimer > this.ragdollMaxTime + 5.0)) {
