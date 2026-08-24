@@ -2613,14 +2613,31 @@ export function startGame(CharacterClass) {
     // scan all conspire to hold it further out, so the condition was simply
     // never true. Back to 1.15 with a slider, so the number can be found by
     // feel instead of guessed at twice.
-    window.aiPunchRange = 1.15;
-    window.aiChargeRange = 1.6;
+    // 1.7, matching the player's own melee reach (hitRadius 0.7 + 1.0).
+    //
+    // At 1.15 the bot was the shortest-reaching fighter in the game - the
+    // companion lands at 1.9 - so a bot walking in had to cross 0.75 units
+    // INSIDE the companion's reach before it could swing, taking hits the
+    // whole way. That fight was decided by reach, not by speed or aggression,
+    // which is why the first companion beat every yellow it met and why
+    // making them faster would only have got them hit sooner.
+    window.aiPunchRange = 1.7;
+    // Kept ahead of aiPunchRange by the same margin it always had - the
+    // charge's whole point is that it starts from further out than a jab.
+    window.aiChargeRange = 2.2;
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
     // ...and how fast it creeps through a COMBO. See the step itself for why
     // the two cannot be the same number.
-    window.aiComboStep = 5.0;
+    //
+    // Down from 5.0 now that aiPunchRange is 1.7. Two reasons: the bot starts
+    // its string from 0.55 further out, so it needs less closing to keep the
+    // later hits live; and the feet are PLANTED during a punch (see
+    // agentPunchSplit in remote_avatar.js - the walking-legs split is off, and
+    // deliberately so), which means every unit of this is a visible slide.
+    // 3.5 still covers a walking target over the string's 0.82s.
+    window.aiComboStep = 3.5;
     window.compPunchStep = 2.0;    // companions close the last step while swinging too
     window.enemyWakeRange = 16;    // how close you get before a sleeper notices
     // ...and how far you get before it stops caring again. Deliberately wider
