@@ -17736,11 +17736,22 @@ export function startGame(CharacterClass) {
     // Defaulted just outside the bot's own punch range, so you begin swinging at
     // about the distance a bot does.
     window.autoPunchRange = 1.6;
-    // The charge punch reaches further than a jab, because it throws a
-    // projectile - so its auto range sits OUTSIDE jab distance rather than at
-    // it. Standing nose-to-nose to release one wastes the reach entirely and
-    // puts you inside the enemy's own swing for the whole wind-up.
-    window.chargeAutoRange = 4.5;
+    // How far the lock is HELD while a charge is being wound up.
+    //
+    // Was 4.5, which is SHORTER than the ordinary lockOnDrop of 5 - the lock
+    // was tighter during the one move that most needs it. The old comment
+    // justified it by reach, and reach turns out to be the wrong measure
+    // anyway: the projectile only travels 1.17 units before it stops counting
+    // (speed 5, fading at 3/s, live above 0.3), so a released charge reaches
+    // about 2.9 in total and 4.5 was already generous on that argument.
+    //
+    // What actually matters is that the wind-up takes a full second and you
+    // are committed for all of it. A bot circling or backing off covers 4.6
+    // units in that time, so a lock acquired at lockOnRange (2.0) has to
+    // survive the target gaining another 4.6 - about 6.6 - before you even
+    // release. At 4.5 the lock dropped mid-charge and you finished the move
+    // pointing somewhere else. 8.0 covers it with margin.
+    window.chargeAutoRange = 8.0;
     let lockedBot = null;
     let autoPunchT = 0;
     const _lockVec = new THREE.Vector3();
