@@ -3272,8 +3272,14 @@ export function startGame(CharacterClass) {
         if (window.aiBotPathVisible) {
             updateAiBotPathVisual(nextPos, destTarget, _tempVec2.copy(nextPos).addScaledVector(moveDir, 3));
         }
+        // Strafe and back-pedal clips, the same mapping the companion uses and
+        // the player's own lock-on picks. A bot holding its facing on the
+        // victim while circling or backing off was playing the FORWARD walk,
+        // so it moonwalked sideways - or, worse, read as simply turning round
+        // and leaving. What direction it faces and what direction it travels
+        // are different things here, and only now does the animation say so.
         aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
-            aiBotLocoState(speed), false);
+            strafeStateFor(aiBotLocoState(speed), facingQuat, moveDir.x, moveDir.z), false);
         return dist;
     }
     // ---- AI bot climbing ----

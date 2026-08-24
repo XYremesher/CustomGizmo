@@ -17,6 +17,11 @@ const REMOTE_ANIMS = [
     { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
     { name: 'strafe_left_run', file: 'StrafeRunRight.fbx' },
     { name: 'strafe_right_run', file: 'StrafeRunLeft.fbx' },
+    // Walking backward. strafeStateFor can return this for a companion or a
+    // bot backing off, and it was never in this list - so the request found no
+    // action, fadeToAction returned early, and whatever was playing stayed on
+    // while the body slid backwards. The player has loaded it all along.
+    { name: 'walk_backward', file: 'WalkingBackwards.fbx' },
     { name: 'run', file: 'Running.fbx' },
     { name: 'jump_start', file: 'JumpStart.fbx' },
     { name: 'fall', file: 'JumpMidAir.fbx' },
@@ -52,6 +57,24 @@ const ONE_SHOT_ANIMS = new Set(['jump_start', 'climb', 'land', 'throw', 'carry_s
 const UPPER_SPLIT_ANIMS = ['punch_left', 'punch_right', 'punch_combo'];
 const LOWER_SPLIT_ANIMS = ['idle', 'walk', 'run', 'punch_walk',
     'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run'];
+
+// Every avatar used to fetch and PARSE the whole animation set for itself.
+// The browser caches the bytes, but not the parse - so seven characters meant
+// seven full FBX parses of every clip, which is most of the loading screen.
+//
+// The promise is cached, not just the result, so avatars built at the same
+// moment share one load rather than racing to do it separately. Sharing the
+// clip object across mixers is safe: an AnimationClip is data, and
+// mixer.clipAction builds its own per-mixer action from it. processClip
+// mutates the clip in place but is idempotent - the second call finds minTime
+// already 0 and does nothing - so running it per avatar over a shared clip
+// still lands on the same result.
+const _sharedAnimLoads = new Map();
+function loadSharedAnim(loader, url) {
+    let p = _sharedAnimLoads.get(url);
+    if (!p) { p = loader.loadAsync(url); _sharedAnimLoads.set(url, p); }
+    return p;
+}
 
 function processClip(clip) {
     let minTime = Infinity;
@@ -395,7 +418,7 @@ export class RemoteAvatar {
             };
 
             Promise.all(REMOTE_ANIMS.map(anim =>
-                loader.loadAsync(BASE_URL + anim.file)
+                loadSharedAnim(loader, BASE_URL + anim.file)
                     .then(animObj => {
                         if (animObj.animations.length === 0) return;
                         if (anim.name === 'punch_charge') {
