@@ -12476,20 +12476,21 @@ export function startGame(CharacterClass) {
     // they can do it is the only honest reason to stop saying it. There is a
     // give-up timer as well, because someone who is not interested should not
     // be nagged for the rest of the level.
-    let _hintId = null, _hintT = 0, _hintDone = {}, _hintShown = {};
-    // The lessons, in the order they are handed out - one per fight, and each
-    // one only ever ONCE.
+    let _hintId = null, _hintT = 0, _hintDone = {};
+    // The lessons, in the order they are handed out: one per companion, each
+    // one once, and the order is the whole rule.
     //
-    // Keyed on having been SHOWN rather than on having been performed. Gating
-    // on performance meant a player who had not yet landed a combo got the
-    // combo card again at the next companion, and again at the one after -
-    // the same card three times over, which reads as the game not having
-    // noticed rather than as patience.
+    // A COUNTER, not a set of flags. This was keyed on "has this been
+    // performed" first, which repeated the combo card at every companion until
+    // it was; then on "has this been shown", which is right in principle but
+    // sits in state that anything else can clear - previewHint did exactly
+    // that while the card was being tuned. An index only ever goes up, so
+    // second companion means second lesson no matter what else has happened.
     const HINT_ORDER = ['combo', 'charge'];
+    let _hintStep = 0;
     const HINT_GIVE_UP = 22.0;
     function showHintCard(id, html) {
         if (_hintDone[id] || _hintId === id) return;
-        _hintShown[id] = true;
         const card = document.getElementById('hint-card');
         const text = document.getElementById('hint-text');
         if (!card || !text) return;
@@ -12574,15 +12575,19 @@ export function startGame(CharacterClass) {
     // For looking at either card without having to earn it first - the charge
     // one only appears after a combo has actually landed, which makes it
     // awkward to check. window.previewHint('charge') or ('combo').
+    // Deliberately does NOT touch _hintStep - looking at a card while tuning
+    // must not spend the lesson the next companion is going to give.
     window.previewHint = (id) => {
-        _hintDone[id] = false; _hintShown[id] = false;
+        _hintDone[id] = false;
         if (id === 'charge') showChargeHint(); else showComboHint();
     };
     // One lesson per fight, in order: the combo first, and the charge only
     // once the combo has actually been landed. Stacking them would put two
     // cards' worth of reading in front of someone who is being punched.
     function showFightHint() {
-        const next = HINT_ORDER.find(id => !_hintShown[id]);
+        const next = HINT_ORDER[_hintStep];
+        if (!next) return;          // every lesson handed out
+        _hintStep++;
         if (next === 'combo') showComboHint();
         else if (next === 'charge') showChargeHint();
     }
@@ -12603,11 +12608,13 @@ export function startGame(CharacterClass) {
             const d2 = b.group.position.distanceToSquared(near);
             if (d2 < bestD2) { bestD2 = d2; best = b; }
         }
-        if (!best) return;
-        // The fight is the reason to know this, so it is taught here rather
-        // than on arrival - being told how to punch before anything wants to
-        // hit you is a lesson with nothing attached to it.
+        // Before the early-out below, not after. Collecting a companion is
+        // what earns the next lesson; whether a sleeper happens to be in range
+        // to wake is a separate question, and tying the two together meant a
+        // companion whose paired enemy was already awake silently skipped its
+        // lesson - and the NEXT companion then gave the one it had missed.
         showFightHint();
+        if (!best) return;
         const packR2 = WAKE_PACK_RADIUS * WAKE_PACK_RADIUS;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
