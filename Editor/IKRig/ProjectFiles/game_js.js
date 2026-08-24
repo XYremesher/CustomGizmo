@@ -12530,7 +12530,7 @@ export function startGame(CharacterClass) {
     function showChargeHint() {
         _hintChargeFrom = window.chargeLandedCount || 0;
         showHintCard('charge',
-            '<b>Hold</b> to charge. Let go when the ring fills &mdash; one hit puts them down, and it sweeps everyone in reach.');
+            '<b>Hold</b> the button &mdash; the ring fills purple. Let go when it is full: one hit puts them down, and it sweeps everyone in reach.');
     }
     // One lesson per fight, in order: the combo first, and the charge only
     // once the combo has actually been landed. Stacking them would put two
