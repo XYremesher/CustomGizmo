@@ -2061,7 +2061,16 @@ export function startGame(CharacterClass) {
     // run it runs at AI_RUN_SPEED, which is the player's own full-tilt 8.0,
     // and only leans past that into AI_CHASE_SPEED once the gap is wide
     // enough that it has ground to make up.
-    const AI_RUN_SPEED = 12.0;      // half again the player's own 8.0
+    const AI_RUN_SPEED = 13.5;      // comfortably past the player's own 8.0
+    // The last couple of metres, walked in.
+    //
+    // This used to be AI_WANDER_SPEED, and the two have nothing to do with
+    // each other: one is an idle amble, the other is closing on someone you
+    // intend to hit. Sharing the number meant that calming the wander down
+    // from 3.2 to 2.2 also slowed every approach in every fight, which is
+    // exactly the "bots feel slow" this is answering. Its own constant now, so
+    // neither can move the other again.
+    const AI_CLOSE_SPEED = 4.2;
     // Speed the run clip is authored for - the player's own top speed, since
     // it is the same Running.fbx. Used to rate-match the animation below.
     const AI_RUN_ANIM_REF = 8.0;
@@ -2106,7 +2115,7 @@ export function startGame(CharacterClass) {
         if (_aiCounterT > 0) return AI_RUN_SPEED;
         if (!_aiChaseRunning && dist > AI_CATCHUP_NEAR) _aiChaseRunning = true;
         else if (_aiChaseRunning && dist < AI_CATCHUP_NEAR - AI_CATCHUP_HYST) _aiChaseRunning = false;
-        if (!_aiChaseRunning) return AI_WANDER_SPEED;
+        if (!_aiChaseRunning) return AI_CLOSE_SPEED;
         const t = THREE.MathUtils.clamp((dist - AI_CATCHUP_NEAR) / (AI_CATCHUP_FAR - AI_CATCHUP_NEAR), 0, 1);
         return THREE.MathUtils.lerp(AI_RUN_SPEED, AI_CHASE_SPEED, t);
     }
@@ -2654,7 +2663,7 @@ export function startGame(CharacterClass) {
     // direction, so an angle that was not there when the punch started is an
     // opening - and to the player it reads as being sized up.
     window.aiCircleChance = 0.55;   // odds of circling rather than closing
-    window.aiCircleSpeed = 3.4;
+    window.aiCircleSpeed = 4.6;
     // RETREAT: below this share of its poise pool it breaks off entirely and
     // backs out of reach until the pool regenerates. A bot that keeps walking
     // into a fight it is losing is not a threat, it is a supply of knockdowns.
@@ -2666,7 +2675,14 @@ export function startGame(CharacterClass) {
     const AI_RETREAT_GAP = 2.4;
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
-    window.aiPunchStep = 1.6;
+    // A LUNGE, not a chase. The feet are planted through a punch (see
+    // agentPunchSplit in remote_avatar.js), so every unit of this is a visible
+    // slide - it exists to close a hand's width, not to follow anyone. What
+    // happens when the victim leaves is now the abort, not a faster creep.
+    window.aiPunchStep = 1.1;
+    // How far past its reach the victim may get before a swing is abandoned.
+    // See the abort in the punch branch.
+    const AI_PUNCH_ABORT_GAP = 1.3;
     // ...and how fast it creeps through a COMBO. See the step itself for why
     // the two cannot be the same number.
     //
@@ -2676,7 +2692,7 @@ export function startGame(CharacterClass) {
     // agentPunchSplit in remote_avatar.js - the walking-legs split is off, and
     // deliberately so), which means every unit of this is a visible slide.
     // 3.5 still covers a walking target over the string's 0.82s.
-    window.aiComboStep = 3.5;
+    window.aiComboStep = 1.8;
     window.compPunchStep = 2.0;    // companions close the last step while swinging too
     window.enemyWakeRange = 16;    // how close you get before a sleeper notices
     // ...and how far you get before it stops caring again. Deliberately wider
@@ -4402,6 +4418,32 @@ export function startGame(CharacterClass) {
                 if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < window.aiPunchRange + 0.6) {
                     aiBotHitVictim(pv, pos);
                 }
+            }
+            // Swung at, and they left: stop the string rather than gliding
+            // after them.
+            //
+            // A punch is thrown standing - that is what the clip does, feet
+            // planted - so anything that moves the bot during one is a slide,
+            // and the faster it chases the worse the slide reads. The old
+            // answer was to creep harder (aiComboStep at 5.0), which bought a
+            // few connected hits at the cost of a bot skating across the
+            // clearing. Aborting is the honest one: the swing missed, so it
+            // ends and the chase starts again, which is also what makes a
+            // combo something you can back out of.
+            //
+            // Only after the first hit has had its chance, or a victim who
+            // steps aside at the moment of the swing cancels it before it can
+            // land at all.
+            const abortReach = (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)
+                + AI_PUNCH_ABORT_GAP;
+            if (pvPos && aiBotState.punchTimer > AI_PUNCH_HIT_TIME &&
+                Math.hypot(pvPos.x - pos.x, pvPos.z - pos.z) > abortReach) {
+                aiBotState.mode = 'cooldown';
+                // A short one - it is going straight back to chasing, and the
+                // full cooldown here would read as the bot losing interest.
+                aiBotState.cooldownTimer = AI_PUNCH_COOLDOWN * 0.4;
+                aiBot.update(delta);
+                return;
             }
             if (aiBotState.punchTimer >= AI_PUNCH_DURATION) {
                 aiBotState.mode = 'cooldown';
