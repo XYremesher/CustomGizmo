@@ -2550,6 +2550,10 @@ export function startGame(CharacterClass) {
     const COMP_PUNCH_SWING = 0.42;    // seconds per swing in the combo
     const COMP_PUNCH_RANGE = 1.9;     // has to be this close when the fist lands
     const COMP_PUNCH_SEEK = 4.5;      // how far it will look for who to hit back at
+    // ...and how far it will look for something to WATCH while standing with
+    // you. Wider than the punch seek: noticing is not the same as engaging,
+    // and it should be turning to face a bot well before it is in reach.
+    const COMP_FACE_ENEMY_RANGE = 9.0;
     // Per hit. Chips the bot's 100-point poise pool by the standard 'medium'
     // damage, so a 2-hit combo is a real contribution without a companion
     // being able to floor a bot on its own.
@@ -2614,6 +2618,9 @@ export function startGame(CharacterClass) {
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
+    // ...and how fast it creeps through a COMBO. See the step itself for why
+    // the two cannot be the same number.
+    window.aiComboStep = 5.0;
     window.compPunchStep = 2.0;    // companions close the last step while swinging too
     window.enemyWakeRange = 16;    // how close you get before a sleeper notices
     // ...and how far you get before it stops caring again. Deliberately wider
@@ -2712,7 +2719,14 @@ export function startGame(CharacterClass) {
     }
     window.walkAnimSpeed = 1.7;    // walk + strafe-walk playback multiplier
     window.runAnimSpeed = 1.0;     // run + strafe-run, kept separate on purpose
-    const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.8, AI_PUNCH_FORCE = 22;
+    // COOLDOWN was 0.8, giving a plain bot one punch every 1.5s - a slow
+    // single, thrown from the same hand every time, which read as a bot
+    // waiting its turn rather than fighting you. 0.4 puts the cycle at 1.1s
+    // and, with the hands alternating (see comboHand at the swing), it reads
+    // as the steady one-two the player's own auto-punch throws. Still well
+    // short of that 0.55s interval: this is an enemy's rhythm, not a player
+    // power handed to the AI.
+    const AI_PUNCH_DURATION = 0.7, AI_PUNCH_HIT_TIME = 0.35, AI_PUNCH_COOLDOWN = 0.4, AI_PUNCH_FORCE = 22;
     // Combo attack (the orange enemy). Same Punch_Combo.fbx and the same five
     // normalized hit times the player's own combo uses, so it reads as the
     // same move rather than a bot-only approximation - RemoteAvatar already
@@ -4185,7 +4199,7 @@ export function startGame(CharacterClass) {
             const charging = chargeAction && aiBotState.punchTimer < AI_CHARGE_HOLD;
             const swingAnim = charging ? 'punch_charge_hold'
                 : chargeAction ? 'punch_charge_punch'
-                : comboAction ? 'punch_combo' : 'punch_left';
+                : comboAction ? 'punch_combo' : aiBotState.comboHand;
             // Keep facing what it is hitting; hold the current facing when
             // there is nothing to aim at. Both branches fall through to the
             // one setNetworkState below - see the comment there.
@@ -4219,9 +4233,23 @@ export function startGame(CharacterClass) {
                     // is excluded: that telegraph reads as planting your feet,
                     // and creeping through it would give the whole thing away
                     // as a chase instead of a threat.
+                    // A COMBO closes faster than a single punch does.
+                    //
+                    // aiPunchStep is 1.6, which is enough to follow through a
+                    // jab that lands 0.35s in, and nothing like enough for the
+                    // five-hit string: that runs to 0.82s, and at 1.6 the bot
+                    // gains 1.3 units over it while the victim strolls away at
+                    // 4.8. So the first hit connected and the other four swung
+                    // at air, which is why the combo bot - the one that should
+                    // hurt most - was the one that could not land anything.
+                    //
+                    // 5.0 keeps it with a WALKING target and still loses a
+                    // running one, so backing off at a sprint stays the answer
+                    // to a combo rather than standing and taking it.
                     const gap = Math.hypot(pvPos.x - pos.x, pvPos.z - pos.z);
+                    const stepSpeed = comboAction ? window.aiComboStep : window.aiPunchStep;
                     if (!charging && gap > window.aiPunchRange * 0.9) {
-                        const st = Math.min(window.aiPunchStep * delta, gap - window.aiPunchRange * 0.9);
+                        const st = Math.min(stepSpeed * delta, gap - window.aiPunchRange * 0.9);
                         if (st > 0) {
                             const nx2 = pos.x + facingDir.x * st, nz2 = pos.z + facingDir.z * st;
                             const gy2 = aiBotSurfaceY(nx2, nz2, pos.y + 2.0);
@@ -4367,6 +4395,11 @@ export function startGame(CharacterClass) {
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
                 aiBotState.comboIndex = 0;
+                // Swap hands for the next plain swing. comboHand has been in
+                // the state object since it was written and nothing ever read
+                // or advanced it, so every jab came from the same fist.
+                aiBotState.comboHand =
+                    aiBotState.comboHand === 'punch_left' ? 'punch_right' : 'punch_left';
                 aiBotState.victim = victim;
                 aiBot.update(delta);
                 return;
@@ -4817,7 +4850,12 @@ export function startGame(CharacterClass) {
     // How likely a hit is to be answered, and how long the answer runs. The
     // blue one hits back only sometimes and short; the pale one always does,
     // and throws the full three.
-    let _compRetaliateChance = 0.5;
+    // Always, not half the time. Being punched and doing nothing about it
+    // reads as the companion not having noticed, and a coin flip means half of
+    // every fight looks like that. The gate that matters is canFight (see the
+    // retaliate branch) - a climb or a following order still comes first, so
+    // this makes it certain WHEN it can act rather than making it act always.
+    let _compRetaliateChance = 1.0;
     let _compPunchCount = 2;
     // Where the NEXT companion added should appear, instead of the usual spot
     // behind the player. Consumed and cleared by the first addCompanion that
@@ -7491,7 +7529,18 @@ export function startGame(CharacterClass) {
                                                  : h < COMP_ARRIVE_DEADZONE);
         if (_compArrived) {
             _compWhy = 'arrived';
-            _compFaceEuler.set(0, Math.atan2(p.x - c.x, p.z - c.z), 0);
+            // Standing beside you, it watches the nearest enemy rather than
+            // watching you. Two of them facing the player while something
+            // circles behind reads as an escort that has not noticed anything;
+            // turning to the threat is what makes them look like they are with
+            // you. Blind (the vision cone is ignored) on purpose - the whole
+            // point is turning toward something not already in front.
+            //
+            // Only while ARRIVED. Moving, climbing or fighting all own the
+            // facing for their own reasons, and this must not reach into them.
+            const watch = nearestBot(COMP_FACE_ENEMY_RANGE, true);
+            const faceAt = watch ? watch.group.position : p;
+            _compFaceEuler.set(0, Math.atan2(faceAt.x - c.x, faceAt.z - c.z), 0);
             _compFaceQuat.setFromEuler(_compFaceEuler);
             companion.setNetworkState([c.x, c.y, c.z], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], companionLocoState(0, delta), false);
             companion.update(delta);
