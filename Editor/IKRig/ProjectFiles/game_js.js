@@ -12476,10 +12476,20 @@ export function startGame(CharacterClass) {
     // they can do it is the only honest reason to stop saying it. There is a
     // give-up timer as well, because someone who is not interested should not
     // be nagged for the rest of the level.
-    let _hintId = null, _hintT = 0, _hintDone = {};
+    let _hintId = null, _hintT = 0, _hintDone = {}, _hintShown = {};
+    // The lessons, in the order they are handed out - one per fight, and each
+    // one only ever ONCE.
+    //
+    // Keyed on having been SHOWN rather than on having been performed. Gating
+    // on performance meant a player who had not yet landed a combo got the
+    // combo card again at the next companion, and again at the one after -
+    // the same card three times over, which reads as the game not having
+    // noticed rather than as patience.
+    const HINT_ORDER = ['combo', 'charge'];
     const HINT_GIVE_UP = 22.0;
     function showHintCard(id, html) {
         if (_hintDone[id] || _hintId === id) return;
+        _hintShown[id] = true;
         const card = document.getElementById('hint-card');
         const text = document.getElementById('hint-text');
         if (!card || !text) return;
@@ -12495,20 +12505,27 @@ export function startGame(CharacterClass) {
         // 60px normally and 50 under body.ui-alt, which no fixed number in a
         // stylesheet can follow.
         const realBtn = document.getElementById('punch-btn');
+        const realSvg = realBtn && realBtn.querySelector('svg');
         const demo = document.getElementById('hint-demo');
         const svg = demo && demo.querySelector('svg');
         if (realBtn && demo && svg) {
-            const r = realBtn.getBoundingClientRect();
-            const w = r.width || 60;
-            demo.style.width = demo.style.height = w + 'px';
-            // The live ring is the button plus 16 (76 against 60), centred on
-            // it - see the SVG in ClimbGame.html.
-            const ring = w + 16;
+            // Both boxes COPIED, not recomputed. The last version derived the
+            // ring as "button + 16", which is the relationship between the
+            // real button's CONTENT box (60) and its ring (76) - but the
+            // measurement is a border box (64), so the ring came out 80. And
+            // the demo was content-box, so assigning a 64 border-box width to
+            // it produced 68. Measuring one thing and reasoning about another
+            // is how a copy stops being a copy; copy both rects instead.
+            const b = realBtn.getBoundingClientRect();
+            const w = b.width || 64;
+            demo.style.width = demo.style.height = w + 'px';   // border-box, see the CSS
+            const rs = realSvg ? realSvg.getBoundingClientRect() : null;
+            const ring = rs && rs.width ? rs.width : w + 12;
             svg.style.width = svg.style.height = ring + 'px';
             svg.style.inset = (-(ring - w) / 2) + 'px';
-            // Same label size relative to the button as the real one: 13px on
-            // 60.
-            demo.style.fontSize = (w * 13 / 60).toFixed(1) + 'px';
+            // Label size straight off the live button, rather than a ratio.
+            const fs = realBtn.ownerDocument.defaultView.getComputedStyle(realBtn).fontSize;
+            if (fs) demo.style.fontSize = fs;
         }
         card.style.display = 'flex';
         // Next frame, so the transition has a start state to animate from.
@@ -12558,15 +12575,16 @@ export function startGame(CharacterClass) {
     // one only appears after a combo has actually landed, which makes it
     // awkward to check. window.previewHint('charge') or ('combo').
     window.previewHint = (id) => {
-        _hintDone[id] = false;
+        _hintDone[id] = false; _hintShown[id] = false;
         if (id === 'charge') showChargeHint(); else showComboHint();
     };
     // One lesson per fight, in order: the combo first, and the charge only
     // once the combo has actually been landed. Stacking them would put two
     // cards' worth of reading in front of someone who is being punched.
     function showFightHint() {
-        if (!_hintDone.combo) showComboHint();
-        else showChargeHint();
+        const next = HINT_ORDER.find(id => !_hintShown[id]);
+        if (next === 'combo') showComboHint();
+        else if (next === 'charge') showChargeHint();
     }
 
     // The nearest bot still asleep, woken. Distance-ordered rather than

@@ -85,6 +85,7 @@
         .pixelated-ui #throw-btn,
         .pixelated-ui #reset-cam-btn,
         .pixelated-ui #punch-btn,
+        .pixelated-ui #hint-demo,
         .pixelated-ui .lock-btn,
         .pixelated-ui .warp-btn {
            font-family: 'PixelButtonFont', 'Segoe UI', sans-serif;
@@ -805,7 +806,8 @@
            (see showHintCard) because the real button changes size with the
            layout - these are only the fallback if that has not run yet. */
         #hint-demo {
-            position: relative; flex: 0 0 auto; width: 60px; height: 60px; border-radius: 50%;
+            position: relative; flex: 0 0 auto; box-sizing: border-box;
+            width: 64px; height: 64px; border-radius: 50%;
             background: rgba(200, 50, 50, 0.7); border: 2px solid rgba(255, 255, 255, 0.5);
             display: flex; align-items: center; justify-content: center;
             color: white; font-family: monospace; font-weight: bold; font-size: 13px;
@@ -815,35 +817,38 @@
            One press per loop demonstrated a punch, not a combo - the thing
            being taught is the repetition itself, so the demo has to repeat. */
         #hint-card.show #hint-demo { animation: hint-tap 2.4s linear infinite; }
+        /* One press at the start of each sweep - the press IS what starts it. */
         @keyframes hint-tap {
-            0%, 8%    { transform: scale(1); }
-            12%       { transform: scale(0.86); }
-            18%, 28%  { transform: scale(1); }
-            32%       { transform: scale(0.86); }
-            38%, 48%  { transform: scale(1); }
-            52%       { transform: scale(0.86); }
-            58%, 100% { transform: scale(1); }
+            0%        { transform: scale(0.86); }
+            6%, 19%   { transform: scale(1); }
+            20%       { transform: scale(0.86); }
+            26%, 39%  { transform: scale(1); }
+            40%       { transform: scale(0.86); }
+            46%, 100% { transform: scale(1); }
         }
         #hint-demo svg { position: absolute; inset: -8px; width: 76px; height: 76px;
             transform: rotate(-90deg); pointer-events: none; }
-        /* The ring advances a THIRD per press, so the picture says "each one
-           opens the next" without the sentence having to. It holds full for a
-           beat, then resets - that beat is the finished string.
+        /* One full ring per press, DRAINING - which is what the live one does.
+           updateUI sets strokeDashoffset to circumference * normalizedTime, so
+           a swing starts with the ring whole and empties it. Each press starts
+           a fresh one.
 
-           One steady colour. The live ring really does change colour through
-           the window, but that is a detail nobody needs to know before they
-           can throw a combo, and putting it in the demo made the demo about
-           colours instead of about pressing three times. */
+           An earlier version filled it, and filled it a third at a time across
+           the three presses. Both were invented: the game does neither, and a
+           demo of a control that behaves differently from the control teaches
+           the player something they will then have to unlearn. */
         #hint-card.show #hint-demo .hint-ring-fill {
             stroke: #00ff00;
             animation: hint-sweep 2.4s linear infinite;
         }
         @keyframes hint-sweep {
-            0%, 10%   { stroke-dashoffset: 201.06; }
-            18%, 30%  { stroke-dashoffset: 134; }
-            38%, 50%  { stroke-dashoffset: 67; }
-            58%, 92%  { stroke-dashoffset: 0; }
-            93%, 100% { stroke-dashoffset: 201.06; }
+            0%        { stroke-dashoffset: 0; }
+            19.9%     { stroke-dashoffset: 201.06; }
+            20%       { stroke-dashoffset: 0; }
+            39.9%     { stroke-dashoffset: 201.06; }
+            40%       { stroke-dashoffset: 0; }
+            59.9%     { stroke-dashoffset: 201.06; }
+            60%, 100% { stroke-dashoffset: 201.06; }
         }
         /* ---- Charge variant ----
            A hold, not a tap, so the button stays pressed while the ring
@@ -862,10 +867,12 @@
         #hint-card.charge #hint-demo .hint-ring-fill {
             animation: hint-charge-sweep 2s linear infinite, hint-charge-colour 2s linear infinite;
         }
+        /* Drains as it charges - updateUI is the same function, fed the
+           charge's own growth instead of a swing's time. */
         @keyframes hint-charge-sweep {
-            0%, 10%   { stroke-dashoffset: 201.06; }
-            60%, 70%  { stroke-dashoffset: 0; }
-            71%, 100% { stroke-dashoffset: 201.06; }
+            0%, 8%    { stroke-dashoffset: 0; }
+            58%, 70%  { stroke-dashoffset: 201.06; }
+            71%, 100% { stroke-dashoffset: 0; }
         }
         /* Magenta, which is what the live ring wears while charging - kept
            only because it is true, not because the colour is the lesson. What
