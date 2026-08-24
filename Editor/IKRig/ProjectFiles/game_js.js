@@ -6236,6 +6236,52 @@ export function startGame(CharacterClass) {
             companion.punchStepping = false;
             _compAttackCD = compAttackCooldown();
         };
+        // ---- Down, and waiting for you ----
+        //
+        // A knocked-down companion used to be back on its feet in about two
+        // seconds, so losing one cost nothing and there was no reason to care
+        // what happened to it. It now stays down until you walk over.
+        //
+        // The cost is a DECISION rather than a timer to sit through: break off
+        // the fight and go help, or carry on short-handed. A flat knockdown
+        // time would only have made you wait, and the bots' own 30 seconds is
+        // the wrong model entirely - that is a "you beat this one" marker, a
+        // reward, and it fades them out to say so. A companion on the ground
+        // has to read as needing you, not as finished.
+        //
+        // No new verb and no new art: walking up to a companion is already how
+        // you collect one, and the beacon over an uncollected recruit already
+        // means "come here". Both are reused exactly as they are.
+        //
+        // knockedOutT is what does the holding - see the heldDown branch in
+        // remote_avatar.js, which also freezes the solver once the body has
+        // settled, so a companion lying there costs nothing. Topped up every
+        // frame rather than set once, so it cannot quietly expire.
+        //
+        // Only for companions that are actually YOURS. An uncollected recruit
+        // is already standing still with a beacon of its own, and running this
+        // over one would strip that beacon the first time you walked past.
+        const isMine = !companion.followOverride;
+        if (isMine && companion.isRagdoll && !companion.isStandingUp) {
+            if (!companion._needsHelp) {
+                companion._needsHelp = true;
+                attachRecruitBeacon(companion);
+            }
+            companion.knockedOutT = 10.0;
+        }
+        if (companion._needsHelp) {
+            // Its own clock, not the free-recruit one: that only ticks inside
+            // the story-free forest, so anywhere else the beacon would hang
+            // motionless.
+            updateRecruitBeacon(companion, performance.now() * 0.001);
+            // Same reach that collects a recruit, so the two read as one move.
+            if (char.group.position.distanceTo(companion.group.position) < STORY_REACH) {
+                companion._needsHelp = false;
+                companion.knockedOutT = 0;   // released: it stands up on its own
+                removeRecruitBeacon(companion);
+                addNotificationToast('Back up!', window.playerIconDataUrl);
+            }
+        }
         if (companion.isRagdoll || companion.isStandingUp) {
             cancelAttack();
             // Knocked down lets go of the wall, the same rule updateAiBot
