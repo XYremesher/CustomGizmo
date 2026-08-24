@@ -459,6 +459,49 @@ export const RagdollPhysics = {
                 // at the recovery threshold, not the same fixed-distance
                 // step regardless of intensity.
                 this.hitRecoveryStrength = impulseMagnitude;
+                // ---- Combo hold ----
+                // Every blow that lands restarts a full-strength stagger
+                // step, and inside a combo those steps SUM. Measured: one
+                // medium blow covers 0.50-0.61 units depending on how far
+                // apart the clip spaces its hits, so the six light blows of
+                // the full string shove a target 3.0-3.7 units back - while
+                // it is stunned and so cannot walk in again. Reach is
+                // hitRadius + 1.0 = 1.7 from the hand, which sits ~0.8 ahead
+                // of the body, and separation holds a body at 1.15, so there
+                // are about 1.3 units of room. The string spends that by its
+                // third blow and the rest of it swings at empty air, which is
+                // exactly what "the last combo attacks don't land unless I
+                // walk forward" is.
+                //
+                // So each further blow of the same string covers less ground.
+                // What is damped is ONLY the ground covered: the timer above
+                // is still refreshed, so the stun-lock is unchanged, and the
+                // recoil lean and twist are untouched, so every blow still
+                // visibly rocks them. 0.35^n floored at 0.08 spends ~1.0 unit
+                // across the six, which fits the room with a little left for
+                // the pacing of whichever clip is playing.
+                //
+                // LIGHT blows only. 'medium_high' is the combo's finisher and
+                // 'high' is a knockdown - those are the payoff for landing
+                // the whole string and are supposed to send them flying.
+                // Damping them would take away the reward for the thing this
+                // exists to make possible.
+                const chainGap = window.comboHoldGap !== undefined ? window.comboHoldGap : 0.6;
+                // Longer than the pause between two blows of a string,
+                // shorter than the time it takes someone knocked back to walk
+                // in again - so a fresh approach starts a fresh chain instead
+                // of continuing the one that pushed them away.
+                const nowT = performance.now() / 1000;
+                if (this._holdChainAt === undefined || (nowT - this._holdChainAt) > chainGap) this._holdChain = 0;
+                this._holdChainAt = nowT;
+                if (intensity === 'medium') {
+                    const decay = window.comboHoldDecay !== undefined ? window.comboHoldDecay : 0.35;
+                    const floor = window.comboHoldMin !== undefined ? window.comboHoldMin : 0.08;
+                    this.hitRecoveryPush = Math.max(floor, Math.pow(decay, this._holdChain || 0));
+                } else {
+                    this.hitRecoveryPush = 1;
+                }
+                this._holdChain = (this._holdChain || 0) + 1;
             }
         }
     },

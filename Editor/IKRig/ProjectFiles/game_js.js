@@ -3865,6 +3865,18 @@ export function startGame(CharacterClass) {
             m.needsUpdate = true;
         });
     }
+    // How much of its stagger step a body gets to cover right now. Set per
+    // blow by applyProceduralRecoil's combo hold (ragdoll_physics.js) and read
+    // by all three stagger steps - the player's, the companion's and the
+    // bot's - because a combo lands on all three and one of them ignoring it
+    // would mean the same string moves them different distances.
+    //
+    // Defaults to 1 rather than assuming the field: a body hit before
+    // applyProceduralRecoil has ever run on it has no value there yet, and
+    // reading that as 0 would silently delete its first stagger step.
+    function comboHoldPush(body) {
+        return body && body.hitRecoveryPush !== undefined ? body.hitRecoveryPush : 1;
+    }
     window.staggerBot = function staggerBot(bot, velocity, intensity, flashStrength, poiseOverride) {
         if (!bot || !bot.isLoaded || bot.isRagdoll) return false;
         // Hit from any direction, by anyone: start looking around. See
@@ -4310,7 +4322,8 @@ export function startGame(CharacterClass) {
             _aiStuckT = 0; _aiStuckAt.copy(pos);   // not stuck, just hurt
             const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
             const recoveryStrengthMult = THREE.MathUtils.clamp(aiBot.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
-            const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
+            const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * comboHoldPush(aiBot)
+                * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
             // Stopped at whatever it is being knocked into - see
             // clampStepToWall. Without it a punch drove a bot clean through a
@@ -6752,7 +6765,8 @@ export function startGame(CharacterClass) {
             _compStuckT = 0; _compStuckAt.copy(c);   // not stuck, just hurt
             const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
             const strengthMult = THREE.MathUtils.clamp(companion.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
-            const stepSpeed = recoveryStepSpeed * strengthMult * Math.min(1, companion.hitRecoveryTimer / compHitRecoveryDuration);
+            const stepSpeed = recoveryStepSpeed * strengthMult * comboHoldPush(companion)
+                * Math.min(1, companion.hitRecoveryTimer / compHitRecoveryDuration);
             clampStepToWall(c.x, c.y, c.z,
                 c.x + companion.hitRecoveryDir.x * stepSpeed * delta,
                 c.z + companion.hitRecoveryDir.z * stepSpeed * delta,
@@ -12575,12 +12589,12 @@ export function startGame(CharacterClass) {
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
-            'Tap <b>again</b> and <b>again</b>');
+            '<span class="hint-title">Combo Punch</span>Tap <b>again</b> and <b>again</b>');
     }
     function showChargeHint() {
         _hintChargeFrom = window.chargeLandedCount || 0;
         showHintCard('charge',
-            '<b>Hold</b>, then let go');
+            '<span class="hint-title">Charge Punch</span><b>Hold</b>, then let go');
     }
     // For looking at either card without having to earn it first - the charge
     // one only appears after a combo has actually landed, which makes it
@@ -18134,6 +18148,13 @@ export function startGame(CharacterClass) {
     window.recoveryStrengthMultMax = 6.0;
     window.hitRecoveryAnimSpeedMin = 1.5;
     window.hitRecoveryAnimSpeedMax = 6.0;
+    // Combo hold - how fast a string's stagger steps stop covering ground.
+    // See applyProceduralRecoil in ragdoll_physics.js for what these buy and
+    // how the defaults were derived. comboHoldDecay 1.0 restores the old
+    // behaviour where every blow of a combo shoved at full strength.
+    window.comboHoldDecay = 0.35;   // multiplier per further blow of the same string
+    window.comboHoldMin = 0.08;     // floor, so a long string never quite stops reacting
+    window.comboHoldGap = 0.6;      // silence that ends a string, seconds
     // Multiplies speedMult while on isDecorativeBump terrain (see
     // bumpSpeedBlend) - 1.0 would mean no slowdown, lower = slower. Applied
     // through the same eased blend as the root foot-rise, not a hard
@@ -22847,7 +22868,8 @@ export function startGame(CharacterClass) {
                 // before this scaling was added.
                 const recoveryStrengthMult = THREE.MathUtils.clamp(char.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax);
                 let actualSpeed = isHitRecovering
-                    ? window.recoveryStepSpeed * recoveryStrengthMult * Math.min(1, char.hitRecoveryTimer / window.hitRecoveryDuration)
+                    ? window.recoveryStepSpeed * recoveryStrengthMult * comboHoldPush(char)
+                        * Math.min(1, char.hitRecoveryTimer / window.hitRecoveryDuration)
                     : (window.isCarryingObj ? 4.0 : 8) * speedMult * moveMag;
 
                 const actualHits = rayFwd.intersectObjects(solidCollidables);

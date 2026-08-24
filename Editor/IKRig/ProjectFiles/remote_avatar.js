@@ -277,6 +277,13 @@ export class RemoteAvatar {
         this.hitRecoveryDir = new THREE.Vector3();
         this.hitRecoveryAnimState = 'walk';
         this.hitRecoveryStrength = 12.0;
+        // How much of the stagger step this particular blow gets to cover,
+        // 0..1 - see the combo hold in applyProceduralRecoil. A separate
+        // field from hitRecoveryStrength because that one is read through a
+        // clamp with a floor of 0.5, so scaling it can never damp a step by
+        // more than half - which is not enough to keep a combo's target in
+        // reach. 1 is "no damping", which is what a single blow gets.
+        this.hitRecoveryPush = 1;
 
         const loader = new FBXLoader();
         loader.load(BASE_URL + 'StickMan.fbx', (object) => {

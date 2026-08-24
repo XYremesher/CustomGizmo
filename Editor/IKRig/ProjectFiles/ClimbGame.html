@@ -884,6 +884,18 @@
         #hint-text { flex: 1 1 auto; }
         #hint-text b { color: #7CFC7C; }
         #hint-card.charge #hint-text b { color: #ff6aff; }
+        /* The move's NAME, on its own line above the instruction. Smaller and
+           dimmer than the instruction on purpose: the instruction is the part
+           that has to be read while someone is being punched, and setting the
+           two at the same weight would turn a one-line card into two lines of
+           equally urgent text. Tinted to the card's own colour so the title,
+           the ring and the bold words all read as one lesson. */
+        #hint-text .hint-title {
+            display: block; font-size: 11px; letter-spacing: 0.08em;
+            text-transform: uppercase; margin-bottom: 3px;
+            color: rgba(124, 252, 124, 0.72);
+        }
+        #hint-card.charge #hint-text .hint-title { color: rgba(255, 106, 255, 0.72); }
 
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
@@ -3073,6 +3085,13 @@
                 this.hitRecoveryDir = new THREE.Vector3();
                 this.hitRecoveryAnimState = 'walk';
                 this.hitRecoveryStrength = 12.0;
+                // How much of the stagger step this particular blow gets to cover,
+                // 0..1 - see the combo hold in applyProceduralRecoil. A separate
+                // field from hitRecoveryStrength because that one is read through a
+                // clamp with a floor of 0.5, so scaling it can never damp a step by
+                // more than half - which is not enough to keep a combo's target in
+                // reach. 1 is "no damping", which is what a single blow gets.
+                this.hitRecoveryPush = 1;
 
                 // 0, not 1. It means "no carry hold has been established
                 // yet", which is the truth at construction - starting it at 1
