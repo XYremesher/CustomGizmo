@@ -2846,6 +2846,10 @@ export function startGame(CharacterClass) {
     // know where walking stops and climbing starts - it used to be a local
     // inside moveAiBotToward's ground-snap block.
     const AI_MAX_STEP_UP = 0.4;
+    // ...and the biggest drop it will walk off VOLUNTARILY, when noDrop is
+    // asked for. Descending further is a fall, and a fall is never how you
+    // reach somewhere higher.
+    const AI_MAX_DROP = 1.2;
     // Matches the companions' own descent rate, so an agent walking off an
     // edge drops at the same speed whichever kind it is.
     const AI_FALL_SPEED = 16;
@@ -3132,7 +3136,13 @@ export function startGame(CharacterClass) {
     // orbit is the bot getting stuck. The companion never had the problem
     // because its own steering is gated off at exactly this height
     // difference - this is the bot's version of that gate.
-    function moveAiBotDirect(destTarget, speed, delta) {
+    // noDrop: refuse to walk off anything taller than a step.
+    //
+    // The ground snap accepts any DESCENT - deliberately, so stairs and slopes
+    // work - and that is exactly wrong while chasing someone ABOVE you. A bot
+    // on a block, with the player up a tree, walked straight at them and off
+    // the edge, every time. Falling is never the route to somewhere higher.
+    function moveAiBotDirect(destTarget, speed, delta, noDrop) {
         const pos = aiBot.group.position;
         let dx = destTarget.x - pos.x, dz = destTarget.z - pos.z;
         const dist = Math.hypot(dx, dz);
@@ -3153,7 +3163,12 @@ export function startGame(CharacterClass) {
             // what buries the bot in a box - its feet stay below the block's
             // top while its position is already over that block's footprint.
             // Height and position have to stay consistent with each other.
-            if (newY - pos.y <= AI_MAX_STEP_UP) ny = newY;
+            if (noDrop && pos.y - newY > AI_MAX_DROP) {
+                // Same treatment as a step too tall: refuse the horizontal
+                // move as well, or it ends up over the drop with its feet
+                // still at the old height.
+                nx = pos.x; nz = pos.z; blocked = true;
+            } else if (newY - pos.y <= AI_MAX_STEP_UP) ny = newY;
             else { nx = pos.x; nz = pos.z; blocked = true; }
         } else {
             // Nothing underneath. Holding the current height here is what lets
@@ -3186,7 +3201,7 @@ export function startGame(CharacterClass) {
     // bot swings up to 100 degrees away - facing its escape route at the
     // moment it should be facing its victim. Passing the victim here keeps
     // the eyes on it while the feet still route around things.
-    function moveAiBotToward(destTarget, speed, delta, faceTarget) {
+    function moveAiBotToward(destTarget, speed, delta, faceTarget, noDrop) {
         const pos = aiBot.group.position;
         const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
         const dist = toTarget.length();
@@ -3270,7 +3285,8 @@ export function startGame(CharacterClass) {
             // old height - buried inside the box. Position and height must
             // agree.
             const newY = groundHit.point.y;
-            if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
+            if (noDrop && pos.y - newY > AI_MAX_DROP) { nextPos.x = pos.x; nextPos.z = pos.z; }
+            else if (newY - pos.y <= AI_MAX_STEP_UP) nextPos.y = newY;
             else { nextPos.x = pos.x; nextPos.z = pos.z; }
         } else {
             // See moveAiBotDirect - no ground means fall, not hover.
@@ -4635,11 +4651,11 @@ export function startGame(CharacterClass) {
                 const app = findTakeoffApproach(pos, trailForVictim(victim));
                 if (app && Math.hypot(app.at.x - pos.x, app.at.z - pos.z) >= 0.7) {
                     _aiApproach.set(app.at.x, pos.y, app.at.z);
-                    if (moveAiBotDirect(_aiApproach, chaseSpeed, delta) >= 0) { aiBot.update(delta); return; }
+                    if (moveAiBotDirect(_aiApproach, chaseSpeed, delta, true) >= 0) { aiBot.update(delta); return; }
                 }
                 // No takeoff, or the way to it is blocked - close head-on and
                 // let the climb above catch the wall once it arrives.
-                if (moveAiBotDirect(vPos, chaseSpeed, delta) >= 0) { aiBot.update(delta); return; }
+                if (moveAiBotDirect(vPos, chaseSpeed, delta, true) >= 0) { aiBot.update(delta); return; }
                 // Genuinely walled in with nothing climbable: fall through to
                 // steering and look for a way round.
             }
@@ -4649,7 +4665,7 @@ export function startGame(CharacterClass) {
             // bot that stares at you while walking sideways round a rock
             // reads as gliding rather than running.
             const eyesOn = distToVictim < window.aiFaceVictimDist ? vPos : null;
-            if (moveAiBotToward(vPos, chaseSpeed, delta, eyesOn) < 0) pickNewAiWanderTarget();
+            if (moveAiBotToward(vPos, chaseSpeed, delta, eyesOn, vAbove) < 0) pickNewAiWanderTarget();
             aiBot.update(delta);
             return;
         }
