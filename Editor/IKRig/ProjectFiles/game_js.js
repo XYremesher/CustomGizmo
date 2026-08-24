@@ -3142,7 +3142,7 @@ export function startGame(CharacterClass) {
     // work - and that is exactly wrong while chasing someone ABOVE you. A bot
     // on a block, with the player up a tree, walked straight at them and off
     // the edge, every time. Falling is never the route to somewhere higher.
-    function moveAiBotDirect(destTarget, speed, delta, noDrop) {
+    function moveAiBotDirect(destTarget, speed, delta, noDrop, treeLift) {
         const pos = aiBot.group.position;
         let dx = destTarget.x - pos.x, dz = destTarget.z - pos.z;
         const dist = Math.hypot(dx, dz);
@@ -3155,7 +3155,8 @@ export function startGame(CharacterClass) {
         let ny = pos.y;
         let blocked = false;
         rayDown.set(_tempVec1.set(nx, pos.y + 2.0, nz), _downVec);
-        const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
+        const groundHit = treeLift ? rayDown.intersectObjects(aiBotNear())[0]
+            : groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
         if (groundHit) {
             const newY = groundHit.point.y;
             // Too tall to step: refuse the HORIZONTAL move as well, don't just
@@ -3201,7 +3202,15 @@ export function startGame(CharacterClass) {
     // bot swings up to 100 degrees away - facing its escape route at the
     // moment it should be facing its victim. Passing the victim here keeps
     // the eyes on it while the feet still route around things.
-    function moveAiBotToward(destTarget, speed, delta, faceTarget, noDrop) {
+    // treeLift: allow a TREE to raise this step.
+    //
+    // groundHitNoTreeLift normally refuses that, which is what stopped bots
+    // ratcheting up a trunk's root flare while walking past one. The cost is
+    // that it also refuses the shoulder of a canopy - so a bot sent up a tree
+    // presses against the dome, cannot rise, and mills about at its edge.
+    // Allowed only while the victim is above, exactly like the climb probe:
+    // going up is then the intent rather than an accident.
+    function moveAiBotToward(destTarget, speed, delta, faceTarget, noDrop, treeLift) {
         const pos = aiBot.group.position;
         const toTarget = _tempVec1.set(destTarget.x - pos.x, 0, destTarget.z - pos.z);
         const dist = toTarget.length();
@@ -3277,7 +3286,8 @@ export function startGame(CharacterClass) {
         aiBotSeparate(nextPos.x, nextPos.z, pos.y, delta, _aiSepOut);
         nextPos.x = _aiSepOut.x; nextPos.z = _aiSepOut.y;
         rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
-        const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
+        const groundHit = treeLift ? rayDown.intersectObjects(aiBotNear())[0]
+            : groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
         if (groundHit) {
             // A short thrown carryable (a box, jar, ...) landing directly in
             // the bot's path is too low for the horizontal avoidance rays
@@ -3323,8 +3333,14 @@ export function startGame(CharacterClass) {
         // so it moonwalked sideways - or, worse, read as simply turning round
         // and leaving. What direction it faces and what direction it travels
         // are different things here, and only now does the animation say so.
+        // The gait comes from the step it ACTUALLY took, not the speed it
+        // asked for. Separation, the ground snap and the refused step-up all
+        // shorten or cancel the move after the request, so a bot pressing
+        // against something it cannot walk up was still being told "you are
+        // running" - which is the running-on-the-spot at the edge of a canopy.
+        const actual = Math.hypot(nextPos.x - pos.x, nextPos.z - pos.z) / Math.max(delta, 1e-3);
         aiBot.setNetworkState([nextPos.x, nextPos.y, nextPos.z], [facingQuat.x, facingQuat.y, facingQuat.z, facingQuat.w],
-            strafeStateFor(aiBotLocoState(speed), facingQuat, moveDir.x, moveDir.z), false);
+            strafeStateFor(aiBotLocoState(actual), facingQuat, moveDir.x, moveDir.z), false);
         return dist;
     }
     // ---- AI bot climbing ----
@@ -4688,11 +4704,11 @@ export function startGame(CharacterClass) {
                 const app = findTakeoffApproach(pos, trailForVictim(victim));
                 if (app && Math.hypot(app.at.x - pos.x, app.at.z - pos.z) >= 0.7) {
                     _aiApproach.set(app.at.x, pos.y, app.at.z);
-                    if (moveAiBotDirect(_aiApproach, chaseSpeed, delta, true) >= 0) { aiBot.update(delta); return; }
+                    if (moveAiBotDirect(_aiApproach, chaseSpeed, delta, true, true) >= 0) { aiBot.update(delta); return; }
                 }
                 // No takeoff, or the way to it is blocked - close head-on and
                 // let the climb above catch the wall once it arrives.
-                if (moveAiBotDirect(vPos, chaseSpeed, delta, true) >= 0) { aiBot.update(delta); return; }
+                if (moveAiBotDirect(vPos, chaseSpeed, delta, true, true) >= 0) { aiBot.update(delta); return; }
                 // Genuinely walled in with nothing climbable: fall through to
                 // steering and look for a way round.
             }
@@ -4702,7 +4718,7 @@ export function startGame(CharacterClass) {
             // bot that stares at you while walking sideways round a rock
             // reads as gliding rather than running.
             const eyesOn = distToVictim < window.aiFaceVictimDist ? vPos : null;
-            if (moveAiBotToward(vPos, chaseSpeed, delta, eyesOn, vAbove) < 0) pickNewAiWanderTarget();
+            if (moveAiBotToward(vPos, chaseSpeed, delta, eyesOn, vAbove, vAbove) < 0) pickNewAiWanderTarget();
             aiBot.update(delta);
             return;
         }
