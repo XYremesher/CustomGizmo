@@ -3409,21 +3409,28 @@ export function startGame(CharacterClass) {
     // "What surface is there" - the probe behind every climb, hop and unstick
     // decision a bot makes.
     //
-    // Trees are excluded outright here, unlike the walking ground snap, which
-    // only refuses to be LIFTED by one (see groundHitNoTreeLift). The two want
-    // different things: standing on a canopy chunk you legitimately reached is
-    // fine, but a bot must never CHOOSE a tree as the thing to climb. Without
-    // this, a bot walking at a trunk probed ahead, met the bark a metre up,
-    // read it as a wall with a ledge, and leapt into the tree - ending up
-    // standing in the branches, which is the "they jump inside trees and stand
-    // where they cannot" case. Getting up a tree is the player's move.
-    function aiBotSurfaceY(x, z, fromTopY) {
+    // noTrees is asked for by the CLIMB probes only, and that narrowness is
+    // the whole point.
+    //
+    // A bot walking at a trunk used to probe ahead, meet the bark a metre up,
+    // read it as a wall with a ledge on top, and leap into the tree - ending
+    // up standing in the branches. Excluding trees from the climb probe fixes
+    // that, because choosing a tree as the thing to climb is what goes wrong.
+    //
+    // Excluding them from EVERY surface query, which is what this did at
+    // first, breaks more than it fixes. A canopy is a real surface: a bot
+    // standing on one would have every probe answer with the ground far below,
+    // so it reads a cliff in every direction, and a leap aimed at a victim
+    // standing on a canopy can never find anywhere to land. Where the bot is
+    // GOING is chosen by the victim, not by whatever happens to be in front,
+    // so those queries have no reason to pretend trees are not there.
+    function aiBotSurfaceY(x, z, fromTopY, noTrees) {
         _tempVec1.set(x, fromTopY, z);
         rayDown.set(_tempVec1, _downVec);
         const hits = rayDown.intersectObjects(aiBotNear(x, z), true);
         for (let i = 0; i < hits.length; i++) {
             const ud = hits[i].object.userData;
-            if (ud && ud.isTreeCollider) continue;
+            if (noTrees && ud && ud.isTreeCollider) continue;
             return hits[i].point.y;
         }
         return -Infinity;
@@ -3449,7 +3456,8 @@ export function startGame(CharacterClass) {
         // Cast from above the tallest thing it could possibly climb, so a
         // block taller than that is seen as too tall rather than missed
         // entirely and mistaken for the lower surface behind it.
-        const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0);
+        // noTrees: a bot must never pick a TREE as the wall to climb.
+        const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0, true);
         const rise = topY - pos.y;
         _aiClimbRise = rise;
         if (rise <= AI_MAX_STEP_UP) { _aiClimbWhy = 'no wall (rise ' + rise.toFixed(2) + ')'; return false; }
@@ -3457,13 +3465,13 @@ export function startGame(CharacterClass) {
         // Landing spot past the lip, and it must be the same surface - one
         // hop, not the first step of a staircase.
         let lx = px + dx * AI_CLIMB_INSET, lz = pz + dz * AI_CLIMB_INSET;
-        let landY = aiBotSurfaceY(lx, lz, topY + 1.0);
+        let landY = aiBotSurfaceY(lx, lz, topY + 1.0, true);
         // Next step starting immediately past the lip = stairs. Land shorter
         // rather than refusing to climb at all - see the same case in
         // tryCompanionClimbUp.
         if (landY > topY + 0.6) {
             lx = px + dx * COMP_CLIMB_INSET_TIGHT; lz = pz + dz * COMP_CLIMB_INSET_TIGHT;
-            landY = aiBotSurfaceY(lx, lz, topY + 1.0);
+            landY = aiBotSurfaceY(lx, lz, topY + 1.0, true);
         }
         // Only a surface that DROPS away is unusable - see the same case in
         // tryCompanionClimbUp. A rising one is a ramp or stairs.
@@ -3599,7 +3607,7 @@ export function startGame(CharacterClass) {
         let lo = 0, hi = 1.2;   // lo: known on the surface, hi: assumed past the edge
         for (let i = 0; i < 7; i++) {
             const mid = (lo + hi) * 0.5;
-            const sy = aiBotSurfaceY(topX - dirX * mid, topZ - dirZ * mid, topY + 1.0);
+            const sy = aiBotSurfaceY(topX - dirX * mid, topZ - dirZ * mid, topY + 1.0, true);
             if (Math.abs(sy - topY) <= 0.4) lo = mid; else hi = mid;
         }
         out.set(topX - dirX * (hi + COMP_HANG_OUT), topY - COMP_HANG_DROP, topZ - dirZ * (hi + COMP_HANG_OUT));
@@ -3641,13 +3649,14 @@ export function startGame(CharacterClass) {
         const dl = Math.hypot(dx, dz);
         if (dl < 1e-4) return false;
         dx /= dl; dz /= dl;
-        const aheadY = aiBotSurfaceY(pos.x + dx * AI_CLIMB_PROBE, pos.z + dz * AI_CLIMB_PROBE, pos.y + COMP_CLIMB_MAX + 1.0);
+        // Vaulting a tree makes no more sense than climbing one.
+        const aheadY = aiBotSurfaceY(pos.x + dx * AI_CLIMB_PROBE, pos.z + dz * AI_CLIMB_PROBE, pos.y + COMP_CLIMB_MAX + 1.0, true);
         const rise = aheadY - pos.y;
         // Low enough to clear with a jump, tall enough to be in the way.
         if (rise <= AI_MAX_STEP_UP || rise > COMP_LEAP_RISE_MAX) return false;
         for (let d = AI_CLIMB_PROBE + 0.5; d <= COMP_LEAP_MAX_DIST; d += 0.4) {
             const lx = pos.x + dx * d, lz = pos.z + dz * d;
-            const ly = aiBotSurfaceY(lx, lz, pos.y + COMP_CLIMB_MAX + 1.0);
+            const ly = aiBotSurfaceY(lx, lz, pos.y + COMP_CLIMB_MAX + 1.0, true);
             if (ly === -Infinity) continue;
             // Landing has to be at roughly its own level and BELOW the
             // obstacle's top - that is what makes this clearing something
@@ -3677,6 +3686,11 @@ export function startGame(CharacterClass) {
         const dl = Math.hypot(dx, dz);
         if (dl < 1e-4) return false;
         dx /= dl; dz /= dl;
+        // Trees INCLUDED here and in the landing scan below, unlike the climb
+        // probes. A leap's direction comes from where the victim is, not from
+        // whatever is in front, so it cannot wander into a trunk by accident -
+        // and if they are stood on a canopy then the canopy is exactly what it
+        // needs to be able to land on.
         const aheadY = aiBotSurfaceY(pos.x + dx * COMP_LEAP_EDGE_FWD, pos.z + dz * COMP_LEAP_EDGE_FWD, pos.y + 3.0);
         if (pos.y - aheadY <= COMP_LEAP_EDGE_DROP) return false;   // a step or a ramp, just walk it
         let landing = null;
