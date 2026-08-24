@@ -12547,12 +12547,12 @@ export function startGame(CharacterClass) {
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
-            'Keep tapping while the ring is <b>green</b> &mdash; each punch opens the next.');
+            'Tap <b>again</b> and <b>again</b>');
     }
     function showChargeHint() {
         _hintChargeFrom = window.chargeLandedCount || 0;
         showHintCard('charge',
-            '<b>Hold</b> the button &mdash; the ring fills purple. Let go when it is full: one hit puts them down, and it sweeps everyone in reach.');
+            '<b>Hold</b>, then let go');
     }
     // For looking at either card without having to earn it first - the charge
     // one only appears after a combo has actually landed, which makes it

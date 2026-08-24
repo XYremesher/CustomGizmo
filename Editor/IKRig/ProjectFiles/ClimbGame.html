@@ -795,8 +795,8 @@
             display: none; align-items: center; gap: 12px; z-index: 60;
             background: rgba(15,18,22,0.82); border: 1px solid rgba(255,255,255,0.16);
             border-radius: 12px; padding: 10px 14px 10px 10px;
-            font-family: monospace; color: #eef2f6; font-size: 13px; line-height: 1.35;
-            max-width: min(78vw, 420px); pointer-events: none;
+            font-family: monospace; color: #eef2f6; font-size: 16px; line-height: 1.3;
+            max-width: min(70vw, 300px); pointer-events: none;
             opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
         }
         #hint-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -811,29 +811,39 @@
             color: white; font-family: monospace; font-weight: bold; font-size: 13px;
             text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
         }
-        /* The tap: a quick press exactly where the window is open. */
-        #hint-card.show #hint-demo { animation: hint-tap 1.6s linear infinite; }
+        /* THREE presses, because the lesson is that you keep pressing.
+           One press per loop demonstrated a punch, not a combo - the thing
+           being taught is the repetition itself, so the demo has to repeat. */
+        #hint-card.show #hint-demo { animation: hint-tap 2.4s linear infinite; }
         @keyframes hint-tap {
-            0%, 38%   { transform: scale(1); }
-            44%       { transform: scale(0.88); }
-            52%, 100% { transform: scale(1); }
+            0%, 8%    { transform: scale(1); }
+            12%       { transform: scale(0.86); }
+            18%, 28%  { transform: scale(1); }
+            32%       { transform: scale(0.86); }
+            38%, 48%  { transform: scale(1); }
+            52%       { transform: scale(0.86); }
+            58%, 100% { transform: scale(1); }
         }
         #hint-demo svg { position: absolute; inset: -8px; width: 76px; height: 76px;
             transform: rotate(-90deg); pointer-events: none; }
+        /* The ring advances a THIRD per press, so the picture says "each one
+           opens the next" without the sentence having to. It holds full for a
+           beat, then resets - that beat is the finished string.
+
+           One steady colour. The live ring really does change colour through
+           the window, but that is a detail nobody needs to know before they
+           can throw a combo, and putting it in the demo made the demo about
+           colours instead of about pressing three times. */
         #hint-card.show #hint-demo .hint-ring-fill {
-            animation: hint-sweep 1.6s linear infinite, hint-colour 1.6s linear infinite;
+            stroke: #00ff00;
+            animation: hint-sweep 2.4s linear infinite;
         }
-        /* One swing, 0 to full. */
         @keyframes hint-sweep {
-            0%   { stroke-dashoffset: 201.06; }
-            100% { stroke-dashoffset: 0; }
-        }
-        /* Grey until the window opens at 10%, green while it is open, blue
-           from the tap at 44% - the same three states the real ring shows. */
-        @keyframes hint-colour {
-            0%, 9.9%    { stroke: #888888; }
-            10%, 43.9%  { stroke: #00ff00; }
-            44%, 100%   { stroke: #0088ff; }
+            0%, 10%   { stroke-dashoffset: 201.06; }
+            18%, 30%  { stroke-dashoffset: 134; }
+            38%, 50%  { stroke-dashoffset: 67; }
+            58%, 92%  { stroke-dashoffset: 0; }
+            93%, 100% { stroke-dashoffset: 201.06; }
         }
         /* ---- Charge variant ----
            A hold, not a tap, so the button stays pressed while the ring
@@ -857,18 +867,12 @@
             60%, 70%  { stroke-dashoffset: 0; }
             71%, 100% { stroke-dashoffset: 201.06; }
         }
-        /* MAGENTA while charging, red on the release. Those are the live
-           ring's own colours for punchState 4 and 5 - the first demo used
-           orange-to-red, which is the combo's colour and the swing's, so it
-           was teaching the player to look for something that never appears
-           while they hold. The whole point of these cards is to name a signal
-           the game really gives; naming the wrong one is worse than saying
-           nothing. */
+        /* Magenta, which is what the live ring wears while charging - kept
+           only because it is true, not because the colour is the lesson. What
+           the demo has to show is that the button goes down and STAYS down. */
         @keyframes hint-charge-colour {
             0%, 9.9%   { stroke: #888888; }
-            10%, 59.9% { stroke: #ff00ff; }
-            60%, 70%   { stroke: #ff3333; }
-            71%, 100%  { stroke: #888888; }
+            10%, 100%  { stroke: #ff00ff; }
         }
         #hint-text { flex: 1 1 auto; }
         #hint-text b { color: #7CFC7C; }
