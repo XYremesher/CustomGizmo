@@ -4745,6 +4745,7 @@ export function startGame(CharacterClass) {
     const RECRUIT_BEACON_Y = 2.5;    // clear of the head
     const RECRUIT_BEACON_BOB = 0.12;
     const _beaconToCam = new THREE.Vector3();
+    const _compDownAt = new THREE.Vector3(), _compDownBeacon = new THREE.Vector3();
     function attachRecruitBeacon(comp, color) {
         if (!comp || comp._beacon) return;
         // Defaults to whatever the ground dot is already wearing - the
@@ -6274,8 +6275,30 @@ export function startGame(CharacterClass) {
             // the story-free forest, so anywhere else the beacon would hang
             // motionless.
             updateRecruitBeacon(companion, performance.now() * 0.001);
+            // Over the BODY, not over the group.
+            //
+            // Ragdoll drives the bones and leaves this.group frozen wherever
+            // the fall started, so both the beacon and the reach test were
+            // reading a spot the body had rolled away from - you walked to the
+            // marker and picked up a companion lying somewhere else. It is the
+            // exact trap the ground dot documents two lines above, which is
+            // why that one is hidden while ragdolled; the beacon cannot be
+            // hidden, since pointing at the body is its whole job.
+            //
+            // The beacon hangs off the group, so the world position has to be
+            // brought back into the group's space to place it.
+            companion.getHitReferencePoint(_compDownAt);
+            if (companion._beacon) {
+                companion._beacon.position.copy(companion.group.worldToLocal(_compDownBeacon.copy(_compDownAt)));
+                // Lower than a standing companion's - it is over a body on the
+                // ground, not over a head - and the bob is re-applied because
+                // placing it from the body just overwrote what
+                // updateRecruitBeacon set.
+                companion._beacon.position.y += RECRUIT_BEACON_Y * 0.5
+                    + Math.sin(performance.now() * 0.0022) * RECRUIT_BEACON_BOB;
+            }
             // Same reach that collects a recruit, so the two read as one move.
-            if (char.group.position.distanceTo(companion.group.position) < STORY_REACH) {
+            if (char.group.position.distanceTo(_compDownAt) < STORY_REACH) {
                 companion._needsHelp = false;
                 companion.knockedOutT = 0;   // released: it stands up on its own
                 removeRecruitBeacon(companion);
@@ -15553,7 +15576,10 @@ export function startGame(CharacterClass) {
     window.ditherStrength = 0.98;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
-    window.ditherFadeSpeed = 7.0;
+    // 15, up from 7. The dissolve is a readability aid - it exists so you can
+    // see yourself behind a trunk - and at 7 it lagged far enough behind the
+    // camera that you were already hidden by the time it finished.
+    window.ditherFadeSpeed = 15.0;
     // Radius of the see-through hole, in FRAMEBUFFER pixels (gl_FragCoord is
     // in framebuffer space, so this is compared against a drawing-buffer size,
     // not CSS pixels - they differ by devicePixelRatio on a phone).
@@ -19152,15 +19178,26 @@ export function startGame(CharacterClass) {
     let fpsSmoothed = 60;
     let fpsMin = Infinity;
     let fpsDisplayAccum = 0;
-    // Tap the counter to restart both figures. Without this the minimum is
-    // set once by the load hitch and never recovers, so it reads as a
-    // permanent single-digit number that says nothing about how the frame is
-    // running now - and comparing a setting before and after a change is
-    // impossible while the worst frame of the session is still in the total.
+    // Collapsed by default: a one-line "FPS: 130" pill, tapped to open the full
+    // readout and tapped again to close it. The whole block is four lines of
+    // numbers that only matter while something is being measured, and it sat
+    // over the corner of the view the rest of the time.
+    //
+    // Opening it also restarts both figures, which used to be what the tap did
+    // on its own. Putting the two on one gesture is not a compromise - opening
+    // the readout is exactly when a fresh reading is wanted, and the minimum is
+    // otherwise set once by the load hitch and never recovers, so it reads as a
+    // permanent single-digit number saying nothing about how the frame is
+    // running now.
+    let fpsCollapsed = true;
     if (fpsCounterEl) {
         fpsCounterEl.addEventListener('pointerdown', (e) => {
             e.preventDefault(); e.stopPropagation();
-            fpsMin = Infinity; fpsSmoothed = 60; fpsDisplayAccum = 1;
+            fpsCollapsed = !fpsCollapsed;
+            if (!fpsCollapsed) { fpsMin = Infinity; fpsSmoothed = 60; }
+            // Redrawn next frame rather than after the 0.3s display interval,
+            // so the tap feels like it did something.
+            fpsDisplayAccum = 1;
         });
     }
 
@@ -19473,6 +19510,13 @@ export function startGame(CharacterClass) {
                 // A 144fps frame is 6.9ms and an 85fps frame 11.8ms, so the
                 // ray line is directly comparable to the budget: if it grows
                 // by roughly the 5ms between them, that is the whole story.
+                // if/else, NOT an early return: this block sits near the top
+                // of animate(), so returning here would abandon the whole
+                // frame - no simulation, no render - every time the counter
+                // happened to redraw while collapsed.
+                if (fpsCollapsed) {
+                    fpsCounterEl.textContent = `FPS: ${Math.round(fpsSmoothed)}`;
+                } else {
                 fpsCounterEl.textContent =
                     `FPS: ${Math.round(fpsSmoothed)} (min ${Math.round(fpsMin)})\n` +
                     `draws ${_lastDrawCalls}  tris ${(_lastTriangles / 1000).toFixed(0)}k\n` +
@@ -19486,6 +19530,7 @@ export function startGame(CharacterClass) {
                     // few seconds - the spike itself lasts one frame and is
                     // unreadable live.
                     (window.carryTickDebug && window.carryTickReport ? `\n${window.carryTickReport}` : '');
+                }
             }
         }
 
