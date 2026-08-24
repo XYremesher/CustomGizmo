@@ -2682,6 +2682,9 @@ export function startGame(CharacterClass) {
     // How far past its reach the victim may get before a swing is abandoned.
     // See the abort in the punch branch.
     const AI_PUNCH_ABORT_GAP = 1.3;
+    // Biggest height difference a punch is worth throwing across. See the
+    // sameLevel gate - above this the answer is to climb, not to swing.
+    const AI_PUNCH_MAX_DY = 1.2;
     // ...and how fast it creeps through a COMBO. See the step itself for why
     // the two cannot be the same number.
     //
@@ -4527,6 +4530,19 @@ export function startGame(CharacterClass) {
             // ---- Break off, circle, or commit ----
             // Ahead of the swing decision, because both of these are reasons
             // NOT to swing. See aiCircleChance and aiRetreatAt.
+            // Reach is a 3D distance, so a victim standing on a low block
+            // reads as "in reach" while being a metre over the bot's head -
+            // and the bot swings at their feet forever instead of climbing up.
+            // Raising aiPunchRange from 1.15 to 1.7 widened exactly that
+            // window: a one-unit step now falls inside it where it used to
+            // fall through to the climb.
+            //
+            // A punch needs the two of you on roughly the same level. 1.2 is
+            // about the height difference at which swinging stops meaning
+            // anything - past that the answer is to climb, which is what the
+            // branch further down is for.
+            const vP = victim.group.position;
+            const sameLevel = Math.abs(vP.y - pos.y) < AI_PUNCH_MAX_DY;
             const poolMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
             const pool = aiBot.staggerPool === undefined ? poolMax : aiBot.staggerPool;
             if (aiBotState.retreatT > 0) aiBotState.retreatT -= delta;
@@ -4534,7 +4550,6 @@ export function startGame(CharacterClass) {
                 aiBotState.retreatT = AI_RETREAT_TIME;
                 aiBotState.circleT = 0;   // one or the other, never both
             }
-            const vP = victim.group.position;
             if (aiBotState.retreatT > 0) {
                 // Straight back, still facing what it is backing away from -
                 // a bot that turns its back reads as fleeing rather than as
@@ -4563,21 +4578,21 @@ export function startGame(CharacterClass) {
                 aiBot.update(delta);
                 return;
             }
-            if (!lineBlocked && distToVictim < reach) {
+            if (sameLevel && !lineBlocked && distToVictim < reach) {
                 // Arriving in reach is a decision point, not automatically a
                 // punch: sometimes it circles for a moment first. Rolled here,
                 // once per arrival, so a bot cannot dither on the spot.
                 // Not while countering: the answer to being punched is to
                 // punch back, and sizing them up first reads as having
                 // forgotten about it.
-                if (aiBot.counterT <= 0 && Math.random() < window.aiCircleChance) {
+                if (sameLevel && aiBot.counterT <= 0 && Math.random() < window.aiCircleChance) {
                     aiBotState.circleT = AI_CIRCLE_MIN + Math.random() * (AI_CIRCLE_MAX - AI_CIRCLE_MIN);
                     aiBotState.circleDir = Math.random() < 0.5 ? -1 : 1;
                     aiBot.update(delta);
                     return;
                 }
             }
-            if (!lineBlocked && distToVictim < reach) {
+            if (sameLevel && !lineBlocked && distToVictim < reach) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
