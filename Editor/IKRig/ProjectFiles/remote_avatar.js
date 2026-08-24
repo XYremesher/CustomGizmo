@@ -845,6 +845,17 @@ export class RemoteAvatar {
         // whole duration - exactly like Character's own animate() dispatch.
         if (this.isRagdoll) {
             if (this.chargeEffect) this.stopChargeEffect();
+            // Mixer FIRST, solver second, so the solver always has the last
+            // word on the bones.
+            //
+            // initRagdoll stops every action, and the restore that a stopped
+            // action triggers does not happen at stop() - it happens on the
+            // next tick. With the tick at the END of this branch, that restore
+            // landed on top of the pose the solver had just written, so the
+            // first frame of every knockdown rendered the bind pose: a single
+            // frame of T before the ragdoll appeared. Ticking first means the
+            // restore is overwritten the same frame it happens.
+            if (this.mixer) this.mixer.update(delta);
             const floorY = this._ragdollFloorY();
             this.updateRagdoll(delta, window.collidables || [], floorY);
             const hipsP = this.getParticle('hips');
@@ -889,9 +900,14 @@ export class RemoteAvatar {
                 return;
             }
             if (!heldDown && this.ragdollTimer > this.ragdollMaxTime && (nearFloor || this.ragdollTimer > this.ragdollMaxTime + 5.0)) {
+                // beginStandUp starts the stand-up action and crossfades from
+                // a captured pose, so the mixer DOES have something to play
+                // from here on - and it has to be ticked for that first frame
+                // or the standup begins a frame late. The tick at the top of
+                // the branch covered the frames before this one.
                 this.beginStandUp(hipsP ? Math.max(0, hipsP.pos.y - 0.5) : 0);
+                if (this.mixer) this.mixer.update(0);
             }
-            if (this.mixer) this.mixer.update(delta);
             return;
         }
         if (this.isStandingUp) {
