@@ -410,16 +410,18 @@
            so it's shifted outward by one full radius (-200px) on both the
            horizontal and vertical side that point off-screen. */
 
-        /* Centred on the JOYSTICK, by being a child of it - not pinned to a
-           screen corner. It used to sit at a fixed bottom-left/right offset
-           that only matched the default layout, so body.ui-alt (which moves
-           the sticks to the middle of the edge) left the matte behind where
-           the stick used to be. Anchoring it to the control means it follows
-           every layout for free, and there is no second set of positions to
-           keep in step with the first. */
-        .drag-deadzone { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-            width: 400px; height: 400px; border-radius: 50%; background: rgba(0, 0, 0, 0.35);
-            pointer-events: none; z-index: 0; display: none; }
+        /* Position and size are written from JS every frame the overlay is
+           visible, from the very numbers the look-drag handler tests against
+           (see updateDragDeadZoneViz). Nothing here may set them.
+
+           The previous version anchored this to the joystick as a CHILD, and
+           that was worse than the fixed corners it replaced: the matte moved
+           and the actual dead-zone logic did not, so the overlay drew a
+           boundary that was not the real one - the exact failure the handler's
+           own comment warns about. Being wrong quietly is worse than being in
+           the wrong place visibly. */
+        .drag-deadzone { position: fixed; border-radius: 50%; background: rgba(0, 0, 0, 0.35);
+            pointer-events: none; z-index: 9; display: none; }
         #carry-btn { position: absolute; bottom: 100px; right: 155px; width: 55px; height: 55px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(255, 50, 150, 0.7); }
 
         #drop-btn { position: absolute; bottom: 145px; right: 195px; width: 45px; height: 45px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, 0.4); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(150, 150, 150, 0.8); }
@@ -1668,15 +1670,15 @@
             <span class="ledge-hint up">PUSH</span>
             <span class="ledge-hint down">PULL</span>
         </div>
-        <div id="drag-deadzone-left" class="drag-deadzone"></div>
         <div id="joy-attract-thumb"></div>
         <div id="joy-attract-hand"><img id="joy-attract-finger" alt=""></div>
         <div id="stick-left" class="joystick-stick"></div>
     </div>
     <div id="base-right" class="joystick-base">
-        <div id="drag-deadzone-right" class="drag-deadzone"></div>
         <div id="stick-right" class="joystick-stick"></div>
     </div>
+    <div id="drag-deadzone-left" class="drag-deadzone"></div>
+    <div id="drag-deadzone-right" class="drag-deadzone"></div>
 
     <script type="importmap">
     {

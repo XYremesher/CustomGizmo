@@ -2928,8 +2928,40 @@ export function startGame(CharacterClass) {
     // Two extra rays offset sideways from the same origin, parallel to the
     // candidate direction, approximate a capsule sweep cheaply.
     const AI_AVOID_RADIUS = 0.45;
-    // Scratch for the stagger's wall check - see the hit-recovery step.
-    const _aiKnockDir = new THREE.Vector3(), _aiKnockFrom = new THREE.Vector3();
+    // Stops a direct step at whatever is in front of it.
+    //
+    // EVERY place a character is moved by writing its position outright needs
+    // this. The walking path has its avoidance ray bundle; the punch step and
+    // the knockback slide do not, and both only ever checked the ground - so a
+    // bot swinging at someone stood behind a trunk walked into the trunk, and
+    // so did one being knocked into it. Those are the "they get into trees
+    // while punching and while taking a hit" cases, and they are the same
+    // omission in four places rather than four separate bugs.
+    //
+    // One ray at chest height, reaching exactly this step plus a body radius,
+    // stopping a body radius short of what it finds. Chest height on purpose:
+    // a trunk is there and a canopy chunk is metres up, so it stops at wood
+    // without ever catching leaves.
+    const _stepWallDir = new THREE.Vector3(), _stepWallFrom = new THREE.Vector3();
+    function clampStepToWall(px, py, pz, nx, nz, near, out) {
+        out.set(nx, nz);
+        _stepWallDir.set(nx - px, 0, nz - pz);
+        const len = _stepWallDir.length();
+        if (len < 1e-5) return out;
+        _stepWallDir.multiplyScalar(1 / len);
+        _stepWallFrom.set(px, py + 0.9, pz);
+        rayFwd.set(_stepWallFrom, _stepWallDir);
+        const prevFar = rayFwd.far;
+        rayFwd.far = len + AI_AVOID_RADIUS;
+        const wall = rayFwd.intersectObjects(near)[0];
+        rayFwd.far = prevFar;
+        if (wall) {
+            const allowed = Math.max(0, wall.distance - AI_AVOID_RADIUS);
+            out.set(px + _stepWallDir.x * allowed, pz + _stepWallDir.z * allowed);
+        }
+        return out;
+    }
+    const _stepWallOut = new THREE.Vector2();
     const _aiAvoidPerp = new THREE.Vector3();
     const _aiAvoidSideOrigin = new THREE.Vector3();
 
@@ -4120,38 +4152,11 @@ export function startGame(CharacterClass) {
             const recoveryStrengthMult = THREE.MathUtils.clamp(aiBot.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
             const stepSpeed = recoveryStepSpeed * recoveryStrengthMult * Math.min(1, aiBot.hitRecoveryTimer / hitRecoveryDuration);
             const nextPos = _tempVec3.copy(pos).addScaledVector(aiBot.hitRecoveryDir, stepSpeed * delta);
-            // Stop the stagger at whatever it is being knocked into.
-            //
-            // This step moves the bot DIRECTLY, and it had no horizontal check
-            // of any kind - the walking path has its avoidance bundle, this
-            // had nothing - so a punch drove a bot clean through a trunk and
-            // left it standing inside the tree. Not a ragdoll, just the
-            // knockback slide, which is why it looked unrelated to the ragdoll
-            // tree fixes.
-            //
-            // One ray at chest height along the horizontal part of the throw,
-            // reaching exactly as far as this frame's step plus a body radius.
-            // Chest height on purpose: a canopy chunk sits metres up and a
-            // trunk does not, so this stops at wood without ever catching
-            // leaves.
-            _aiKnockDir.copy(aiBot.hitRecoveryDir).setY(0);
-            const stepLen = _aiKnockDir.length() * stepSpeed * delta;
-            if (stepLen > 1e-5) {
-                _aiKnockDir.normalize();
-                _aiKnockFrom.copy(pos).setY(pos.y + 0.9);
-                rayFwd.set(_aiKnockFrom, _aiKnockDir);
-                const prevFar = rayFwd.far;
-                rayFwd.far = stepLen + AI_AVOID_RADIUS;
-                const wall = rayFwd.intersectObjects(aiBotNear())[0];
-                rayFwd.far = prevFar;
-                if (wall) {
-                    // Held a body radius off the surface rather than against
-                    // it, so the next frame's ray does not start inside.
-                    const allowed = Math.max(0, wall.distance - AI_AVOID_RADIUS);
-                    nextPos.x = pos.x + _aiKnockDir.x * allowed;
-                    nextPos.z = pos.z + _aiKnockDir.z * allowed;
-                }
-            }
+            // Stopped at whatever it is being knocked into - see
+            // clampStepToWall. Without it a punch drove a bot clean through a
+            // trunk and left it standing inside the tree.
+            clampStepToWall(pos.x, pos.y, pos.z, nextPos.x, nextPos.z, aiBotNear(), _stepWallOut);
+            nextPos.x = _stepWallOut.x; nextPos.z = _stepWallOut.y;
             rayDown.set(_tempVec1.copy(nextPos).setY(nextPos.y + 2.0), _downVec);
             const groundHit = groundHitNoTreeLift(rayDown.intersectObjects(aiBotNear()), pos.y);
             // Falls rather than snapping - see the companion's own stagger for
@@ -4268,7 +4273,10 @@ export function startGame(CharacterClass) {
                     if (!charging && gap > window.aiPunchRange * 0.9) {
                         const st = Math.min(stepSpeed * delta, gap - window.aiPunchRange * 0.9);
                         if (st > 0) {
-                            const nx2 = pos.x + facingDir.x * st, nz2 = pos.z + facingDir.z * st;
+                            clampStepToWall(pos.x, pos.y, pos.z,
+                                pos.x + facingDir.x * st, pos.z + facingDir.z * st,
+                                aiBotNear(), _stepWallOut);
+                            const nx2 = _stepWallOut.x, nz2 = _stepWallOut.y;
                             const gy2 = aiBotSurfaceY(nx2, nz2, pos.y + 2.0);
                             // Only onto ground level with where it stands -
                             // a bot must not punch its way up a step or off
@@ -6472,8 +6480,11 @@ export function startGame(CharacterClass) {
             const recoveryStepSpeed = window.recoveryStepSpeed || 3.5;
             const strengthMult = THREE.MathUtils.clamp(companion.hitRecoveryStrength / 12.0, 0.5, window.recoveryStrengthMultMax || 2.0);
             const stepSpeed = recoveryStepSpeed * strengthMult * Math.min(1, companion.hitRecoveryTimer / compHitRecoveryDuration);
-            const rx = c.x + companion.hitRecoveryDir.x * stepSpeed * delta;
-            const rz = c.z + companion.hitRecoveryDir.z * stepSpeed * delta;
+            clampStepToWall(c.x, c.y, c.z,
+                c.x + companion.hitRecoveryDir.x * stepSpeed * delta,
+                c.z + companion.hitRecoveryDir.z * stepSpeed * delta,
+                _compGroundList, _stepWallOut);
+            const rx = _stepWallOut.x, rz = _stepWallOut.y;
             const rgy = companionGroundY(rx, rz, c.y);
             let ry = c.y;
             // FALL to the ground, do not snap to it. The old test was
@@ -6641,7 +6652,9 @@ export function startGame(CharacterClass) {
                 if (gapT > want) {
                     const st = Math.min(window.compPunchStep * delta, gapT - want);
                     const ux = (tp.x - c.x) / gapT, uz = (tp.z - c.z) / gapT;
-                    const nx2 = c.x + ux * st, nz2 = c.z + uz * st;
+                    clampStepToWall(c.x, c.y, c.z, c.x + ux * st, c.z + uz * st,
+                        _compGroundList, _stepWallOut);
+                    const nx2 = _stepWallOut.x, nz2 = _stepWallOut.y;
                     // Only onto ground level with where it stands - it must not
                     // punch its way up a step or off the ledge it is fighting on.
                     const gy2 = companionGroundY(nx2, nz2, c.y);
@@ -17895,18 +17908,48 @@ export function startGame(CharacterClass) {
     // lift and re-grip. Live-tunable (see the debug panel slider) so this
     // can be dialed in without a reload; default 2 doubles the old rate.
     window.dragRotateSensitivity = 3.0;
+    // The two dead zones, in screen pixels. ONE definition, read both by the
+    // look-drag test and by the debug overlay - the previous arrangement kept
+    // the number in two places with a comment begging whoever changed one to
+    // change the other, and it went wrong the first time anybody moved it.
+    //
+    // Anchored to the elements a thumb actually reaches for: the movement
+    // stick, and the jump button as the nearest thing to the middle of the
+    // action cluster. Falls back to the screen corner when an element is
+    // missing or hidden, which is what the right-hand side does whenever the
+    // camera stick is off.
+    window.dragDeadZoneRadius = 140;
+    function dragDeadZone(i) {
+        const r = window.dragDeadZoneRadius;
+        const el = document.getElementById(i === 0 ? 'base-left' : 'jump-btn');
+        if (el && el.offsetParent !== null) {
+            const b = el.getBoundingClientRect();
+            return { x: b.left + b.width * 0.5, y: b.top + b.height * 0.5, r };
+        }
+        return { x: i === 0 ? 0 : window.innerWidth, y: window.innerHeight, r };
+    }
     let lookPointerId = null, lX, lY;
     window.addEventListener('pointerdown', e => {
         if (lookPointerId !== null) return;   // one look finger at a time
-        // Circular (not square) exclusion around each bottom corner - same
-        // 200px reach along both edges as the old square check, just
-        // rounded off along the diagonal instead of blocking a full corner
-        // rectangle. Radius must match DRAG_DEADZONE_RADIUS in ClimbGame.html
-        // (the "Show Drag Dead-Zone" debug overlay) exactly, or the overlay
-        // would show a boundary that isn't the real one.
-        const DRAG_DEADZONE_RADIUS = 200;
-        if (Math.hypot(e.clientX, e.clientY - window.innerHeight) < DRAG_DEADZONE_RADIUS) return;
-        if (Math.hypot(e.clientX - window.innerWidth, e.clientY - window.innerHeight) < DRAG_DEADZONE_RADIUS) return;
+        // Circular exclusions around the two thumbs, so reaching for the
+        // stick or the buttons cannot start a camera drag by accident.
+        //
+        // Centred on the CONTROLS, read from their own bounding boxes, rather
+        // than on the screen corners. The corners only matched the default
+        // layout - body.ui-alt moves the stick to the middle of the bottom
+        // edge, and the dead zone stayed behind in the corner. Reading the
+        // elements means every layout is covered without a second set of
+        // numbers to keep in step, and the debug overlay draws from this same
+        // function so the two cannot disagree.
+        //
+        // 140, down from the old 200: half of a corner-centred circle was off
+        // screen, and moving the centre onto the control put all of it in
+        // view. At 200 that ate a fist-sized hole out of the middle of the
+        // picture.
+        for (let i = 0; i < 2; i++) {
+            const z = dragDeadZone(i);
+            if (z && Math.hypot(e.clientX - z.x, e.clientY - z.y) < z.r) return;
+        }
         if (!e.target.closest('.joystick-base') && e.target.id.indexOf('btn') === -1 && !e.target.closest('#ui')) { lookPointerId = e.pointerId; lX=e.clientX; lY=e.clientY; }
     });
     window.addEventListener('pointermove', e => { if (e.pointerId === lookPointerId) { const s = 0.005 * window.dragRotateSensitivity; cameraTheta -= (e.clientX-lX)*s; cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi-(e.clientY-lY)*s)); lX=e.clientX; lY=e.clientY; } });
@@ -18305,10 +18348,25 @@ export function startGame(CharacterClass) {
     const toggleDragDeadZoneEl = document.getElementById('toggle-drag-deadzone');
     if (toggleDragDeadZoneEl) toggleDragDeadZoneEl.addEventListener('change', e => {
         window.showDragDeadZone = e.target.checked;
-        const display = e.target.checked ? 'block' : 'none';
-        const l = document.getElementById('drag-deadzone-left'); if (l) l.style.display = display;
-        const r = document.getElementById('drag-deadzone-right'); if (r) r.style.display = display;
+        updateDragDeadZoneViz();
     });
+    // Drawn from dragDeadZone(), so the matte IS the boundary rather than a
+    // second drawing of it. Re-run on resize and orientation change, since
+    // both move the controls the zones are anchored to.
+    function updateDragDeadZoneViz() {
+        for (let i = 0; i < 2; i++) {
+            const el = document.getElementById(i === 0 ? 'drag-deadzone-left' : 'drag-deadzone-right');
+            if (!el) continue;
+            if (!window.showDragDeadZone) { el.style.display = 'none'; continue; }
+            const z = dragDeadZone(i);
+            el.style.display = 'block';
+            el.style.width = el.style.height = (z.r * 2) + 'px';
+            el.style.left = (z.x - z.r) + 'px';
+            el.style.top = (z.y - z.r) + 'px';
+        }
+    }
+    window.addEventListener('resize', updateDragDeadZoneViz);
+    window.updateDragDeadZoneViz = updateDragDeadZoneViz;
     // Shared size for every small UI icon (toast icon, dialogue icon) -
     // read live by addNotificationToast/updateDialogueIconForCurrentLine
     // rather than baked into their CSS, so this one slider covers both.
