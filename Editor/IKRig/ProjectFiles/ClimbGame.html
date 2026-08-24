@@ -830,8 +830,37 @@
             10%, 43.9%  { stroke: #00ff00; }
             44%, 100%   { stroke: #0088ff; }
         }
+        /* ---- Charge variant ----
+           A hold, not a tap, so the button stays pressed while the ring
+           fills. Fractions of a 2.0s loop, from the real numbers: the hold is
+           only detected after 200ms (10%), it matures over
+           chargePunchChargeTime, 1.0s (10%-60%), and the release is the
+           moment it is full. Red is the colour the live ring wears in the
+           charge state. */
+        #hint-card.charge #hint-demo { animation: hint-hold 2s linear infinite; }
+        @keyframes hint-hold {
+            0%        { transform: scale(1); }
+            8%, 58%   { transform: scale(0.88); }
+            64%       { transform: scale(1.12); }
+            72%, 100% { transform: scale(1); }
+        }
+        #hint-card.charge #hint-demo .hint-ring-fill {
+            animation: hint-charge-sweep 2s linear infinite, hint-charge-colour 2s linear infinite;
+        }
+        @keyframes hint-charge-sweep {
+            0%, 10%   { stroke-dashoffset: 176; }
+            60%, 70%  { stroke-dashoffset: 0; }
+            71%, 100% { stroke-dashoffset: 176; }
+        }
+        @keyframes hint-charge-colour {
+            0%, 9.9%   { stroke: #888888; }
+            10%        { stroke: #ff8800; }
+            60%, 70%   { stroke: #ff3333; }
+            71%, 100%  { stroke: #888888; }
+        }
         #hint-text { flex: 1 1 auto; }
         #hint-text b { color: #7CFC7C; }
+        #hint-card.charge #hint-text b { color: #ff8a6a; }
 
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
@@ -2468,6 +2497,13 @@
                         // rather than the first jab of one that was abandoned.
                         if (isFinalComboBlow) {
                             window.comboLandedCount = (window.comboLandedCount || 0) + 1;
+                        }
+                        // Same idea for the charge, and only a MATURE one -
+                        // an early release is an ordinary punch wearing the
+                        // charge's clip, so counting it would let the hint
+                        // dismiss on the thing it is trying to teach against.
+                        if (isMatureCharge) {
+                            window.chargeLandedCount = (window.chargeLandedCount || 0) + 1;
                         }
                     }
                 }

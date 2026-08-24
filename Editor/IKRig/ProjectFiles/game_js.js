@@ -12485,6 +12485,9 @@ export function startGame(CharacterClass) {
         if (!card || !text) return;
         _hintId = id; _hintT = 0;
         text.innerHTML = html;
+        // The demo is a different gesture per lesson - a tap for the combo, a
+        // hold for the charge - and the class is what selects it.
+        card.classList.toggle('charge', id === 'charge');
         card.style.display = 'flex';
         // Next frame, so the transition has a start state to animate from.
         requestAnimationFrame(() => card.classList.add('show'));
@@ -12511,12 +12514,30 @@ export function startGame(CharacterClass) {
             addNotificationToast('Combo!', window.playerIconDataUrl);
             return;
         }
+        if (_hintId === 'charge' && (window.chargeLandedCount || 0) > _hintChargeFrom) {
+            hideHintCard(true);
+            addNotificationToast('Knockdown!', window.playerIconDataUrl);
+            return;
+        }
         if (_hintT > HINT_GIVE_UP) hideHintCard(false);
     }
+    let _hintChargeFrom = 0;
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
             'Keep tapping while the ring is <b>green</b> &mdash; each punch opens the next.');
+    }
+    function showChargeHint() {
+        _hintChargeFrom = window.chargeLandedCount || 0;
+        showHintCard('charge',
+            '<b>Hold</b> to charge. Let go when the ring fills &mdash; one hit puts them down, and it sweeps everyone in reach.');
+    }
+    // One lesson per fight, in order: the combo first, and the charge only
+    // once the combo has actually been landed. Stacking them would put two
+    // cards' worth of reading in front of someone who is being punched.
+    function showFightHint() {
+        if (!_hintDone.combo) showComboHint();
+        else showChargeHint();
     }
 
     // The nearest bot still asleep, woken. Distance-ordered rather than
@@ -12539,7 +12560,7 @@ export function startGame(CharacterClass) {
         // The fight is the reason to know this, so it is taught here rather
         // than on arrival - being told how to punch before anything wants to
         // hit you is a lesson with nothing attached to it.
-        showComboHint();
+        showFightHint();
         const packR2 = WAKE_PACK_RADIUS * WAKE_PACK_RADIUS;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
