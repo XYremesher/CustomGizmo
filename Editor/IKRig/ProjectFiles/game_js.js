@@ -3253,7 +3253,18 @@ export function startGame(CharacterClass) {
         aiBotState.avoidSide = chosenAngle === 0 ? 0 : Math.sign(chosenAngle);
         // Every candidate angle is blocked within lookahead - genuinely
         // boxed in, not just "one direction happens to be blocked".
-        if (!moveDir) return -1;
+        //
+        // Pushes an IDLE state before giving up. Returning straight out left
+        // whatever was playing still playing, so a bot that ran into a corner
+        // stood there running on the spot - which is the "it stops but keeps
+        // playing the run" case. It is not moving; it should not look like it
+        // is.
+        if (!moveDir) {
+            aiBot.setNetworkState([pos.x, pos.y, pos.z],
+                [aiBot.group.quaternion.x, aiBot.group.quaternion.y, aiBot.group.quaternion.z, aiBot.group.quaternion.w],
+                aiBotLocoState(0), false);
+            return -1;
+        }
 
         let faceDir = moveDir;
         if (faceTarget) {
@@ -3443,7 +3454,19 @@ export function startGame(CharacterClass) {
     // hop height when the target is only level with the bot - climbing a full
     // block just because it is in the way is the "tries to get on top of the
     // stacked cubes" behaviour, and going around is right there.
-    function tryAiBotClimb(pos, destPos, maxRise = COMP_CLIMB_MAX) {
+    // allowTrees: only while the victim is genuinely ABOVE.
+    //
+    // The bug that made trees unclimbable was a bot at ground level walking
+    // into a trunk, reading the bark as a wall and leaping into the branches.
+    // That happens while WANDERING PAST a tree - the victim is on the flat and
+    // the tree is simply in the way. It cannot happen when the target is up a
+    // tree, because then climbing is the correct answer and the only one.
+    //
+    // Blanket-excluding trees left companions able to go somewhere bots had no
+    // route to at all: the companion climbs the canopy, the crumb trail leads
+    // up a trunk, and the bot mills about underneath. Gating on vAbove keeps
+    // the fix where it was needed and gives the route back where it was not.
+    function tryAiBotClimb(pos, destPos, maxRise = COMP_CLIMB_MAX, allowTrees) {
         if (_aiClimbPhase !== 'none') { _aiClimbWhy = 'busy:' + _aiClimbPhase; return false; }
         // Where the model normally sits on its root - captured before any
         // offset is applied, so the decay has something true to return to.
@@ -3457,7 +3480,7 @@ export function startGame(CharacterClass) {
         // block taller than that is seen as too tall rather than missed
         // entirely and mistaken for the lower surface behind it.
         // noTrees: a bot must never pick a TREE as the wall to climb.
-        const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0, true);
+        const topY = aiBotSurfaceY(px, pz, pos.y + COMP_CLIMB_MAX + 1.0, !allowTrees);
         const rise = topY - pos.y;
         _aiClimbRise = rise;
         if (rise <= AI_MAX_STEP_UP) { _aiClimbWhy = 'no wall (rise ' + rise.toFixed(2) + ')'; return false; }
@@ -3465,13 +3488,13 @@ export function startGame(CharacterClass) {
         // Landing spot past the lip, and it must be the same surface - one
         // hop, not the first step of a staircase.
         let lx = px + dx * AI_CLIMB_INSET, lz = pz + dz * AI_CLIMB_INSET;
-        let landY = aiBotSurfaceY(lx, lz, topY + 1.0, true);
+        let landY = aiBotSurfaceY(lx, lz, topY + 1.0, !allowTrees);
         // Next step starting immediately past the lip = stairs. Land shorter
         // rather than refusing to climb at all - see the same case in
         // tryCompanionClimbUp.
         if (landY > topY + 0.6) {
             lx = px + dx * COMP_CLIMB_INSET_TIGHT; lz = pz + dz * COMP_CLIMB_INSET_TIGHT;
-            landY = aiBotSurfaceY(lx, lz, topY + 1.0, true);
+            landY = aiBotSurfaceY(lx, lz, topY + 1.0, !allowTrees);
         }
         // Only a surface that DROPS away is unusable - see the same case in
         // tryCompanionClimbUp. A rising one is a ramp or stairs.
@@ -4650,7 +4673,7 @@ export function startGame(CharacterClass) {
             // Full reach when the target is above, hop height when level. That
             // distinction is what keeps it from scaling blocks for no reason
             // on flat ground while still letting it follow upward.
-            if (tryAiBotClimb(pos, vPos, vAbove ? COMP_CLIMB_MAX : COMP_LEAP_RISE_MAX)) { aiBot.update(delta); return; }
+            if (tryAiBotClimb(pos, vPos, vAbove ? COMP_CLIMB_MAX : COMP_LEAP_RISE_MAX, vAbove)) { aiBot.update(delta); return; }
             // Couldn't land on it - it may still be something to vault.
             if (tryAiBotHopOver(pos, vPos)) { aiBot.update(delta); return; }
 
