@@ -2460,6 +2460,21 @@ export function startGame(CharacterClass) {
     // is willing to go anywhere again.
     let _compRecoverT = 0;
     const COMP_RECOVER_SETTLE = 0.8;
+    // How long after being staggered a companion cannot be staggered AGAIN.
+    //
+    // Bots carry a 100-point poise pool, so it takes several hits to put one
+    // down; companions carry nothing, so every single punch staggered them
+    // outright. That was survivable while a bot punched every 1.5s and the
+    // companion was free again at 1.15 - a 0.35s window to answer in. Cutting
+    // the bot's cooldown to 0.4 closed that window: the cycle became 1.10s,
+    // the next punch landing 0.05s BEFORE the companion could act, and a
+    // companion caught by two bots was simply walked backwards for as long as
+    // they cared to keep hitting it.
+    //
+    // 1.6s means at most every other punch staggers, which hands back about a
+    // second to move or hit back in. The hit still lands - flash, poise,
+    // knockback - it just cannot take the legs a second time.
+    const COMP_STAGGER_IMMUNE = 1.6;
     // Grace period straight after topping out, during which the companion
     // will not step back off the ledge it just climbed. Without it the follow
     // spot - which sits BEHIND the player, and so hangs out over the edge
@@ -2486,6 +2501,7 @@ export function startGame(CharacterClass) {
     // shared flag would have three companions overwriting each other's
     // stand/go decision every frame.
     let _compArrived = false;
+    let _compStaggerCD = 0;   // see COMP_STAGGER_IMMUNE
     const COMP_HIT_OK_DIST = 3.2;
     // How long this companion has been hanging. Only drives when the sideways
     // search starts - there is no give-up timeout, see the HANG block.
@@ -2625,6 +2641,29 @@ export function startGame(CharacterClass) {
     // Kept ahead of aiPunchRange by the same margin it always had - the
     // charge's whole point is that it starts from further out than a jab.
     window.aiChargeRange = 2.2;
+    // ---- Circling and backing off ----
+    // A bot used to have exactly one idea: walk at the victim until close
+    // enough to swing. Against a companion - which punches from 1.9 and never
+    // moves off its line - that is a queue to be hit in, which is why the
+    // first companion beat every yellow it met even after their reach was
+    // evened up. Two states fix the shape of the fight rather than its
+    // numbers.
+    //
+    // CIRCLE: on reaching swinging distance it may sidestep instead, holding
+    // range while facing the victim. A companion's swing is committed to one
+    // direction, so an angle that was not there when the punch started is an
+    // opening - and to the player it reads as being sized up.
+    window.aiCircleChance = 0.55;   // odds of circling rather than closing
+    window.aiCircleSpeed = 3.4;
+    // RETREAT: below this share of its poise pool it breaks off entirely and
+    // backs out of reach until the pool regenerates. A bot that keeps walking
+    // into a fight it is losing is not a threat, it is a supply of knockdowns.
+    window.aiRetreatAt = 0.35;
+    window.aiRetreatSpeed = 4.6;
+    const AI_CIRCLE_MIN = 0.5, AI_CIRCLE_MAX = 1.3;
+    const AI_RETREAT_TIME = 1.8;
+    // How far past its own reach a retreating bot wants to be.
+    const AI_RETREAT_GAP = 2.4;
     // How fast a bot creeps forward while swinging. Slower than its walk -
     // it is following through on a punch, not chasing.
     window.aiPunchStep = 1.6;
@@ -2963,6 +3002,8 @@ export function startGame(CharacterClass) {
     }
     const _stepWallOut = new THREE.Vector2();
     const _aiAvoidPerp = new THREE.Vector3();
+    // Scratch for the circle/retreat destinations - see aiCircleChance.
+    const _aiOrbit = new THREE.Vector3(), _aiOrbitTo = new THREE.Vector3();
     const _aiAvoidSideOrigin = new THREE.Vector3();
 
     // Locomotion clip from how fast the bot is actually travelling, using the
@@ -4415,6 +4456,57 @@ export function startGame(CharacterClass) {
             // to walk in first and losing the moment.
             const reach = (aiBotState.charge ? window.aiChargeRange : window.aiPunchRange)
                 + (_aiCounterT > 0 ? 0.5 : 0);
+
+            // ---- Break off, circle, or commit ----
+            // Ahead of the swing decision, because both of these are reasons
+            // NOT to swing. See aiCircleChance and aiRetreatAt.
+            const poolMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
+            const pool = aiBot.staggerPool === undefined ? poolMax : aiBot.staggerPool;
+            if (aiBotState.retreatT > 0) aiBotState.retreatT -= delta;
+            else if (pool < poolMax * window.aiRetreatAt && distToVictim < reach + AI_RETREAT_GAP) {
+                aiBotState.retreatT = AI_RETREAT_TIME;
+                aiBotState.circleT = 0;   // one or the other, never both
+            }
+            const vP = victim.group.position;
+            if (aiBotState.retreatT > 0) {
+                // Straight back, still facing what it is backing away from -
+                // a bot that turns its back reads as fleeing rather than as
+                // regrouping, and it would also never see the follow-up.
+                _aiOrbit.set(pos.x - vP.x, 0, pos.z - vP.z);
+                if (_aiOrbit.lengthSq() < 1e-6) _aiOrbit.set(1, 0, 0);
+                _aiOrbit.normalize().multiplyScalar(reach + AI_RETREAT_GAP);
+                _aiOrbitTo.set(vP.x + _aiOrbit.x, pos.y, vP.z + _aiOrbit.z);
+                moveAiBotToward(_aiOrbitTo, window.aiRetreatSpeed, delta, vP);
+                aiBot.update(delta);
+                return;
+            }
+            if (aiBotState.circleT > 0) {
+                aiBotState.circleT -= delta;
+                // A point along the tangent, at the range it already holds -
+                // so it strafes round rather than spiralling in or out.
+                _aiOrbit.set(pos.x - vP.x, 0, pos.z - vP.z);
+                const orbitR = Math.max(reach, _aiOrbit.length());
+                if (_aiOrbit.lengthSq() < 1e-6) _aiOrbit.set(1, 0, 0);
+                _aiOrbit.normalize();
+                _aiOrbitTo.set(
+                    vP.x + (_aiOrbit.x * 0.72 - _aiOrbit.z * 0.69 * aiBotState.circleDir) * orbitR,
+                    pos.y,
+                    vP.z + (_aiOrbit.z * 0.72 + _aiOrbit.x * 0.69 * aiBotState.circleDir) * orbitR);
+                moveAiBotToward(_aiOrbitTo, window.aiCircleSpeed, delta, vP);
+                aiBot.update(delta);
+                return;
+            }
+            if (!lineBlocked && distToVictim < reach) {
+                // Arriving in reach is a decision point, not automatically a
+                // punch: sometimes it circles for a moment first. Rolled here,
+                // once per arrival, so a bot cannot dither on the spot.
+                if (Math.random() < window.aiCircleChance) {
+                    aiBotState.circleT = AI_CIRCLE_MIN + Math.random() * (AI_CIRCLE_MAX - AI_CIRCLE_MIN);
+                    aiBotState.circleDir = Math.random() < 0.5 ? -1 : 1;
+                    aiBot.update(delta);
+                    return;
+                }
+            }
             if (!lineBlocked && distToVictim < reach) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
@@ -4561,6 +4653,8 @@ export function startGame(CharacterClass) {
                 waitTimer: 0, punchTimer: 0, punchHasHit: false, cooldownTimer: 0,
                 comboIndex: 0, comboHand: 'punch_left',
                 combo: !!opts.combo, charge: !!opts.charge,
+                // See aiCircleChance / aiRetreatAt.
+                circleT: 0, circleDir: 1, retreatT: 0,
                 victim: null, foe: null, avoidSide: 0,
             },
             chaseRunning: false, locoState: 'idle',
@@ -4925,7 +5019,7 @@ export function startGame(CharacterClass) {
             leapStart: new THREE.Vector3(), leapEnd: new THREE.Vector3(),
             leapFaceQuat: new THREE.Quaternion(), leapT: 0, leapDur: 0.35, leapToHang: false,
             stuckAt: new THREE.Vector3(), stuckT: 0,
-            why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false, arrived: false,
+            why: 'init', recoverT: 0, justClimbedT: 0, takeoffT: -1, hitSettled: false, arrived: false, staggerCD: 0,
             speedSmooth: 0, locoState: 'idle',
             avoidSide: 0, steerDirSmooth: new THREE.Vector3(),
             steerDirValid: false, steerBlockedFor: 0,
@@ -5136,6 +5230,7 @@ export function startGame(CharacterClass) {
         _compWhy = rec.why; _compRecoverT = rec.recoverT;
         _compJustClimbedT = rec.justClimbedT; _compTakeoffT = rec.takeoffT;
         _compHitSettled = rec.hitSettled; _compArrived = rec.arrived;
+        _compStaggerCD = rec.staggerCD;
         _compSpeedSmooth = rec.speedSmooth; _compLocoState = rec.locoState;
         _compAvoidSide = rec.avoidSide; _compSteerDirSmooth = rec.steerDirSmooth;
         _compSteerDirValid = rec.steerDirValid; _compSteerBlockedFor = rec.steerBlockedFor;
@@ -5158,6 +5253,7 @@ export function startGame(CharacterClass) {
         rec.why = _compWhy; rec.recoverT = _compRecoverT;
         rec.justClimbedT = _compJustClimbedT; rec.takeoffT = _compTakeoffT;
         rec.hitSettled = _compHitSettled; rec.arrived = _compArrived;
+        rec.staggerCD = _compStaggerCD;
         rec.speedSmooth = _compSpeedSmooth; rec.locoState = _compLocoState;
         rec.avoidSide = _compAvoidSide; rec.steerDirValid = _compSteerDirValid;
         rec.steerBlockedFor = _compSteerBlockedFor;
@@ -6460,7 +6556,15 @@ export function startGame(CharacterClass) {
         // before it is willing to go anywhere - that pause is the part that
         // makes the hit land, and it is why this is not just a movement lock.
         const compHitRecoveryDuration = window.hitRecoveryDuration !== undefined ? window.hitRecoveryDuration : 0.35;
+        if (_compStaggerCD > 0) _compStaggerCD -= delta;
         if (companion.hitRecoveryTimer > 0 && companion.hitRecoveryTimer <= compHitRecoveryDuration) {
+            // Hit again too soon after the last stagger: take it standing.
+            // See COMP_STAGGER_IMMUNE - without this a second attacker keeps
+            // the first one's stagger going forever and the companion never
+            // gets a frame of its own.
+            if (_compStaggerCD > 0 && _compRecoverT <= 0) {
+                companion.hitRecoveryTimer = 0;
+            } else {
             // Skip hit recovery if hanging/climbing - companions should be committed to the climb
             if (_compMode === 'hang' || _compMode === 'replay' || _compMode === 'climbup' || _compMode === 'leap') {
                 companion.hitRecoveryTimer = 0;
@@ -6473,7 +6577,10 @@ export function startGame(CharacterClass) {
             // the stagger. _compRecoverT is only ever 0 here on the first
             // frame of a new one - every later frame of the same stagger has
             // already re-armed it on the line below.
-            if (_compRecoverT <= 0) _compRetaliate = Math.random() < _compRetaliateChance;
+            if (_compRecoverT <= 0) {
+                _compRetaliate = Math.random() < _compRetaliateChance;
+                _compStaggerCD = COMP_STAGGER_IMMUNE;
+            }
             _compRecoverT = COMP_RECOVER_SETTLE;
             _compHitSettled = true;      // hold wherever this leaves it, if that spot is fine
             _compStuckT = 0; _compStuckAt.copy(c);   // not stuck, just hurt
@@ -6501,6 +6608,7 @@ export function startGame(CharacterClass) {
             companion.setNetworkState([rx, ry, rz], [companion.group.quaternion.x, companion.group.quaternion.y, companion.group.quaternion.z, companion.group.quaternion.w], 'walk', false);
             companion.update(delta);
             return;
+            }
         }
         if (_compRecoverT > 0) {
             cancelAttack();
@@ -17921,12 +18029,24 @@ export function startGame(CharacterClass) {
     window.dragDeadZoneRadius = 140;
     function dragDeadZone(i) {
         const r = window.dragDeadZoneRadius;
-        const el = document.getElementById(i === 0 ? 'base-left' : 'jump-btn');
-        if (el && el.offsetParent !== null) {
-            const b = el.getBoundingClientRect();
-            return { x: b.left + b.width * 0.5, y: b.top + b.height * 0.5, r };
+        // LEFT follows the movement stick, because that is the control that
+        // moves between layouts. RIGHT stays on the corner.
+        //
+        // Anchoring the right one to the jump button looked symmetrical and
+        // was wrong in use: the button sits well up from the edge, so a circle
+        // centred on it reaches far into the picture and swallows exactly the
+        // stretch of screen a thumb sweeps to turn the camera. On the corner,
+        // half the circle is off screen and what remains covers the buttons
+        // without taking the view with it.
+        if (i === 0) {
+            const el = document.getElementById('base-left');
+            if (el && el.offsetParent !== null) {
+                const b = el.getBoundingClientRect();
+                return { x: b.left + b.width * 0.5, y: b.top + b.height * 0.5, r };
+            }
+            return { x: 0, y: window.innerHeight, r };
         }
-        return { x: i === 0 ? 0 : window.innerWidth, y: window.innerHeight, r };
+        return { x: window.innerWidth, y: window.innerHeight, r: 200 };
     }
     let lookPointerId = null, lX, lY;
     window.addEventListener('pointerdown', e => {
