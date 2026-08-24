@@ -3196,6 +3196,19 @@ export function startGame(CharacterClass) {
     // after a hit before they are willing to move again.
     let _aiRecoverT = 0;
     const AI_RECOVER_SETTLE = 0.8;
+    // How long a bot keeps looking in EVERY direction after being hit.
+    //
+    // There was already an exemption for this - aiBotPickVictim's `blind`,
+    // keyed on hitRecoveryTimer - and it never once fired. Being hit sends the
+    // bot through the stagger step (hitRecoveryDuration, 0.35s) and then the
+    // settle (AI_RECOVER_SETTLE, 0.8s), and BOTH return early, before victim
+    // picking is reached. By the time it picks again the timer has expired and
+    // the cone is back, so a bot punched in the back turned round, saw nobody,
+    // and wandered off. Its own comment says "something that punched you has
+    // been noticed whatever direction it came from" - this is what makes that
+    // true. Longer than the 1.15s of early-outs by a wide margin, so it is
+    // still looking when it finally gets to look.
+    const AI_ALERT_TIME = 5.0;
     // Sidestep used to break a wedge - see the watchdog.
     let _aiUnstickDir = new THREE.Vector3();
     let _aiUnstickT = 0;
@@ -3633,6 +3646,10 @@ export function startGame(CharacterClass) {
     }
     window.staggerBot = function staggerBot(bot, velocity, intensity, flashStrength, poiseOverride) {
         if (!bot || !bot.isLoaded || bot.isRagdoll) return false;
+        // Hit from any direction, by anyone: start looking around. See
+        // AI_ALERT_TIME. Set here rather than at the call sites because every
+        // way of hurting a bot already funnels through this one function.
+        bot.alertedT = AI_ALERT_TIME;
         const staggerMax = window.aiBotStaggerMax !== undefined ? window.aiBotStaggerMax : 100;
         const regenDelay = window.aiBotStaggerRegenDelay !== undefined ? window.aiBotStaggerRegenDelay : 2.5;
         bot.triggerHitFlash(flashStrength);
@@ -3808,7 +3825,7 @@ export function startGame(CharacterClass) {
         // noticed whatever direction it came from, and a bot that could not
         // find whoever is hitting it in the back would never answer - the same
         // exemption the companions' retaliation gets.
-        const blind = aiBot.hitRecoveryTimer > 0;
+        const blind = aiBot.hitRecoveryTimer > 0 || (aiBot.alertedT || 0) > 0;
         const seen = (v) => !quat || blind ||
             inVisionCone(pos, quat, v.group.position, window.aiVisionDeg);
         let best = null, bestD = Infinity;
@@ -3903,6 +3920,10 @@ export function startGame(CharacterClass) {
         // Ticked BEFORE the ragdoll early-out below, or the clock would only
         // run once it was already back on its feet - a bot spends most of a
         // knockout lying down, and that time has to count.
+        // Same reasoning as knockedOutT just below: ticked here, before the
+        // ragdoll early-out, or the clock would not start until it was already
+        // back on its feet - and the whole point is to still be alert then.
+        if (aiBot.alertedT > 0) aiBot.alertedT = Math.max(0, aiBot.alertedT - delta);
         if (aiBot.knockedOutT > 0) {
             aiBot.knockedOutT -= delta;
             setBotKnockedOutLook(aiBot, aiBot.knockedOutT > 0);
@@ -6562,12 +6583,17 @@ export function startGame(CharacterClass) {
                         target.sandbag.applyHit(vel.clone().normalize(),
                             COMP_PUNCH_FORCE * (last ? 1.7 : 1.0));
                     } else if (chargeAction) {
-                        // Knocks down outright, like every other charge punch
-                        // in the game. Affordable because it is rare: a long
-                        // wind-up, a long cooldown, and a companion cannot
-                        // chase - it follows the player, so it only ever gets
-                        // the chance when a bot comes to it.
-                        window.staggerBot(target, vel, 'high', 2.5);
+                        // 'medium_high', NOT 'high' - a companion presses, it
+                        // does not finish.
+                        //
+                        // It used to knock a bot down outright, and with a
+                        // companion or two along that made fights win
+                        // themselves: you could stand back and watch. At 35
+                        // poise against a 100 pool it now takes three of these
+                        // to put anything down, so a companion holds an
+                        // enemy's attention and softens it while the kill
+                        // stays yours. The knockdown is the player's move.
+                        window.staggerBot(target, vel, 'medium_high', 2.5);
                     } else {
                         window.staggerBot(target, vel, 'medium', last ? 1.3 : 0.9, poisePerHit);
                     }

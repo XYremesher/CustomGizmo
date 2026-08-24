@@ -2346,7 +2346,16 @@
                 // Raise window.punchMaxTargets to bring the cleave back - it
                 // is the kind of thing a power-up should grant rather than
                 // something the first jab of the game already does.
-                const maxTargets = window.punchMaxTargets !== undefined ? window.punchMaxTargets : 1;
+                // ...except a MATURE charge punch, which sweeps everything in
+                // reach. The cleave was satisfying and is worth keeping - it
+                // just should not be what an ordinary jab does. Putting it on
+                // the charge gives it somewhere to live and, more usefully,
+                // gives holding the button a payoff big enough to be worth
+                // teaching. A tap is self-explanatory; a hold is not, and this
+                // is the reason to bother learning it.
+                const maxTargets = isMatureCharge
+                    ? (window.chargePunchMaxTargets !== undefined ? window.chargePunchMaxTargets : 6)
+                    : (window.punchMaxTargets !== undefined ? window.punchMaxTargets : 1);
                 const inReach = [];
                 for (let bi = 0; bi < enemies.length; bi++) {
                     const cand = enemies[bi];
