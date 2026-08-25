@@ -1974,48 +1974,54 @@
         };
 
         // ---- Sound ----
-        // The game's whole audio setup. Still small on purpose, but a
-        // registry now rather than one hard-wired sample: sounds are being
-        // added one at a time, and each new one wants its own level and its
-        // own amount of variation, which is a table rather than another copy
-        // of the same twenty lines.
+        // The game's whole audio setup. A registry rather than a set of
+        // hard-wired samples: sounds arrive one at a time, and each wants its
+        // own level, its own amount of variation and its own list of takes.
         //
         // WebAudio rather than <audio> elements. A combo lands seven blows
         // about a quarter-second apart and a single element cannot overlap
         // itself - the second hit cuts the first one off - while restarting
-        // an element has its own latency on top. One decoded buffer feeding a
-        // fresh source per play overlaps for free, and lets every play be
-        // detuned a little, which is what keeps a string of them sounding
-        // like a flurry rather than one sample on a loop.
+        // an element has its own latency on top. A fresh source per play
+        // overlaps for free, and everything below hangs off being able to
+        // treat each play separately.
         //
-        // semis is that detune, as a number of semitones EITHER WAY, because
-        // that is the unit the effect actually lives in: a fixed +/- on the
-        // playback rate is a bigger musical step downward than upward, so a
-        // symmetric rate range is an asymmetric pitch range. Written on the
-        // sound rather than shared, since how far a sample can be moved
-        // before it stops being itself depends on the sample - an impact
-        // takes less than a whoosh does.
+        // ---- Making every hit sound different ----
+        // One sample played seven times is one sample played seven times, and
+        // detuning it by a random amount does NOT fix that: uniform random
+        // repeats itself constantly, so a string comes out as four blows that
+        // sound identical and one that does not. Three things together are
+        // what actually separate them.
+        //
+        //   files  every take of the sound. More real recordings beats any
+        //          amount of processing, and this is the slot they go in - add
+        //          Punch2.mp3 to the list and it joins the rotation with no
+        //          other change. One entry is a floor, not the design.
+        //   semis  how far the pitch moves, in semitones EITHER WAY, because
+        //          that is the unit the effect lives in - a fixed +/- on the
+        //          playback rate is a bigger musical step downward than
+        //          upward, so a symmetric rate range is an asymmetric pitch
+        //          range. Drawn from a shuffle bag, see below.
+        //   tone   the lowest cutoff a play may get, in Hz. Pitch alone moves
+        //          a sample without changing its character; running each play
+        //          through a lowpass at a different frequency is what makes
+        //          one blow read as dull and close and the next as sharp.
+        //          0 turns the filter off entirely.
+        //   vary   how much the level wanders per play, as a fraction.
+        //   gap    the shortest time between two plays of THIS sound.
+        //   into   what to fall back to when no take of this sound loaded. A
+        //          charge punch silent because its sample has not been dropped
+        //          in yet is worse than one that borrows the ordinary punch's,
+        //          and it means new sounds can be wired before their files
+        //          exist.
         //
         // Exposed as window.sfx, so every one of these can be tried live from
-        // the console: window.sfx.punch.semis = 5, and the next punch is
+        // the console: window.sfx.punch.semis = 6, and the next punch is
         // wilder. Tuning a sound by ear is the only way to tune one.
-        //
-        // `into` names the sound to fall back to when this one's file is
-        // missing or will not decode. A charge punch that made no sound at all
-        // because its sample had not been dropped in yet would be worse than
-        // one that borrows the ordinary punch's - and it means a new sound can
-        // be wired here before the file for it exists.
-        //
-        // The strong pair are the MATURE charge only, matching every other
-        // reward the game gates that way (the cleave, the projectile, the
-        // outright knockdown). An early release is described in
-        // detectMeleeHits as an ordinary punch wearing the charge's clip, and
-        // it should sound like one.
         const SFX = {
-            punch:        { file: 'Punch.mp3',        vol: 0.70, semis: 3.0, gap: 0.05 },
-            swoosh:       { file: 'Swoosh.mp3',       vol: 0.45, semis: 4.0, gap: 0.03 },
-            punchStrong:  { file: 'PunchStrong.mp3',  vol: 0.85, semis: 2.5, gap: 0.05, into: 'punch' },
-            swooshStrong: { file: 'SwooshStrong.mp3', vol: 0.60, semis: 3.0, gap: 0.03, into: 'swoosh' },
+            punch:        { files: ['Punch.mp3'],        vol: 0.70, semis: 4.0, tone: 4000, vary: 0.22, gap: 0.05 },
+            swoosh:       { files: ['Swoosh.mp3'],       vol: 0.45, semis: 5.0, tone: 5000, vary: 0.22, gap: 0.03 },
+            punchStrong:  { files: ['PunchStrong.mp3'],  vol: 0.85, semis: 3.0, tone: 5000, vary: 0.15, gap: 0.05, into: 'punch' },
+            swooshStrong: { files: ['SwooshStrong.mp3'], vol: 0.60, semis: 3.5, tone: 5500, vary: 0.15, gap: 0.03, into: 'swoosh' },
         };
         window.sfx = SFX;
         window.sfxVolume = 1.0;
@@ -2034,20 +2040,55 @@
             for (const key of Object.keys(SFX)) {
                 const snd = SFX[key];
                 snd.at = -1;
-                fetch(ASSET_BASE + snd.file)
-                    .then(r => r.arrayBuffer())
-                    .then(b => _sfxCtx.decodeAudioData(b))
-                    .then(buf => { snd.buf = buf; })
-                    // Silence is the right failure here. A missing or
-                    // unplayable file is a missing sound, not a broken game,
-                    // and nothing is waiting on the result. One sound failing
-                    // also leaves the others alone, which a single shared
-                    // catch would not.
-                    .catch(() => { snd.buf = null; });
+                snd.bufs = [];
+                for (const file of snd.files) {
+                    fetch(ASSET_BASE + file)
+                        .then(r => r.arrayBuffer())
+                        .then(b => _sfxCtx.decodeAudioData(b))
+                        .then(buf => { snd.bufs.push(buf); })
+                        // Silence is the right failure here. A missing or
+                        // unplayable file is a missing take, not a broken
+                        // game, and nothing is waiting on the result. Catching
+                        // per file rather than per sound also means one bad
+                        // take does not cost the sound its good ones.
+                        .catch(() => {});
+                }
             }
         }
         window.addEventListener('pointerdown', armAudio, { capture: true });
         window.addEventListener('keydown', armAudio, { capture: true });
+        // A shuffle bag, not a die.
+        //
+        // Six steps spread evenly across -1..+1, dealt in a random order and
+        // only reshuffled once all six are gone - so six plays in a row are
+        // six DIFFERENT pitches, guaranteed, instead of whatever a run of
+        // random numbers happens to give. Rolling independently each time is
+        // exactly what made a combo sound like the same blow four times over:
+        // with six buckets two consecutive rolls match about one time in six,
+        // and near-matches, which sound the same, are far commoner than that.
+        //
+        // The first step of a new bag is swapped away from the last step of
+        // the old one, since that is the only place the guarantee could break.
+        // Each step then gets a little jitter so the ladder is not audible as
+        // a ladder.
+        const SFX_BAG_STEPS = 6;
+        function nextStep(snd) {
+            if (!snd.bag || !snd.bag.length) {
+                const steps = [];
+                for (let i = 0; i < SFX_BAG_STEPS; i++) steps.push(-1 + (2 * i) / (SFX_BAG_STEPS - 1));
+                for (let i = steps.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    const t = steps[i]; steps[i] = steps[j]; steps[j] = t;
+                }
+                const last = steps.length - 1;      // pop() takes this one first
+                if (snd.lastStep !== undefined && steps[last] === snd.lastStep) {
+                    const t = steps[last]; steps[last] = steps[0]; steps[0] = t;
+                }
+                snd.bag = steps;
+            }
+            snd.lastStep = snd.bag.pop();
+            return snd.lastStep + (Math.random() * 2 - 1) * 0.15;
+        }
         // Inside this radius a sound is at full volume; past it the level
         // falls off as NEAR/distance. Measured from the PLAYER, not the
         // camera: the camera sits a fixed 13 units back, so measuring from it
@@ -2067,7 +2108,7 @@
         window.playSound = function(name, pos, _depth) {
             const snd = SFX[name];
             if (!_sfxCtx || !snd) return;
-            if (!snd.buf) {
+            if (!snd.bufs || !snd.bufs.length) {
                 // Depth-limited, so a pair of sounds pointing at each other
                 // cannot spin here. Two hops is more than any real chain.
                 if (snd.into && (_depth || 0) < 2) window.playSound(snd.into, pos, (_depth || 0) + 1);
@@ -2091,21 +2132,49 @@
                 vol = Math.min(1, SFX_NEAR / Math.max(d, 0.001));
             }
             vol *= snd.vol * window.sfxVolume;
+            // Level wanders per play. Small on its own, but it is part of the
+            // difference between two blows landing at the same weight and two
+            // blows landing.
+            vol *= 1 + (Math.random() * 2 - 1) * (snd.vary || 0);
             if (vol < 0.02) return;      // too far to hear - not worth the nodes
+            // Never the same take twice running, when there is more than one.
+            let bi = 0;
+            if (snd.bufs.length > 1) {
+                bi = Math.floor(Math.random() * (snd.bufs.length - 1));
+                if (bi >= snd.lastBuf) bi++;      // skip over the one just used
+            }
+            snd.lastBuf = bi;
             const src = _sfxCtx.createBufferSource();
-            src.buffer = snd.buf;
-            src.playbackRate.value = Math.pow(2, (Math.random() * 2 - 1) * snd.semis / 12);
+            src.buffer = snd.bufs[bi];
+            src.playbackRate.value = Math.pow(2, nextStep(snd) * snd.semis / 12);
             const gain = _sfxCtx.createGain();
             gain.gain.value = vol;
-            src.connect(gain).connect(_sfxCtx.destination);
+            let head = gain;
+            if (snd.tone) {
+                // Log-uniform between the sound's floor and 20kHz, skewed
+                // bright: the exponent is pushed toward 1 so most plays stay
+                // near the sample's own voice and only some are noticeably
+                // duller. Drawn flat, most hits would come out muffled, which
+                // is variation in the wrong direction.
+                const cut = snd.tone * Math.pow(20000 / snd.tone, Math.pow(Math.random(), 0.6));
+                if (cut < 18000) {
+                    const lp = _sfxCtx.createBiquadFilter();
+                    lp.type = 'lowpass';
+                    lp.frequency.value = cut;
+                    lp.Q.value = 0.7;
+                    lp.connect(gain);
+                    head = lp;
+                }
+            }
+            gain.connect(_sfxCtx.destination);
+            src.connect(head);
             src.start();
         };
-        // Kept as its own name because it is called from three other files -
-        // game_js.js and multiplayer.js - wherever a fist actually connects.
-        // Deliberately not hung off createHandHitEffect, which looks like the
-        // one shared place for it but also fires for thrown jars and
-        // projectile impacts; those are not punches and should not borrow the
-        // punch's sound.
+        // Kept as its own name because multiplayer.js calls it, wherever a
+        // fist actually connects. Deliberately not hung off
+        // createHandHitEffect, which looks like the one shared place for it
+        // but also fires for thrown jars and projectile impacts; those are not
+        // punches and should not borrow the punch's sound.
         window.playPunchSound = function(pos) { window.playSound('punch', pos); };
 
         window.speedParticles = [];
