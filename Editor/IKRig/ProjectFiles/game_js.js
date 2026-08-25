@@ -1467,46 +1467,6 @@ export function startGame(CharacterClass) {
     // 0.5 hugged it with almost nothing to spare and the collar read as
     // painted onto the bark rather than growing round it.
     window.grassTreeInner = 0.62;   // ring starts this far from the trunk axis
-    // Where the wood is AT THE GROUND, which is not where the shaft is.
-    //
-    // 0.454 above is the SHAFT, sampled between 10% and 30% of the model's
-    // height - deliberately above the root flare, because that is the radius a
-    // ring wants to hug. At the base the trunk is a cone: measured off
-    // Tree.glb, the bottom ring (y -0.19..0, 14 verts) sits at radius 0.930
-    // and the next ring up (y 1.4..1.6) at 0.524, a taper of 0.240 per unit,
-    // so at the plant point - which is where the ground is - the bark is at
-    // 0.884, not 0.454.
-    //
-    // The scatter was rejecting blades inside 0.62 - the shaft number - so
-    // every blade landing between 0.62 and 0.88 was planted INSIDE the wood.
-    // Nothing showed until the x-ray dither made a trunk transparent and it
-    // was full of grass, which is the second time that view has caught this
-    // exact mistake: a number measured in one place and then used in another.
-    //
-    // Kept separate from grassTreeInner rather than folded into it, because
-    // the two answer different questions. This one is "where is the bark" and
-    // belongs to the tree; grassTreeInner is "where should the ring sit" and
-    // belongs to the collar. They were the same constant, which is why fixing
-    // the rejection used to drag the collar outwards with it and open a bare
-    // gap at the trunk.
-    //
-    // The trunk is a CONE, so the number below is worked out from the
-    // measurement rather than typed in - which is the whole point, since the
-    // mistake being fixed here is a radius measured at one height and then
-    // used at another. Written out, 0.884 would be one more number with
-    // nothing attached to say where on the tree it came from.
-    const TRUNK_BASE_R = 0.930;    // the bottom ring, y -0.19..0, 14 verts
-    const TRUNK_BASE_Y = -0.19;    // where that ring sits below the origin
-    const TRUNK_TAPER = -0.2402;   // to radius 0.524 at y 1.4..1.6
-    // ...at the plant point, which is where the ground is: trees are not sunk.
-    const TRUNK_GROUND_R = TRUNK_BASE_R + TRUNK_TAPER * (0 - TRUNK_BASE_Y);
-    // The scatter's own card-size range, hoisted so the trunk rejection can
-    // use it too - a blade is not a point, and one whose CENTRE clears the
-    // bark can still have half its card inside it. The mean half-width rather
-    // than the widest: the outliers that still graze the bark are hidden by
-    // the collar standing at 1.07, and rejecting on the widest would clear a
-    // visibly bald ring around every tree.
-    const GRASS_CARD_MIN = 0.65, GRASS_CARD_MAX = 1.35;
     window.grassTreeSpread = 0.9;   // ...and extends this much further out
     // Collar CARD size - now the SAME range as the scattered grass, because a
     // collar of the same plant should not be a different size from the plant.
@@ -1709,14 +1669,9 @@ export function startGame(CharacterClass) {
                 // rejected here by distance instead.
                 if (treeSpots) {
                     let inTrunk = false;
-                    // Half a typical card. In WORLD units, not multiplied by
-                    // the tree's scale - a big tree does not grow bigger
-                    // grass, so the margin a blade needs is the same at every
-                    // trunk.
-                    const halfCard = window.grassSize * (GRASS_CARD_MIN + GRASS_CARD_MAX) * 0.25;
                     for (let i = 0; i < treeSpots.length; i++) {
                         const t = treeSpots[i];
-                        const rr = TRUNK_GROUND_R * t.scale + halfCard;
+                        const rr = window.grassTreeInner * t.scale;
                         if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < rr * rr) { inTrunk = true; break; }
                     }
                     if (inTrunk) continue;
@@ -1793,8 +1748,8 @@ export function startGame(CharacterClass) {
                 }
             }
             const ringSize = collarRing ? collarRing.size : 1;
-            const sizeLo = (collarTree ? window.grassTreeCardMin : GRASS_CARD_MIN) * ringSize;
-            const sizeHi = (collarTree ? window.grassTreeCardMax : GRASS_CARD_MAX) * ringSize;
+            const sizeLo = (collarTree ? window.grassTreeCardMin : 0.65) * ringSize;
+            const sizeHi = (collarTree ? window.grassTreeCardMax : 1.35) * ringSize;
             const s = window.grassSize * (sizeLo + Math.random() * (sizeHi - sizeLo));
             // Same height range as the scatter now. The collar used to be
             // stretched (2.0..2.5 against the scatter's 0.8..1.3) to make
@@ -8563,37 +8518,9 @@ export function startGame(CharacterClass) {
             });
             o.material = Array.isArray(o.material) ? newMats : newMats[0];
         });
-        // The base mass gets its OWN copy of the material, purely so it can
-        // carry a different dither depth fade - see ditherBaseDepthFade. It
-        // shares its material with the walkable upper canopy chunks (see
-        // isTreeVisualOnly, which has to tell them apart by node name for the
-        // same reason), so splitting the material is the only way to give it
-        // different shader uniforms.
-        //
-        // Both levels pick this up: the forest reads o.material when it builds
-        // its instanced sources, and the village's clone(true) shares
-        // materials by reference.
-        treeModel.traverse(o => {
-            if (!o.isMesh || o.userData._baseDitherSplit) return;
-            if (!o.name || !o.name.startsWith('BaseTreeLeaveBunch')) return;
-            o.userData._baseDitherSplit = true;
-            const src = Array.isArray(o.material) ? o.material[0] : o.material;
-            if (!src) return;
-            const m = src.clone();
-            // Material.clone() does not carry onBeforeCompile, and this one
-            // has it: the normal-flip that stops a DoubleSide leaf blob
-            // shading two-toned. Losing it here would be a quiet change in how
-            // the base mass lights, of the kind nobody traces back to a dither
-            // fix.
-            m.onBeforeCompile = src.onBeforeCompile;
-            m.userData.ditherDepthFadeUniform = _ditherBaseDepthFadeUniform;
-            o.material = m;
-        });
         // Registered AFTER the loop above, so makeDitherable wraps the
         // normal-flip onBeforeCompile those leaf materials just got rather
-        // than being overwritten by it. The split copy above is in place by
-        // now too, so it is registered and driven like any other tree
-        // material - without that it would never dissolve at all.
+        // than being overwritten by it.
         treeModel.traverse(o => {
             if (!o.isMesh) return;
             const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -8869,13 +8796,15 @@ export function startGame(CharacterClass) {
     window.forestGridSize = 60;
     window.forestNoiseScale = 18;
     window.forestTreeThreshold = 0.55;
-    // Trees sit ON the ground, at the height they are placed at - the way
-    // the village's do. There is no sink, and there was one briefly: burying
-    // them 0.35 seals the trunk's hollow underside, which ends at y -0.19 and
-    // is otherwise only 19cm below the grass line. Looked at side by side that
-    // reads as trees standing in a hole, and the seam it was hiding is the
-    // grass collar's job anyway. Do not add it back without looking at the
-    // village trees next to it first.
+    // Lifts every forest tree by this much. Tree.glb's trunk ends at y -0.19,
+    // so placed at ground level the base ring sits below the grass line and
+    // the tree reads as standing IN the ground rather than on it.
+    //
+    // A world distance, not a fraction of the tree: it is a nudge, and a nudge
+    // is the same size whatever it is applied to. Live-tunable - change it and
+    // re-pick the level in the Level dropdown to see it, since the forest is
+    // built once rather than per frame.
+    window.forestTreeLift = 0.12;
     window.forestMinScale = 0.8;
     window.forestMaxScale = 1.6;
     window.forestBaseMinDistance = 4.0;
@@ -13318,7 +13247,10 @@ export function startGame(CharacterClass) {
             const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
             placements.forEach((p, i) => {
                 _q.setFromAxisAngle(_upVec, p.rotY);
-                _pos.set(p.x, p.y || 0, p.z);
+                // See forestTreeLift. The collider below takes the same lift,
+                // or the bark you see and the bark you walk into would be at
+                // different heights.
+                _pos.set(p.x, (p.y || 0) + window.forestTreeLift, p.z);
                 _scl.setScalar(p.scale);
                 _treeMat.compose(_pos, _q, _scl);
                 _instMat.multiplyMatrices(_treeMat, src.rel);
@@ -13429,7 +13361,7 @@ export function startGame(CharacterClass) {
                 // them, so each one was pure per-frame cost for nothing.
                 if (p.noCollide) return;
                 const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
-                col.position.set(p.x, p.y || 0, p.z);
+                col.position.set(p.x, (p.y || 0) + window.forestTreeLift, p.z);
                 col.rotation.y = p.rotY;
                 col.scale.setScalar(p.scale);
                 col.castShadow = false;
@@ -16233,29 +16165,6 @@ export function startGame(CharacterClass) {
     // player too.
     window.ditherDepthFade = 4.5;
     const _ditherDepthFadeUniform = { value: window.ditherDepthFade };
-    // ...and a much tighter one for the tree's BASE MASS, so you can see
-    // through it to the trunk inside.
-    //
-    // The ramp above is a ramp for a good reason - a trunk running from in
-    // front of the player to behind them lost its near half in one step and
-    // read as a sawn-off stump - but it means anything sitting CLOSE in front
-    // of the player barely dissolves at all: at 4.5, a fragment 1 unit ahead
-    // of you is 7% gone and one 2 units ahead is 35%. Both still read as
-    // solid. BaseTreeLeaveBunch, the squat blob round the foot of the trunk,
-    // is exactly there whenever you stand at a tree - so the x-ray opened the
-    // canopy and then showed you an opaque green skirt with the base of the
-    // trunk hidden behind it.
-    //
-    // It is also why a forest tree looked worse than a village one: the forest
-    // scales trees to 1.6, so the same blob spans 3.2 units of depth instead
-    // of 2.0 and puts even more of itself in the band that hardly fades.
-    //
-    // 0.8 makes it close to a hard cut, which is fine for THIS mesh and only
-    // this one. The stump problem is about reading a shape that spans you; the
-    // base mass is a decorative skirt, and what matters is being able to see
-    // past it.
-    window.ditherBaseDepthFade = 0.8;
-    const _ditherBaseDepthFadeUniform = { value: window.ditherBaseDepthFade };
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
     function makeDitherable(material) {
@@ -16271,10 +16180,7 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherRadius = _ditherRadiusUniform;
             shader.uniforms.uDitherFeather = _ditherFeatherUniform;
             shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
-            // Per material, so one mesh can dissolve on a different depth
-            // ramp from everything else. See ditherBaseDepthFade.
-            shader.uniforms.uDitherDepthFade =
-                material.userData.ditherDepthFadeUniform || _ditherDepthFadeUniform;
+            shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
                     `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\n${DITHER_GLSL}\nvoid main() {`)
@@ -16316,8 +16222,7 @@ export function startGame(CharacterClass) {
         // key, so without this a dithering material could be handed the
         // compiled program of an otherwise-identical non-dithering one.
         const prevKey = material.customProgramCacheKey;
-        const keyTag = material.userData.ditherDepthFadeUniform ? '|dither|ownfade' : '|dither';
-        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + keyTag;
+        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|dither';
         material.needsUpdate = true;
         return uniform;
     }
@@ -16400,7 +16305,6 @@ export function startGame(CharacterClass) {
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
-        _ditherBaseDepthFadeUniform.value = Math.max(window.ditherBaseDepthFade, 0.4);
 
         // Everything is gated on these probes. Letting the shader decide
         // alone - "in front of the player and inside the hole" - reads as the
