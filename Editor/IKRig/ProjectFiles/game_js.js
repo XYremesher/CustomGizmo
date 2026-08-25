@@ -1474,8 +1474,8 @@ export function startGame(CharacterClass) {
     // ring wants to hug. At the base the trunk is a cone: measured off
     // Tree.glb, the bottom ring (y -0.19..0, 14 verts) sits at radius 0.930
     // and the next ring up (y 1.4..1.6) at 0.524, a taper of 0.240 per unit,
-    // so at the plant point the bark is at 0.884 and after forestTreeSink it
-    // is at 0.800.
+    // so at the plant point - which is where the ground is - the bark is at
+    // 0.884, not 0.454.
     //
     // The scatter was rejecting blades inside 0.62 - the shaft number - so
     // every blade landing between 0.62 and 0.88 was planted INSIDE the wood.
@@ -1490,21 +1490,16 @@ export function startGame(CharacterClass) {
     // the rejection used to drag the collar outwards with it and open a bare
     // gap at the trunk.
     //
-    // The trunk is a CONE, and the ground cuts it at whatever height
-    // forestTreeSink leaves it at - so the bark radius is derived per tree
-    // rather than written down. A flat number would be right at one tree size
-    // and wrong at the others (the forest scales trees 0.8 to 1.6), and would
-    // go quietly stale the first time the sink was retuned, which is exactly
-    // how the 0.454 shaft figure ended up being used at the base.
-    //
-    // The sink is a world distance, so in the MODEL's own units it is
-    // sink/scale - a big tree is planted less deep relative to itself.
+    // The trunk is a CONE, so the number below is worked out from the
+    // measurement rather than typed in - which is the whole point, since the
+    // mistake being fixed here is a radius measured at one height and then
+    // used at another. Written out, 0.884 would be one more number with
+    // nothing attached to say where on the tree it came from.
     const TRUNK_BASE_R = 0.930;    // the bottom ring, y -0.19..0, 14 verts
     const TRUNK_BASE_Y = -0.19;    // where that ring sits below the origin
     const TRUNK_TAPER = -0.2402;   // to radius 0.524 at y 1.4..1.6
-    function treeBarkR(scale) {
-        return (TRUNK_BASE_R + TRUNK_TAPER * (window.forestTreeSink / scale - TRUNK_BASE_Y)) * scale;
-    }
+    // ...at the plant point, which is where the ground is: trees are not sunk.
+    const TRUNK_GROUND_R = TRUNK_BASE_R + TRUNK_TAPER * (0 - TRUNK_BASE_Y);
     // The scatter's own card-size range, hoisted so the trunk rejection can
     // use it too - a blade is not a point, and one whose CENTRE clears the
     // bark can still have half its card inside it. The mean half-width rather
@@ -1721,7 +1716,7 @@ export function startGame(CharacterClass) {
                     const halfCard = window.grassSize * (GRASS_CARD_MIN + GRASS_CARD_MAX) * 0.25;
                     for (let i = 0; i < treeSpots.length; i++) {
                         const t = treeSpots[i];
-                        const rr = treeBarkR(t.scale) + halfCard;
+                        const rr = TRUNK_GROUND_R * t.scale + halfCard;
                         if ((x - t.x) * (x - t.x) + (z - t.z) * (z - t.z) < rr * rr) { inTrunk = true; break; }
                     }
                     if (inTrunk) continue;
@@ -8846,22 +8841,13 @@ export function startGame(CharacterClass) {
     window.forestGridSize = 60;
     window.forestNoiseScale = 18;
     window.forestTreeThreshold = 0.55;
-    // How far a tree is planted INTO the ground.
-    //
-    // Tree.glb's trunk ends at y -0.19, so at 0 the base ring sat essentially
-    // flush with the grass line: the widest part of the root flare level with
-    // the ground, and the open bottom of the trunk only 19cm under it - close
-    // enough to see into from a low angle, and exactly the band the x-ray
-    // dither looks through.
-    //
-    // Modest on purpose. The trunk tapers at 0.240 radius per unit, so sinking
-    // it is a poor way to make the base NARROWER - 0.35 buys 0.084 of radius,
-    // and burying enough to matter that way would swallow the flare, which is
-    // the detail that makes the tree look rooted rather than stood on the
-    // grass. What it does buy is the rim: 0.54 under instead of 0.19, so the
-    // hollow underside is sealed. Making sure nothing is PLANTED in the base
-    // is treeBarkR's job, not this one's.
-    window.forestTreeSink = 0.35;
+    // Trees sit ON the ground, at the height they are placed at - the way
+    // the village's do. There is no sink, and there was one briefly: burying
+    // them 0.35 seals the trunk's hollow underside, which ends at y -0.19 and
+    // is otherwise only 19cm below the grass line. Looked at side by side that
+    // reads as trees standing in a hole, and the seam it was hiding is the
+    // grass collar's job anyway. Do not add it back without looking at the
+    // village trees next to it first.
     window.forestMinScale = 0.8;
     window.forestMaxScale = 1.6;
     window.forestBaseMinDistance = 4.0;
@@ -13304,10 +13290,7 @@ export function startGame(CharacterClass) {
             const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
             placements.forEach((p, i) => {
                 _q.setFromAxisAngle(_upVec, p.rotY);
-                // Planted, not stood on the grass - see forestTreeSink. The
-                // collider below takes the same drop, or the bark you see and
-                // the bark you walk into would be at different heights.
-                _pos.set(p.x, (p.y || 0) - window.forestTreeSink, p.z);
+                _pos.set(p.x, p.y || 0, p.z);
                 _scl.setScalar(p.scale);
                 _treeMat.compose(_pos, _q, _scl);
                 _instMat.multiplyMatrices(_treeMat, src.rel);
@@ -13418,7 +13401,7 @@ export function startGame(CharacterClass) {
                 // them, so each one was pure per-frame cost for nothing.
                 if (p.noCollide) return;
                 const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
-                col.position.set(p.x, (p.y || 0) - window.forestTreeSink, p.z);
+                col.position.set(p.x, p.y || 0, p.z);
                 col.rotation.y = p.rotY;
                 col.scale.setScalar(p.scale);
                 col.castShadow = false;
@@ -14445,7 +14428,7 @@ export function startGame(CharacterClass) {
             // normal rather than "floating"). Subtracting that offset on
             // top of groundY was adding an unwanted extra lift, which is
             // what was actually causing the floating look.
-            tree.position.set(pos.x, groundY - window.forestTreeSink, pos.z);
+            tree.position.set(pos.x, groundY, pos.z);
             // Forces this clone's whole ancestor chain to actually reflect
             // the placement just set above before the Box3 below reads it.
             // Box3.expandByObject calls object.updateWorldMatrix(false,
@@ -15293,7 +15276,7 @@ export function startGame(CharacterClass) {
         tree.scale.setScalar(scale);
         // y, not a hardcoded 0: authored voxel geometry has surfaces at every
         // height, and a tree belongs on the one it was placed on.
-        tree.position.set(x, y - window.forestTreeSink, z);
+        tree.position.set(x, y, z);
         // Box3.setFromObject below reads c.parent.matrixWorld as-is rather
         // than recomputing it (Box3.expandByObject calls
         // object.updateWorldMatrix(false, false) - updateParents=false), and
