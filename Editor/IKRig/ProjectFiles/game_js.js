@@ -4104,6 +4104,7 @@ export function startGame(CharacterClass) {
             if (intensity === 'high') network.sendRagdollEvent(velocity, intensity);
             else network.sendRecoilEvent(velocity, intensity);
         }
+        if (window.playPunchSound) window.playPunchSound(hitPoint);
         if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
         if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
     }
@@ -7022,6 +7023,7 @@ export function startGame(CharacterClass) {
                     } else {
                         window.staggerBot(target, vel, 'medium', last ? 1.3 : 0.9, poisePerHit);
                     }
+                    if (window.playPunchSound) window.playPunchSound(hitPoint);
                     if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
                     if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
                 }

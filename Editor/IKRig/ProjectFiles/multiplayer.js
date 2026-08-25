@@ -301,6 +301,7 @@ export class MultiplayerClient {
         // below carries the same position so bystanders see it too.
         const impactPos = pu.p ? new THREE.Vector3(pu.p[0], pu.p[1], pu.p[2]) : null;
         if (impactPos) {
+            if (window.playPunchSound) window.playPunchSound(impactPos);
             if (window.createHandHitEffect) window.createHandHitEffect(impactPos);
             if (window.spawnHitEffect) window.spawnHitEffect(impactPos);
         }

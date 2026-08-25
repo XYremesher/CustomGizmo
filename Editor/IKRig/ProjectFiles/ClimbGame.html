@@ -968,16 +968,14 @@
                 el.textContent = (el.textContent ? el.textContent + '\n' : '') + what;
             };
             window.addEventListener('error', (e) => {
-                show((e.message || 'Error') + '
-  at ' + (e.filename || '?') + ':' + (e.lineno || '?') +
-                     (e.error && e.error.stack ? '
-' + e.error.stack.split('
-').slice(1, 4).join('
-') : ''));
+                show((e.message || 'Error') + '\n  at ' + (e.filename || '?') + ':' + (e.lineno || '?') +
+                     (e.error && e.error.stack
+                        ? '\n' + e.error.stack.split('\n').slice(1, 4).join('\n')
+                        : ''));
             });
             window.addEventListener('unhandledrejection', (e) => {
-                show('Unhandled promise rejection:
-  ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+                show('Unhandled promise rejection:\n  '
+                    + (e.reason && e.reason.message ? e.reason.message : e.reason));
             });
         })();
     </script>
@@ -1975,6 +1973,83 @@
             window.createHitEffect(pos);
         };
 
+        // ---- Punch sound ----
+        // The game's first sound, so this is also the whole of its audio
+        // setup. Deliberately small: one buffer, one entry point, and no
+        // engine around it until there is a second sound to justify one.
+        //
+        // WebAudio rather than an <audio> element. A combo lands seven blows
+        // about a quarter-second apart and a single element cannot overlap
+        // itself - the second hit cuts the first one off - while restarting
+        // an element has its own latency on top. One decoded buffer feeding a
+        // fresh source per hit overlaps for free, and lets each hit be pitched
+        // slightly differently, which is what keeps a string of them sounding
+        // like a flurry rather than one sample on a loop.
+        let _punchCtx = null, _punchBuf = null, _punchAt = -1;
+        // Armed by the session's first input, whatever it happens to be. Two
+        // things stop this being done at load: a context created outside a
+        // user gesture starts suspended and stays silent, and fetching plus
+        // decoding takes long enough that leaving it until the first punch
+        // would make that punch the silent one. The first tap is always far
+        // earlier than the first fight.
+        function armPunchAudio() {
+            if (_punchCtx) return;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            _punchCtx = new AC();
+            fetch(ASSET_BASE + 'Punch.mp3')
+                .then(r => r.arrayBuffer())
+                .then(b => _punchCtx.decodeAudioData(b))
+                .then(buf => { _punchBuf = buf; })
+                // Silence is the right failure here. A missing or unplayable
+                // sound file is a missing sound, not a broken game, and this
+                // runs on a path where nothing is waiting on the result.
+                .catch(() => { _punchBuf = null; });
+        }
+        window.addEventListener('pointerdown', armPunchAudio, { capture: true });
+        window.addEventListener('keydown', armPunchAudio, { capture: true });
+        // Minimum gap between two punch sounds. A mature charge sweeps up to
+        // six bodies and each one is its own hit call - a single swing has to
+        // be a single sound, not six stacked on the same millisecond, which is
+        // a click rather than an impact. A combo's blows are ~0.25s apart, far
+        // clear of this.
+        const PUNCH_SOUND_GAP = 0.05;
+        // Inside this radius a punch is at full volume; past it the level
+        // falls off as NEAR/distance. Measured from the PLAYER, not the
+        // camera: the camera sits a fixed 13 units back, so measuring from it
+        // would put your own fists at the same distance as everything else and
+        // flatten the falloff away entirely.
+        const PUNCH_SOUND_NEAR = 3.0;
+        window.punchVolume = 0.7;
+        // Called wherever a fist actually connects - the player's, a bot's, a
+        // companion's, a remote player's. Not hung off createHandHitEffect,
+        // which looks like the one shared place for it but also fires for
+        // thrown jars and projectile impacts; those are not punches and should
+        // not borrow the punch's sound.
+        window.playPunchSound = function(pos) {
+            if (!_punchCtx || !_punchBuf) return;
+            // A context can be suspended again by the tab losing focus, so
+            // this is checked per play rather than once at arming time.
+            if (_punchCtx.state === 'suspended') _punchCtx.resume();
+            const now = _punchCtx.currentTime;
+            if (now - _punchAt < PUNCH_SOUND_GAP) return;
+            _punchAt = now;
+            let vol = 1;
+            const self = window.combat && window.combat.char && window.combat.char.group;
+            if (pos && self) {
+                const d = self.position.distanceTo(pos);
+                vol = Math.min(1, PUNCH_SOUND_NEAR / Math.max(d, 0.001));
+            }
+            if (vol < 0.02) return;      // too far to hear - not worth the nodes
+            const src = _punchCtx.createBufferSource();
+            src.buffer = _punchBuf;
+            src.playbackRate.value = 0.92 + Math.random() * 0.16;
+            const gain = _punchCtx.createGain();
+            gain.gain.value = vol * window.punchVolume;
+            src.connect(gain).connect(_punchCtx.destination);
+            src.start();
+        };
+
         window.speedParticles = [];
         let punchSpeedParticleGeometry = null;
         const punchSpeedParticleTexture = new THREE.TextureLoader().load(
@@ -2423,6 +2498,7 @@
                             // state, so the forest's practice test only counts
                             // punches that actually CONNECT with the bag.
                             window.bagHitCount = (window.bagHitCount || 0) + 1;
+                            if (window.playPunchSound) window.playPunchSound(hitCenter);
                             if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                             if (createHitEffectCallback) {
                                 const sackCenter = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
@@ -2453,6 +2529,7 @@
                         if (!avatar.isLoaded || avatar.isRagdoll) return;
                         const avatarHitPos = avatar.getHitReferencePoint();
                         if (avatarHitPos.distanceTo(hitCenter) < hitRadius + 1.0) {
+                            if (window.playPunchSound) window.playPunchSound(hitCenter);
                             if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                             if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
                             window.multiplayerClient.sendPunchEvent(remoteId, fwdDir, forceMagnitude, hitCenter);
@@ -2516,6 +2593,7 @@
                 for (let bi = 0; bi < inReach.length && bi < maxTargets; bi++) {
                     const bot = inReach[bi].bot;
                     {
+                        if (window.playPunchSound) window.playPunchSound(hitCenter);
                         if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                         if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
                         const intensity = forceMagnitude >= 70 ? 'high' : (forceMagnitude >= 45 ? 'medium_high' : 'medium');
