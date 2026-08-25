@@ -16630,6 +16630,15 @@ export function startGame(CharacterClass) {
         if (autoPunchT > 0) autoPunchT -= delta;
         if (!window.autoPunchEnabled || !lockedBot) return;
         if (char.isRagdoll || char.isStandingUp || window.isCarryingObj) return;
+        // Hanging on a ledge or pulling up over it. The punch BUTTON has been
+        // gated on this for a long time (see punchUsable, and the pointerdown
+        // handler in ClimbGame.html) - auto punch was not, so it went on
+        // throwing one-twos at a bot below while both hands were supposed to
+        // be on the wall, and the punch clip fought the hang pose and the
+        // arm IK for the arms. window.isClimbing is written a few lines
+        // before this is called, so it is this frame's value, not last
+        // frame's.
+        if (window.isClimbing) return;
         const cb = window.combat;
         if (!cb) return;
         // The lock reaches further than the fist does - see autoPunchRange.
@@ -23172,6 +23181,22 @@ export function startGame(CharacterClass) {
 
                         if (liftsOffGround && isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
                             isLedgeGrabbing = true; ledgeMoveLocked = true; justGrabbedLedge = true;
+                            // Drop a punch that is still mid-swing. Blocking
+                            // new ones is not enough on its own: a jab thrown
+                            // a moment before catching the ledge keeps
+                            // playing, and its clip drives the same arms the
+                            // hang pose and the ledge arm IK are trying to
+                            // plant on the lip - which is the pose falling
+                            // apart on the wall. The charge already had this
+                            // handled on release (see the pointerup handler
+                            // in ClimbGame.html); an ordinary swing did not.
+                            //
+                            // resetState is that same "this punch is over"
+                            // path - it clears the state, stops the charge
+                            // effect and empties the ring. Its fade to idle is
+                            // immediately overridden by the hang clip, which
+                            // the animation dispatch picks this same frame.
+                            if (window.combat && window.combat.punchState > 0) window.combat.resetState();
                             // Clear any leftover corner-retreat from a PREVIOUS
                             // hang - if you shimmied into a corner (which arms
                             // ledgeCornerRetreating + ledgeCornerRetreatTarget)
