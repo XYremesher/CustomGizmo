@@ -2833,6 +2833,13 @@ export function startGame(CharacterClass) {
     // which ragdolls outright rather than staggering, so it has to be
     // telegraphed long enough to run from or interrupt - an untelegraphed
     // knockdown is just an unavoidable one.
+    // How far ahead of a charge's contact its whoosh starts, as a fraction of
+    // the SWING clip - the same rule and the same 0.12 the player's own punches
+    // use (see SWOOSH_LEAD in ClimbGame.html). Written as a fraction rather
+    // than a number of seconds because the bot's swing clip and the
+    // companion's half-second swing are different lengths, and a fixed lead
+    // would sit in a different part of each.
+    const CHARGE_SWOOSH_LEAD = 0.12;
     const AI_CHARGE_HOLD = 1.1;
     // Fraction into the swing clip where the fist connects - the player's own
     // number, so both charge punches land on the same frame of the same clip.
@@ -4104,7 +4111,11 @@ export function startGame(CharacterClass) {
             if (intensity === 'high') network.sendRagdollEvent(velocity, intensity);
             else network.sendRecoilEvent(velocity, intensity);
         }
-        if (window.playPunchSound) window.playPunchSound(hitPoint);
+        // 'high' is the charge finisher and nothing else - the plain punch
+        // and every blow of the combo come in below it (see the callers) - so
+        // it is what tells the heavy impact from the ordinary one. The player
+        // draws the same line at isMatureCharge; this is the bots' side of it.
+        if (window.playSound) window.playSound(intensity === 'high' ? 'punchStrong' : 'punch', hitPoint);
         if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
         if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
     }
@@ -4482,6 +4493,16 @@ export function startGame(CharacterClass) {
 
             if (chargeAction) {
                 const swingDur = chargeAction.getClip().duration;
+                // The arm going out. Written as a crossing test - was it
+                // before this instant last frame and past it now - rather than
+                // as another flag on aiBotState, because the timer only ever
+                // runs forward within a swing and is reset to 0 at the start
+                // of each, so the crossing happens exactly once per charge
+                // with nothing to remember or restore between bots.
+                const swooshAt = AI_CHARGE_HOLD + swingDur * (AI_CHARGE_HIT_T - CHARGE_SWOOSH_LEAD);
+                if (aiBotState.punchTimer >= swooshAt && aiBotState.punchTimer - delta < swooshAt) {
+                    if (window.playSound) window.playSound('swooshStrong', pos);
+                }
                 // One hit, at the same point in the clip the player's own
                 // charge connects, and only if the victim is still in front of
                 // it - the wind-up gives them a full second to leave, and the
@@ -6979,6 +7000,17 @@ export function startGame(CharacterClass) {
                 : (i + hitT) * COMP_PUNCH_SWING;
             const totalDur = chargeAction ? COMP_CHARGE_HOLD + COMP_CHARGE_SWING
                 : comboAction ? comboDur : hitCount * COMP_PUNCH_SWING;
+            // The arm going out, once per charge - same crossing test the bot
+            // uses, and for the same reason: _compPunchT runs forward within
+            // an attack and is reset to 0 at the start of one, so no extra
+            // scalar has to be plumbed through activateCompanion/saveCompanion
+            // to remember whether this already fired.
+            if (chargeAction) {
+                const swooshAt = hitAt(0) - COMP_CHARGE_SWING * CHARGE_SWOOSH_LEAD;
+                if (_compPunchT >= swooshAt && _compPunchT - delta < swooshAt) {
+                    if (window.playSound) window.playSound('swooshStrong', c);
+                }
+            }
             // Fire every hit frame this step crossed. A long frame can span a
             // whole swing, and skipping it would silently drop a punch.
             while (_compPunchIndex < hitCount && _compPunchT >= hitAt(_compPunchIndex)) {
@@ -7023,7 +7055,12 @@ export function startGame(CharacterClass) {
                     } else {
                         window.staggerBot(target, vel, 'medium', last ? 1.3 : 0.9, poisePerHit);
                     }
-                    if (window.playPunchSound) window.playPunchSound(hitPoint);
+                    // A companion's charge presses rather than finishes, so
+                    // it lands at 'medium_high' rather than 'high' (see just
+                    // above) - which means the intensity cannot be read as
+                    // "was this a charge" here the way it can for a bot. The
+                    // clip it is throwing can.
+                    if (window.playSound) window.playSound(chargeAction ? 'punchStrong' : 'punch', hitPoint);
                     if (window.createHandHitEffect) window.createHandHitEffect(hitPoint);
                     if (window.spawnHitEffect) window.spawnHitEffect(hitPoint.clone());
                 }
