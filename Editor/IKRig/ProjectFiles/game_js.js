@@ -1480,7 +1480,20 @@ export function startGame(CharacterClass) {
     // matching the grass means matching its SIZE.
     //
     // Density, below, is what buys back the ring the narrow cards were for.
-    window.grassTreeCardMin = 0.65, window.grassTreeCardMax = 1.35;
+    //
+    // A little BIGGER than the scatter's own 0.65..1.35, not equal to it. The
+    // collar reads smaller than it measures: its cards stand tangential and
+    // overlapping, so you see them edge-on and half-hidden by each other,
+    // while the open ground's are crossed quads facing every direction and
+    // standing alone. Matching the number made them look undersized next to
+    // the grass a metre away. 118% of it is where they read as the same
+    // plant.
+    //
+    // Card count is derived from card width (see the collar plan), so growing
+    // these does not thicken the ring - it just means fewer, larger cards
+    // covering the same circle. Measured: coverage stays at ~200% on the inner
+    // ring and ~110% on the outer, exactly as before.
+    window.grassTreeCardMin = 0.80, window.grassTreeCardMax = 1.55;
     // How much collar cards may overlap. 1.0 is shoulder to shoulder; 1.5
     // means each covers half again its share of the circle, so neighbours
     // overlap by a third - which is how grass actually reads, and the reason
@@ -1508,7 +1521,13 @@ export function startGame(CharacterClass) {
     // is 1.66 - just outside, with no overlap between the two bands.
     window.grassTreeRings = [
         { rMul: 1.0,  density: 1.0,  size: 1.0,  skew: 0.16 },
-        { rMul: 1.55, density: 0.55, size: 0.75, skew: 0.40 },
+        // size 1.0, not 0.75. "Smaller" was meant to make the skirt fade
+        // out, but the fade is what `density` does - the outer ring is
+        // already sparser and turned about more. Shrinking the cards on top
+        // of that just made the grass around a tree visibly stunted next to
+        // the grass that is not around one, which is the opposite of blending
+        // into it.
+        { rMul: 1.55, density: 0.55, size: 1.0,  skew: 0.40 },
     ];
     // How up-facing a surface has to be to grow anything. cos(45deg) ~ 0.71,
     // so this is a little past 45 degrees.
@@ -8796,15 +8815,22 @@ export function startGame(CharacterClass) {
     window.forestGridSize = 60;
     window.forestNoiseScale = 18;
     window.forestTreeThreshold = 0.55;
-    // Lifts every forest tree by this much. Tree.glb's trunk ends at y -0.19,
-    // so placed at ground level the base ring sits below the grass line and
-    // the tree reads as standing IN the ground rather than on it.
+    // Lifts every forest tree, as a multiple of ITS OWN SCALE.
     //
-    // A world distance, not a fraction of the tree: it is a nudge, and a nudge
-    // is the same size whatever it is applied to. Live-tunable - change it and
-    // re-pick the level in the Level dropdown to see it, since the forest is
-    // built once rather than per frame.
-    window.forestTreeLift = 0.12;
+    // Tree.glb's trunk ends at y -0.19, so a tree placed at ground level has
+    // its base ring buried and reads as standing IN the ground rather than on
+    // it. That depth scales with the tree - 0.15 under a small one, 0.30 under
+    // a big one - so a flat lift in world units cannot fix both: 0.12 brought
+    // the smallest trees up and left the 1.6-scale ones as sunk as before,
+    // and the big ones are the ones you look at.
+    //
+    // Per scale, every tree ends up the same 0.04 of its own size below the
+    // surface: the root flare shows in full and nothing hangs in the air.
+    // Raise it past 0.19 and they start to float.
+    //
+    // Live-tunable - change it and re-pick the level in the Level dropdown,
+    // since the forest is built once rather than per frame.
+    window.forestTreeLift = 0.15;
     window.forestMinScale = 0.8;
     window.forestMaxScale = 1.6;
     window.forestBaseMinDistance = 4.0;
@@ -13247,10 +13273,10 @@ export function startGame(CharacterClass) {
             const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
             placements.forEach((p, i) => {
                 _q.setFromAxisAngle(_upVec, p.rotY);
-                // See forestTreeLift. The collider below takes the same lift,
-                // or the bark you see and the bark you walk into would be at
-                // different heights.
-                _pos.set(p.x, (p.y || 0) + window.forestTreeLift, p.z);
+                // See forestTreeLift. The collider below takes the same
+                // lift, or the bark you see and the bark you walk into would
+                // be at different heights.
+                _pos.set(p.x, (p.y || 0) + window.forestTreeLift * p.scale, p.z);
                 _scl.setScalar(p.scale);
                 _treeMat.compose(_pos, _q, _scl);
                 _instMat.multiplyMatrices(_treeMat, src.rel);
@@ -13361,7 +13387,7 @@ export function startGame(CharacterClass) {
                 // them, so each one was pure per-frame cost for nothing.
                 if (p.noCollide) return;
                 const col = new THREE.Mesh(treeCollisionGeo, colliderMat);
-                col.position.set(p.x, (p.y || 0) + window.forestTreeLift, p.z);
+                col.position.set(p.x, (p.y || 0) + window.forestTreeLift * p.scale, p.z);
                 col.rotation.y = p.rotY;
                 col.scale.setScalar(p.scale);
                 col.castShadow = false;
