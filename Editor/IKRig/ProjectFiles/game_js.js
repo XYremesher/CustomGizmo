@@ -8563,9 +8563,37 @@ export function startGame(CharacterClass) {
             });
             o.material = Array.isArray(o.material) ? newMats : newMats[0];
         });
+        // The base mass gets its OWN copy of the material, purely so it can
+        // carry a different dither depth fade - see ditherBaseDepthFade. It
+        // shares its material with the walkable upper canopy chunks (see
+        // isTreeVisualOnly, which has to tell them apart by node name for the
+        // same reason), so splitting the material is the only way to give it
+        // different shader uniforms.
+        //
+        // Both levels pick this up: the forest reads o.material when it builds
+        // its instanced sources, and the village's clone(true) shares
+        // materials by reference.
+        treeModel.traverse(o => {
+            if (!o.isMesh || o.userData._baseDitherSplit) return;
+            if (!o.name || !o.name.startsWith('BaseTreeLeaveBunch')) return;
+            o.userData._baseDitherSplit = true;
+            const src = Array.isArray(o.material) ? o.material[0] : o.material;
+            if (!src) return;
+            const m = src.clone();
+            // Material.clone() does not carry onBeforeCompile, and this one
+            // has it: the normal-flip that stops a DoubleSide leaf blob
+            // shading two-toned. Losing it here would be a quiet change in how
+            // the base mass lights, of the kind nobody traces back to a dither
+            // fix.
+            m.onBeforeCompile = src.onBeforeCompile;
+            m.userData.ditherDepthFadeUniform = _ditherBaseDepthFadeUniform;
+            o.material = m;
+        });
         // Registered AFTER the loop above, so makeDitherable wraps the
         // normal-flip onBeforeCompile those leaf materials just got rather
-        // than being overwritten by it.
+        // than being overwritten by it. The split copy above is in place by
+        // now too, so it is registered and driven like any other tree
+        // material - without that it would never dissolve at all.
         treeModel.traverse(o => {
             if (!o.isMesh) return;
             const mats = Array.isArray(o.material) ? o.material : [o.material];
@@ -16205,6 +16233,29 @@ export function startGame(CharacterClass) {
     // player too.
     window.ditherDepthFade = 4.5;
     const _ditherDepthFadeUniform = { value: window.ditherDepthFade };
+    // ...and a much tighter one for the tree's BASE MASS, so you can see
+    // through it to the trunk inside.
+    //
+    // The ramp above is a ramp for a good reason - a trunk running from in
+    // front of the player to behind them lost its near half in one step and
+    // read as a sawn-off stump - but it means anything sitting CLOSE in front
+    // of the player barely dissolves at all: at 4.5, a fragment 1 unit ahead
+    // of you is 7% gone and one 2 units ahead is 35%. Both still read as
+    // solid. BaseTreeLeaveBunch, the squat blob round the foot of the trunk,
+    // is exactly there whenever you stand at a tree - so the x-ray opened the
+    // canopy and then showed you an opaque green skirt with the base of the
+    // trunk hidden behind it.
+    //
+    // It is also why a forest tree looked worse than a village one: the forest
+    // scales trees to 1.6, so the same blob spans 3.2 units of depth instead
+    // of 2.0 and puts even more of itself in the band that hardly fades.
+    //
+    // 0.8 makes it close to a hard cut, which is fine for THIS mesh and only
+    // this one. The stump problem is about reading a shape that spans you; the
+    // base mass is a decorative skirt, and what matters is being able to see
+    // past it.
+    window.ditherBaseDepthFade = 0.8;
+    const _ditherBaseDepthFadeUniform = { value: window.ditherBaseDepthFade };
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
     function makeDitherable(material) {
@@ -16220,7 +16271,10 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherRadius = _ditherRadiusUniform;
             shader.uniforms.uDitherFeather = _ditherFeatherUniform;
             shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
-            shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
+            // Per material, so one mesh can dissolve on a different depth
+            // ramp from everything else. See ditherBaseDepthFade.
+            shader.uniforms.uDitherDepthFade =
+                material.userData.ditherDepthFadeUniform || _ditherDepthFadeUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
                     `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\n${DITHER_GLSL}\nvoid main() {`)
@@ -16262,7 +16316,8 @@ export function startGame(CharacterClass) {
         // key, so without this a dithering material could be handed the
         // compiled program of an otherwise-identical non-dithering one.
         const prevKey = material.customProgramCacheKey;
-        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + '|dither';
+        const keyTag = material.userData.ditherDepthFadeUniform ? '|dither|ownfade' : '|dither';
+        material.customProgramCacheKey = () => (prevKey ? prevKey.call(material) : '') + keyTag;
         material.needsUpdate = true;
         return uniform;
     }
@@ -16345,6 +16400,7 @@ export function startGame(CharacterClass) {
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
+        _ditherBaseDepthFadeUniform.value = Math.max(window.ditherBaseDepthFade, 0.4);
 
         // Everything is gated on these probes. Letting the shader decide
         // alone - "in front of the player and inside the hole" - reads as the
