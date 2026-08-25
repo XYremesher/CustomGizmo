@@ -1973,82 +1973,120 @@
             window.createHitEffect(pos);
         };
 
-        // ---- Punch sound ----
-        // The game's first sound, so this is also the whole of its audio
-        // setup. Deliberately small: one buffer, one entry point, and no
-        // engine around it until there is a second sound to justify one.
+        // ---- Sound ----
+        // The game's whole audio setup. Still small on purpose, but a
+        // registry now rather than one hard-wired sample: sounds are being
+        // added one at a time, and each new one wants its own level and its
+        // own amount of variation, which is a table rather than another copy
+        // of the same twenty lines.
         //
-        // WebAudio rather than an <audio> element. A combo lands seven blows
+        // WebAudio rather than <audio> elements. A combo lands seven blows
         // about a quarter-second apart and a single element cannot overlap
         // itself - the second hit cuts the first one off - while restarting
         // an element has its own latency on top. One decoded buffer feeding a
-        // fresh source per hit overlaps for free, and lets each hit be pitched
-        // slightly differently, which is what keeps a string of them sounding
+        // fresh source per play overlaps for free, and lets every play be
+        // detuned a little, which is what keeps a string of them sounding
         // like a flurry rather than one sample on a loop.
-        let _punchCtx = null, _punchBuf = null, _punchAt = -1;
+        //
+        // semis is that detune, as a number of semitones EITHER WAY, because
+        // that is the unit the effect actually lives in: a fixed +/- on the
+        // playback rate is a bigger musical step downward than upward, so a
+        // symmetric rate range is an asymmetric pitch range. Written on the
+        // sound rather than shared, since how far a sample can be moved
+        // before it stops being itself depends on the sample - an impact
+        // takes less than a whoosh does.
+        //
+        // Exposed as window.sfx, so every one of these can be tried live from
+        // the console: window.sfx.punch.semis = 5, and the next punch is
+        // wilder. Tuning a sound by ear is the only way to tune one.
+        const SFX = {
+            punch:  { file: 'Punch.mp3',  vol: 0.70, semis: 3.0, gap: 0.05 },
+            swoosh: { file: 'Swoosh.mp3', vol: 0.45, semis: 4.0, gap: 0.03 },
+        };
+        window.sfx = SFX;
+        window.sfxVolume = 1.0;
+        let _sfxCtx = null;
         // Armed by the session's first input, whatever it happens to be. Two
         // things stop this being done at load: a context created outside a
         // user gesture starts suspended and stays silent, and fetching plus
         // decoding takes long enough that leaving it until the first punch
         // would make that punch the silent one. The first tap is always far
         // earlier than the first fight.
-        function armPunchAudio() {
-            if (_punchCtx) return;
+        function armAudio() {
+            if (_sfxCtx) return;
             const AC = window.AudioContext || window.webkitAudioContext;
             if (!AC) return;
-            _punchCtx = new AC();
-            fetch(ASSET_BASE + 'Punch.mp3')
-                .then(r => r.arrayBuffer())
-                .then(b => _punchCtx.decodeAudioData(b))
-                .then(buf => { _punchBuf = buf; })
-                // Silence is the right failure here. A missing or unplayable
-                // sound file is a missing sound, not a broken game, and this
-                // runs on a path where nothing is waiting on the result.
-                .catch(() => { _punchBuf = null; });
+            _sfxCtx = new AC();
+            for (const key of Object.keys(SFX)) {
+                const snd = SFX[key];
+                snd.at = -1;
+                fetch(ASSET_BASE + snd.file)
+                    .then(r => r.arrayBuffer())
+                    .then(b => _sfxCtx.decodeAudioData(b))
+                    .then(buf => { snd.buf = buf; })
+                    // Silence is the right failure here. A missing or
+                    // unplayable file is a missing sound, not a broken game,
+                    // and nothing is waiting on the result. One sound failing
+                    // also leaves the others alone, which a single shared
+                    // catch would not.
+                    .catch(() => { snd.buf = null; });
+            }
         }
-        window.addEventListener('pointerdown', armPunchAudio, { capture: true });
-        window.addEventListener('keydown', armPunchAudio, { capture: true });
-        // Minimum gap between two punch sounds. A mature charge sweeps up to
-        // six bodies and each one is its own hit call - a single swing has to
-        // be a single sound, not six stacked on the same millisecond, which is
-        // a click rather than an impact. A combo's blows are ~0.25s apart, far
-        // clear of this.
-        const PUNCH_SOUND_GAP = 0.05;
-        // Inside this radius a punch is at full volume; past it the level
+        window.addEventListener('pointerdown', armAudio, { capture: true });
+        window.addEventListener('keydown', armAudio, { capture: true });
+        // Inside this radius a sound is at full volume; past it the level
         // falls off as NEAR/distance. Measured from the PLAYER, not the
         // camera: the camera sits a fixed 13 units back, so measuring from it
-        // would put your own fists at the same distance as everything else and
-        // flatten the falloff away entirely.
-        const PUNCH_SOUND_NEAR = 3.0;
-        window.punchVolume = 0.7;
-        // Called wherever a fist actually connects - the player's, a bot's, a
-        // companion's, a remote player's. Not hung off createHandHitEffect,
-        // which looks like the one shared place for it but also fires for
-        // thrown jars and projectile impacts; those are not punches and should
-        // not borrow the punch's sound.
-        window.playPunchSound = function(pos) {
-            if (!_punchCtx || !_punchBuf) return;
+        // would put your own fists at the same distance as everything else
+        // and flatten the falloff away entirely.
+        const SFX_NEAR = 3.0;
+        // How far ahead of a blow's contact its whoosh starts, as a fraction
+        // of the punch clip. The combo spaces its five blows about 0.17 apart
+        // in the same units, so this sits comfortably inside a blow's own
+        // wind-up rather than reaching back into the one before it. On a
+        // roughly one-second clip it works out at a little over a tenth of a
+        // second before contact, which is where a whoosh wants to be.
+        const SWOOSH_LEAD = 0.12;
+        // pos is optional - without it the sound plays at full level, which is
+        // right for anything that belongs to the interface rather than to a
+        // place in the world.
+        window.playSound = function(name, pos) {
+            const snd = SFX[name];
+            if (!_sfxCtx || !snd || !snd.buf) return;
             // A context can be suspended again by the tab losing focus, so
             // this is checked per play rather than once at arming time.
-            if (_punchCtx.state === 'suspended') _punchCtx.resume();
-            const now = _punchCtx.currentTime;
-            if (now - _punchAt < PUNCH_SOUND_GAP) return;
-            _punchAt = now;
+            if (_sfxCtx.state === 'suspended') _sfxCtx.resume();
+            const now = _sfxCtx.currentTime;
+            // Per sound, not global: a swoosh and the impact it leads into are
+            // meant to overlap, and a shared floor would swallow one of them.
+            // Within one sound it stops a mature charge sweeping six bodies
+            // from stacking six impacts on the same millisecond, which is a
+            // click rather than a punch.
+            if (now - snd.at < snd.gap) return;
+            snd.at = now;
             let vol = 1;
             const self = window.combat && window.combat.char && window.combat.char.group;
             if (pos && self) {
                 const d = self.position.distanceTo(pos);
-                vol = Math.min(1, PUNCH_SOUND_NEAR / Math.max(d, 0.001));
+                vol = Math.min(1, SFX_NEAR / Math.max(d, 0.001));
             }
+            vol *= snd.vol * window.sfxVolume;
             if (vol < 0.02) return;      // too far to hear - not worth the nodes
-            const src = _punchCtx.createBufferSource();
-            src.buffer = _punchBuf;
-            src.playbackRate.value = 0.92 + Math.random() * 0.16;
-            const gain = _punchCtx.createGain();
-            gain.gain.value = vol * window.punchVolume;
-            src.connect(gain).connect(_punchCtx.destination);
+            const src = _sfxCtx.createBufferSource();
+            src.buffer = snd.buf;
+            src.playbackRate.value = Math.pow(2, (Math.random() * 2 - 1) * snd.semis / 12);
+            const gain = _sfxCtx.createGain();
+            gain.gain.value = vol;
+            src.connect(gain).connect(_sfxCtx.destination);
             src.start();
         };
+        // Kept as its own name because it is called from three other files -
+        // game_js.js and multiplayer.js - wherever a fist actually connects.
+        // Deliberately not hung off createHandHitEffect, which looks like the
+        // one shared place for it but also fires for thrown jars and
+        // projectile impacts; those are not punches and should not borrow the
+        // punch's sound.
+        window.playPunchSound = function(pos) { window.playSound('punch', pos); };
 
         window.speedParticles = [];
         let punchSpeedParticleGeometry = null;
@@ -2147,6 +2185,9 @@
                 this.punchTimer = 0;
                 this.nextPunchQueued = false;
                 this.punchesHitFlags = [false, false, false, false, false];
+                // One per blow, same shape and same lifetime as punchesHitFlags -
+                // see the swoosh in update().
+                this.punchSwooshFlags = [false, false, false, false, false];
                 this.chargeEffect = null;
                 this.chargeMaturity = 0;
                 this.chargeDuration = 1; // real value set in startChargePunch()
@@ -2247,6 +2288,9 @@
                 this.punchState = 5;
                 this.punchTimer = 0;
                 this.punchesHitFlags = [false, false, false, false, false];
+                // One per blow, same shape and same lifetime as punchesHitFlags -
+                // see the swoosh in update().
+                this.punchSwooshFlags = [false, false, false, false, false];
                 this.playPunchPose('punch_charge_punch', 0.05);
                 this.stopChargeEffect();
             }
@@ -2410,6 +2454,9 @@
                     this.punchTimer = 0;
                     this.nextPunchQueued = false;
                     this.punchesHitFlags = [false, false, false, false, false];
+                    // One per blow, same shape and same lifetime as punchesHitFlags -
+                    // see the swoosh in update().
+                    this.punchSwooshFlags = [false, false, false, false, false];
                     this.playPunchPose('punch_left', 0.1);
                 } else if (this.punchState > 0 && this.punchState < 3) {
                     let currentAnimName = this.punchState === 1 ? 'punch_left' : 'punch_right';
@@ -2821,6 +2868,16 @@
                             ? (window.chargePunchHitTime !== undefined ? window.chargePunchHitTime : 0.35)
                             : (window.punchHitTime !== undefined ? window.punchHitTime : 0.35);
                         const hitEnd = hitStart + 0.2;
+                        // The arm going out, not the arm arriving. Fired a
+                        // fixed fraction of the clip BEFORE contact so the
+                        // whoosh leads into the impact instead of landing on
+                        // top of it - and fired whether or not the punch
+                        // connects, because a punch through empty air is
+                        // exactly the case that should still be audible.
+                        if (normalizedTime >= hitStart - SWOOSH_LEAD && !this.punchSwooshFlags[0]) {
+                            this.punchSwooshFlags[0] = true;
+                            if (window.playSound) window.playSound('swoosh', this.char.group.position);
+                        }
                         if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this.punchesHitFlags[0]) {
                             this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
                             this.spawnSwingParticle();
@@ -2840,6 +2897,14 @@
                     } else if (this.punchState === 3) {
                         const comboHitTimes = [window.comboHit1Time !== undefined ? window.comboHit1Time : 0.15, 0.32, 0.48, 0.65, 0.82];
                         for (let i = 0; i < 5; i++) {
+                            // Per blow, not per clip. punch_combo is one
+                            // animation holding five swings, so hanging the
+                            // whoosh off the clip starting would give five
+                            // visible punches a single sound.
+                            if (normalizedTime >= comboHitTimes[i] - SWOOSH_LEAD && !this.punchSwooshFlags[i]) {
+                                this.punchSwooshFlags[i] = true;
+                                if (window.playSound) window.playSound('swoosh', this.char.group.position);
+                            }
                             if (normalizedTime >= comboHitTimes[i] && normalizedTime <= (comboHitTimes[i] + 0.15) && !this.punchesHitFlags[i]) {
                                 this.detectMeleeHits(sacks, i, createHitEffectCallback);
                                 this.spawnSwingParticle();
@@ -2881,6 +2946,9 @@
                         this.punchTimer = 0;
                         this.nextPunchQueued = false;
                         this.punchesHitFlags = [false, false, false, false, false];
+                        // One per blow, same shape and same lifetime as punchesHitFlags -
+                        // see the swoosh in update().
+                        this.punchSwooshFlags = [false, false, false, false, false];
                         let nextAnimName = this.punchState === 2 ? 'punch_right' : 'punch_combo';
                         this.playPunchPose(nextAnimName, 0.15);
                     } else if (normalizedTime >= 0.95) {
