@@ -20340,6 +20340,7 @@ export function startGame(CharacterClass) {
                         for (const sack of window.sacks) {
                             if (sack.checkHit(cp.mesh.position, chargeHitRadius)) {
                                 sack.applyHit(impactDir, chargeForce);
+                                if (window.playSound) window.playSound('punchStrong', cp.mesh.position);
                                 if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
                                 if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
                                 if (network) {
@@ -20364,6 +20365,7 @@ export function startGame(CharacterClass) {
                             if (consumed || !avatar.isLoaded || avatar.isRagdoll) return;
                             const avatarHitPos = avatar.getHitReferencePoint();
                             if (avatarHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
+                                if (window.playSound) window.playSound('punchStrong', cp.mesh.position);
                                 if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
                                 if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
                                 window.multiplayerClient.sendPunchEvent(remoteId, impactDir, chargeForce, cp.mesh.position);
@@ -20402,6 +20404,7 @@ export function startGame(CharacterClass) {
                         if (!bot.isLoaded || bot.isRagdoll) continue;
                         const botHitPos = bot.getHitReferencePoint();
                         if (botHitPos.distanceTo(cp.mesh.position) < chargeHitRadius + 1.0) {
+                            if (window.playSound) window.playSound('punchStrong', cp.mesh.position);
                             if (window.createHandHitEffect) window.createHandHitEffect(cp.mesh.position);
                             if (window.spawnHitEffect) window.spawnHitEffect(cp.mesh.position.clone());
                             const intensity = chargeForce >= 70 ? 'high' : (chargeForce >= 45 ? 'medium_high' : 'medium');

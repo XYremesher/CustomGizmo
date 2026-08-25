@@ -1999,9 +1999,23 @@
         // Exposed as window.sfx, so every one of these can be tried live from
         // the console: window.sfx.punch.semis = 5, and the next punch is
         // wilder. Tuning a sound by ear is the only way to tune one.
+        //
+        // `into` names the sound to fall back to when this one's file is
+        // missing or will not decode. A charge punch that made no sound at all
+        // because its sample had not been dropped in yet would be worse than
+        // one that borrows the ordinary punch's - and it means a new sound can
+        // be wired here before the file for it exists.
+        //
+        // The strong pair are the MATURE charge only, matching every other
+        // reward the game gates that way (the cleave, the projectile, the
+        // outright knockdown). An early release is described in
+        // detectMeleeHits as an ordinary punch wearing the charge's clip, and
+        // it should sound like one.
         const SFX = {
-            punch:  { file: 'Punch.mp3',  vol: 0.70, semis: 3.0, gap: 0.05 },
-            swoosh: { file: 'Swoosh.mp3', vol: 0.45, semis: 4.0, gap: 0.03 },
+            punch:        { file: 'Punch.mp3',        vol: 0.70, semis: 3.0, gap: 0.05 },
+            swoosh:       { file: 'Swoosh.mp3',       vol: 0.45, semis: 4.0, gap: 0.03 },
+            punchStrong:  { file: 'PunchStrong.mp3',  vol: 0.85, semis: 2.5, gap: 0.05, into: 'punch' },
+            swooshStrong: { file: 'SwooshStrong.mp3', vol: 0.60, semis: 3.0, gap: 0.03, into: 'swoosh' },
         };
         window.sfx = SFX;
         window.sfxVolume = 1.0;
@@ -2050,9 +2064,15 @@
         // pos is optional - without it the sound plays at full level, which is
         // right for anything that belongs to the interface rather than to a
         // place in the world.
-        window.playSound = function(name, pos) {
+        window.playSound = function(name, pos, _depth) {
             const snd = SFX[name];
-            if (!_sfxCtx || !snd || !snd.buf) return;
+            if (!_sfxCtx || !snd) return;
+            if (!snd.buf) {
+                // Depth-limited, so a pair of sounds pointing at each other
+                // cannot spin here. Two hops is more than any real chain.
+                if (snd.into && (_depth || 0) < 2) window.playSound(snd.into, pos, (_depth || 0) + 1);
+                return;
+            }
             // A context can be suspended again by the tab losing focus, so
             // this is checked per play rather than once at arming time.
             if (_sfxCtx.state === 'suspended') _sfxCtx.resume();
@@ -2504,6 +2524,10 @@
                 // hold-detection threshold passes isn't a free "high intensity"
                 // ragdoll button.
                 const isMatureCharge = isChargePunch && this.chargeMaturity >= 1.0;
+                // Which impact this blow makes. Every connect site below plays
+                // the same one, so a charge that sweeps several bodies is one
+                // kind of sound repeated rather than a mixture.
+                const impactSound = isMatureCharge ? 'punchStrong' : 'punch';
                 const chargePunchForce = window.chargePunchForce !== undefined ? window.chargePunchForce : 80;
                 // comboStep treats left(1)->right(2)->the 5 hits inside
                 // punch_combo(3-7) as one continuous sequence. Every hit
@@ -2545,7 +2569,7 @@
                             // state, so the forest's practice test only counts
                             // punches that actually CONNECT with the bag.
                             window.bagHitCount = (window.bagHitCount || 0) + 1;
-                            if (window.playPunchSound) window.playPunchSound(hitCenter);
+                            if (window.playSound) window.playSound(impactSound, hitCenter);
                             if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                             if (createHitEffectCallback) {
                                 const sackCenter = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
@@ -2576,7 +2600,7 @@
                         if (!avatar.isLoaded || avatar.isRagdoll) return;
                         const avatarHitPos = avatar.getHitReferencePoint();
                         if (avatarHitPos.distanceTo(hitCenter) < hitRadius + 1.0) {
-                            if (window.playPunchSound) window.playPunchSound(hitCenter);
+                            if (window.playSound) window.playSound(impactSound, hitCenter);
                             if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                             if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
                             window.multiplayerClient.sendPunchEvent(remoteId, fwdDir, forceMagnitude, hitCenter);
@@ -2640,7 +2664,7 @@
                 for (let bi = 0; bi < inReach.length && bi < maxTargets; bi++) {
                     const bot = inReach[bi].bot;
                     {
-                        if (window.playPunchSound) window.playPunchSound(hitCenter);
+                        if (window.playSound) window.playSound(impactSound, hitCenter);
                         if (window.createHandHitEffect) window.createHandHitEffect(hitCenter);
                         if (createHitEffectCallback) createHitEffectCallback(hitCenter.clone());
                         const intensity = forceMagnitude >= 70 ? 'high' : (forceMagnitude >= 45 ? 'medium_high' : 'medium');
@@ -2876,7 +2900,14 @@
                         // exactly the case that should still be audible.
                         if (normalizedTime >= hitStart - SWOOSH_LEAD && !this.punchSwooshFlags[0]) {
                             this.punchSwooshFlags[0] = true;
-                            if (window.playSound) window.playSound('swoosh', this.char.group.position);
+                            // State 5 is the charge being thrown, and a
+                            // matured one gets its own heavier whoosh. Read
+                            // off chargeMaturity rather than the state alone
+                            // because an early release is state 5 too - see
+                            // the isMatureCharge gate in detectMeleeHits,
+                            // which draws the same line for the impact.
+                            const heavy = this.punchState === 5 && this.chargeMaturity >= 1.0;
+                            if (window.playSound) window.playSound(heavy ? 'swooshStrong' : 'swoosh', this.char.group.position);
                         }
                         if (normalizedTime >= hitStart && normalizedTime <= hitEnd && !this.punchesHitFlags[0]) {
                             this.detectMeleeHits(sacks, this.punchState === 5 ? 5 : 0, createHitEffectCallback);
