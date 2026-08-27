@@ -13122,6 +13122,7 @@ export function startGame(CharacterClass) {
             // assumed in case that changes.
             const iw = icon.getBoundingClientRect().width || 44;
             icon.style.marginRight = (-iw * HINT_OVERHANG) + 'px';
+            icon.style.marginTop = icon.style.marginBottom = (-iw * 0.5) + 'px';
             if (iconUrl) { icon.src = iconUrl; icon.style.display = ''; }
             else { icon.removeAttribute('src'); icon.style.display = 'none'; }
         }
@@ -13171,6 +13172,18 @@ export function startGame(CharacterClass) {
             // 0.6 of its width outside, which leaves enough of it overlapping
             // to read as attached to the card rather than floating beside it.
             demo.style.marginLeft = (-w * HINT_OVERHANG) + 'px';
+            // ...and out of the HEIGHT entirely.
+            //
+            // The card is a flex row, so its height was the tallest thing in
+            // it - the 64px button - and two lines of text sat in a box built
+            // for something two thirds taller than they are. Equal negative
+            // margins top and bottom take the button's outer height to zero
+            // while align-items keeps it centred, so the row is as tall as the
+            // words and the button overhangs above and below.
+            //
+            // Same trick as the horizontal overhang and for the same reason:
+            // its animations own `transform`, so it cannot be placed with one.
+            demo.style.marginTop = demo.style.marginBottom = (-w * 0.5) + 'px';
             const rs = realSvg ? realSvg.getBoundingClientRect() : null;
             const ring = rs && rs.width ? rs.width : w + 12;
             svg.style.width = svg.style.height = ring + 'px';
