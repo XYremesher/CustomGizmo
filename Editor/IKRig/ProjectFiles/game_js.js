@@ -855,10 +855,26 @@ export function startGame(CharacterClass) {
     // The flat arrow at the top of the screen, on by default. Independent of
     // the 3D needle: either, both or neither can be shown.
     window.compass2DEnabled = true;
+    // How the 3D needle is aimed.
+    //
+    // ON: like a 2D compass, but drawn with the model - laid flat in the plane
+    // of the screen and turned to the target's bearing, so up is ahead, right
+    // is to your right, down is behind. It keeps its full length from every
+    // angle, it cannot foreshorten to a dot, and there is no target position
+    // that makes it degenerate.
+    //
+    // OFF: the original, pointing at the target in real 3D. Kept because it is
+    // the honest arrow - it aims at a place in the world rather than
+    // describing one - and because switching between the two side by side is
+    // the only way to judge which reads better.
+    window.compassFlat = true;
     const _compassOffset = new THREE.Vector3();
-    // Scratch for the camera's own heading, read once a frame for the flat
-    // arrow. Kept off the hot path's allocations like everything else here.
+    // Scratch for the camera's own heading and, in flat mode, the needle's
+    // direction. Kept off the hot path's allocations like everything else.
     const _compassFront = new THREE.Vector3();
+    const _compassDir = new THREE.Vector3();
+    const _compassBack = new THREE.Vector3();
+    const _compassAim = new THREE.Vector3();
     const compassArrowEl = document.getElementById('compass-arrow');
     const compassBackdropEl = document.getElementById('compass-backdrop');
     // Off ASSET_BASE like every other image the game loads, rather than the
@@ -20024,6 +20040,9 @@ export function startGame(CharacterClass) {
         document.getElementById('ortho-zoom-val').textContent = v;
     });
 
+    document.getElementById('toggle-compass-flat').addEventListener('change', e => {
+        window.compassFlat = e.target.checked;
+    });
     document.getElementById('toggle-compass-2d').addEventListener('change', e => {
         window.compass2DEnabled = e.target.checked;
     });
@@ -24474,7 +24493,38 @@ export function startGame(CharacterClass) {
         // specific to go (see buildVillageLevel's forest-entrance quest),
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
-        compassMesh.lookAt(window.compassTarget || star.position);
+        // ---- The bearing, worked out once for both compasses ----
+        //
+        // Flat, from the PLAYER: the target's heading minus the way the camera
+        // faces. See the arrow block below for why it is measured this way
+        // rather than by projecting the needle.
+        const compassTgt = window.compassTarget || star.position;
+        const compassFrom = char.group.position;
+        _compassFront.set(0, 0, -1).applyQuaternion(camera.quaternion);
+        const compassBearing =
+            Math.atan2(_compassFront.x, _compassFront.z)
+            - Math.atan2(compassTgt.x - compassFrom.x, compassTgt.z - compassFrom.z);
+
+        if (window.compassFlat) {
+            // The bearing as a direction in the camera's own frame - x right,
+            // y up - then back into world space. Straight ahead is (0,1,0),
+            // the needle lying up the screen.
+            _compassDir.set(Math.sin(compassBearing), Math.cos(compassBearing), 0)
+                .applyQuaternion(camera.quaternion);
+            // Up, for the lookAt below, is OUT of the screen - so the model's
+            // own up ends up facing the viewer rather than facing into the
+            // picture. It is exactly perpendicular to the direction above
+            // (one is the camera's z, the other lies in its xy plane), which
+            // is also why this arrangement has no degenerate case.
+            _compassBack.set(0, 0, 1).applyQuaternion(camera.quaternion);
+            compassMesh.up.copy(_compassBack);
+            compassMesh.lookAt(_compassAim.copy(compassMesh.position).add(_compassDir));
+        } else {
+            // Restored, or the flat mode's own up would follow the needle back
+            // into the world-aimed one and quietly change what "off" does.
+            compassMesh.up.set(0, 1, 0);
+            compassMesh.lookAt(compassTgt);
+        }
         compassMesh.updateMatrixWorld();
 
         // ---- ...and the flat 2D arrow ----
@@ -24505,20 +24555,12 @@ export function startGame(CharacterClass) {
             compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (window.compass2DEnabled) {
-                const tgt = window.compassTarget || star.position;
-                const from = char.group.position;
-                // atan2(x, z) is the yaw convention the rest of the file uses
-                // (see yawTowards) - the angle that turns a +Z-forward object
-                // to face along a direction.
-                _compassFront.set(0, 0, -1).applyQuaternion(camera.quaternion);
-                const camYaw = Math.atan2(_compassFront.x, _compassFront.z);
-                const tgtYaw = Math.atan2(tgt.x - from.x, tgt.z - from.z);
-                // camYaw - tgtYaw, that way round: a positive difference in
-                // this convention is a turn to the LEFT, and CSS rotate() is
-                // positive CLOCKWISE. Getting this backwards is the other way
-                // an arrow ends up mirrored.
-                const screenAngle = camYaw - tgtYaw;
-                compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
+                // The same bearing the needle uses. camYaw - tgtYaw, that way
+                // round: a positive difference in this convention is a turn to
+                // the LEFT, and CSS rotate() is positive CLOCKWISE. Getting
+                // that backwards is the other way an arrow ends up mirrored.
+                compassArrowEl.style.transform =
+                    `translateX(-50%) rotate(${compassBearing}rad)`;
             }
         }
 
