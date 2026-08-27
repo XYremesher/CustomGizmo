@@ -4212,7 +4212,10 @@ export function startGame(CharacterClass) {
         // Its own flag rather than followOverride, which is also set on a
         // companion of yours being rescued and on the one demonstrating at the
         // bag; neither of those should stop being a target.
-        if (v !== char && v.isWaitingRecruit) return false;
+        // ...unless this bot has been sent after that one on purpose. See
+        // _huntTarget: one enemy per level goes for the companion you have not
+        // reached yet, which is the whole point of it.
+        if (v !== char && v.isWaitingRecruit && aiBot._huntTarget !== v) return false;
         // A companion that has not loaded yet, or is switched off, is not
         // something to walk over to and punch.
         if (v !== char) return v.isLoaded && v.group.visible;
@@ -4234,6 +4237,15 @@ export function startGame(CharacterClass) {
         // exactly this reason; the cone must not undercut it from upstream.
         if (aiBotState.mode === 'punch' && aiBotVictimAvailable(aiBotState.victim)) {
             return aiBotState.victim;
+        }
+        // Sent after somebody specific, and it stays sent until that
+        // somebody is collected. Below the mid-swing lock above, which still
+        // wins - a bot does not change its mind halfway through a punch - and
+        // above everything else, because this is not a preference to be
+        // weighed against distance.
+        if (aiBot._huntTarget) {
+            if (!aiBot._huntTarget.isWaitingRecruit) aiBot._huntTarget = null;
+            else if (aiBotVictimAvailable(aiBot._huntTarget)) return aiBot._huntTarget;
         }
         const held = aiBotState.foe;
         const heldD = held && aiBotVictimAvailable(held) &&
@@ -12657,8 +12669,14 @@ export function startGame(CharacterClass) {
                 // that would answer the question the fight is asking.
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z,
                   awayFrom: botAt.BotYellow, unlock: 'punch' },
+                // Collecting this one also sends one of its three enemies
+                // up the level after the LAST companion - it breaks off, runs
+                // past you and climbs to the landing. Two things at once: it
+                // is the first time you see an enemy climb, and it puts the
+                // companion you have not reached yet under threat, so the walk
+                // to the top stops being a walk.
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z,
-                  awayFrom: botAt.BotOrange },
+                  awayFrom: botAt.BotOrange, hunter: 'BotYellow4' },
                 // No bot shares this ledge - keeps its original facing.
                 // The carry lesson's own demonstration - it goes and does
                 // the thing the card describes. It lands on this one because
@@ -12698,7 +12716,7 @@ export function startGame(CharacterClass) {
                 // always agree.
                 attachRecruitBeacon(comp);
                 _freeRecruits.push({ comp, at, quiet: !!sp.quiet, unlock: sp.unlock || null,
-                                     demoJar: !!sp.demoJar });
+                                     demoJar: !!sp.demoJar, hunter: sp.hunter || null });
             });
             // Every enemy in the level, placed now and asleep. One of them
             // per beat, where that beat happens: the first clearing, the far
@@ -13675,6 +13693,15 @@ export function startGame(CharacterClass) {
             // a lesson between companions is one word in one place.
             // Off to find a jar, if this is the one that teaches carrying.
             if (r.demoJar) { r.comp._jarPhase = 'seek'; r.comp._jarT = 0; }
+            // ...and one of the enemies off after the next companion.
+            // Resolved here rather than written into the spot, because who is
+            // next depends on what you have already collected.
+            if (r.hunter) {
+                const hspec = AI_BOT_SPECS.find(sp => sp.key === r.hunter);
+                const hrec = hspec && aiBots.find(x => x.bot.id === hspec.id);
+                const nextWaiting = _freeRecruits.find(o => o.comp && o.comp.isWaitingRecruit);
+                if (hrec && nextWaiting) hrec.bot._huntTarget = nextWaiting.comp;
+            }
             if (r.unlock === 'punch') window.punchButtonEnabled = true;
             if (r.unlock === 'jump') window.jumpButtonEnabled = true;
             // ...and anything THIS one was given to say, said now - the moment
@@ -23105,7 +23132,19 @@ export function startGame(CharacterClass) {
                         consumed = true;
                     };
                     for (let bi = 0; bi < aiBots.length && !consumed; bi++) throwHit(aiBots[bi].bot);
-                    for (let ci = 0; ci < companions.length && !consumed; ci++) throwHit(companions[ci].comp);
+                    // Companions only with friendly fire on - the SAME rule
+                    // the throwTargets list a hundred lines up already obeys.
+                    //
+                    // This line did not, and that is the whole of "jars still
+                    // break on my companions' heads": there are two paths that
+                    // can consume a thrown object, they were written at
+                    // different times, and only one of them asked. The other
+                    // hit a companion, set consumed, and the jar shattered on
+                    // it - so a throw aimed past your own team was eaten by
+                    // your own team.
+                    if (window.friendlyFire) {
+                        for (let ci = 0; ci < companions.length && !consumed; ci++) throwHit(companions[ci].comp);
+                    }
 
                     // A thrown jar shatters on any of these hits too, same
                     // as it already does hitting a wall in the collision
