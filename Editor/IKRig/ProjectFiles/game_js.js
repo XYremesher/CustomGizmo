@@ -14575,10 +14575,9 @@ export function startGame(CharacterClass) {
             // BufferGeometry.applyMatrix4 (what .scale() uses) transforms the
             // normal attribute by the proper normal matrix, so baking it gives
             // correct normals and leaves the mesh at identity scale.
-            const rimGeo = new THREE.TorusGeometry(
+            const rimGeo = buildLakeRimGeo(
                 L.r + FOREST_LAKE_RIM_TUBE, FOREST_LAKE_RIM_TUBE,
-                FOREST_LAKE_RIM_TUBE_SEGS, FOREST_LAKE_RIM_SEGS);
-            rimGeo.scale(1, 1, FOREST_LAKE_RIM_FLATTEN);
+                FOREST_LAKE_RIM_FLATTEN, L.x, L.z);
             const rim = new THREE.Mesh(rimGeo, forestLakeRimMaterial);
             rim.rotation.x = -Math.PI / 2;    // torus is authored in XY; lay it flat
             // Sunk below the ground plane rather than centred on it, so less
@@ -14962,8 +14961,76 @@ export function startGame(CharacterClass) {
     const FOREST_LAKE_RIM_TUBE = 2.85;     // horizontal half-width of the bank
     const FOREST_LAKE_RIM_FLATTEN = 0.55;  // vertical squash -> tube half-height 1.57
     const FOREST_LAKE_RIM_SINK = 0.97;     // tube centre below ground -> crest 0.60 proud
-    const FOREST_LAKE_RIM_SEGS = 30;       // around the ring
-    const FOREST_LAKE_RIM_TUBE_SEGS = 8;   // around the cross-section
+    const FOREST_LAKE_RIM_SEGS = 64;       // around the ring
+    const FOREST_LAKE_RIM_TUBE_SEGS = 8;   // over the visible HALF of the cross-section
+    // How far the bank wanders, as a fraction of the tube. 0 is the plain
+    // torus this used to be.
+    window.forestLakeRimNoise = 0.22;
+    // How tightly it wanders. Bigger = the wobble repeats over a shorter
+    // stretch of shoreline.
+    window.forestLakeRimNoiseFreq = 0.55;
+    // Half a torus, subdivided, and pushed about.
+    //
+    // TorusGeometry builds the whole tube, and the underside of this one is
+    // buried: the ring is sunk almost a metre so that only the crest and the
+    // outer walk-up show. So half of every cross-section was geometry nobody
+    // could ever see, and the segment budget was being spent on it. Building
+    // the top half only spends the same budget on twice the resolution, which
+    // is what makes the next part worth doing.
+    //
+    // The next part being that it is a perfect ring, and nothing at the edge
+    // of a pond is. Each vertex is pushed in or out by noise, scaled by
+    // sin(v) - which is 0 where the surface meets the ground and 1 at the
+    // crest - so the bank wanders where you can see it and stays welded to
+    // the ground where it meets it. A ring that lifted off the ground would
+    // be a worse artefact than the one being fixed.
+    //
+    // Noise from the same perlin2 the wood is scattered with, sampled on the
+    // lake's own position, so a given lake wobbles the same way every time
+    // the level is built rather than shimmering on rebuild.
+    function buildLakeRimGeo(ringR, tube, flatten, sx, sz) {
+        const segs = Math.max(8, Math.round(FOREST_LAKE_RIM_SEGS));
+        const tsegs = Math.max(2, Math.round(FOREST_LAKE_RIM_TUBE_SEGS));
+        const amt = window.forestLakeRimNoise, freq = window.forestLakeRimNoiseFreq;
+        const pos = [], uvs = [], idx = [];
+        for (let i = 0; i <= segs; i++) {
+            const u = (i / segs) * Math.PI * 2;
+            const cu = Math.cos(u), su = Math.sin(u);
+            for (let j = 0; j <= tsegs; j++) {
+                // 0..PI, not 0..2PI: the top half of the tube.
+                const v = (j / tsegs) * Math.PI;
+                const cv = Math.cos(v), sv = Math.sin(v);
+                // Sampled where this vertex actually IS, so neighbouring
+                // cross-sections agree and the wobble is a shoreline rather
+                // than a ripple across the seams.
+                const wx = sx + (ringR + tube * cv) * cu;
+                const wz = sz + (ringR + tube * cv) * su;
+                const n = perlin2(wx * freq, wz * freq) - 0.5;
+                const push = 1 + n * 2 * amt * sv;
+                const rr = ringR + tube * cv * push;
+                pos.push(rr * cu, rr * su, tube * flatten * sv * push);
+                uvs.push(i / segs, j / tsegs);
+            }
+        }
+        const row = tsegs + 1;
+        for (let i = 0; i < segs; i++) {
+            for (let j = 0; j < tsegs; j++) {
+                const a = i * row + j, b = a + row, c = b + 1, d = a + 1;
+                idx.push(a, b, d, b, c, d);
+            }
+        }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        g.setIndex(idx);
+        // AFTER the displacement, so the lighting follows the shape that was
+        // actually built rather than the ring it started as. This is also why
+        // the flatten is baked into the position above instead of applied as a
+        // scale afterwards - a scale would have to fix up the normals, and
+        // computing them here means there is nothing to fix.
+        g.computeVertexNormals();
+        return g;
+    }
     let forestLakeRimMaterial = null;
     let forestLakeBedMaterial = null;
     let forestLakeBody = null;
@@ -25569,7 +25636,13 @@ export function startGame(CharacterClass) {
         // camera that jumps to the player's shoulder every time a branch
         // crosses the line would be unusable. Those are what the dissolve is
         // genuinely good at - small, many, and expected to be seen through.
-        if (window.cameraCollide) {
+        // ...except while you are hanging. The thing directly in front of the
+        // camera then is the cliff you are HOLDING, so pulling in off it jams
+        // the view into the bark you are gripping and shows nothing else. Same
+        // call the dissolve makes for the same moment and the same reason: on
+        // a ledge, what is between you and the camera is not in the way, it is
+        // the point.
+        if (window.cameraCollide && !window.isClimbing) {
             _camColDir.set(targetCamX - camTarget.x, targetCamY - camTarget.y, targetCamZ - camTarget.z);
             const want = _camColDir.length();
             if (want > 1e-3) {
