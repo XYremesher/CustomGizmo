@@ -16250,12 +16250,12 @@ export function startGame(CharacterClass) {
                 });
             }
         } catch (e) {}
-        // The story-free forest on load, from its own start: the corridor
-        // mouth, with all three recruits still out there to be found.
+        // The LINEAR forest on load, from its own start: the corridor
+        // mouth, with all three recruits still out there to be found along it.
         // window.startLevel overrides this without an edit, and
         // window.forestDebugEnd = true skips ahead to the foot of the stairs
         // with two of them already collected (see forestDebugStartAtEnd).
-        select.value = window.startLevel || 'local_forest_free'; currentLevel = select.value;
+        select.value = window.startLevel || 'local_forest_linear'; currentLevel = select.value;
         buildLevel();
     }
     populateLevelsAndLoad();
@@ -18600,6 +18600,10 @@ export function startGame(CharacterClass) {
     // missing or hidden, which is what the right-hand side does whenever the
     // camera stick is off.
     window.dragDeadZoneRadius = 140;
+    // How far past the movement stick's own edge its dead zone reaches - a
+    // finger's width, so landing beside the ring still counts as reaching for
+    // it rather than starting a camera drag.
+    window.dragDeadZonePad = 25;
     function dragDeadZone(i) {
         const r = window.dragDeadZoneRadius;
         // LEFT follows the movement stick, because that is the control that
@@ -18615,7 +18619,22 @@ export function startGame(CharacterClass) {
             const el = document.getElementById('base-left');
             if (el && el.offsetParent !== null) {
                 const b = el.getBoundingClientRect();
-                return { x: b.left + b.width * 0.5, y: b.top + b.height * 0.5, r };
+                // The stick's OWN radius plus a thumb, not the shared 140.
+                //
+                // 140 against a 120px base is more than twice the control it
+                // is protecting: it reached 80px past the ring on every side,
+                // and the side that matters is UP, into the picture, where it
+                // was eating the bottom-left of the view. Sized off the
+                // element instead, it covers the stick and the width of a
+                // finger either side of it and no more - and it keeps doing
+                // that under body.ui-alt, where the base is a different size,
+                // without a second number to keep in step.
+                //
+                // The right one keeps the flat radius: it is anchored to the
+                // screen corner rather than to a control, so it has no box of
+                // its own to measure.
+                return { x: b.left + b.width * 0.5, y: b.top + b.height * 0.5,
+                         r: b.width * 0.5 + window.dragDeadZonePad };
             }
             return { x: 0, y: window.innerHeight, r };
         }
