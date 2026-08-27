@@ -17402,7 +17402,10 @@ export function startGame(CharacterClass) {
     // there is still visibly something there. Behind these pieces is usually
     // sky, and a wall thinned against bright sky vanishes at a lower amount
     // than one thinned against more world.
-    window.ditherLevelStrength = 0.35;
+    // The same amount the trees use. They are the version of this that
+    // works, so the level's pieces are now the same thing rather than a
+    // quieter cousin of it.
+    window.ditherLevelStrength = 0.98;
     // Whether the level's own big pieces dissolve at all. OFF.
     //
     // The amount has been tuned three times now - 0.98, 0.55, 0.35 - and each
@@ -17423,7 +17426,7 @@ export function startGame(CharacterClass) {
     // registered and still carry their own strength, so this is one live flag
     // to compare the two, and the grass on them comes from the same call that
     // registers them.
-    window.ditherLevelPieces = false;
+    window.ditherLevelPieces = true;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     // 15, up from 7. The dissolve is a readability aid - it exists so you can
@@ -17816,10 +17819,25 @@ export function startGame(CharacterClass) {
             // like a hole.
             const isLevelPiece = !!obj.userData.ditherIsLevelPiece;
             const full = isLevelPiece ? window.ditherLevelStrength : window.ditherStrength;
-            // See ditherLevelPieces. Driven to 0 rather than skipped, so
-            // turning it off fades whatever was mid-dissolve back to solid
-            // instead of snapping it.
-            const wants = obj.userData._ditherHold > 0 && (!isLevelPiece || window.ditherLevelPieces);
+            // ---- Level pieces are armed the way the TREES are ----
+            //
+            // Not by the probe. That is the difference between the two, and it
+            // is the difference you can see: a probed occluder is switched on
+            // when a ray reaches you through it and off when it does not, so
+            // walking past a wide flight of stairs turns the whole thing on
+            // and off as the ray finds an edge - the dissolve arrives in
+            // slabs. The trees never do that because they are simply held on,
+            // and the shader's own circle and depth test decide where anything
+            // is actually discarded. The result follows the camera smoothly
+            // because it IS the camera's own geometry doing the deciding.
+            //
+            // Holding a wall on costs nothing, for the reason the trees'
+            // comment already gives: the shader discards only inside the hole
+            // AND nearer than the player, so a wall you are facing - which is
+            // deeper than you are - never loses a pixel.
+            const wants = isLevelPiece
+                ? (window.ditherLevelPieces && window.ditherHoleEnabled)
+                : obj.userData._ditherHold > 0;
             const blockTarget = wants ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
@@ -18714,6 +18732,22 @@ export function startGame(CharacterClass) {
     window.cameraInsideEnabled = true;
     window.cameraInsideHole = 190;     // radius of the hole, in CSS pixels
     window.cameraInsideFeather = 90;   // ...and how far it fades out over
+    // How dark it goes, and the two cases are not the same case.
+    //
+    // INSIDE something, the view is worthless - there is nothing out there to
+    // preserve, so it goes fully black and the hole is the whole picture.
+    //
+    // Merely OCCLUDED is different and blacking it out was too much: the
+    // camera behind a wall still has a world around it - the sky, the trees,
+    // where you were going - and taking all of that away to hide one wall
+    // costs more than the wall does. A veil keeps your bearings and still
+    // lifts the wall off your face.
+    window.cameraInsideDark = 1.0;
+    // 0 - the dissolve covers this case again now that the level's pieces
+    // are held on like the trees. The veil was standing in for a dither that
+    // was switched off; with it back, two things dimming the same view is one
+    // too many. Raise it if a piece ever turns out not to be dissolving.
+    window.cameraOccludedDark = 0;
     const _camInsideBox = new THREE.Box3();
     const _camInsideVec = new THREE.Vector3();
     let _camInsideCache = null;
@@ -18724,8 +18758,9 @@ export function startGame(CharacterClass) {
         // Occluded is the common case and the box test is the extreme one -
         // being INSIDE something can hide the world without hiding you, so
         // both are asked rather than one standing in for the other.
-        let inside = !!occluded;
-        if (!inside && window.cameraInsideEnabled) {
+        let occludedOnly = !!occluded;
+        let inside = false;
+        if (window.cameraInsideEnabled) {
             if (!_camInsideCache) _camInsideCache = makeNearCache();
             const near = getNearColliders(visionLosList(), cam.position, _camInsideCache);
             for (let i = 0; i < near.length; i++) {
@@ -18735,7 +18770,9 @@ export function startGame(CharacterClass) {
                 if (_camInsideBox.containsPoint(cam.position)) { inside = true; break; }
             }
         }
-        if (inside) {
+        const want = inside ? window.cameraInsideDark
+            : occludedOnly ? window.cameraOccludedDark : 0;
+        if (want > 0) {
             // The hole follows you, so it has to be written every frame it is
             // up - the mask is in CSS pixels, which is what the layer is sized
             // in, so this is the plain projection rather than the buffer-space
@@ -18753,9 +18790,9 @@ export function startGame(CharacterClass) {
         // Only written when it changes - the opacity transition is what fades
         // it, and re-assigning the same value every frame restarts nothing but
         // costs a style write on every one of them.
-        if (inside !== _camInsideOn) {
-            _camInsideOn = inside;
-            _camInsideEl.style.opacity = inside ? '1' : '0';
+        if (want !== _camInsideOn) {
+            _camInsideOn = want;
+            _camInsideEl.style.opacity = String(want);
         }
     }
     // Clears whatever fall the character had accumulated. Level builders call
