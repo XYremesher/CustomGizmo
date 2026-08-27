@@ -18740,6 +18740,7 @@ export function startGame(CharacterClass) {
         { id: 'climb-speed-slider', vId: 'climb-speed-val', func: v => char.updateClimbSpeed(v), fix: 1 },
         { id: 'land-speed-slider', vId: 'land-speed-val', func: v => char.updateLandSpeed(v), fix: 1 },
         { id: 'land-dur-slider', vId: 'land-dur-val', func: v => baseLandingAnimDuration = v },
+        { id: 'compass-pitch-slider', vId: 'compass-pitch-val', func: v => window.compassMaxPitchDeg = v, raw: true },
         { id: 'climb-trans-slider', vId: 'climb-trans-val', func: v => climbTransitionDuration = v },
         { id: 'wall-stop-slider', vId: 'wall-stop-val', func: v => wallStopThreshold = v, fix: 2 },
         { id: 'standup-start-slider', vId: 'standup-start-val', func: v => char.standupStartTime = v },

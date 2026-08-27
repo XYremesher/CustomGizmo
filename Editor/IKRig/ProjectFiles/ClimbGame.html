@@ -1603,7 +1603,13 @@
                     <label><input type="checkbox" id="toggle-ortho-camera"> Orthographic Camera</label><br>
                     <label>Ortho View Size (smaller = more zoomed in): <span id="ortho-zoom-val">10</span></label><br>
                     <input type="range" id="ortho-zoom-slider" min="2" max="30" step="1" value="10" style="width: 100%;"><br>
-                    <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label>
+                    <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label><br>
+                    <!-- How far the needle may tip out of level. 0 is dead
+                         flat; the default keeps enough tilt to say the goal is
+                         above you without the needle standing on end. See
+                         compassMaxPitchDeg in game_js.js. -->
+                    <label>Compass Max Tilt: <span id="compass-pitch-val">22</span>&deg;</label><br>
+                    <input type="range" id="compass-pitch-slider" min="0" max="90" step="1" value="22" style="width: 100%;">
                 </div>
             </div>
 
