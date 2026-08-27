@@ -859,13 +859,14 @@ export function startGame(CharacterClass) {
     // the 3D needle: either, both or neither can be shown.
     window.compass2DEnabled = true;
     const _compassOffset = new THREE.Vector3();
-    // The needle's own tip and centre, projected each frame to give the flat
-    // arrow its angle - see the block that uses them for why it is measured
-    // there rather than at the target.
+    // The needle's forward and the camera's, both read fresh each frame and
+    // flattened onto the ground plane to give the flat arrow its bearing -
+    // see the block that uses them for why it is a bearing and not a
+    // projection.
     const _compassFront = new THREE.Vector3();
-    const _compassCamInv = new THREE.Quaternion();
-    // Last readable arrow angle, held through the frames where the needle
-    // points straight at or away from the camera and has no screen direction.
+    const _compassCamFwd = new THREE.Vector3();
+    // Last readable arrow angle, held through the frames where both flattened
+    // vectors vanish - the camera straight down, or the target overhead.
     let _compassArrowAngle = 0;
     const compassArrowEl = document.getElementById('compass-arrow');
     const compassBackdropEl = document.getElementById('compass-backdrop');
@@ -26193,31 +26194,51 @@ export function startGame(CharacterClass) {
             compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (window.compass2DEnabled) {
-                // The needle's DIRECTION, turned into the camera's frame -
-                // not its two ends projected.
+                // A BEARING in the horizontal plane, not the needle's
+                // appearance on screen.
                 //
-                // Projecting the ends is what this did, and it inverts. The
-                // projected offset between them is two things added together:
-                // the needle's own direction on screen, and a radial term
-                // pulling toward the vanishing point. That second part is
-                // scaled by how far the needle leans in Z - away from you when
-                // the target is ahead, toward you when it is behind - so it
-                // changes SIGN as the target passes you, and with the camera
-                // swung round to the far side it is the part that wins. That
-                // is "the compass is wrong when the camera looks from the
-                // reverse side": not a wrong angle, a mirrored one.
+                // Both earlier versions asked the wrong question. Projecting
+                // the needle's two ends added a radial term that changes sign
+                // as the target passes you, so the arrow mirrored itself when
+                // the camera swung round to the far side. Taking the needle's
+                // direction in camera space dropped that, but then read the
+                // screen-space x and y as if y were "forward" - and y is the
+                // VERTICAL of the screen, not depth. A target dead ahead is
+                // (0, 0, -1) in camera space: x and y are both zero, so the
+                // angle was noise and the arrow froze on its last value. Tip
+                // the camera a little and the tiny leftover y decided
+                // everything - target below eye level meant y < 0 meant
+                // atan2(0, negative) = pi, and the arrow pointed DOWN at
+                // something straight in front of you. That is the whole of
+                // "sometimes right, sometimes wrong", and why tilting the
+                // camera changed the answer.
                 //
-                // Taking the direction alone drops the radial term and keeps
-                // the rest: this is still the 3D needle as seen on screen,
-                // which is why it tracks while the target is in view, without
-                // the artefact that only ever came from perspective.
-                _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion)
-                    .applyQuaternion(_compassCamInv.copy(camera.quaternion).invert());
-                const dx = _compassFront.x, dy = _compassFront.y;
-                // Straight at or away from the camera: both of those are zero
-                // and the angle is noise. Hold the last readable one rather
-                // than letting the arrow spin on the spot.
-                if (dx * dx + dy * dy > 1e-8) _compassArrowAngle = Math.atan2(dx, dy);
+                // A HUD arrow is answering "which way do I turn", which is a
+                // compass bearing: the angle between where the camera faces
+                // and where the target is, both flattened onto the ground.
+                // Flattening is what makes it immune to pitch - looking up,
+                // down or from below cannot change a bearing - and it is the
+                // one reading that stays correct with the target ahead,
+                // behind, or anywhere between.
+                //
+                // Still driven BY the 3D needle: its forward is the direction
+                // its own lookAt worked out, so the two can never disagree and
+                // window.compassTarget keeps working for both.
+                _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion);
+                _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+                const tx = _compassFront.x, tz = _compassFront.z;
+                const fx = _compassCamFwd.x, fz = _compassCamFwd.z;
+                // Camera right, in the ground plane: forward turned -90 about
+                // Y. The arrow's angle is then measured off forward, positive
+                // toward the right, which is the direction CSS rotate() turns.
+                const fwdDot = tx * fx + tz * fz;
+                const rightDot = tx * -fz + tz * fx;
+                // Both flat vectors vanish only if the camera is looking
+                // straight down or the target is directly overhead. Hold the
+                // last readable angle rather than letting the arrow spin.
+                if (fwdDot * fwdDot + rightDot * rightDot > 1e-8) {
+                    _compassArrowAngle = Math.atan2(rightDot, fwdDot);
+                }
                 compassArrowEl.style.transform =
                     `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
             }
