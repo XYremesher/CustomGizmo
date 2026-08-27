@@ -18566,6 +18566,15 @@ export function startGame(CharacterClass) {
     window.cameraCloseStartAngle = 0.7;
     window.cameraMinCloseDistance = 5.0;
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
+    // The camera's own collision - see where it is used. Off restores the
+    // orbit that goes through walls.
+    window.cameraCollide = true;
+    window.cameraCollidePad = 0.4;   // how far short of the surface it stops
+    window.cameraCollideMin = 1.6;   // ...and how close it may ever get to you
+    const _camColRay = new THREE.Raycaster();
+    const _camColDir = new THREE.Vector3();
+    const _camColFrom = new THREE.Vector3();
+    let _camColCache = null;
     // Clears whatever fall the character had accumulated. Level builders call
     // it after placing the spawn, because a build can happen DURING a fall:
     // a level whose geometry loads asynchronously has no collidables at all
@@ -25505,6 +25514,60 @@ export function startGame(CharacterClass) {
         let targetCamX = camTarget.x + horizDist * Math.sin(cameraTheta);
         let targetCamY = Math.max(floorY + 0.5, camTarget.y + cameraRadius * Math.cos(cameraPhi) + 1.5);
         let targetCamZ = camTarget.z + horizDist * Math.cos(cameraTheta);
+
+        // ---- Keep the camera out of the walls ----
+        //
+        // It has never had collision - it orbits at whatever radius the maths
+        // says and goes through whatever is in the way. Everything else in
+        // this file that deals with being unable to see the player is a
+        // workaround for that: the screen-door dissolve, the x-ray ghost, the
+        // blacked-out interior when the camera ends up inside a mesh. Turning
+        // round next to a wall and having the world go dark is the same fact
+        // arriving without any of them being able to help, because the camera
+        // is not behind the wall - it is inside it.
+        //
+        // So: a ray from what the camera is looking at, out along the line it
+        // wants to sit on, and if anything solid is in the way the camera
+        // stops short of it. It is the standard answer and it removes the
+        // cause rather than dressing the symptom.
+        //
+        // TREES ARE EXCLUDED, and that is deliberate. visionLosList is the
+        // list that already drops tree colliders and the practice bag, for the
+        // same reason wanted here: a wood is hundreds of canopies, and a
+        // camera that jumps to the player's shoulder every time a branch
+        // crosses the line would be unusable. Those are what the dissolve is
+        // genuinely good at - small, many, and expected to be seen through.
+        if (window.cameraCollide) {
+            _camColDir.set(targetCamX - camTarget.x, targetCamY - camTarget.y, targetCamZ - camTarget.z);
+            const want = _camColDir.length();
+            if (want > 1e-3) {
+                _camColDir.divideScalar(want);
+                _camColRay.set(_camColFrom.copy(camTarget), _camColDir);
+                _camColRay.far = want;
+                if (!_camColCache) _camColCache = makeNearCache();
+                const hits = _camColRay.intersectObjects(
+                    getNearColliders(visionLosList(), camTarget, _camColCache), false);
+                let hitD = Infinity;
+                for (let i = 0; i < hits.length; i++) {
+                    const ud = hits[i].object.userData;
+                    // Things you are meant to walk through or pick up should
+                    // not drag the camera in either.
+                    if (ud && (ud.isCarryable || ud.isSandbagCollider)) continue;
+                    hitD = hits[i].distance;
+                    break;
+                }
+                if (hitD < want) {
+                    // Short of the surface, never closer than the minimum -
+                    // a camera pinned to the back of the head is its own
+                    // problem, and at that point the dissolve and the ghost
+                    // are still there to cover what is left.
+                    const d = Math.max(window.cameraCollideMin, hitD - window.cameraCollidePad);
+                    targetCamX = camTarget.x + _camColDir.x * d;
+                    targetCamY = camTarget.y + _camColDir.y * d;
+                    targetCamZ = camTarget.z + _camColDir.z * d;
+                }
+            }
+        }
 
         // Village dialogue overrides the normal follow-cam with a fixed
         // two-shot framing (computed in startVillageDialogue) instead of the
