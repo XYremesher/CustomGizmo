@@ -5408,6 +5408,12 @@ export function startGame(CharacterClass) {
         // Dark blue - the heavy. One wound-up knockdown rather than a string.
         { key: 'CompDark', id: 'companion-3', color: 0x1b3fa0,
           retaliateChance: 1.0, punchCount: 1, charge: true, sideOffset: 0 },
+        // The one waiting at the practice bag, a few strides from where you
+        // start. A mid blue between CompBlue's default and CompDark's navy, so
+        // the four of them read as the same crew at four depths rather than as
+        // four unrelated colours.
+        { key: 'CompSky', id: 'companion-4', color: 0x4fa3d9,
+          retaliateChance: 1.0, punchCount: 3, fullCombo: true, sideOffset: 0 },
     ];
     const AI_BOT_SPECS = [
         { key: 'BotYellow', id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] },
@@ -11104,6 +11110,41 @@ export function startGame(CharacterClass) {
         iconRenderer.render(Viewer.scene, iconCamera);
         window.playerIconDataUrl = iconRenderer.domElement.toDataURL('image/png');
         iconRenderer.dispose();
+        // Straight after, off the same loaded model - so the two icons exist
+        // or are missing together rather than one of them depending on a
+        // second thing having happened.
+        generateEnemyIcon();
+    }
+    // ...and the same character in an enemy's orange, for the combo card.
+    //
+    // Rendered off the Viewer's own model rather than off a bot in the level:
+    // generateIconFromObject reparents what it is given, which is fine for a
+    // prop and not fine for a character something is currently driving. The
+    // model is tinted, rendered and put back, so what comes out is the same
+    // figure the player icon is, wearing the colour the orange bot wears.
+    function generateEnemyIcon() {
+        if (!Viewer.scene || !Viewer.playerModel) return;
+        const spec = AI_BOT_SPECS.find(sp => sp.key === 'BotOrange');
+        const color = spec ? spec.color : 0xff7a1a;
+        const restore = [];
+        Viewer.playerModel.traverse(o => {
+            const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+            mats.forEach(m => {
+                if (!m || !m.color) return;
+                restore.push([m, m.color.getHex()]);
+                m.color.setHex(color);
+            });
+        });
+        const iconRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        iconRenderer.setSize(96, 96);
+        iconRenderer.setClearColor(0x000000, 0);
+        const iconCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 10);
+        iconCamera.position.set(2.2, 1.8, 4.2);
+        iconCamera.lookAt(0, 0.9, 0);
+        iconRenderer.render(Viewer.scene, iconCamera);
+        window.enemyIconDataUrl = iconRenderer.domElement.toDataURL('image/png');
+        iconRenderer.dispose();
+        restore.forEach(([m, hex]) => m.color.setHex(hex));
     }
     function openViewer() {
         ensureViewerLoaded();
@@ -11701,6 +11742,21 @@ export function startGame(CharacterClass) {
     // the gap between them, so the pair stays centred on the route whatever
     // this is set to.
     const STORY_PAIR_HALF = 1.8;
+    // How far in front of the corridor mouth the practice bag stands.
+    //
+    // Well short of STORY_FIRST_OFFSET, which is where the first companion
+    // waits: the bag is the first thing you meet, not something you find after
+    // a walk. You come out of the trees and it is right there with someone
+    // standing next to it.
+    const FOREST_BAG_OFFSET = 8;
+    function forestBagPoint() {
+        const [z0, z1] = forestCorridorZ(-1);
+        return { x: forestEntryX() + STORY_PAIR_HALF, z: (z0 + z1) * 0.5 + FOREST_BAG_OFFSET };
+    }
+    // What the one at the bag tells you. The auto-punch is on by default and
+    // nothing said so - you either noticed your character swinging on its own
+    // or you did not.
+    const STORY_AUTOPUNCH_LINE = 'Get close to one and\nyou will swing on your own.';
     // Radius kept clear of trees around that spot. Generous on purpose: the
     // trunk exclusion alone is not enough, because a canopy is a couple of
     // units wide and overhangs from trees standing outside the band - which
@@ -12150,7 +12206,8 @@ export function startGame(CharacterClass) {
             // "wait here" costs no new state: it walks to its own spot, gets
             // there, and idles.
             const m1 = forestMeetPoint(), m2 = forestMeetPoint2();
-            spawnForestSandbag(m1.x + STORY_PAIR_HALF, m1.z);
+            const bag = forestBagPoint();
+            spawnForestSandbag(bag.x, bag.z);
             // Where each sleeping bot ends up, worked out here rather than at
             // the storyPlaceBot calls below because the companion sharing its
             // clearing needs to be turned away from it.
@@ -12203,6 +12260,13 @@ export function startGame(CharacterClass) {
                 // is 140 degrees, i.e. 70 either side of forward, so something
                 // at a full 180 is comfortably outside it and neither wakes up
                 // already fighting.
+                // At the bag, and FIRST in the list so it is the first one
+                // you reach - the order here is the order the lessons come in
+                // (see showFightHint, which wakeNearestSleeper advances).
+                // Its lesson is the bag: collect it, hear what the button
+                // does, and there is something standing there to try it on.
+                { key: 'CompSky', x: bag.x - STORY_PAIR_HALF * 2, y: null, z: bag.z,
+                  say: STORY_AUTOPUNCH_LINE, noWake: true },
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
@@ -12219,11 +12283,12 @@ export function startGame(CharacterClass) {
                 comp.group.position.copy(at);
                 comp.group.rotation.y = yaw;
                 comp.followOverride = at;   // stand here until spoken to
+                comp._recruitLine = sp.say || null;
                 // The beacon marks them as still-uncollected; releasing them
                 // takes it away again, so its presence and followOverride
                 // always agree.
                 attachRecruitBeacon(comp);
-                _freeRecruits.push({ comp, at });
+                _freeRecruits.push({ comp, at, noWake: !!sp.noWake });
             });
             // Every enemy in the level, placed now and asleep. One of them
             // per beat, where that beat happens: the first clearing, the far
@@ -12788,13 +12853,21 @@ export function startGame(CharacterClass) {
     const HINT_ORDER = ['combo', 'charge'];
     let _hintStep = 0;
     const HINT_GIVE_UP = 22.0;
-    function showHintCard(id, html) {
+    function showHintCard(id, html, iconUrl) {
         if (_hintDone[id] || _hintId === id) return;
         const card = document.getElementById('hint-card');
         const text = document.getElementById('hint-text');
         if (!card || !text) return;
         _hintId = id; _hintT = 0;
         text.innerHTML = html;
+        // Who this is for, on the right. The button on the left is what you
+        // press; the figure on the right is what you press it at, which is the
+        // half of "tap again and again" the card could not say before.
+        const icon = document.getElementById('hint-icon');
+        if (icon) {
+            if (iconUrl) { icon.src = iconUrl; icon.style.display = ''; }
+            else { icon.removeAttribute('src'); icon.style.display = 'none'; }
+        }
         // The demo is a different gesture per lesson - a tap for the combo, a
         // hold for the charge - and the class is what selects it.
         card.classList.toggle('charge', id === 'charge');
@@ -12864,7 +12937,8 @@ export function startGame(CharacterClass) {
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
-            '<span class="hint-title">Combo Punch</span>Tap <b>again</b> and <b>again</b>');
+            '<span class="hint-title">Combo Punch</span>Tap <b>again</b> and <b>again</b>',
+            window.enemyIconDataUrl);
     }
     function showChargeHint() {
         _hintChargeFrom = window.chargeLandedCount || 0;
@@ -12928,9 +13002,27 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // A marker over the practice bag, the same triangle a waiting recruit
+    // wears - it means the same thing here, "this one, now". Taken away once
+    // you have actually hit it: bagHitCount only counts punches that CONNECT
+    // (see the sandbag branch in detectMeleeHits), so it comes down when the
+    // lesson has landed rather than when you have swung near it.
+    function updateBagArrow(tSec) {
+        const bag = _forestSandbag;
+        if (!bag || !bag.group) return;
+        const done = (window.bagHitCount || 0) > 0;
+        if (done) {
+            if (bag._beacon) removeRecruitBeacon(bag);
+            return;
+        }
+        if (!bag._beacon) attachRecruitBeacon(bag, 0xffffff);
+        updateRecruitBeacon(bag, tSec);
+    }
     function updateFreeRecruits(delta) {
-        if (!isFreeForest() || !_freeRecruits.length) return;
+        if (!isFreeForest()) return;
         _freeRecruitT += delta || 0;
+        updateBagArrow(_freeRecruitT);
+        if (!_freeRecruits.length) return;
         const p = char.group.position;
         let released = false;
         for (let i = 0; i < _freeRecruits.length; i++) {
@@ -12948,6 +13040,12 @@ export function startGame(CharacterClass) {
             // apart at a distance; once one is yours that distinction has
             // done its job, and a white dot is what marks it as collected.
             setCompanionMarkerColor(r.comp, 0xffffff);
+            // Anything this one was given to say, said now - the moment it
+            // becomes yours is the moment it has your attention.
+            if (r.comp._recruitLine) {
+                storySay(r.comp, r.comp._recruitLine, 'companion');
+                r.comp._recruitLine = null;
+            }
             released = true;
             // Nothing is spawned - the enemy for this beat has been standing
             // in the clearing since the level was built, asleep. It used to be
@@ -12956,7 +13054,19 @@ export function startGame(CharacterClass) {
             // companion could pass with nothing happening at all. Waking the
             // nearest sleeper here ties the two together: you gain someone,
             // and something comes for you.
-            wakeNearestSleeper(r.at);
+            // The one at the bag brings no fight with it. Every other
+            // collection wakes the nearest sleeper - you gain someone and
+            // something comes for you - but this one's whole point is a
+            // stationary target and time to hit it, and the nearest sleeper
+            // to the corridor mouth is the yellow pair fifty units up the
+            // path. Waking them here would put a fight in the middle of the
+            // punch lesson.
+            //
+            // The LESSON still advances, which is why this is not simply a
+            // skip: showFightHint lives inside wakeNearestSleeper precisely so
+            // that collecting a companion always earns the next card, whether
+            // or not there was anything nearby to wake.
+            if (r.noWake) showFightHint(); else wakeNearestSleeper(r.at);
         }
         // Nothing is spawned on reaching the top either - the red one has
         // been standing on that step since the level loaded.
@@ -18686,8 +18796,25 @@ export function startGame(CharacterClass) {
     const RAMP_CLIMB_DRAIN = 3, RAMP_CLIMB_DRAIN_MAX = 8;
 
 
+    // How close to the practice bag jumping is switched off.
+    //
+    // The bag is where punching is taught, and a jump button next to it is the
+    // one other thing to press - so the lesson turns into bouncing off the bag
+    // without landing a punch, which is what it did. Nothing else is taken
+    // away: you can walk off at any time and the button works again.
+    const BAG_NO_JUMP_R = 4.0;
     function handleJump() {
         if (window.dialogueInputLocked) return;
+        if (_forestSandbag && isFreeForest()) {
+            // The collider, not the group: the group sits on the floor and the
+            // bag hangs above it, and measuring to the wrong one is how the
+            // sandbag's own hit test used to disagree with the check guarding
+            // it.
+            const at = _forestSandbag.colliderMesh
+                ? _forestSandbag.colliderMesh.position : _forestSandbag.group.position;
+            const dx = char.group.position.x - at.x, dz = char.group.position.z - at.z;
+            if (dx * dx + dz * dz < BAG_NO_JUMP_R * BAG_NO_JUMP_R) return;
+        }
         if (char.isRagdoll || char.isStandingUp || isSlipping || isClimbingUp) return;
         if (isHoldingMovable) {
             isHoldingMovable = false; heldBox = null; holdBtn.innerText = 'HOLD';

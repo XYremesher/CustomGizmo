@@ -797,7 +797,10 @@
             background: rgba(15,18,22,0.82); border: 1px solid rgba(255,255,255,0.16);
             border-radius: 12px; padding: 10px 14px 10px 10px;
             font-family: monospace; color: #eef2f6; font-size: 16px; line-height: 1.3;
-            max-width: min(70vw, 300px); pointer-events: none;
+            /* Room for three things now, not two - the button, the words
+               and who they are about. At 300 the text column was down to
+               about 180px once the icon took its 44. */
+            max-width: min(78vw, 340px); pointer-events: none;
             opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
         }
         #hint-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -882,6 +885,11 @@
             10%, 100%  { stroke: #ff00ff; }
         }
         #hint-text { flex: 1 1 auto; }
+        /* Sized off the demo button so the card reads as a row of equals:
+           the control, the instruction, the target. */
+        #hint-icon { display: none; flex: 0 0 auto; width: 44px; height: 44px;
+            object-fit: contain; image-rendering: pixelated;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
         #hint-text b { color: #7CFC7C; }
         #hint-card.charge #hint-text b { color: #ff6aff; }
         /* The move's NAME, on its own line above the instruction. Smaller and
@@ -1831,6 +1839,9 @@
             </svg>
         </div>
         <div id="hint-text"></div>
+        <!-- Filled by showHintCard when a card has someone to point at.
+             Hidden by default so a card without one does not leave a gap. -->
+        <img id="hint-icon" alt="">
     </div>
     <!-- The flat compass. Its rotation is written every frame from the 3D
          needle's own projected tip (see game_js.js); src is set from there too,
