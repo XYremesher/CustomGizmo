@@ -11911,6 +11911,15 @@ export function startGame(CharacterClass) {
         return c;
     }
 
+    // How wide the stairs and their landing are.
+    //
+    // In the linear wood they ARE the end of the level: one flight running the
+    // full width of the strip, wall to wall, which is what you walk up to
+    // finish. In the square wood they stay a staircase found along one side of
+    // it, which is a different thing and wants its old width.
+    function forestStairW() {
+        return isLinearForest() ? forestSlabHalfX() * 2 : FOREST_PLATFORM_W;
+    }
     function buildForestExitSteps() {
         const top = forestFrameTopY();
         const mat = _forestBorderMat ||
@@ -11920,12 +11929,26 @@ export function startGame(CharacterClass) {
             box.position.set(cx, h * 0.5, cz);
             box.castShadow = true; box.receiveShadow = true;
             box.updateMatrixWorld(true);
+            // Grass on top and stone down the sides, from the same triplanar
+            // treatment the level's other walkable props get - and dithering
+            // with it, so a flight this wide cannot stand between you and the
+            // camera and simply hide you. makeLevelOccluder clones the
+            // material per box, which is what keeps each one's fade its own;
+            // see the note on it for what sharing one costs.
+            makeLevelOccluder(box, { grass: true });
+            // ...and tufts are planted ON it, the way they are on the forest
+            // floor. Without this the scatter treats every step as an
+            // obstacle - it rejects anything whose underside is lower than a
+            // tuft is tall, and a step sits on the ground - so the stairs came
+            // out as the one bare stone thing in a wood made of grass.
+            box.userData.isGroundSlab = true;
+            box.updateMatrixWorld(true);
             levelGroup.add(box);
             collidables.push(box);
         };
         // The landing, level with the frame top.
         const pz = (forestPlatformZ0() + forestPlatformZ1()) * 0.5;
-        put(FOREST_PLATFORM_W, top, forestPlatformZ1() - forestPlatformZ0(), forestStepX(), pz);
+        put(forestStairW(), top, forestPlatformZ1() - forestPlatformZ0(), forestStepX(), pz);
         // ...and the stairs up to it, marching south from its edge. Each rise
         // is one 3.0 cube - the same block Level 1 is built from, and the same
         // height as the island edges, which is what the player's jump-and-grab
@@ -11945,7 +11968,7 @@ export function startGame(CharacterClass) {
             // - small enough to walk over and large enough that a bot chasing
             // you up them stalled at the first one, since its step-up check
             // finds no ground ahead across a hole.
-            put(FOREST_STEP_SIZE, h, FOREST_STEP_SIZE, forestStepX(),
+            put(forestStairW(), h, FOREST_STEP_SIZE, forestStepX(),
                 forestPlatformZ0() - (steps - i) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5);
         }
         // Laid out in front of where the carry teacher stands, not merely
