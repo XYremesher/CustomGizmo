@@ -12282,8 +12282,12 @@ export function startGame(CharacterClass) {
                 // (see showFightHint, which wakeNearestSleeper advances).
                 // Its lesson is the bag: collect it, hear what the button
                 // does, and there is something standing there to try it on.
-                { key: 'CompSky', x: bag.x - STORY_PAIR_HALF * 2, y: null, z: bag.z,
-                  say: STORY_AUTOPUNCH_LINE, quiet: true },
+                // Within COMP_PUNCH_RANGE (1.9) of the bag, not beside it:
+                // demoTarget is range-gated, so a companion parked further off
+                // would stand there watching. Close enough to swing is the
+                // whole point of where it stands.
+                { key: 'CompSky', x: bag.x - 1.5, y: null, z: bag.z,
+                  say: STORY_AUTOPUNCH_LINE, quiet: true, demoBag: true },
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
@@ -12301,6 +12305,20 @@ export function startGame(CharacterClass) {
                 comp.group.rotation.y = yaw;
                 comp.followOverride = at;   // stand here until spoken to
                 comp._recruitLine = sp.say || null;
+                // Hitting the bag, using the same field the story's own demo
+                // uses. It is a demonstration: it swings at the thing you are
+                // about to be asked to swing at, which says what a paragraph
+                // of text would have to.
+                //
+                // Kept after it joins you rather than cleared on collection -
+                // the story clears it there because its companion is standing
+                // in front of a bag you are being TESTED on, and here nothing
+                // is being tested. So it keeps you company at the bag and
+                // stops when you have landed one yourself (see updateBagArrow).
+                if (sp.demoBag && _forestSandbag) {
+                    comp.demoTarget = { group: _forestSandbag.group, isLoaded: true,
+                                        isRagdoll: false, sandbag: _forestSandbag };
+                }
                 // The beacon marks them as still-uncollected; releasing them
                 // takes it away again, so its presence and followOverride
                 // always agree.
@@ -13027,9 +13045,20 @@ export function startGame(CharacterClass) {
     function updateBagArrow(tSec) {
         const bag = _forestSandbag;
         if (!bag || !bag.group) return;
+        // bagHitCount counts the PLAYER's connecting punches only - the
+        // companion's own swings go through a different path and do not add to
+        // it - so this really is "you have done it", not "something hit it".
         const done = (window.bagHitCount || 0) > 0;
         if (done) {
             if (bag._beacon) removeRecruitBeacon(bag);
+            // The demonstration is over the moment it stops being a
+            // demonstration. Cleared on whoever was given it rather than on a
+            // remembered reference, so it does not matter which companion it
+            // was or whether it has joined you since.
+            for (let i = 0; i < companions.length; i++) {
+                const cm = companions[i].comp;
+                if (cm && cm.demoTarget && cm.demoTarget.sandbag === bag) cm.demoTarget = null;
+            }
             return;
         }
         if (!bag._beacon) attachRecruitBeacon(bag, 0xffffff);
