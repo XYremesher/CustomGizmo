@@ -18718,11 +18718,14 @@ export function startGame(CharacterClass) {
     const _camInsideVec = new THREE.Vector3();
     let _camInsideCache = null;
     let _camInsideEl = null, _camInsideOn = null;
-    function updateCameraInside(cam, playerPoint) {
+    function updateCameraInside(cam, playerPoint, occluded) {
         if (_camInsideEl === null) _camInsideEl = document.getElementById('cam-inside') || false;
         if (!_camInsideEl) return;
-        let inside = false;
-        if (window.cameraInsideEnabled) {
+        // Occluded is the common case and the box test is the extreme one -
+        // being INSIDE something can hide the world without hiding you, so
+        // both are asked rather than one standing in for the other.
+        let inside = !!occluded;
+        if (!inside && window.cameraInsideEnabled) {
             if (!_camInsideCache) _camInsideCache = makeNearCache();
             const near = getNearColliders(visionLosList(), cam.position, _camInsideCache);
             for (let i = 0; i < near.length; i++) {
@@ -25779,7 +25782,6 @@ export function startGame(CharacterClass) {
             camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
             camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
         }
-        updateCameraInside(camera, camTarget);
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
 
@@ -26021,6 +26023,21 @@ export function startGame(CharacterClass) {
             }
         }
         char.setXrayVisible(playerOccluded);
+        // Driven from the SAME answer the ghost is, and that is the point.
+        //
+        // It was gated on the camera being inside a box, which is only the
+        // loudest case. The ordinary one is the camera sitting near the ground
+        // with a rise between it and you: nothing contains the camera, so the
+        // box test said no, and with the dissolve off for level pieces
+        // nothing else covered it either - a screen full of flat green with
+        // your ghost in the middle.
+        //
+        // playerOccluded is already "something solid is hiding the player, and
+        // it is not something that is dissolving to show you" - it skips
+        // occluders whose own dither is up. So a tree in the way still just
+        // dissolves, and the ground, the stairs and the frame wall, which no
+        // longer dissolve at all, get the black instead.
+        updateCameraInside(camera, trackingPoint, playerOccluded);
 
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
