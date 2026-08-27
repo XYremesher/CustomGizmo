@@ -6836,6 +6836,152 @@ export function startGame(CharacterClass) {
 
     // Drives ONE companion - whichever activateCompanion last pointed the
     // module bindings at. updateCompanions is the entry point.
+    // ---- A companion picking a jar up and throwing it ----
+    //
+    // The carry lesson is the only one nobody demonstrates. The other three
+    // are shown without anything being staged, because the companion that
+    // teaches a move is the one that throws it in the fight that follows -
+    // CompBlue carries fullCombo, CompDark carries charge. Nothing in a
+    // companion's repertoire picks anything up, so this is the one that needs
+    // building rather than pairing.
+    //
+    // Deliberately NOT a state machine bolted into updateCompanion's own: this
+    // sets followOverride and lets the existing follow code do the walking,
+    // the same way the bag demonstration does. All it owns is which spot to
+    // walk to, where the jar is while it is held, and when to let go.
+    //
+    // State lives on the COMPANION object rather than in module scalars.
+    // Everything else in here is per-companion via activateCompanion/
+    // saveCompanion, and a scalar that forgets to be plumbed through those is
+    // the oldest bug in this file - fields on the object cannot forget.
+    const COMP_JAR_REACH = 1.7;        // close enough to pick one up
+    const COMP_JAR_LIFT_TIME = 0.55;   // the pick-up itself
+    const COMP_JAR_THROW_AT = 9.0;     // how close it gets before throwing
+    const COMP_JAR_RELEASE = 0.30;     // into the throw clip, when it lets go
+    const COMP_JAR_HOLD_FWD = 0.45, COMP_JAR_HOLD_UP = 1.15;
+    const COMP_JAR_GIVE_UP = 20.0;     // no jar, no target, or simply stuck
+    const _jarHoldVec = new THREE.Vector3();
+    function companionJarTarget() {
+        let best = null, bestD = Infinity;
+        for (let i = 0; i < aiBots.length; i++) {
+            const b = aiBots[i].bot;
+            if (!b || !b.isLoaded || b.isRagdoll || b.dormant || b.knockedOutT > 0) continue;
+            const d = companion.group.position.distanceToSquared(b.group.position);
+            if (d < bestD) { bestD = d; best = b; }
+        }
+        return best;
+    }
+    function companionFreeJar() {
+        let best = null, bestD = Infinity;
+        for (let i = 0; i < carryables.length; i++) {
+            const c = carryables[i];
+            if (!c.mesh || c.isCarried || c.mesh === heldCarryable) continue;
+            if (!c.mesh.userData.isJar) continue;
+            const d = companion.group.position.distanceToSquared(c.mesh.position);
+            if (d < bestD) { bestD = d; best = c; }
+        }
+        return best;
+    }
+    function endCompanionJar(drop) {
+        if (drop && companion._jarObj) {
+            companion._jarObj.isCarried = false;
+            companion._jarObj.wasThrown = false;
+        }
+        companion._jarPhase = null;
+        companion._jarObj = null;
+        companion.followOverride = null;
+    }
+    function updateCompanionJar(delta) {
+        if (!companion._jarPhase) return;
+        companion._jarT = (companion._jarT || 0) + delta;
+        if (companion._jarT > COMP_JAR_GIVE_UP) { endCompanionJar(true); return; }
+        const c = companion.group.position;
+        if (!companion._jarSpot) companion._jarSpot = new THREE.Vector3();
+
+        if (companion._jarPhase === 'seek') {
+            const jar = companion._jarObj || companionFreeJar();
+            if (!jar) { endCompanionJar(false); return; }
+            companion._jarObj = jar;
+            companion._jarSpot.copy(jar.mesh.position);
+            companion.followOverride = companion._jarSpot;
+            if (c.distanceTo(jar.mesh.position) < COMP_JAR_REACH) {
+                // Taken out of the world's hands the same way the player's
+                // pickup does it: isCarried is what stops the physics step
+                // touching it, so from here its position is ours to write.
+                jar.isCarried = true;
+                jar.velocity.set(0, 0, 0);
+                companion._jarPhase = 'lift';
+                companion._jarT = 0;
+            }
+            return;
+        }
+
+        // Held: carried in front of the chest. Not on a hand bone - the hand
+        // is driven by whichever locomotion clip is playing and a jar welded
+        // to it swings through the body on every step. In front of the chest
+        // is where the carry pose puts it anyway.
+        if (companion._jarObj) {
+            _jarHoldVec.set(0, 0, 1).applyQuaternion(companion.group.quaternion);
+            companion._jarObj.mesh.position.copy(c)
+                .addScaledVector(_jarHoldVec, COMP_JAR_HOLD_FWD)
+                .setY(c.y + COMP_JAR_HOLD_UP);
+        }
+
+        if (companion._jarPhase === 'lift') {
+            companion.followOverride = companion._jarSpot;   // stand still and lift
+            if (companion._jarT >= COMP_JAR_LIFT_TIME) {
+                companion._jarPhase = 'aim';
+                companion._jarT = 0;
+            }
+            return;
+        }
+
+        if (companion._jarPhase === 'aim') {
+            const t = companionJarTarget();
+            if (!t) { endCompanionJar(true); return; }
+            companion._jarTarget = t;
+            const tp = t.group.position;
+            // Walks to a spot short of it rather than to it - a thrown jar
+            // wants some distance to travel, and walking into the target would
+            // make this a punch with extra steps.
+            _jarHoldVec.subVectors(c, tp).setY(0);
+            if (_jarHoldVec.lengthSq() < 1e-6) _jarHoldVec.set(0, 0, 1);
+            _jarHoldVec.normalize().multiplyScalar(COMP_JAR_THROW_AT * 0.8);
+            companion._jarSpot.copy(tp).add(_jarHoldVec).setY(c.y);
+            companion.followOverride = companion._jarSpot;
+            if (c.distanceTo(tp) <= COMP_JAR_THROW_AT) {
+                companion._jarPhase = 'throw';
+                companion._jarT = 0;
+            }
+            return;
+        }
+
+        if (companion._jarPhase === 'throw') {
+            // Planted for the throw - followOverride at its own feet is how
+            // everything else here says "stay put".
+            companion._jarSpot.copy(c);
+            companion.followOverride = companion._jarSpot;
+            if (companion._jarT < COMP_JAR_RELEASE) return;
+            const jar = companion._jarObj;
+            const t = companion._jarTarget;
+            if (jar && t && t.isLoaded) {
+                // The player's own launch numbers, so the arc is the one you
+                // are about to be asked to copy rather than a second set that
+                // looks different.
+                _jarHoldVec.subVectors(t.group.position, jar.mesh.position).setY(0);
+                if (_jarHoldVec.lengthSq() < 1e-6) _jarHoldVec.set(0, 0, 1);
+                _jarHoldVec.normalize();
+                jar.isCarried = false;
+                jar.wasThrown = true;
+                jar.throwOwnerId = null;
+                jar.velocity.copy(_jarHoldVec)
+                    .multiplyScalar(window.throwHorizontalSpeed)
+                    .setY(window.throwVerticalSpeed);
+            }
+            endCompanionJar(false);
+            return;
+        }
+    }
     function updateCompanion(delta) {
         if (!companion) return;
         if (!companion.isLoaded) { companion.update(delta); return; }
@@ -6853,6 +6999,15 @@ export function startGame(CharacterClass) {
         // drives the BONES rather than the group, so the dot would sit at a
         // stale spot on the ground with nobody standing on it.
         if (companion.marker) companion.marker.visible = !companion.isRagdoll && !companion.isStandingUp;
+        // Before the branches below, all of which return: this only sets a
+        // destination and moves a held jar, so it has to run whatever else the
+        // companion is doing - and it has to stop if that turns into a
+        // knockdown.
+        if (companion.isRagdoll || companion.isStandingUp) {
+            if (companion._jarPhase) endCompanionJar(true);
+        } else {
+            updateCompanionJar(delta);
+        }
         // Knocked out of a swing - drop it. The branches below return before
         // `_compPunchT += delta` ever runs, so an attack left standing here is
         // frozen at whatever frame it was on and can never reach totalDur to
@@ -8431,6 +8586,11 @@ export function startGame(CharacterClass) {
         _compFaceQuat.setFromEuler(_compFaceEuler);
         let st = companionLocoState(movedH, delta);
         st = strafeStateFor(st, _compFaceQuat, movedX, movedZ);
+        // Holding one overrides the gait: there is no carry-walk clip, so the
+        // carry pose is played while it moves. Wrong feet is a smaller lie
+        // than empty hands.
+        if (companion._jarPhase === 'lift' || companion._jarPhase === 'aim') st = 'carry';
+        else if (companion._jarPhase === 'throw') st = 'throw';
         companion.group.position.set(nx, ny, nz);
         companion.setNetworkState([nx, ny, nz], [_compFaceQuat.x, _compFaceQuat.y, _compFaceQuat.z, _compFaceQuat.w], st, false);
         drawCompanionPath(tgx, tgz, movedX, movedZ);
@@ -12500,8 +12660,12 @@ export function startGame(CharacterClass) {
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z,
                   awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
+                // The carry lesson's own demonstration - it goes and does
+                // the thing the card describes. It lands on this one because
+                // this is the companion the carry card arrives with, and the
+                // jars and the last enemy are both on this landing already.
                 { key: 'CompPale', x: forestExitX() + 4.0, y: forestFrameTopY(),
-                  z: (forestPlatformZ0() + forestPlatformZ1()) * 0.5 },
+                  z: (forestPlatformZ0() + forestPlatformZ1()) * 0.5, demoJar: true },
             ];
             _freeRecruits = [];
             spots.forEach(sp => {
@@ -12533,7 +12697,8 @@ export function startGame(CharacterClass) {
                 // takes it away again, so its presence and followOverride
                 // always agree.
                 attachRecruitBeacon(comp);
-                _freeRecruits.push({ comp, at, quiet: !!sp.quiet, unlock: sp.unlock || null });
+                _freeRecruits.push({ comp, at, quiet: !!sp.quiet, unlock: sp.unlock || null,
+                                     demoJar: !!sp.demoJar });
             });
             // Every enemy in the level, placed now and asleep. One of them
             // per beat, where that beat happens: the first clearing, the far
@@ -13508,6 +13673,8 @@ export function startGame(CharacterClass) {
             // Whatever control this one carries. Named on the spot rather
             // than worked out from what it says or which key it is, so moving
             // a lesson between companions is one word in one place.
+            // Off to find a jar, if this is the one that teaches carrying.
+            if (r.demoJar) { r.comp._jarPhase = 'seek'; r.comp._jarT = 0; }
             if (r.unlock === 'punch') window.punchButtonEnabled = true;
             if (r.unlock === 'jump') window.jumpButtonEnabled = true;
             // ...and anything THIS one was given to say, said now - the moment
