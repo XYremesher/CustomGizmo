@@ -12426,10 +12426,7 @@ export function startGame(CharacterClass) {
             // camera and simply hide you. makeLevelOccluder clones the
             // material per box, which is what keeps each one's fade its own;
             // see the note on it for what sharing one costs.
-            makeLevelOccluder(box, { grass: true });
-            // Same reason as the frame wall's: at the block strength a step
-            // this wide does not read as dissolving, it reads as missing.
-            box.userData.ditherIsLevelPiece = true;
+            makeLevelOccluder(box, { grass: true, levelPiece: true });
             // ...and tufts are planted ON it, the way they are on the forest
             // floor. Without this the scatter treats every step as an
             // obstacle - it rejects anything whose underside is lower than a
@@ -14649,9 +14646,8 @@ export function startGame(CharacterClass) {
                 // you and the camera. ditherByMesh because its bounding box is
                 // the whole level, and the gentler strength because a wall
                 // that vanishes is a hole in the world rather than a window.
-                makeLevelOccluder(inst, { grass: true });
+                makeLevelOccluder(inst, { grass: true, levelPiece: true });
                 inst.userData.ditherByMesh = true;
-                inst.userData.ditherIsLevelPiece = true;
                 return inst;
             };
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
@@ -16534,6 +16530,25 @@ export function startGame(CharacterClass) {
     // one's turn came last in that frame's loop would win, stomping every
     // other object using that material. A per-mesh clone gives each one an
     // independent uniform so they fade in/out on their own.
+    // A smaller hole, for the level's own pieces.
+    //
+    // The shared 320 is sized for "cut a window I can find myself in", which
+    // is right for a tree - the wood closes back up behind it. Cut that window
+    // in the staircase you are standing on and most of what goes is floor
+    // beside you rather than anything covering you: the hole is a wide circle
+    // centred on your screen position, and the steps below and in front of you
+    // fall inside it while hiding nothing.
+    //
+    // Sized to a body instead. What has to go is what is actually drawn over
+    // you, plus enough margin to see the edges of yourself.
+    window.ditherLevelHoleRadius = 120;
+    const _ditherLevelRadiusUniform = { value: window.ditherLevelHoleRadius };
+    // Declared HERE rather than beside the other dither uniforms further
+    // down, because makeLevelOccluder READS it when it dresses a mesh - and
+    // that happens during the first level build, which runs from inside
+    // startGame's own body. A `const` declared after that point is still in
+    // its dead zone when the stairs are built, and reading it would throw
+    // before the game drew a frame.
     function makeLevelOccluder(mesh, opts) {
         mesh.material = mesh.material.clone();
         // The clone starts from scratch, whatever the source had.
@@ -16562,6 +16577,16 @@ export function startGame(CharacterClass) {
         // onBeforeCompile across, so anything applied to the source material
         // would be silently lost here.
         if (opts && opts.grass) applyTriplanarGrass(mesh.material);
+        // BEFORE makeDitherable, which reads it when it builds the shader.
+        // Set on the material rather than the mesh because that is what the
+        // shader is compiled from, and set here rather than at the call sites
+        // because this is the one place a level piece is dressed - the flag on
+        // the mesh and the uniform on its material would otherwise be two
+        // things to remember.
+        if (opts && opts.levelPiece) {
+            mesh.userData.ditherIsLevelPiece = true;
+            mesh.material.userData.ditherRadiusUniform = _ditherLevelRadiusUniform;
+        }
         makeDitherable(mesh.material);
         ditherOccluders.push(mesh);
         return mesh;
@@ -17402,10 +17427,11 @@ export function startGame(CharacterClass) {
     // there is still visibly something there. Behind these pieces is usually
     // sky, and a wall thinned against bright sky vanishes at a lower amount
     // than one thinned against more world.
-    // The same amount the trees use. They are the version of this that
-    // works, so the level's pieces are now the same thing rather than a
-    // quieter cousin of it.
-    window.ditherLevelStrength = 0.98;
+    // Gentler than the trees' 0.98. A tree at 0.98 reads as gone, which is
+    // what you want from a tree; a staircase at 0.98 reads as a hole in the
+    // world. 0.7 leaves enough of the surface to be seen through rather than
+    // seen past.
+    window.ditherLevelStrength = 0.7;
     // Whether the level's own big pieces dissolve at all. OFF.
     //
     // The amount has been tuned three times now - 0.98, 0.55, 0.35 - and each
@@ -17495,7 +17521,8 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherAmount = uniform;
             shader.uniforms.uDitherScreen = _ditherScreenUniform;
             shader.uniforms.uDitherPlayerDepth = _ditherDepthUniform;
-            shader.uniforms.uDitherRadius = _ditherRadiusUniform;
+            shader.uniforms.uDitherRadius =
+                material.userData.ditherRadiusUniform || _ditherRadiusUniform;
             shader.uniforms.uDitherFeather = _ditherFeatherUniform;
             shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
             shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
@@ -17623,6 +17650,7 @@ export function startGame(CharacterClass) {
         // camera, not straight-line distance to it.
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
         _ditherRadiusUniform.value = window.ditherHoleRadius * bufferScale / pixelDiv;
+        _ditherLevelRadiusUniform.value = window.ditherLevelHoleRadius * bufferScale / pixelDiv;
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
@@ -17837,24 +17865,27 @@ export function startGame(CharacterClass) {
             // like a hole.
             const isLevelPiece = !!obj.userData.ditherIsLevelPiece;
             const full = isLevelPiece ? window.ditherLevelStrength : window.ditherStrength;
-            // ---- Level pieces are armed the way the TREES are ----
+            // ---- Why level pieces CANNOT be armed the way trees are ----
             //
-            // Not by the probe. That is the difference between the two, and it
-            // is the difference you can see: a probed occluder is switched on
-            // when a ray reaches you through it and off when it does not, so
-            // walking past a wide flight of stairs turns the whole thing on
-            // and off as the ray finds an edge - the dissolve arrives in
-            // slabs. The trees never do that because they are simply held on,
-            // and the shader's own circle and depth test decide where anything
-            // is actually discarded. The result follows the camera smoothly
-            // because it IS the camera's own geometry doing the deciding.
+            // Tried, and it is worse. Held on, the shader's own rule decides
+            // everything - discard what is inside the hole and nearer than the
+            // player - and for a tree that rule is exactly right, because a
+            // tree nearer than you is genuinely between you and the camera.
             //
-            // Holding a wall on costs nothing, for the reason the trees'
-            // comment already gives: the shader discards only inside the hole
-            // AND nearer than the player, so a wall you are facing - which is
-            // deeper than you are - never loses a pixel.
+            // You stand ON these. The near edge of the flight you are climbing
+            // is nearer to the camera than you are, every frame, without ever
+            // hiding you - so held on, the stairs dissolve out from under your
+            // feet. That is the whole difference between the two cases and it
+            // is not a tuning one: no amount is right, because the rule is
+            // answering a question the geometry cannot ask. Trees are never
+            // underfoot.
+            //
+            // So the probe stays. It is coarser - it decides for a whole mesh
+            // at a time, which is what makes a wide flight arrive in slabs -
+            // but it is answering the right question: is this actually
+            // covering the player.
             const wants = isLevelPiece
-                ? (window.ditherLevelPieces && window.ditherHoleEnabled)
+                ? (window.ditherLevelPieces && obj.userData._ditherHold > 0)
                 : obj.userData._ditherHold > 0;
             const blockTarget = wants ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
@@ -18765,7 +18796,11 @@ export function startGame(CharacterClass) {
     // are held on like the trees. The veil was standing in for a dither that
     // was switched off; with it back, two things dimming the same view is one
     // too many. Raise it if a piece ever turns out not to be dissolving.
-    window.cameraOccludedDark = 0;
+    // Back on, low. The probe decides a whole mesh at a time, so there are
+    // moments where something is genuinely in the way and the dissolve has not
+    // caught it - a thin veil covers those without competing with the
+    // dissolve when it does. 0 to switch it off.
+    window.cameraOccludedDark = 0.35;
     const _camInsideBox = new THREE.Box3();
     const _camInsideVec = new THREE.Vector3();
     let _camInsideCache = null;
