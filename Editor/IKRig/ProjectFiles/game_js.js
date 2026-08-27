@@ -8477,6 +8477,24 @@ export function startGame(CharacterClass) {
     // right where you are looking". A tree behind or beside you never loses a
     // pixel.
     const ditherAlwaysOnMats = [];
+    // ...and materials held armed WITHOUT that probe.
+    //
+    // The frame wall is instanced exactly like the trees - one mesh for the
+    // whole ring - so it has the same problem: there is no per-block material
+    // to raise and lower, and no useful bounding box either, since one
+    // InstancedMesh reports a single box covering the entire level. So it
+    // takes the trees' solution, holding the amount at full and letting the
+    // shader's own screen-circle and depth test decide where anything is
+    // discarded.
+    //
+    // Its own list rather than ditherAlwaysOnMats, because that one is driven
+    // by whether a TREE is judged to be occluding you. A wall is not a tree,
+    // and gating it on the tree probe would leave it solid in exactly the
+    // place it matters - a corner of the level with no trees in it. Holding it
+    // armed is as correct as holding the trees armed, and for the same stated
+    // reason: the shader only discards inside the hole AND in front of the
+    // player, so a wall behind or beside you never loses a pixel.
+    const ditherArmedMats = [];
     const villageLoader = new GLTFLoader();
     const onVillageLoaded = (gltf) => {
         villageScene = gltf.scene;
@@ -13779,15 +13797,32 @@ export function startGame(CharacterClass) {
         {
             const step = FOREST_BORDER_BLOCK;
             const top = FOREST_BORDER_HEIGHT;
+            // The same build as the stairs: grey stone with grass projected
+            // onto whatever faces up. buildForestExitSteps takes this very
+            // material and adds applyTriplanarGrass to its own clone, so
+            // doing it here is what makes the frame and the flight at the end
+            // of the level read as the same stuff rather than as two greys.
+            //
+            // ...and ditherable with it, held armed - see ditherArmedMats for
+            // why the wall cannot use the per-object occluder path the stairs
+            // use. Registered once, guarded by the same _forestBorderMat null
+            // check that builds them, so rebuilding the level does not stack
+            // duplicate entries in that list.
             if (!_forestBorderMat) {
                 _forestBorderMat = new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
+                applyTriplanarGrass(_forestBorderMat);
+                makeDitherable(_forestBorderMat);
+                ditherArmedMats.push(_forestBorderMat);
             }
-            // Grass projected onto the caps, the same triplanar treatment the
-            // Level 1 blocks get - so the tops read as earth with grass rather
-            // than as painted grey.
+            // The cap keeps its warmer earth base under the grass - it is the
+            // soil the wall's own trees are planted in, and grey soil under a
+            // grass line reads as painted stone. Same treatment, different
+            // ground colour.
             if (!_forestBorderCapMat) {
                 _forestBorderCapMat = new THREE.MeshToonMaterial({ color: 0xa89880, gradientMap: threeTone });
                 applyTriplanarGrass(_forestBorderCapMat);
+                makeDitherable(_forestBorderCapMat);
+                ditherArmedMats.push(_forestBorderCapMat);
             }
             const spots = [];
             forestBorderLayout((bx, bz) => spots.push([bx, bz]));
@@ -15622,6 +15657,25 @@ export function startGame(CharacterClass) {
     // independent uniform so they fade in/out on their own.
     function makeLevelOccluder(mesh, opts) {
         mesh.material = mesh.material.clone();
+        // The clone starts from scratch, whatever the source had.
+        //
+        // Material.clone() copies userData but NOT onBeforeCompile - so a
+        // source material that has already been through applyTriplanarGrass or
+        // makeDitherable hands the clone their MARKERS without their shaders.
+        // Both functions then see the marker, decide the work is done and
+        // return, and the clone silently ends up with neither the grass nor
+        // the dissolve. It is invisible until someone gives the source
+        // material one of those treatments - which is exactly what happened
+        // when the frame wall's material, the same object the stairs clone
+        // from, was given both.
+        //
+        // Clearing the markers is what makes this helper independent of what
+        // has been done to its input. The uniform goes with them: a copied
+        // ditherUniform is a different object from the one in the driver's
+        // list, so it would never be written to anyway.
+        mesh.material.userData.hasTriplanarGrass = false;
+        mesh.material.userData.ditherUniform = undefined;
+        mesh.material.userData.triInsideUniform = undefined;
         // BEFORE makeDitherable, and on the CLONE rather than on the shared
         // platMat. Both of these chain onBeforeCompile using the same
         // replace-the-include-and-re-insert-it pattern, so they stack in
@@ -16799,6 +16853,11 @@ export function startGame(CharacterClass) {
         for (let i = 0; i < ditherAlwaysOnMats.length; i++) {
             const m = ditherAlwaysOnMats[i];
             if (m.userData.ditherUniform) m.userData.ditherUniform.value = _ditherTreeAmount;
+        }
+        const armed = window.ditherHoleEnabled ? window.ditherStrength : 0;
+        for (let i = 0; i < ditherArmedMats.length; i++) {
+            const m = ditherArmedMats[i];
+            if (m.userData.ditherUniform) m.userData.ditherUniform.value = armed;
         }
         for (let i = 0; i < ditherOccluders.length; i++) {
             const obj = ditherOccluders[i];
