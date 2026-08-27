@@ -13097,6 +13097,11 @@ export function startGame(CharacterClass) {
     // second companion means second lesson no matter what else has happened.
     // Three lessons, one per companion that arrives with something to fight -
     // the one at the bag is quiet and hands over none of them.
+    // How much of the button and the icon hang outside the panel, as a
+    // fraction of their own width. They are the two widest things on the card
+    // and neither is words, so keeping them out of the panel is what lets it
+    // be as narrow as the sentence it is holding.
+    const HINT_OVERHANG = 0.6;
     const HINT_ORDER = ['combo', 'charge', 'carry'];
     let _hintStep = 0;
     const HINT_GIVE_UP = 22.0;
@@ -13112,6 +13117,11 @@ export function startGame(CharacterClass) {
         // half of "tap again and again" the card could not say before.
         const icon = document.getElementById('hint-icon');
         if (icon) {
+            // The same overhang on the other side, off its own width - the
+            // icon is a fixed 44 in the CSS, so this is read back rather than
+            // assumed in case that changes.
+            const iw = icon.getBoundingClientRect().width || 44;
+            icon.style.marginRight = (-iw * HINT_OVERHANG) + 'px';
             if (iconUrl) { icon.src = iconUrl; icon.style.display = ''; }
             else { icon.removeAttribute('src'); icon.style.display = 'none'; }
         }
@@ -13150,6 +13160,17 @@ export function startGame(CharacterClass) {
             const b = realBtn.getBoundingClientRect();
             const w = b.width || 64;
             demo.style.width = demo.style.height = w + 'px';   // border-box, see the CSS
+            // Hung off the left edge rather than sitting inside the panel.
+            //
+            // A negative margin, not absolute positioning: the demo's own
+            // animations drive `transform` (see hint-tap and hint-hold), so
+            // anything that needs a transform to place it would be wiped out
+            // by the press it is trying to show. A margin is untouched by
+            // them.
+            //
+            // 0.6 of its width outside, which leaves enough of it overlapping
+            // to read as attached to the card rather than floating beside it.
+            demo.style.marginLeft = (-w * HINT_OVERHANG) + 'px';
             const rs = realSvg ? realSvg.getBoundingClientRect() : null;
             const ring = rs && rs.width ? rs.width : w + 12;
             svg.style.width = svg.style.height = ring + 'px';
@@ -13220,7 +13241,7 @@ export function startGame(CharacterClass) {
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
-            '<span class="hint-title">Combo Punch</span>Tap <b>again</b> and <b>again</b>',
+            '<span class="hint-title">Combo Punch</span>Keep <b>tapping</b>',
             window.enemyIconDataUrl);
     }
     function showChargeHint() {
@@ -13254,7 +13275,7 @@ export function startGame(CharacterClass) {
     let _wasCarrying = false;
     function showThrowHint() {
         showHintCard('throw',
-            '<span class="hint-title">Throw</span>Tap to <b>throw</b> it',
+            '<span class="hint-title">Throw</span>Tap to <b>throw</b>',
             null, { fromBtn: 'throw-btn' });
     }
     // The compass, as a card rather than as a line over a companion's head.
@@ -13271,7 +13292,7 @@ export function startGame(CharacterClass) {
     // is a reminder, not a test.
     function showCompassHint() {
         showHintCard('compass',
-            '<span class="hint-title">Compass</span>Follow the <b>yellow</b> end',
+            '<span class="hint-title">Compass</span>Follow the <b>yellow</b>',
             window.compassIconDataUrl, { noDemo: true });
     }
     // For looking at either card without having to earn it first - the charge

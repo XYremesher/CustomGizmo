@@ -797,10 +797,14 @@
             background: rgba(15,18,22,0.82); border: 1px solid rgba(255,255,255,0.16);
             border-radius: 12px; padding: 10px 14px 10px 10px;
             font-family: monospace; color: #eef2f6; font-size: 16px; line-height: 1.3;
-            /* Room for three things now, not two - the button, the words
-               and who they are about. At 300 the text column was down to
-               about 180px once the icon took its 44. */
-            max-width: min(78vw, 340px); pointer-events: none;
+            /* Sized to its WORDS, and only its words.
+               The button and the icon hang off the ends (see the negative
+               margins written from JS), so neither takes any of the panel's
+               width - which is what lets it shrink to two short lines instead
+               of being a wide bar with a lot of dark in it.
+               No max-width to fight the nowrap below: the strings are short by
+               design and the card is as wide as the longest of them. */
+            pointer-events: none;
             opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
         }
         #hint-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -895,9 +899,15 @@
             0%, 9.9%   { stroke: #888888; }
             10%, 100%  { stroke: #ff00ff; }
         }
-        #hint-text { flex: 1 1 auto; }
+        /* Two lines, always: the name of the move and what to do. nowrap is
+           what guarantees the second one - without it a narrow panel wraps
+           "Tap again and again" onto a third line and the card grows back the
+           height it just saved. The strings are written short to suit it. */
+        #hint-text { flex: 0 0 auto; white-space: nowrap; }
         /* Sized off the demo button so the card reads as a row of equals:
            the control, the instruction, the target. */
+        /* Hangs off the right the way the demo hangs off the left - its
+           margin is written from JS for the same reason the demo's is. */
         #hint-icon { display: none; flex: 0 0 auto; width: 44px; height: 44px;
             object-fit: contain; image-rendering: pixelated;
             filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6)); }
