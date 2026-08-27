@@ -13485,7 +13485,6 @@ export function startGame(CharacterClass) {
         updateBagArrow(_freeRecruitT, delta);
         if (!_freeRecruits.length) return;
         const p = char.group.position;
-        let released = false;
         for (let i = 0; i < _freeRecruits.length; i++) {
             const r = _freeRecruits[i];
             if (!r.comp || !r.comp.followOverride) continue;
@@ -13517,7 +13516,6 @@ export function startGame(CharacterClass) {
                 storySay(r.comp, r.comp._recruitLine, 'companion');
                 r.comp._recruitLine = null;
             }
-            released = true;
             // Nothing is spawned - the enemy for this beat has been standing
             // in the clearing since the level was built, asleep. It used to be
             // left to notice you on its own, but enemyWakeRange is 16 and a
@@ -13541,10 +13539,22 @@ export function startGame(CharacterClass) {
         }
         // Nothing is spawned on reaching the top either - the red one has
         // been standing on that step since the level loaded.
-        if (released) {
-            const next = _freeRecruits.find(o => o.comp && o.comp.followOverride);
-            window.compassTarget = next ? next.at : (star.visible ? star.position : null);
-        }
+        //
+        // ---- Where the compass points ----
+        //
+        // Worked out EVERY FRAME rather than written once when a companion is
+        // collected. Set on the event, it is right only if every path that can
+        // change who is still waiting remembers to update it - and it was
+        // already being written from six other places in this file, any one of
+        // which lands after this one and leaves the needle on the goal while
+        // somebody is still standing there waiting to be found.
+        //
+        // Derived, it cannot be stale: the first recruit still waiting, and
+        // the goal once there are none. isWaitingRecruit is the same flag the
+        // bots read to decide who is not a target yet, so "who am I being sent
+        // to" and "who is not in the fight yet" cannot disagree.
+        const next = _freeRecruits.find(o => o.comp && o.comp.isWaitingRecruit);
+        window.compassTarget = next ? next.at : (star.visible ? star.position : null);
     }
 
     function updateForestStory(delta) {
