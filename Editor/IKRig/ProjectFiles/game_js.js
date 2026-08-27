@@ -4191,6 +4191,25 @@ export function startGame(CharacterClass) {
         // loops kept coming from. Nothing about a fight has anywhere useful to
         // put a body that is hanging off a ledge.
         if (v !== char && companionIsClimbing(v)) return false;
+        // A recruit you have not collected yet is not a target.
+        //
+        // They are real companions from the moment the level is built - that
+        // is what makes them idle and foot-plant properly while they wait - so
+        // every bot's victim scan was finding them. The one at the top of the
+        // stairs is a companion standing in the open thirty units away, so a
+        // bot woken at the charge fight would pick it and set off up the
+        // level, past you, at somebody who is not in the fight and cannot
+        // fight back.
+        //
+        // Distance makes that more likely rather than less: the sight line is
+        // only cast within VISION_LOS_MAX, and past that the test passes on
+        // the grounds that nobody is going to act on something that far away -
+        // which is exactly what this was acting on.
+        //
+        // Its own flag rather than followOverride, which is also set on a
+        // companion of yours being rescued and on the one demonstrating at the
+        // bag; neither of those should stop being a target.
+        if (v !== char && v.isWaitingRecruit) return false;
         // A companion that has not loaded yet, or is switched off, is not
         // something to walk over to and punch.
         if (v !== char) return v.isLoaded && v.group.visible;
@@ -5335,7 +5354,15 @@ export function startGame(CharacterClass) {
         }
     }
     function removeRecruitBeacon(comp) {
-        if (!comp || !comp._beacon) return;
+        if (!comp) return;
+        // Cleared here rather than at each release site. The beacon and "still
+        // waiting" mean the same thing and are already kept together - the
+        // hail bubble hangs off this same pair - and there are three places a
+        // recruit can be let go from, which is three chances for one of them
+        // to forget. Harmless on the downed-companion beacon, which never sets
+        // it.
+        comp.isWaitingRecruit = false;
+        if (!comp._beacon) return;
         comp._beacon.traverse(o => {
             if (o.geometry) o.geometry.dispose();
             if (o.material) o.material.dispose();
@@ -12030,6 +12057,7 @@ export function startGame(CharacterClass) {
         // longer exists.
         companions.forEach(r => {
             r.comp.followOverride = null; r.comp.demoTarget = null; r.comp._riverTeaching = false;
+            r.comp.isWaitingRecruit = false;
         });
         removeWorldLabel(_riverBubble); _riverBubble = null;
         // Everyone the story hands out goes away again, so re-entering the
@@ -12469,6 +12497,7 @@ export function startGame(CharacterClass) {
                 comp.group.position.copy(at);
                 comp.group.rotation.y = yaw;
                 comp.followOverride = at;   // stand here until spoken to
+                comp.isWaitingRecruit = true;   // ...and not a target until then
                 comp._recruitLine = sp.say || null;
                 // Hitting the bag, using the same field the story's own demo
                 // uses. It is a demonstration: it swings at the thing you are
