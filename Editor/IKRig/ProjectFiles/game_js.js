@@ -12337,10 +12337,16 @@ export function startGame(CharacterClass) {
             // same field the punch demo uses to send one to the sandbag, so
             // "wait here" costs no new state: it walks to its own spot, gets
             // there, and idles.
-            // Nothing but the stick to begin with. Handed over as they are
-            // explained: the punch when the one at the bag tells you what the
-            // button does, the jump once you have used it and it says to move
-            // on. Only here - every other level starts with both.
+            // Nothing but the stick to begin with, and each control arrives
+            // with a companion - see the `unlock` fields below. The bag hands
+            // over nothing: what it teaches is that the punch happens on its
+            // own when you are close, and the first fight is fought on that
+            // alone. Only here; every other level starts with both.
+            //
+            // Nothing before the third companion NEEDS a jump. The stair
+            // risers and the river bank are 3.0, and a grounded assisted grab
+            // reaches 3.5 (see grabFromGroundReach), so everything up to the
+            // crossing is walked and climbed rather than jumped.
             if (isLinearForest()) {
                 window.punchButtonEnabled = false;
                 window.jumpButtonEnabled = false;
@@ -12445,8 +12451,23 @@ export function startGame(CharacterClass) {
                 // whole point of where it stands.
                 { key: 'CompSky', x: bag.x - 1.5, y: null, z: bag.z,
                   say: STORY_AUTOPUNCH_LINE, quiet: true, demoBag: true },
-                { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
-                { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
+                // One control per companion, and each arrives after the
+                // thing that makes sense of it.
+                //
+                // The punch BUTTON comes here, at the second - not at the bag.
+                // The one at the bag teaches that it happens on its own when
+                // you get close, and the first fight is fought exactly that
+                // way: you meet two of them knowing only that standing near
+                // something makes you swing. Handing over the button before
+                // that would answer the question the fight is asking.
+                { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z,
+                  awayFrom: botAt.BotYellow, unlock: 'punch' },
+                // ...and the jump at the third, which is the first companion
+                // on the far side of the stream: crossing it is the first
+                // thing in the level that is about getting somewhere rather
+                // than about a fight.
+                { key: 'CompDark', x: m2.x, y: null, z: m2.z,
+                  awayFrom: botAt.BotOrange, unlock: 'jump' },
                 // No bot shares this ledge - keeps its original facing.
                 { key: 'CompPale', x: forestExitX() + 4.0, y: forestFrameTopY(),
                   z: (forestPlatformZ0() + forestPlatformZ1()) * 0.5 },
@@ -12480,7 +12501,7 @@ export function startGame(CharacterClass) {
                 // takes it away again, so its presence and followOverride
                 // always agree.
                 attachRecruitBeacon(comp);
-                _freeRecruits.push({ comp, at, quiet: !!sp.quiet });
+                _freeRecruits.push({ comp, at, quiet: !!sp.quiet, unlock: sp.unlock || null });
             });
             // Every enemy in the level, placed now and asleep. One of them
             // per beat, where that beat happens: the first clearing, the far
@@ -13346,11 +13367,6 @@ export function startGame(CharacterClass) {
                 _bagMoveOnT += delta || 0;
                 if (_bagMoveOnT >= BAG_MOVE_ON_DELAY) {
                     if (tutor) storySay(tutor, STORY_MOVE_ON_LINE, 'companion');
-                    // "Let's move on" is also when moving on becomes possible.
-                    // Nothing before this point needs a jump - the bag is on
-                    // flat ground and jumping at it was the distraction the
-                    // no-jump radius exists to stop.
-                    window.jumpButtonEnabled = true;
                     // By name, not by nearness: this beat is staged. The
                     // nearest sleeper to the bag IS the single yellow, but
                     // only because of where it was put - saying which one is
@@ -13391,11 +13407,11 @@ export function startGame(CharacterClass) {
             // comes down when you do rather than sitting there through the
             // fight it sent you into.
             storySay(null, null, 'companion');
-            // The punch arrives with the one that explains it. Guarded on the
-            // line rather than on the key, so it is the companion that TALKS
-            // about punching that hands it over - if that role moves, this
-            // moves with it.
-            if (r.comp._recruitLine === STORY_AUTOPUNCH_LINE) window.punchButtonEnabled = true;
+            // Whatever control this one carries. Named on the spot rather
+            // than worked out from what it says or which key it is, so moving
+            // a lesson between companions is one word in one place.
+            if (r.unlock === 'punch') window.punchButtonEnabled = true;
+            if (r.unlock === 'jump') window.jumpButtonEnabled = true;
             // ...and anything THIS one was given to say, said now - the moment
             // it becomes yours is the moment it has your attention.
             if (r.comp._recruitLine) {
