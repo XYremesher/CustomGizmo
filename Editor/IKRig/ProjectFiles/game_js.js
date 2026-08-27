@@ -3943,21 +3943,53 @@ export function startGame(CharacterClass) {
     // them the one that is out has to be obvious. Draining the colour too is
     // what makes it read as OUT rather than as far away.
     const AI_KO_COLOR = 0x6b6b72;
-    function setBotKnockedOutLook(bot, on) {
-        if (bot._koLook === on) return;
-        bot._koLook = on;
+    // ...and it arrives late, and slowly.
+    //
+    // Snapping to it the instant the flag goes up landed the change while the
+    // body was still falling, so the thing you saw was a colour change rather
+    // than a knockdown - two events on top of each other, and the loud one
+    // hiding the one that mattered. The delay lets the ragdoll finish and
+    // settle first; the fade then says "and it is staying there", which is a
+    // different statement and wants its own moment.
+    const AI_KO_LOOK_DELAY = 1.2;   // after it goes down, before anything changes
+    const AI_KO_LOOK_FADE = 2.0;    // ...and how long the change itself takes
+    const _koColFrom = new THREE.Color();
+    const _koColTo = new THREE.Color(AI_KO_COLOR);
+    // t is 0 for a normal body and 1 for a fully faded one. Written every
+    // frame while it is moving and skipped once it has arrived, so a settled
+    // body costs nothing.
+    function setBotKnockedOutLook(bot, on, delta) {
+        const want = on ? 1 : 0;
+        if (bot._koLookT === undefined) bot._koLookT = 0;
+        if (bot._koHold === undefined) bot._koHold = 0;
+        // The delay is on the way IN only. Standing back up should undo this
+        // immediately - it is back in the fight, and a body still greyed out
+        // while it swings at you is worse than one that greyed out early.
+        if (on) {
+            bot._koHold += delta || 0;
+            if (bot._koHold < AI_KO_LOOK_DELAY) return;
+        } else {
+            bot._koHold = 0;
+        }
+        if (bot._koLookT === want) return;
+        const step = (delta || 0) / AI_KO_LOOK_FADE;
+        bot._koLookT = want > bot._koLookT
+            ? Math.min(want, bot._koLookT + step)
+            : Math.max(want, bot._koLookT - step);
+        const t = bot._koLookT;
         (bot.bodyMaterials || []).forEach(m => {
-            m.transparent = on;
-            m.opacity = on ? AI_KO_OPACITY : 1.0;
+            m.transparent = t > 0;
+            m.opacity = 1 - (1 - AI_KO_OPACITY) * t;
             // A see-through body still writing depth hides whatever is behind
             // it, which reads as a hole in the world rather than a faded body.
-            m.depthWrite = !on;
+            m.depthWrite = t <= 0;
             if (m.color) {
                 // Its own colour remembered ON the material, not in a map
                 // keyed by bot. These are per-bot materials, and the one place
                 // that cannot get out of step with a material is itself.
                 if (m.userData._koFrom === undefined) m.userData._koFrom = m.color.getHex();
-                m.color.setHex(on ? AI_KO_COLOR : m.userData._koFrom);
+                _koColFrom.setHex(m.userData._koFrom);
+                m.color.copy(_koColFrom).lerp(_koColTo, t);
             }
             m.needsUpdate = true;
         });
@@ -4296,11 +4328,17 @@ export function startGame(CharacterClass) {
         if (aiBot.alertedT > 0) aiBot.alertedT = Math.max(0, aiBot.alertedT - delta);
         if (aiBot.knockedOutT > 0) {
             aiBot.knockedOutT -= delta;
-            setBotKnockedOutLook(aiBot, aiBot.knockedOutT > 0);
             // Back on its feet: let a LATER knockout be announced as its own
             // event rather than being swallowed by the first one's flag.
             if (aiBot.knockedOutT <= 0) aiBot._koAnnounced = false;
         }
+        // OUTSIDE that branch, or the fade would never come back. The look now
+        // takes AI_KO_LOOK_FADE seconds to arrive and the same to leave, and
+        // the moment knockedOutT reaches zero this block would stop running -
+        // leaving the body stuck part way back to its own colour. It costs
+        // nothing to call on a bot that is not out: it returns on the first
+        // comparison once the look has finished moving.
+        setBotKnockedOutLook(aiBot, aiBot.knockedOutT > 0, delta);
         // A hit mid-climb drops it - being knocked off a wall should look
         // like being knocked off a wall, not like finishing the climb anyway.
         if (aiBot.isRagdoll || aiBot.isStandingUp) {
@@ -12908,7 +12946,11 @@ export function startGame(CharacterClass) {
             rec.bot._lastDownAt = undefined;
             rec.bot._koAnnounced = false;
             rec.bot.dormant = !!dormant;
-            setBotKnockedOutLook(rec.bot, false);
+            // Staged placement, not play: snapped back rather than faded,
+            // since there is nobody watching a body that is being put down
+            // before the level starts.
+            rec.bot._koLookT = 1; rec.bot._koHold = 0;
+            setBotKnockedOutLook(rec.bot, false, AI_KO_LOOK_FADE);
             return;
         }
         _aiBotSpawnOverride = new THREE.Vector3(x, y, z);
@@ -22617,11 +22659,18 @@ export function startGame(CharacterClass) {
                         if (!b.isLoaded || b.isRagdoll) continue;
                         if (b.getHitReferencePoint(_tempVec2).distanceTo(c.mesh.position) < hitRadius + 1.0) {
                             const vel = _tempVec1.copy(impactDir).multiplyScalar(hitForce);
-                            // 'medium_high' - a thrown jar is worth more than a
-                            // jab and less than a charge punch, which puts a
-                            // couple of them inside the same 100-point pool a
-                            // combo works through.
-                            window.staggerBot(b, vel, 'medium_high', 1.4);
+                            // 'high' - a thrown jar puts them down.
+                            //
+                            // It was 'medium_high', worth a couple of hits out
+                            // of the same 100-point poise pool a combo works
+                            // through, so throwing something at an enemy
+                            // rocked it and nothing more. A jar arriving at
+                            // speed is not a jab; the whole reason to pick one
+                            // up and throw it instead of walking over and
+                            // punching is that it does something punching
+                            // cannot, and the cost is already paid - you had
+                            // to find it, carry it and be in position.
+                            window.staggerBot(b, vel, 'high', 1.4);
                             if (window.createHandHitEffect) window.createHandHitEffect(c.mesh.position);
                             consumed = true;
                             break;
