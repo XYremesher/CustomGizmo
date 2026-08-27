@@ -16541,7 +16541,7 @@ export function startGame(CharacterClass) {
     //
     // Sized to a body instead. What has to go is what is actually drawn over
     // you, plus enough margin to see the edges of yourself.
-    window.ditherLevelHoleRadius = 120;
+    window.ditherLevelHoleRadius = 320;
     const _ditherLevelRadiusUniform = { value: window.ditherLevelHoleRadius };
     // Declared HERE rather than beside the other dither uniforms further
     // down, because makeLevelOccluder READS it when it dresses a mesh - and
@@ -16586,6 +16586,8 @@ export function startGame(CharacterClass) {
         if (opts && opts.levelPiece) {
             mesh.userData.ditherIsLevelPiece = true;
             mesh.material.userData.ditherRadiusUniform = _ditherLevelRadiusUniform;
+            // What makes holding it on survivable - see makeDitherable.
+            mesh.material.userData.ditherSkipUp = true;
         }
         makeDitherable(mesh.material);
         ditherOccluders.push(mesh);
@@ -17431,7 +17433,8 @@ export function startGame(CharacterClass) {
     // what you want from a tree; a staircase at 0.98 reads as a hole in the
     // world. 0.7 leaves enough of the surface to be seen through rather than
     // seen past.
-    window.ditherLevelStrength = 0.7;
+    // The trees' own amount. Same treatment, same number.
+    window.ditherLevelStrength = 0.98;
     // Whether the level's own big pieces dissolve at all. OFF.
     //
     // The amount has been tuned three times now - 0.98, 0.55, 0.35 - and each
@@ -17509,10 +17512,40 @@ export function startGame(CharacterClass) {
     // the CAMERA is, not about any one mesh, and a camera inside one thing
     // should see out through everything between it and out.
     const _ditherInsideUniform = { value: 0 };
+    // Which way is UP, in the space the fragment shader's normals are in.
+    //
+    // Used to leave floors alone - see the skip-up variant below. vNormal is
+    // in view space, so comparing it against world up means bringing world up
+    // into view space, which is one vector a frame rather than a matrix per
+    // fragment.
+    const _ditherUpViewUniform = { value: new THREE.Vector3(0, 1, 0) };
+    const _ditherUpWorld = new THREE.Vector3(0, 1, 0);
+    const _ditherUpQuat = new THREE.Quaternion();
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
+    // skipUp: leave surfaces that face upward alone.
+    //
+    // This is what lets the level's own pieces be held on the way the trees
+    // are. Held on, the rule is "discard what is inside the hole and nearer
+    // than the player" - right for a tree, because a tree nearer than you is
+    // between you and the camera. Wrong for the flight of stairs you are
+    // standing on: its near edge is nearer than you every frame and hides
+    // nothing, so the steps dissolve out from under your feet.
+    //
+    // A surface you are standing on faces up. A surface that is covering you
+    // does not - it is a wall, a riser, an overhang. So up-facing fragments
+    // keep their pixels and everything else behaves exactly like a tree, which
+    // is the whole of the difference between the two cases written as one
+    // line of shader.
+    //
+    // Injected only where it is asked for, rather than branched at runtime on
+    // a uniform, because vNormal only exists in materials that are lit -
+    // referencing it from a MeshBasicMaterial's shader would not compile.
     function makeDitherable(material) {
         if (material.userData.ditherUniform) return material.userData.ditherUniform;
+        const skipUp = material.userData.ditherSkipUp
+            ? 'if (dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
+            : '';
         const uniform = { value: 0 };
         material.userData.ditherUniform = uniform;
         const prevOnBeforeCompile = material.onBeforeCompile;
@@ -17527,9 +17560,10 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
             shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
             shader.uniforms.uDitherInside = _ditherInsideUniform;
+            shader.uniforms.uDitherUpView = _ditherUpViewUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
-                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\n${DITHER_GLSL}\nvoid main() {`)
+                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\nuniform vec3 uDitherUpView;\n${DITHER_GLSL}\nvoid main() {`)
                 // First statement in main, before any lighting work is done
                 // for a fragment that is about to be thrown away.
                 //
@@ -17562,6 +17596,7 @@ export function startGame(CharacterClass) {
         float _dDepth = uDitherInside > 0.5 ? 1.0
             : 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
         float _dCut = uDitherAmount * _dEdge * _dDepth;
+        ${skipUp}
         if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
     }
     #include <clipping_planes_fragment>`);
@@ -17651,6 +17686,10 @@ export function startGame(CharacterClass) {
         _ditherDepthUniform.value = -_ditherTargetPoint.copy(playerPoint).applyMatrix4(cam.matrixWorldInverse).z;
         _ditherRadiusUniform.value = window.ditherHoleRadius * bufferScale / pixelDiv;
         _ditherLevelRadiusUniform.value = window.ditherLevelHoleRadius * bufferScale / pixelDiv;
+        // World up, rotated into the camera's frame. Written once a frame
+        // here rather than derived per fragment.
+        _ditherUpViewUniform.value.copy(_ditherUpWorld)
+            .applyQuaternion(_ditherUpQuat.copy(cam.quaternion).invert());
         _ditherFeatherUniform.value = window.ditherHoleFeather;
         _ditherHoleOnUniform.value = window.ditherHoleEnabled ? 1 : 0;
         _ditherDepthFadeUniform.value = Math.max(window.ditherDepthFade, 0.4);
@@ -17884,8 +17923,17 @@ export function startGame(CharacterClass) {
             // at a time, which is what makes a wide flight arrive in slabs -
             // but it is answering the right question: is this actually
             // covering the player.
+            // Held on, exactly the way the trees are. The probe is not
+            // asked, because the shader's own circle and depth test are what
+            // make a tree's dissolve follow the camera smoothly instead of
+            // switching a whole mesh on and off as a ray finds an edge - and
+            // that switching is what made a wide flight arrive in slabs.
+            //
+            // The reason this is now safe is the skip-up in its shader: the
+            // one case the shader's rule got wrong was the floor under your
+            // feet, and a floor is the one thing that faces up.
             const wants = isLevelPiece
-                ? (window.ditherLevelPieces && obj.userData._ditherHold > 0)
+                ? (window.ditherLevelPieces && window.ditherHoleEnabled)
                 : obj.userData._ditherHold > 0;
             const blockTarget = wants ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
@@ -18800,7 +18848,8 @@ export function startGame(CharacterClass) {
     // moments where something is genuinely in the way and the dissolve has not
     // caught it - a thin veil covers those without competing with the
     // dissolve when it does. 0 to switch it off.
-    window.cameraOccludedDark = 0.35;
+    // 0. The dissolve covers this again, and you did not want the veil.
+    window.cameraOccludedDark = 0;
     const _camInsideBox = new THREE.Box3();
     const _camInsideVec = new THREE.Vector3();
     let _camInsideCache = null;
