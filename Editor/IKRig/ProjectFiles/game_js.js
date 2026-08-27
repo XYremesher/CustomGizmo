@@ -856,11 +856,9 @@ export function startGame(CharacterClass) {
     // the 3D needle: either, both or neither can be shown.
     window.compass2DEnabled = true;
     const _compassOffset = new THREE.Vector3();
-    // The needle's own tip and centre, projected each frame to give the flat
-    // arrow its angle - see the block that uses them for why it is measured
-    // there rather than at the target.
+    // Scratch for the camera's own heading, read once a frame for the flat
+    // arrow. Kept off the hot path's allocations like everything else here.
     const _compassFront = new THREE.Vector3();
-    const _compassBack = new THREE.Vector3();
     const compassArrowEl = document.getElementById('compass-arrow');
     const compassBackdropEl = document.getElementById('compass-backdrop');
     // Off ASSET_BASE like every other image the game loads, rather than the
@@ -24479,35 +24477,48 @@ export function startGame(CharacterClass) {
         compassMesh.lookAt(window.compassTarget || star.position);
         compassMesh.updateMatrixWorld();
 
-        // ---- ...and the flat 2D arrow, driven BY it ----
+        // ---- ...and the flat 2D arrow ----
         //
-        // Brought back rather than reinvented: this is how it worked before it
-        // was removed, and the reason it works is worth keeping. The angle is
-        // not taken from the target - projecting a far-away or behind-you
-        // point runs into the near-zero-w blowup and the arrow spins. It is
-        // taken from the 3D needle's own tip against its own centre, two
-        // points that stay right next to the camera whatever the needle is
-        // pointing at. All the "which way" information is in the needle's
-        // rotation, which its lookAt has already worked out.
+        // Its angle comes from the HEADING, not from projecting the needle.
         //
-        // Driven every frame even when the 3D needle is hidden - the mesh's
-        // matrix is what this reads, not its visibility.
+        // Projecting the needle's tip against its centre is what this used to
+        // do, and it is wrong in a way that takes a while to see. The needle
+        // points AT the target, so when the target is ahead of you the tip is
+        // further from the camera than the centre is - and under perspective a
+        // further point projects CLOSER to the screen centre, not forward. So
+        // the projected delta does not describe the direction the needle
+        // points; it describes which side of the principal point the compass
+        // happens to sit on, and it flips sign the moment the target goes
+        // from in front of you to behind. Worked through: with the compass a
+        // metre above the camera axis, a target ahead gives dy -0.09 and one
+        // behind gives +0.13 - down and up for the same bearing. That is the
+        // "sometimes inverted", and tilting the camera "fixing" it is the
+        // same fact from the other side, since tilting is what moves the
+        // compass relative to the screen centre.
+        //
+        // A flat compass is answering a flat question, so it is measured
+        // flat: the bearing of the target from the PLAYER, minus the way the
+        // camera is facing. Up the screen is straight ahead, right is to your
+        // right, down is behind you. Height does not enter into it, nothing
+        // is projected, and there is no configuration that degenerates.
         if (compassArrowEl) {
             compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (window.compass2DEnabled) {
-                _compassFront.set(0, 0, 0.25).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                _compassBack.set(0, 0, 0).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                const frontX = (_compassFront.x * 0.5 + 0.5) * window.innerWidth;
-                const frontY = (-_compassFront.y * 0.5 + 0.5) * window.innerHeight;
-                const backX = (_compassBack.x * 0.5 + 0.5) * window.innerWidth;
-                const backY = (-_compassBack.y * 0.5 + 0.5) * window.innerHeight;
-                const dx = frontX - backX, dy = frontY - backY;
-                if (dx !== 0 || dy !== 0) {
-                    // Pixel space, so y already runs DOWN - hence -dy.
-                    const screenAngle = Math.atan2(dx, -dy);
-                    compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
-                }
+                const tgt = window.compassTarget || star.position;
+                const from = char.group.position;
+                // atan2(x, z) is the yaw convention the rest of the file uses
+                // (see yawTowards) - the angle that turns a +Z-forward object
+                // to face along a direction.
+                _compassFront.set(0, 0, -1).applyQuaternion(camera.quaternion);
+                const camYaw = Math.atan2(_compassFront.x, _compassFront.z);
+                const tgtYaw = Math.atan2(tgt.x - from.x, tgt.z - from.z);
+                // camYaw - tgtYaw, that way round: a positive difference in
+                // this convention is a turn to the LEFT, and CSS rotate() is
+                // positive CLOCKWISE. Getting this backwards is the other way
+                // an arrow ends up mirrored.
+                const screenAngle = camYaw - tgtYaw;
+                compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
             }
         }
 
