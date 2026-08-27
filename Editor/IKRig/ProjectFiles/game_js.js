@@ -12420,13 +12420,11 @@ export function startGame(CharacterClass) {
             box.position.set(cx, h * 0.5, cz);
             box.castShadow = true; box.receiveShadow = true;
             box.updateMatrixWorld(true);
-            // Grass on top and stone down the sides, from the same triplanar
-            // treatment the level's other walkable props get - and dithering
-            // with it, so a flight this wide cannot stand between you and the
-            // camera and simply hide you. makeLevelOccluder clones the
-            // material per box, which is what keeps each one's fade its own;
-            // see the note on it for what sharing one costs.
-            makeLevelOccluder(box, { grass: true, levelPiece: true });
+            // Grass on top and stone down the sides, and the dissolve with
+            // it, both already on _forestBorderMat - see dressLevelMaterial.
+            // Not registered per box on purpose: a clone here would give this
+            // one step a private uniform and put back the seam between it and
+            // the step beside it.
             // ...and tufts are planted ON it, the way they are on the forest
             // floor. Without this the scatter treats every step as an
             // obstacle - it rejects anything whose underside is lower than a
@@ -14610,20 +14608,21 @@ export function startGame(CharacterClass) {
         {
             const step = FOREST_BORDER_BLOCK;
             const top = FOREST_BORDER_HEIGHT;
-            // Plain here, and dressed per mesh below. makeLevelOccluder
-            // clones whatever it is given and adds the grass and the dissolve
-            // to the clone, so the stairs - which clone from this very
-            // material - and the wall both end up with the same treatment on
-            // their own copies, and neither can spend the other's uniform.
+            // Dressed HERE, on the shared material, rather than per mesh.
+            // The stairs are built from this very material, so this is what
+            // makes the wall and the flight dissolve as the one surface they
+            // look like instead of each fading on its own schedule.
             if (!_forestBorderMat) {
                 _forestBorderMat = new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
             }
+            dressLevelMaterial(_forestBorderMat, { grass: true });
             // The cap keeps its warmer earth base under the grass - it is the
             // soil the wall's own trees are planted in, and grey soil under a
             // grass line reads as painted stone.
             if (!_forestBorderCapMat) {
                 _forestBorderCapMat = new THREE.MeshToonMaterial({ color: 0xa89880, gradientMap: threeTone });
             }
+            dressLevelMaterial(_forestBorderCapMat, { grass: true });
             const spots = [];
             forestBorderLayout((bx, bz) => spots.push([bx, bz]));
             // INSTANCED, not one mesh per block. There are ~85 of them and
@@ -14641,13 +14640,12 @@ export function startGame(CharacterClass) {
                 inst.castShadow = true; inst.receiveShadow = true;
                 inst.frustumCulled = false;
                 levelGroup.add(inst);
-                // Dissolves like a block you built rather than being held
-                // permanently armed: it only goes when it is genuinely between
-                // you and the camera. ditherByMesh because its bounding box is
-                // the whole level, and the gentler strength because a wall
-                // that vanishes is a hole in the world rather than a window.
-                makeLevelOccluder(inst, { grass: true, levelPiece: true });
-                inst.userData.ditherByMesh = true;
+                // Nothing to register. Its material is dressed and held on as
+                // a shared one, and an InstancedMesh is the case that shows
+                // why that is the right level to work at: one bounding box
+                // around every block in the wall is useless to a probe, but a
+                // per-pixel circle does not care how many instances share the
+                // material it is cutting.
                 return inst;
             };
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
@@ -15439,6 +15437,12 @@ export function startGame(CharacterClass) {
         // BoxGeometry group order is +x, -x, +y, -y, +z, -z - index 2 is the
         // top. Grass on the land masses; the river bed is underwater, so it
         // takes the same earth material as the banks around it.
+        // The slab's own materials, dressed as shared ones. The cliff faces
+        // are what you actually end up behind; the top is dressed alongside
+        // them so the pair cannot disagree, and keeps its pixels anyway
+        // because it faces up.
+        dressLevelMaterial(_forestBoxSideMaterial);
+        dressLevelMaterial(ground.material);
         const topMat = topY < 0 ? _forestBoxSideMaterial : ground.material;
         const mats = [
             _forestBoxSideMaterial, _forestBoxSideMaterial, topMat,
@@ -15455,6 +15459,11 @@ export function startGame(CharacterClass) {
         // standing under something and reject the lot - the same trap the tree
         // colliders hit. This says "I am the ground, not a thing above it".
         slab.userData.isGroundSlab = true;
+        // Deliberately NOT makeLevelOccluder. This mesh carries an ARRAY of
+        // six materials (see mats above) and that helper's first act is to
+        // clone what it is handed - Array has no clone(), so registering the
+        // slab that way throws during the build. Its two materials are dressed
+        // as shared ones instead, up where mats is assembled.
         slab.updateMatrixWorld(true);
         levelGroup.add(slab);
         // Takes the plane's place as the level's floor - every ground scan,
@@ -16543,12 +16552,62 @@ export function startGame(CharacterClass) {
     // you, plus enough margin to see the edges of yourself.
     window.ditherLevelHoleRadius = 320;
     const _ditherLevelRadiusUniform = { value: window.ditherLevelHoleRadius };
+    // Faded as one number, like the trees' own - see the loop that drives it.
+    let _ditherLevelAmount = 0;
     // Declared HERE rather than beside the other dither uniforms further
     // down, because makeLevelOccluder READS it when it dresses a mesh - and
     // that happens during the first level build, which runs from inside
     // startGame's own body. A `const` declared after that point is still in
     // its dead zone when the stairs are built, and reading it would throw
     // before the game drew a frame.
+    // ---- The level dissolves as MATERIALS, the way the wood does ----
+    //
+    // This is the fix for "two blocks side by side are not pierced as one
+    // object - one of them disappears instead", and the cause is worth
+    // keeping, because it was never the amount and never the radius.
+    //
+    // makeLevelOccluder clones the material it is given, so every piece of the
+    // level held its own copy and its own dither uniform, and the per-object
+    // probe then decided each of them separately. Two stretches of the same
+    // wall standing next to each other were therefore two unrelated things:
+    // the probe's ray found one and missed the other, so one went and one
+    // stayed, with a seam down the middle of what is plainly one surface. And
+    // the ground slab was not registered at all - it could not be, being
+    // multi-material - so the biggest surface in the level never dissolved,
+    // which is the solid half of that screenshot.
+    //
+    // The trees never had this problem, and not because of their strength: the
+    // whole wood shares one material per source mesh, so whatever happens
+    // happens to all of it at once, and the shader's own circle decides where.
+    // Sharing IS the mechanism. There is nothing else to copy.
+    //
+    // So the level's big surfaces are dressed once, as materials, and held on
+    // like the trees. Adjacent pieces of the same stuff now dissolve as one
+    // surface because they ARE one material, and the hole is cut per pixel by
+    // the only part of this that knows about pixels.
+    //
+    // Not cloned, deliberately - the same call voxelLevelMat above makes and
+    // for the same reason. ground.material carries the forest's tint shader
+    // and _forestBorderMat is shared by the wall and the stairs;
+    // Material.clone() drops onBeforeCompile, so cloning either would quietly
+    // strip what makes it look like itself. makeDitherable chains onto the
+    // handler that is already there.
+    const ditherLevelMats = [];
+    function dressLevelMaterial(mat, opts) {
+        if (!mat || mat.userData._levelDressed) return;
+        mat.userData._levelDressed = true;
+        // Grass first, so the two onBeforeCompile handlers chain in the order
+        // makeLevelOccluder uses.
+        if (opts && opts.grass) applyTriplanarGrass(mat);
+        // Both read by makeDitherable as it builds the shader, so both have to
+        // be set before it runs. skipUp is what makes holding it on
+        // survivable: without it the floor under your feet, being nearer to
+        // the camera than you are every frame, dissolves as you stand on it.
+        mat.userData.ditherSkipUp = true;
+        mat.userData.ditherRadiusUniform = _ditherLevelRadiusUniform;
+        makeDitherable(mat);
+        ditherLevelMats.push(mat);
+    }
     function makeLevelOccluder(mesh, opts) {
         mesh.material = mesh.material.clone();
         // The clone starts from scratch, whatever the source had.
@@ -17529,6 +17588,11 @@ export function startGame(CharacterClass) {
     // out of it.
     window.ditherInsideStrength = 0.55;
     const _ditherInsideCutUniform = { value: window.ditherInsideStrength };
+    // Where the hole stops being feathered and goes fully clear, as a fraction
+    // of the hole's own falloff. 1 disables the clear core entirely; lower
+    // makes the clear part reach further out toward the rim.
+    window.ditherCoreEdge = 0.55;
+    const _ditherCoreEdgeUniform = { value: window.ditherCoreEdge };
     // Which way is UP, in the space the fragment shader's normals are in.
     //
     // Used to leave floors alone - see the skip-up variant below. vNormal is
@@ -17560,13 +17624,15 @@ export function startGame(CharacterClass) {
     // referencing it from a MeshBasicMaterial's shader would not compile.
     function makeDitherable(material) {
         if (material.userData.ditherUniform) return material.userData.ditherUniform;
-        // ...except from INSIDE. The skip exists because a floor never hides
-        // you when you are standing on it - but once the camera is inside the
-        // block, the floor and the underside ARE what is hiding you, and the
-        // only surfaces left to see out through are the ones this protects.
-        // So the protection is lifted exactly where its reason stops holding.
+        // Unconditional, including from inside. It was lifted there once, on
+        // the argument that indoors the floor is what is hiding you - but a
+        // floor is not what you are trying to see past even then, and the
+        // centre of the hole is now cut all the way (see _dCore), so lifting
+        // it took the ground out from under your feet completely and left you
+        // looking at the sky through your own floor. The undersides and the
+        // walls are what you see out through indoors, and neither faces up.
         const skipUp = material.userData.ditherSkipUp
-            ? 'if (uDitherInside < 0.5 && dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
+            ? 'if (dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
             : '';
         const uniform = { value: 0 };
         material.userData.ditherUniform = uniform;
@@ -17584,9 +17650,10 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherInside = _ditherInsideUniform;
             shader.uniforms.uDitherUpView = _ditherUpViewUniform;
             shader.uniforms.uDitherInsideCut = _ditherInsideCutUniform;
+            shader.uniforms.uDitherCoreEdge = _ditherCoreEdgeUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
-                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\nuniform vec3 uDitherUpView;\nuniform float uDitherInsideCut;\n${DITHER_GLSL}\nvoid main() {`)
+                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\nuniform vec3 uDitherUpView;\nuniform float uDitherInsideCut;\nuniform float uDitherCoreEdge;\n${DITHER_GLSL}\nvoid main() {`)
                 // First statement in main, before any lighting work is done
                 // for a fragment that is about to be thrown away.
                 //
@@ -17610,6 +17677,14 @@ export function startGame(CharacterClass) {
         float _dr = length(gl_FragCoord.xy - uDitherScreen) / max(uDitherRadius, 1.0);
         float _dHole = 1.0 - smoothstep(1.0 - uDitherFeather, 1.0, _dr);
         float _dEdge = mix(1.0, _dHole, uDitherHoleOn);
+        // The CENTRE of the hole goes all the way. _dHole is 1 at the middle
+        // and falls to 0 at the rim, and multiplying it by an amount that is
+        // itself under 1 means the middle was never fully cut - two pixels in
+        // fifty stayed, which over a whole wall is a haze you look at rather
+        // than through. Raising it to 1 where the hole is deepest leaves the
+        // edges alone, so the block's shape is still readable at the rim,
+        // which is the thing the sub-1 amount was protecting.
+        float _dCore = smoothstep(uDitherCoreEdge, 1.0, _dHole);
         // Depth is faded, not cut. A hard "is this nearer than the player"
         // test slices any object that spans that plane - a tree trunk running
         // from in front of the player to behind them lost its near half in one
@@ -17624,7 +17699,7 @@ export function startGame(CharacterClass) {
         float _dAmt = uDitherInside > 0.5
             ? uDitherInsideCut * step(0.001, uDitherAmount)
             : uDitherAmount;
-        float _dCut = _dAmt * _dEdge * _dDepth;
+        float _dCut = mix(_dAmt, 1.0, _dCore * step(0.001, _dAmt)) * _dEdge * _dDepth;
         ${skipUp}
         if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
     }
@@ -17718,6 +17793,7 @@ export function startGame(CharacterClass) {
         // World up, rotated into the camera's frame. Written once a frame
         // here rather than derived per fragment.
         _ditherInsideCutUniform.value = window.ditherInsideStrength;
+        _ditherCoreEdgeUniform.value = window.ditherCoreEdge;
         _ditherUpViewUniform.value.copy(_ditherUpWorld)
             .applyQuaternion(_ditherUpQuat.copy(cam.quaternion).invert());
         _ditherFeatherUniform.value = window.ditherHoleFeather;
@@ -17923,6 +17999,21 @@ export function startGame(CharacterClass) {
             const m = ditherAlwaysOnMats[i];
             if (m.userData.ditherUniform) m.userData.ditherUniform.value = _ditherTreeAmount;
         }
+        // The level's own surfaces, held on the same way and faded the same
+        // way - see dressLevelMaterial for why they are materials and not
+        // meshes.
+        //
+        // Only while the forest is up. These are shared materials and
+        // ground.material outlives the level it was dressed in, so driving it
+        // unconditionally would have every other level dissolving its floor.
+        const levelWanted = window.ditherLevelPieces && window.ditherHoleEnabled
+            && isForestLevel();
+        const levelTarget = levelWanted ? window.ditherLevelStrength : 0;
+        _ditherLevelAmount += THREE.MathUtils.clamp(levelTarget - _ditherLevelAmount, -step, step);
+        for (let i = 0; i < ditherLevelMats.length; i++) {
+            const u = ditherLevelMats[i].userData.ditherUniform;
+            if (u) u.value = _ditherLevelAmount;
+        }
         for (let i = 0; i < ditherOccluders.length; i++) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
@@ -17932,40 +18023,10 @@ export function startGame(CharacterClass) {
             // rebuilding it, and this is a by-eye setting - the whole reason
             // it exists is that the right amount is whatever stops looking
             // like a hole.
-            const isLevelPiece = !!obj.userData.ditherIsLevelPiece;
-            const full = isLevelPiece ? window.ditherLevelStrength : window.ditherStrength;
-            // ---- Why level pieces CANNOT be armed the way trees are ----
-            //
-            // Tried, and it is worse. Held on, the shader's own rule decides
-            // everything - discard what is inside the hole and nearer than the
-            // player - and for a tree that rule is exactly right, because a
-            // tree nearer than you is genuinely between you and the camera.
-            //
-            // You stand ON these. The near edge of the flight you are climbing
-            // is nearer to the camera than you are, every frame, without ever
-            // hiding you - so held on, the stairs dissolve out from under your
-            // feet. That is the whole difference between the two cases and it
-            // is not a tuning one: no amount is right, because the rule is
-            // answering a question the geometry cannot ask. Trees are never
-            // underfoot.
-            //
-            // So the probe stays. It is coarser - it decides for a whole mesh
-            // at a time, which is what makes a wide flight arrive in slabs -
-            // but it is answering the right question: is this actually
-            // covering the player.
-            // Held on, exactly the way the trees are. The probe is not
-            // asked, because the shader's own circle and depth test are what
-            // make a tree's dissolve follow the camera smoothly instead of
-            // switching a whole mesh on and off as a ray finds an edge - and
-            // that switching is what made a wide flight arrive in slabs.
-            //
-            // The reason this is now safe is the skip-up in its shader: the
-            // one case the shader's rule got wrong was the floor under your
-            // feet, and a floor is the one thing that faces up.
-            const wants = isLevelPiece
-                ? (window.ditherLevelPieces && window.ditherHoleEnabled)
-                : obj.userData._ditherHold > 0;
-            const blockTarget = wants ? full : 0;
+            // What is left in this list is the props - the ramps, the
+            // shooters, the built blocks. The level's own big surfaces are
+            // not here any more; they are held on as materials, above.
+            const blockTarget = obj.userData._ditherHold > 0 ? window.ditherStrength : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
     }
