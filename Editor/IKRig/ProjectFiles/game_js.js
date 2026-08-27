@@ -3940,6 +3940,22 @@ export function startGame(CharacterClass) {
     }
     window.staggerBot = function staggerBot(bot, velocity, intensity, flashStrength, poiseOverride) {
         if (!bot || !bot.isLoaded || bot.isRagdoll) return false;
+        // Being hit wakes it. Nothing else in the hit path did, so a sleeping
+        // bot could be punched indefinitely and just stand there: updateAiBot
+        // returns early while dormant, and holdAsleep means proximity cannot
+        // clear it either - only collecting the companion it is paired with.
+        // Punch something and have it keep sleeping is not a state the game
+        // should be able to be in.
+        //
+        // Both flags, for the same reason wakeNearestSleeper clears both:
+        // dormant alone would leave it liable to be put straight back to sleep
+        // and then unable to wake itself again.
+        //
+        // Before the 'high' branch below, which returns - or a blow hard
+        // enough to knock it down would be the one kind that failed to wake
+        // it, which is the worst way round.
+        bot.dormant = false;
+        bot.holdAsleep = false;
         // Hit from any direction, by anyone: start looking around. See
         // AI_ALERT_TIME. Set here rather than at the call sites because every
         // way of hurting a bot already funnels through this one function.
