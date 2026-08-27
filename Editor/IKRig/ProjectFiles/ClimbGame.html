@@ -897,6 +897,13 @@
         }
         #hint-card.charge #hint-text .hint-title { color: rgba(255, 106, 255, 0.72); }
 
+        /* Top centre, above everything else on the HUD. The arrow is rotated
+           about its own middle, so the translateX(-50%) that centres it has to
+           be part of the same transform the rotation is written into - see
+           where that string is built. */
+        #compass-arrow { position: absolute; top: 14px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
+        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); pointer-events: none; z-index: 9; }
+
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
             position: fixed; bottom: 8px; right: 8px; z-index: 50;
@@ -1540,14 +1547,11 @@
                          first - nobody looking for a compass setting finds it
                          there. It is a thing on screen, so it lives under UI.
 
-                         Face Roll spins the needle about its own axis, for
-                         turning the model's face toward the viewer - which way
-                         round that is depends on how Compass.glb was authored,
-                         so it is a number to try rather than one to work out.
-                         See compassFaceRollDeg in game_js.js. -->
+                         The flat arrow is driven BY the 3D needle - see the
+                         block in game_js.js - so it keeps working with the
+                         needle itself switched off. -->
                     <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label><br>
-                    <label>Compass Face Roll: <span id="compass-roll-val">0</span>&deg;</label><br>
-                    <input type="range" id="compass-roll-slider" min="0" max="360" step="5" value="0" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-compass-2d" checked> Compass (2D arrow)</label><br>
                     <!-- Elements hidden from the default control set (see
                          ClimbGame.html #base-right/#build-btn and their
                          wiring in game_js.js) - both off by default here
@@ -1825,6 +1829,11 @@
         </div>
         <div id="hint-text"></div>
     </div>
+    <!-- The flat compass. Its rotation is written every frame from the 3D
+         needle's own projected tip (see game_js.js); src is set from there too,
+         so it follows ASSET_BASE. -->
+    <div id="compass-backdrop"></div>
+    <img id="compass-arrow" alt="">
     <div id="drag-deadzone-left" class="drag-deadzone"></div>
     <div id="drag-deadzone-right" class="drag-deadzone"></div>
 
