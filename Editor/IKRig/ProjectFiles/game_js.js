@@ -12337,22 +12337,28 @@ export function startGame(CharacterClass) {
             // same field the punch demo uses to send one to the sandbag, so
             // "wait here" costs no new state: it walks to its own spot, gets
             // there, and idles.
-            // Nothing but the stick to begin with, and each control arrives
-            // with a companion - see the `unlock` fields below. The bag hands
-            // over nothing: what it teaches is that the punch happens on its
-            // own when you are close, and the first fight is fought on that
-            // alone. Only here; every other level starts with both.
+            // Two controls in the whole level: the stick, and the punch -
+            // and the punch arrives with a companion (see the `unlock` field
+            // below) rather than being there from the start.
             //
-            // Nothing before the third companion NEEDS a jump. The stair
-            // risers and the river bank are 3.0, and a grounded assisted grab
-            // reaches 3.5 (see grabFromGroundReach), so everything up to the
-            // crossing is walked and climbed rather than jumped.
+            // No jump AT ALL, and no build button either. Everything here is
+            // walked or climbed: the stair risers and the river bank are 3.0
+            // and a grounded assisted grab reaches 3.5 (see
+            // grabFromGroundReach), so a jump would only ever be a second way
+            // of doing something the level already does for you. A control
+            // that is never the answer is a control worth not having.
+            //
+            // handleJump reads the same flag, so this withholds the keyboard
+            // and the auto-jump with the button. Only here; every other level
+            // has all of them.
             if (isLinearForest()) {
                 window.punchButtonEnabled = false;
                 window.jumpButtonEnabled = false;
+                setBuildButtonShown(false);
             } else {
                 window.punchButtonEnabled = true;
                 window.jumpButtonEnabled = true;
+                setBuildButtonShown(true);
             }
             const m1 = forestMeetPoint(), m2 = forestMeetPoint2();
             const bag = forestBagPoint();
@@ -12462,12 +12468,8 @@ export function startGame(CharacterClass) {
                 // that would answer the question the fight is asking.
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z,
                   awayFrom: botAt.BotYellow, unlock: 'punch' },
-                // ...and the jump at the third, which is the first companion
-                // on the far side of the stream: crossing it is the first
-                // thing in the level that is about getting somewhere rather
-                // than about a fight.
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z,
-                  awayFrom: botAt.BotOrange, unlock: 'jump' },
+                  awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
                 { key: 'CompPale', x: forestExitX() + 4.0, y: forestFrameTopY(),
                   z: (forestPlatformZ0() + forestPlatformZ1()) * 0.5 },
@@ -19804,6 +19806,19 @@ export function startGame(CharacterClass) {
         const el = document.getElementById('base-right');
         if (el) el.style.display = e.target.checked ? 'flex' : 'none';
     });
+    // The build button, its flag and its checkbox, moved as one.
+    //
+    // Its visibility is set once rather than recomputed per frame, so a level
+    // that wants it gone has to say so - and the checkbox has to follow, or
+    // the panel would claim it is shown while it is not. That mismatch is the
+    // thing this exists to prevent; every other control here already has it.
+    function setBuildButtonShown(on) {
+        window.buildButtonEnabled = on;
+        const el = document.getElementById('build-btn');
+        if (el) el.style.display = on ? 'flex' : 'none';
+        const box = document.getElementById('toggle-build-btn');
+        if (box) box.checked = on;
+    }
     const toggleBuildBtnEl = document.getElementById('toggle-build-btn');
     // Markup is the source of truth for the initial state - the box carries
     // `checked` and the CSS starts the button visible to match. Reading it here
@@ -23449,8 +23464,13 @@ export function startGame(CharacterClass) {
             // Shown whenever climbing is possible at all - it is a traversal
             // assist, so it has nothing to do with whether you can punch.
             if (grabBtn) grabBtn.style.display = window.isCarryingObj ? 'none' : 'flex';
+            // Hidden with the jump itself. It switches whether gaps are
+            // jumped automatically, and in a level with no jump that is a
+            // dead switch - the same reason the lock and auto-punch toggles
+            // are hidden whenever punching is impossible.
             const gapBtn = document.getElementById('auto-jump-gap-btn');
-            if (gapBtn) gapBtn.style.display = window.isCarryingObj ? 'none' : 'flex';
+            if (gapBtn) gapBtn.style.display =
+                (window.isCarryingObj || !window.jumpButtonEnabled) ? 'none' : 'flex';
             const carryLockBtn = document.getElementById('carry-lock-btn');
             if (carryLockBtn) {
                 carryLockBtn.style.display =
