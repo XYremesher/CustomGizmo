@@ -763,7 +763,10 @@ export function startGame(CharacterClass) {
     // target. (There used to be a flat 2D screen-space arrow alongside
     // this, projected from the same needle - removed outright per request,
     // not just defaulted off.)
-    window.compass3DEnabled = true;
+    // Off. The needle is still POSITIONED and AIMED every frame below - only
+    // its visibility is switched here - because the 2D arrow's angle is read
+    // off its matrix. Hiding it hides it; it does not stop it working.
+    window.compass3DEnabled = false;
     // Positioned in world space every frame (see the main loop) rather
     // than parented to the camera: still uses the camera's full local
     // offset (so it stays roughly centered in view exactly like before,

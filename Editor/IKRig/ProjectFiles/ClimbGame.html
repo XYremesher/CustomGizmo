@@ -902,7 +902,10 @@
            be part of the same transform the rotation is written into - see
            where that string is built. */
         #compass-arrow { position: absolute; top: 14px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
-        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(255, 255, 255, 0.25); pointer-events: none; z-index: 9; }
+        /* No border, and darker. The pale ring drew the eye to the disc
+           rather than to the arrow on it, and the disc is only there to keep
+           the arrow readable over a bright sky or a pale path. */
+        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 9; }
 
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
@@ -1550,7 +1553,7 @@
                          The flat arrow is driven BY the 3D needle - see the
                          block in game_js.js - so it keeps working with the
                          needle itself switched off. -->
-                    <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label><br>
+                    <label><input type="checkbox" id="toggle-compass-3d"> Compass (3D needle)</label><br>
                     <label><input type="checkbox" id="toggle-compass-2d" checked> Compass (2D arrow)</label><br>
                     <!-- Elements hidden from the default control set (see
                          ClimbGame.html #base-right/#build-btn and their
