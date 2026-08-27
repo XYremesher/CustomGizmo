@@ -17543,8 +17543,13 @@ export function startGame(CharacterClass) {
     // referencing it from a MeshBasicMaterial's shader would not compile.
     function makeDitherable(material) {
         if (material.userData.ditherUniform) return material.userData.ditherUniform;
+        // ...except from INSIDE. The skip exists because a floor never hides
+        // you when you are standing on it - but once the camera is inside the
+        // block, the floor and the underside ARE what is hiding you, and the
+        // only surfaces left to see out through are the ones this protects.
+        // So the protection is lifted exactly where its reason stops holding.
         const skipUp = material.userData.ditherSkipUp
-            ? 'if (dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
+            ? 'if (uDitherInside < 0.5 && dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
             : '';
         const uniform = { value: 0 };
         material.userData.ditherUniform = uniform;
@@ -18839,7 +18844,11 @@ export function startGame(CharacterClass) {
     // where you were going - and taking all of that away to hide one wall
     // costs more than the wall does. A veil keeps your bearings and still
     // lifts the wall off your face.
-    window.cameraInsideDark = 1.0;
+    // 0. The black layer is off: with the dissolve reaching the insides of
+    // blocks now, there is nothing left for it to cover, and two things
+    // dimming the same view was one too many. The element and the hole stay
+    // wired, so raising this puts it straight back.
+    window.cameraInsideDark = 0;
     // 0 - the dissolve covers this case again now that the level's pieces
     // are held on like the trees. The veil was standing in for a dither that
     // was switched off; with it back, two things dimming the same view is one
