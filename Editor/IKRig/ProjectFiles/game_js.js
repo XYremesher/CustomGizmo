@@ -12127,9 +12127,16 @@ export function startGame(CharacterClass) {
             // per beat, where that beat happens: the first clearing, the far
             // island, and the top of the stairs. They wake when you get close
             // (see aiBot.dormant), so nothing is constructed mid-fight.
-            const topStepZ = forestPlatformZ0() - FOREST_STEP_SIZE * 0.5;
-            const topStepY = Math.min(forestFrameTopY(),
-                Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE - 1) * FOREST_STEP_SIZE);
+            // On the LANDING, not on the top step.
+            //
+            // The step was a 3x3 block when this was written and a fine perch.
+            // Widening the stairs to the level's full width turned it into a
+            // shelf 1.5 deep with an 11.8 wall across the whole of it - the
+            // red one had nowhere to go, which reads exactly like it never
+            // woke up. The landing is the open ground at the top, and the last
+            // fight of the level wants room.
+            const topStepZ = forestPlatformZ0() + 4.0;
+            const topStepY = forestFrameTopY();
             // Facing away from the companion in the same clearing - the other
             // half of the back-to-back pairing set up in `spots` above.
             storyPlaceBot('BotYellow', botAt.BotYellow.x, storyGroundY(botAt.BotYellow.x, botAt.BotYellow.z, 0), botAt.BotYellow.z, true,
@@ -23492,7 +23499,28 @@ export function startGame(CharacterClass) {
                     // below, for internal consistency (whatever height
                     // this accepts, hangGroupY correctly reflects it).
                     const remainingRise = yVelocity > 0 ? (yVelocity * yVelocity) / 60 : 0;
-                    const maxLedgeY = char.group.position.y + remainingRise + 1.85;
+                    // remainingRise is 0 while grounded, and that left the
+                    // grounded window EMPTY. Written out: a grab has to LIFT
+                    // you, which is ledgeY - 1.85 > feet + 0.2 (see
+                    // liftsOffGround below), i.e. ledgeY > feet + 2.05; and
+                    // this cap said ledgeY < feet + 1.85. Nothing satisfies
+                    // both, so grabFromGround could never fire at all - the
+                    // whole assisted-from-standing path has been dead since
+                    // the lift guard was added to it.
+                    //
+                    // What that looked like: walk into a stair riser and
+                    // nothing happens until you jump. Every 3.0 rise in the
+                    // level - the stairs, the river bank, an island edge -
+                    // needed a jump first, which is the pause.
+                    //
+                    // 3.5 from the ground, the same height the airborne branch
+                    // reaches: it clears a 3.0 rise with room, and a kerb is
+                    // still ignored because the lift test throws it out (at
+                    // feet + 1.0 the hang would put the body BELOW where it
+                    // already stands).
+                    const groundReach = window.grabFromGroundReach !== undefined ? window.grabFromGroundReach : 3.5;
+                    const maxLedgeY = char.group.position.y
+                        + (grabFromGround ? groundReach : remainingRise + 1.85);
                     if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < maxLedgeY) {
                         const hangX = wH[0].point.x + n.x*ledgeOffset;
                         const hangZ = wH[0].point.z + n.z*ledgeOffset;
