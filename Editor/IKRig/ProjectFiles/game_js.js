@@ -863,7 +863,10 @@ export function startGame(CharacterClass) {
     // arrow its angle - see the block that uses them for why it is measured
     // there rather than at the target.
     const _compassFront = new THREE.Vector3();
-    const _compassBack = new THREE.Vector3();
+    const _compassCamInv = new THREE.Quaternion();
+    // Last readable arrow angle, held through the frames where the needle
+    // points straight at or away from the camera and has no screen direction.
+    let _compassArrowAngle = 0;
     const compassArrowEl = document.getElementById('compass-arrow');
     const compassBackdropEl = document.getElementById('compass-backdrop');
     // Off ASSET_BASE like every other image the game loads, rather than the
@@ -2743,6 +2746,22 @@ export function startGame(CharacterClass) {
     // slide - it exists to close a hand's width, not to follow anyone. What
     // happens when the victim leaves is now the abort, not a faster creep.
     window.aiPunchStep = 1.1;
+    // Sometimes the first swing starts on the APPROACH rather than on arrival.
+    //
+    // A bot walks to exactly aiPunchRange, stops, and only then winds up - so
+    // every fight opens the same way and you always get the same beat to react
+    // in. Starting some of them a stride early closes that: the swing is
+    // already coming as it arrives.
+    //
+    // It costs nothing to land, because the punch branch already creeps
+    // forward during the swing (see aiPunchStep) and stops at 0.9 of the punch
+    // range - so a swing begun a stride out is still closing when its hit
+    // frame comes round. That creep is what makes this possible at all.
+    //
+    // Rolled ONCE per approach, not per frame: rolling every frame would make
+    // it certain rather than sometimes, and the bot would always open early.
+    window.aiWalkInChance = 0.4;
+    window.aiWalkInLead = 0.9;
     // How far past its reach the victim may get before a swing is abandoned.
     // See the abort in the punch branch.
     const AI_PUNCH_ABORT_GAP = 1.3;
@@ -4793,7 +4812,18 @@ export function startGame(CharacterClass) {
                     return;
                 }
             }
-            if (sameLevel && !lineBlocked && distToVictim < reach) {
+            // See aiWalkInChance. The roll is remembered for as long as this
+            // approach lasts and cleared when the bot falls back out of the
+            // wider ring, so one approach is one decision.
+            if (distToVictim < reach + window.aiWalkInLead) {
+                if (aiBotState.walkInRoll === undefined || aiBotState.walkInRoll === null) {
+                    aiBotState.walkInRoll = Math.random() < window.aiWalkInChance;
+                }
+            } else {
+                aiBotState.walkInRoll = null;
+            }
+            const punchReach = aiBotState.walkInRoll ? reach + window.aiWalkInLead : reach;
+            if (sameLevel && !lineBlocked && distToVictim < punchReach) {
                 aiBotState.mode = 'punch';
                 aiBotState.punchTimer = 0;
                 aiBotState.punchHasHit = false;
@@ -5448,6 +5478,14 @@ export function startGame(CharacterClass) {
         { key: 'BotOrange', id: 'ai-bot-2', color: 0xff7a1a, offset: [-3.5, 0, 3.5], combo: true },
         // Red winds up and throws one knockdown blow.
         { key: 'BotRed', id: 'ai-bot-3', color: 0xd42a2a, offset: [0, 0, -4.5], charge: true },
+        // One of each, for the fight the charge card arrives with. By then you
+        // have met all three kinds one at a time; this is the first time they
+        // come together, which is what the charge punch is FOR - it sweeps
+        // everything in reach, and until now there has never been more than
+        // two of anything to sweep.
+        { key: 'BotYellow3', id: 'ai-bot-5', color: 0xffd633, offset: [4, 0, 4] },
+        { key: 'BotOrange2', id: 'ai-bot-6', color: 0xff7a1a, offset: [-4, 0, 4], combo: true },
+        { key: 'BotRed2', id: 'ai-bot-7', color: 0xd42a2a, offset: [0, 0, 5.5], charge: true },
     ];
     // Performance probe. Pads the roster out to window.enemyTestCount with
     // PLAIN yellows - no combo, no charge - so what is being measured is the
@@ -12301,6 +12339,14 @@ export function startGame(CharacterClass) {
                 // arrived as two separate fights.
                 botAt.BotYellow2 = { x: m1.x - 5.0, z: m1.z + FREE_BOT_STANDOFF };
                 botAt.BotOrange  = { x: m1.x + 3.0, z: m1.z + FREE_BOT_STANDOFF + 2.0 };
+                // ...and all three kinds together at the second companion,
+                // which is the one that hands you the charge card. Inside
+                // WAKE_PACK_RADIUS of each other for the same reason the pair
+                // is: they have to get up together or they arrive as three
+                // separate fights.
+                botAt.BotYellow3 = { x: m2.x - 5.0, z: m2.z + FREE_BOT_STANDOFF };
+                botAt.BotOrange2 = { x: m2.x + 3.0, z: m2.z + FREE_BOT_STANDOFF + 2.0 };
+                botAt.BotRed2    = { x: m2.x - 1.0, z: m2.z + FREE_BOT_STANDOFF + 5.0 };
             }
             // Yaw that points +Z (the direction inVisionCone measures from)
             // along ax,az -> bx,bz.
@@ -12381,6 +12427,16 @@ export function startGame(CharacterClass) {
                 yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow2.x, botAt.BotYellow2.z));
             storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
                 yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
+            // The trio, asleep like the rest. Only in the linear wood - the
+            // square one's beats are its own and adding three bodies to a
+            // clearing there would rewrite a level nobody asked me to touch.
+            if (isLinearForest()) {
+                ['BotYellow3', 'BotOrange2', 'BotRed2'].forEach(key => {
+                    const at = botAt[key];
+                    storyPlaceBot(key, at.x, storyGroundY(at.x, at.z, 0), at.z, true,
+                        yawTowards(m2.x, m2.z, at.x, at.z));
+                });
+            }
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
             // Anything past the staged four is a performance probe (see
             // window.enemyTestCount). They go in a tight ring in the first
@@ -25024,18 +25080,33 @@ export function startGame(CharacterClass) {
             compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (window.compass2DEnabled) {
-                _compassFront.set(0, 0, 0.25).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                _compassBack.set(0, 0, 0).applyMatrix4(compassMesh.matrixWorld).project(camera);
-                const frontX = (_compassFront.x * 0.5 + 0.5) * window.innerWidth;
-                const frontY = (-_compassFront.y * 0.5 + 0.5) * window.innerHeight;
-                const backX = (_compassBack.x * 0.5 + 0.5) * window.innerWidth;
-                const backY = (-_compassBack.y * 0.5 + 0.5) * window.innerHeight;
-                const dx = frontX - backX, dy = frontY - backY;
-                if (dx !== 0 || dy !== 0) {
-                    // Pixel space, so y already runs DOWN - hence -dy.
-                    const screenAngle = Math.atan2(dx, -dy);
-                    compassArrowEl.style.transform = `translateX(-50%) rotate(${screenAngle}rad)`;
-                }
+                // The needle's DIRECTION, turned into the camera's frame -
+                // not its two ends projected.
+                //
+                // Projecting the ends is what this did, and it inverts. The
+                // projected offset between them is two things added together:
+                // the needle's own direction on screen, and a radial term
+                // pulling toward the vanishing point. That second part is
+                // scaled by how far the needle leans in Z - away from you when
+                // the target is ahead, toward you when it is behind - so it
+                // changes SIGN as the target passes you, and with the camera
+                // swung round to the far side it is the part that wins. That
+                // is "the compass is wrong when the camera looks from the
+                // reverse side": not a wrong angle, a mirrored one.
+                //
+                // Taking the direction alone drops the radial term and keeps
+                // the rest: this is still the 3D needle as seen on screen,
+                // which is why it tracks while the target is in view, without
+                // the artefact that only ever came from perspective.
+                _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion)
+                    .applyQuaternion(_compassCamInv.copy(camera.quaternion).invert());
+                const dx = _compassFront.x, dy = _compassFront.y;
+                // Straight at or away from the camera: both of those are zero
+                // and the angle is noise. Hold the last readable one rather
+                // than letting the arrow spin on the spot.
+                if (dx * dx + dy * dy > 1e-8) _compassArrowAngle = Math.atan2(dx, dy);
+                compassArrowEl.style.transform =
+                    `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
             }
         }
 
