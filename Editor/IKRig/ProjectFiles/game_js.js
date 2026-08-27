@@ -848,25 +848,23 @@ export function startGame(CharacterClass) {
     // otherwise compute - this is what actually stops it from ever
     // visually sinking into the ground on a steep downward camera pitch.
     const COMPASS_MIN_FLOOR_CLEARANCE = 1.2;
-    // How far the needle is allowed to tip out of level, in degrees.
-    //
-    // lookAt aims it in full 3D, which is correct as an arrow and wrong as a
-    // compass: a compass lies flat and answers WHICH WAY, and the moment the
-    // target is above or below you the needle stands on end and stops
-    // reading as a direction at all. The level's own goal is the worst case -
-    // it sits up on the canopy platform about 10 units off the floor, so
-    // twenty units out the needle is already tilted 27 degrees and close up
-    // it is pointing nearly straight at the sky.
-    //
-    // Clamped rather than flattened, because some tilt is worth keeping: it
-    // is the only thing that says the goal is UP there rather than along the
-    // ground. 22 degrees is enough to read as "and upward" while leaving the
-    // needle's direction the thing you actually see. 0 makes it dead level.
-    window.compassMaxPitchDeg = 22;
+    // Spin about the needle's own axis, in degrees, for getting the FACE of
+    // the model turned toward the viewer. Which way round that is depends on
+    // how Compass.glb was authored, and it is one number to try rather than a
+    // thing to reason about - hence a slider.
+    window.compassFaceRollDeg = 0;
     const _compassOffset = new THREE.Vector3();
-    // YXZ, so x really is pitch after yaw has been applied - in the default
-    // XYZ order the two are mixed and clamping x would swing the heading.
-    const _compassEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+    // Scratch for the bearing. Built once: this runs every frame.
+    const _compassFwd = new THREE.Vector3();
+    const _compassDir = new THREE.Vector3();
+    const _compassAim = new THREE.Vector3();
+    const _compassBack = new THREE.Vector3();
+    const _compassTip = new THREE.Vector3();
+    const _compassTail = new THREE.Vector3();
+    const _compassMatInv = new THREE.Matrix4();
+    // Last readable bearing, held through the frames where the needle points
+    // straight at or away from the camera and its projection has no direction.
+    let _compassBearing = 0;
 
     // Orthographic camera test, toggled from the settings panel - all the
     // existing follow/orbit/raycast/billboard logic below keeps driving the
@@ -18740,7 +18738,7 @@ export function startGame(CharacterClass) {
         { id: 'climb-speed-slider', vId: 'climb-speed-val', func: v => char.updateClimbSpeed(v), fix: 1 },
         { id: 'land-speed-slider', vId: 'land-speed-val', func: v => char.updateLandSpeed(v), fix: 1 },
         { id: 'land-dur-slider', vId: 'land-dur-val', func: v => baseLandingAnimDuration = v },
-        { id: 'compass-pitch-slider', vId: 'compass-pitch-val', func: v => window.compassMaxPitchDeg = v, raw: true },
+        { id: 'compass-roll-slider', vId: 'compass-roll-val', func: v => window.compassFaceRollDeg = v, raw: true },
         { id: 'climb-trans-slider', vId: 'climb-trans-val', func: v => climbTransitionDuration = v },
         { id: 'wall-stop-slider', vId: 'wall-stop-val', func: v => wallStopThreshold = v, fix: 2 },
         { id: 'standup-start-slider', vId: 'standup-start-val', func: v => char.standupStartTime = v },
@@ -24474,21 +24472,68 @@ export function startGame(CharacterClass) {
         // specific to go (see buildVillageLevel's forest-entrance quest),
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
-        compassMesh.lookAt(window.compassTarget || star.position);
-        // ...then levelled off. See compassMaxPitchDeg.
-        {
-            const lim = THREE.MathUtils.degToRad(window.compassMaxPitchDeg);
-            _compassEuler.setFromQuaternion(compassMesh.quaternion, 'YXZ');
-            const clamped = THREE.MathUtils.clamp(_compassEuler.x, -lim, lim);
-            if (clamped !== _compassEuler.x || _compassEuler.z !== 0) {
-                _compassEuler.x = clamped;
-                // Roll goes too. lookAt keeps the model upright against world
-                // up, so this is normally already zero - but it stops being
-                // zero the moment the target is near vertical, which is
-                // exactly the case being fixed.
-                _compassEuler.z = 0;
-                compassMesh.quaternion.setFromEuler(_compassEuler);
-            }
+        // ---- Aimed like the old 2D compass, drawn as the 3D model ----
+        //
+        // It used to lookAt the target, which points a real arrow at a real
+        // place in the world - and that is the wrong instrument. Aimed that
+        // way the needle is foreshortened by however far off your heading the
+        // target is (dead ahead, you see it end-on and it reads as a dot), it
+        // tips out of level whenever the target is above or below you, and
+        // with the target directly overhead lookAt has no basis to build at
+        // all: its direction and its up vector are the same line, so the
+        // orientation comes out degenerate and the compass vanishes. That
+        // last one is what "it disappears" was.
+        //
+        // A flat compass has none of those problems because it answers a
+        // different question. It does not point AT the target, it shows the
+        // target's BEARING relative to the way you are facing: up the screen
+        // is straight ahead, right is to your right, down is behind you. The
+        // needle stays the same length and stays readable from any angle, and
+        // height simply does not enter into it.
+        //
+        // So: the bearing is worked out flat, in world xz, and then drawn in
+        // the plane of the SCREEN. The model still turns in 3D and still
+        // catches the light in 3D - it is only being aimed two-dimensionally.
+        const tgt = window.compassTarget || star.position;
+        // Where the needle WOULD point in 3D - the direction lookAt used to
+        // aim it - taken as a plain vector rather than as an orientation.
+        // That is the whole of the disappearing bug: a direction is fine
+        // straight overhead, an orientation built from one is not.
+        _compassFwd.subVectors(tgt, compassMesh.position);
+        if (_compassFwd.lengthSq() < 1e-8) _compassFwd.set(0, 0, -1);
+        _compassFwd.normalize().multiplyScalar(COMPASS_SIZE * 0.5);
+        // Its two ends, projected to the screen. The angle between them IS
+        // the direction the 3D needle reads as from where you are standing,
+        // which is what gets drawn flat below.
+        camera.updateMatrixWorld();
+        _compassMatInv.copy(camera.matrixWorld).invert();
+        camera.matrixWorldInverse.copy(_compassMatInv);
+        _compassTip.copy(compassMesh.position).add(_compassFwd).project(camera);
+        _compassTail.copy(compassMesh.position).sub(_compassFwd).project(camera);
+        const sx = _compassTip.x - _compassTail.x;
+        // NDC y runs UP, and so does the screen angle measured below, so it
+        // needs no flip. The aspect ratio does: NDC is square and the viewport
+        // is not, so an angle read straight off it leans.
+        const sy = (_compassTip.y - _compassTail.y) / Math.max(camera.aspect, 1e-6);
+        // Dead ahead or dead behind, both ends land on nearly the same pixel
+        // and the angle between them is noise. Hold the last good one rather
+        // than letting the needle spin - which is also what "ahead" should
+        // look like: unchanged.
+        if (sx * sx + sy * sy > 1e-12) _compassBearing = Math.atan2(sx, sy);
+        const bearing = _compassBearing;
+        // That bearing as a direction in the camera's own frame - x right, y
+        // up - then back into world space. Straight ahead gives (0,1,0),
+        // i.e. the needle pointing up the screen.
+        _compassDir.set(Math.sin(bearing), Math.cos(bearing), 0).applyQuaternion(camera.quaternion);
+        // Out of the screen, toward the viewer, so the model's own up ends up
+        // facing you rather than facing into the picture.
+        _compassBack.set(0, 0, 1).applyQuaternion(camera.quaternion);
+        compassMesh.up.copy(_compassBack);
+        compassMesh.lookAt(_compassAim.copy(compassMesh.position).add(_compassDir));
+        // Local z IS the needle's axis (see the model's own rotation where it
+        // is loaded), so this spins the face without moving the direction.
+        if (window.compassFaceRollDeg) {
+            compassMesh.rotateZ(THREE.MathUtils.degToRad(window.compassFaceRollDeg));
         }
         compassMesh.updateMatrixWorld();
 

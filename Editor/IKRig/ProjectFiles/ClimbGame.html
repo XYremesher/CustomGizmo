@@ -1540,13 +1540,14 @@
                          first - nobody looking for a compass setting finds it
                          there. It is a thing on screen, so it lives under UI.
 
-                         Max Tilt is how far the needle may tip out of level.
-                         0 is dead flat; the default keeps enough tilt to say
-                         the goal is above you without the needle standing on
-                         end. See compassMaxPitchDeg in game_js.js. -->
+                         Face Roll spins the needle about its own axis, for
+                         turning the model's face toward the viewer - which way
+                         round that is depends on how Compass.glb was authored,
+                         so it is a number to try rather than one to work out.
+                         See compassFaceRollDeg in game_js.js. -->
                     <label><input type="checkbox" id="toggle-compass-3d" checked> Compass (3D needle)</label><br>
-                    <label>Compass Max Tilt: <span id="compass-pitch-val">22</span>&deg;</label><br>
-                    <input type="range" id="compass-pitch-slider" min="0" max="90" step="1" value="22" style="width: 100%;"><br>
+                    <label>Compass Face Roll: <span id="compass-roll-val">0</span>&deg;</label><br>
+                    <input type="range" id="compass-roll-slider" min="0" max="360" step="5" value="0" style="width: 100%;"><br>
                     <!-- Elements hidden from the default control set (see
                          ClimbGame.html #base-right/#build-btn and their
                          wiring in game_js.js) - both off by default here
