@@ -17468,6 +17468,21 @@ export function startGame(CharacterClass) {
     // player too.
     window.ditherDepthFade = 4.5;
     const _ditherDepthFadeUniform = { value: window.ditherDepthFade };
+    // 1 while the camera is inside solid level geometry.
+    //
+    // The depth test below only discards what is NEARER than the player, which
+    // is right from outside a wall: the far side of it is behind you and
+    // taking that away would be taking away the world. From INSIDE one it is
+    // exactly backwards. The near faces are behind the camera and culled, so
+    // everything you can actually see is the FAR side - and the depth test
+    // then protects precisely that. "The blocks only dither from the outside"
+    // is not a missing dissolve, it is a dissolve pointed the wrong way.
+    //
+    // Inside, the depth gate is dropped and the hole cuts through whatever is
+    // in it. Shared rather than per material because the answer is about where
+    // the CAMERA is, not about any one mesh, and a camera inside one thing
+    // should see out through everything between it and out.
+    const _ditherInsideUniform = { value: 0 };
     // Turns a material into one that can dissolve. Returns the uniform so the
     // per-frame code can drive it; the material keeps its own reference too.
     function makeDitherable(material) {
@@ -17484,9 +17499,10 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherFeather = _ditherFeatherUniform;
             shader.uniforms.uDitherHoleOn = _ditherHoleOnUniform;
             shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
+            shader.uniforms.uDitherInside = _ditherInsideUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
-                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\n${DITHER_GLSL}\nvoid main() {`)
+                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\n${DITHER_GLSL}\nvoid main() {`)
                 // First statement in main, before any lighting work is done
                 // for a fragment that is about to be thrown away.
                 //
@@ -17506,7 +17522,7 @@ export function startGame(CharacterClass) {
                 // player dissolves, so the far side of the same block, and
                 // anything behind the player, stays solid.
                 .replace('#include <clipping_planes_fragment>',
-                    `if (uDitherAmount > 0.001 && vViewPosition.z < uDitherPlayerDepth - 0.35) {
+                    `if (uDitherAmount > 0.001 && (uDitherInside > 0.5 || vViewPosition.z < uDitherPlayerDepth - 0.35)) {
         float _dr = length(gl_FragCoord.xy - uDitherScreen) / max(uDitherRadius, 1.0);
         float _dHole = 1.0 - smoothstep(1.0 - uDitherFeather, 1.0, _dr);
         float _dEdge = mix(1.0, _dHole, uDitherHoleOn);
@@ -17515,7 +17531,9 @@ export function startGame(CharacterClass) {
         // from in front of the player to behind them lost its near half in one
         // step and read as a sawn-off stump. Ramping the amount across a depth
         // band instead lets the trunk thin out along its length.
-        float _dDepth = 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
+        // Inside, depth says nothing useful - see uDitherInside.
+        float _dDepth = uDitherInside > 0.5 ? 1.0
+            : 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
         float _dCut = uDitherAmount * _dEdge * _dDepth;
         if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
     }
@@ -18770,6 +18788,9 @@ export function startGame(CharacterClass) {
                 if (_camInsideBox.containsPoint(cam.position)) { inside = true; break; }
             }
         }
+        // Told to the shader as well as to the black layer - the two are
+        // answering the same question, so this is the one place that asks it.
+        _ditherInsideUniform.value = inside ? 1 : 0;
         const want = inside ? window.cameraInsideDark
             : occludedOnly ? window.cameraOccludedDark : 0;
         if (want > 0) {
