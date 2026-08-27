@@ -23736,7 +23736,23 @@ export function startGame(CharacterClass) {
                 // slide/walk range.
                 const realWallNormal = wH.length > 0 ? wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld) : null;
                 const isRampHit = wH.length > 0 && wH[0].object.userData?.isSlopeRamp;
-                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
+                // A practice bag is not a ledge.
+                //
+                // Its collider is a 1.2x2.4x1.2 box flagged isObstacle/isWall,
+                // which is what stops you walking through it - and a 2.4 top
+                // now sits inside the grounded grab's reach, so walking up to
+                // punch it climbed it instead. That reach is new (see
+                // grabFromGroundReach, which opened a window that had been
+                // empty), and this is its cost: something waist-to-chest high
+                // that was only ever meant to be an obstacle turns into
+                // furniture. The bag is the one such thing in the level and it
+                // already carries a flag of its own.
+                //
+                // Refused here, at the "is this a climbable wall" test, rather
+                // than at the grab itself - the grab decision is made before
+                // this ray is cast, so the object is not known there yet.
+                const isBagHit = wH.length > 0 && wH[0].object.userData?.isSandbagCollider;
+                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && !isBagHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
                     // Captured BEFORE the setY(0) flatten below destroys the
                     // real 3D normal - this is the grabbed face's actual
                     // steepness (its normal's angle from straight up; 90deg
