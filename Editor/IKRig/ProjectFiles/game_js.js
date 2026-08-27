@@ -11754,6 +11754,7 @@ export function startGame(CharacterClass) {
     // the meeting happens out in the clearing rather than in the passage,
     // where there is no room to walk round anyone.
     const STORY_FIRST_OFFSET = 22;
+    const STORY_FIRST_OFFSET_LINEAR = 60;
     // The companion and the bag stand SIDE BY SIDE, straddling the middle of
     // the path rather than one of them being pushed off into the trees. Half
     // the gap between them, so the pair stays centred on the route whatever
@@ -11784,7 +11785,17 @@ export function startGame(CharacterClass) {
     // deciding what to plant, which is long before the player is placed.
     function forestMeetPoint() {
         const [z0, z1] = forestCorridorZ(-1);
-        return { x: forestEntryX(), z: (z0 + z1) * 0.5 + STORY_FIRST_OFFSET };
+        // Further along in the linear wood. There the bag and its tutor stand
+        // 8 in front of the corridor, and a first companion at the usual 22
+        // would be almost on top of them - three beats inside fourteen units.
+        // At 60 the bag, the single enemy that follows it and this one are
+        // spaced out along the walk instead of stacked at the entrance.
+        //
+        // Changed HERE rather than at the placement, because pass 1 keeps a
+        // clearing around this point (STORY_MEET_CLEAR) - moving the companion
+        // without moving the clearing would stand it in the trees.
+        const off = isLinearForest() ? STORY_FIRST_OFFSET_LINEAR : STORY_FIRST_OFFSET;
+        return { x: forestEntryX(), z: (z0 + z1) * 0.5 + off };
     }
     // ...and where the SECOND one waits, on the far island. It gets a clearing
     // of its own for the same reason the first does, and more so: that scene
@@ -11922,6 +11933,7 @@ export function startGame(CharacterClass) {
         // The companions themselves are owned by the companion registry -
         // this only drops the waiting list.
         _freeRecruits = [];
+        _bagMoveOnT = -1;
         _forestTopReached = false;
         _forestStairsSeen = false;
         coachStep = -1;
@@ -12256,17 +12268,28 @@ export function startGame(CharacterClass) {
             // is its own fight (see AI_BOT_SPECS) and splitting them would
             // just be two easier ones.
             if (isLinearForest()) {
-                const walkFrom = m1.z, walkTo = forestPlatformZ0();
-                const along = t => walkFrom + (walkTo - walkFrom) * t;
-                // Off the centre line, and on opposite sides, so you meet them
-                // as figures among the trunks rather than as a row.
-                botAt.BotYellow  = { x:  4.0, z: along(0.25) };
-                botAt.BotYellow2 = { x: -3.5, z: along(0.28) };
-                // 0.85, not 0.75: at 0.75 it landed within a metre of the
-                // second companion, and standing an enemy on top of the
-                // recruit is the thing FREE_BOT_STANDOFF exists to stop -
-                // waking it should give you time to see it coming.
-                botAt.BotOrange  = { x:  3.0, z: along(0.85) };
+                // ---- One at a time, then two ----
+                //
+                // The first enemy of the level is a single yellow, standing
+                // between the bag and the first companion: it arrives on its
+                // own, right after the thing that taught you to punch, and one
+                // of the simplest enemy is exactly what a first fight wants.
+                //
+                // The pair comes next, with the first companion - a yellow and
+                // an orange together. That is a real step up rather than more
+                // of the same: the orange throws the five-hit combo, so you
+                // are keeping track of a flank AND something that does not
+                // stop after one punch, and you have someone with you for it.
+                const solo = (bag.z + m1.z) * 0.5;
+                botAt.BotYellow  = { x:  3.0, z: solo };
+                // Close enough TO EACH OTHER to wake together: collecting the
+                // companion wakes the nearest sleeper and then everything
+                // within WAKE_PACK_RADIUS of it, which is 10. Standing them at
+                // the full standoff either side of the path put 22 between
+                // them, so only one would have got up and the pair would have
+                // arrived as two separate fights.
+                botAt.BotYellow2 = { x: m1.x - 5.0, z: m1.z + FREE_BOT_STANDOFF };
+                botAt.BotOrange  = { x: m1.x + 3.0, z: m1.z + FREE_BOT_STANDOFF + 2.0 };
             }
             // Yaw that points +Z (the direction inVisionCone measures from)
             // along ax,az -> bx,bz.
@@ -13008,6 +13031,19 @@ export function startGame(CharacterClass) {
     // apart, and waking one of a pair leaves the other standing there asleep
     // while its partner fights - which reads as a bug, not as staging.
     const WAKE_PACK_RADIUS = 10.0;
+    // One specific sleeper, by its spec key - for the beats that are staged
+    // rather than found. wakeNearestSleeper is right when the question is
+    // "something near here"; this is for when the answer is a particular one.
+    function wakeBot(key) {
+        const spec = AI_BOT_SPECS.find(sp => sp.key === key);
+        const rec = spec && aiBots.find(r => r.bot.id === spec.id);
+        if (!rec || !rec.bot) return;
+        // Both flags, the same pair wakeNearestSleeper clears and for the same
+        // reason - dormant alone leaves it liable to be put back to sleep and
+        // then unable to wake itself again.
+        rec.bot.dormant = false;
+        rec.bot.holdAsleep = false;
+    }
     function wakeNearestSleeper(near) {
         let best = null, bestD2 = Infinity;
         for (let i = 0; i < aiBots.length; i++) {
@@ -13042,7 +13078,16 @@ export function startGame(CharacterClass) {
     // you have actually hit it: bagHitCount only counts punches that CONNECT
     // (see the sandbag branch in detectMeleeHits), so it comes down when the
     // lesson has landed rather than when you have swung near it.
-    function updateBagArrow(tSec) {
+    // What the tutor says once you have hit the bag, and how long it waits.
+    //
+    // Not immediately: the first punch is the moment the lesson lands, and
+    // talking over it would step on the thing you just did. A couple of
+    // seconds is long enough to watch the bag swing and short enough that it
+    // reads as a reply to what you did.
+    const BAG_MOVE_ON_DELAY = 2.5;
+    const STORY_MOVE_ON_LINE = 'Let\'s move on and\nfind the others.';
+    let _bagMoveOnT = -1;
+    function updateBagArrow(tSec, delta) {
         const bag = _forestSandbag;
         if (!bag || !bag.group) return;
         // bagHitCount counts the PLAYER's connecting punches only - the
@@ -13055,9 +13100,27 @@ export function startGame(CharacterClass) {
             // demonstration. Cleared on whoever was given it rather than on a
             // remembered reference, so it does not matter which companion it
             // was or whether it has joined you since.
+            let tutor = null;
             for (let i = 0; i < companions.length; i++) {
                 const cm = companions[i].comp;
-                if (cm && cm.demoTarget && cm.demoTarget.sandbag === bag) cm.demoTarget = null;
+                if (cm && cm.demoTarget && cm.demoTarget.sandbag === bag) { cm.demoTarget = null; tutor = cm; }
+                if (!tutor && cm && cm._wasBagTutor) tutor = cm;
+            }
+            if (tutor) tutor._wasBagTutor = true;
+            // ...and then, a moment later, it says so and the first enemy
+            // comes. -1 is "not started", so this arms on the first frame
+            // after the bag is hit and runs once.
+            if (_bagMoveOnT < 0) _bagMoveOnT = 0;
+            else if (_bagMoveOnT < BAG_MOVE_ON_DELAY) {
+                _bagMoveOnT += delta || 0;
+                if (_bagMoveOnT >= BAG_MOVE_ON_DELAY) {
+                    if (tutor) storySay(tutor, STORY_MOVE_ON_LINE, 'companion');
+                    // By name, not by nearness: this beat is staged. The
+                    // nearest sleeper to the bag IS the single yellow, but
+                    // only because of where it was put - saying which one is
+                    // what keeps that true when something moves.
+                    wakeBot('BotYellow');
+                }
             }
             return;
         }
@@ -13067,7 +13130,7 @@ export function startGame(CharacterClass) {
     function updateFreeRecruits(delta) {
         if (!isFreeForest()) return;
         _freeRecruitT += delta || 0;
-        updateBagArrow(_freeRecruitT);
+        updateBagArrow(_freeRecruitT, delta);
         if (!_freeRecruits.length) return;
         const p = char.group.position;
         let released = false;
