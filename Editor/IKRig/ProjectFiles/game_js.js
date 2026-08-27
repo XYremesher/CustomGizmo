@@ -12108,6 +12108,35 @@ export function startGame(CharacterClass) {
                 BotYellow2: { x: m1.x + FREE_BOT_STANDOFF + 4.0, z: m1.z + FREE_BOT_STANDOFF - 3.0 },
                 BotOrange:  { x: m2.x + FREE_BOT_STANDOFF, z: m2.z + FREE_BOT_STANDOFF },
             };
+            // ---- Spread along the walk, in the linear wood ----
+            //
+            // Standing each enemy a few metres off its own companion is right
+            // in the square wood: you arrive at a clearing and the fight is
+            // the clearing. Down a strip you walk one way through, it leaves
+            // the middle of the level empty - the two yellows sat 11 past the
+            // first companion and then there was nothing at all until the
+            // second, the stream crossing included.
+            //
+            // Stations along the walk instead, as fractions of the distance
+            // from the first companion to the landing at the top. Each is
+            // still AHEAD of the companion whose collection wakes it, so the
+            // order you meet things in survives: companion, fight, companion,
+            // fight. The pair stays a pair - two of the simplest enemy at once
+            // is its own fight (see AI_BOT_SPECS) and splitting them would
+            // just be two easier ones.
+            if (isLinearForest()) {
+                const walkFrom = m1.z, walkTo = forestPlatformZ0();
+                const along = t => walkFrom + (walkTo - walkFrom) * t;
+                // Off the centre line, and on opposite sides, so you meet them
+                // as figures among the trunks rather than as a row.
+                botAt.BotYellow  = { x:  4.0, z: along(0.25) };
+                botAt.BotYellow2 = { x: -3.5, z: along(0.28) };
+                // 0.85, not 0.75: at 0.75 it landed within a metre of the
+                // second companion, and standing an enemy on top of the
+                // recruit is the thing FREE_BOT_STANDOFF exists to stop -
+                // waking it should give you time to see it coming.
+                botAt.BotOrange  = { x:  3.0, z: along(0.85) };
+            }
             // Yaw that points +Z (the direction inVisionCone measures from)
             // along ax,az -> bx,bz.
             const yawTowards = (ax, az, bx, bz) => Math.atan2(bx - ax, bz - az);
