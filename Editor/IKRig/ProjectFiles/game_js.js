@@ -18669,7 +18669,22 @@ export function startGame(CharacterClass) {
     // orbit that goes through walls.
     window.cameraCollide = true;
     window.cameraCollidePad = 0.4;   // how far short of the surface it stops
-    window.cameraCollideMin = 1.6;   // ...and how close it may ever get to you
+    // How close it may ever get. 1.6 was far too near - a camera that hard
+    // against your back fills the screen with whatever you are standing on and
+    // shows nothing of the game.
+    //
+    // The game already has a number for "close but still usable":
+    // cameraMinCloseDistance, 5.0, is where the orbit itself stops when you
+    // look down. This sits just inside that, so collision may bring the camera
+    // closer than the orbit ever would, but not into the back of your head.
+    //
+    // The trade is deliberate and is the whole difficulty here. Held at 3.5,
+    // something less than 3.5 behind you is NOT avoided - the camera stays
+    // inside it and the x-ray ghost carries the view, which is the same answer
+    // the ledge-hang already uses. Lowering this avoids more geometry and
+    // costs framing; raising it keeps framing and lets the camera sit in more
+    // walls. There is no value that does both.
+    window.cameraCollideMin = 3.5;
     const _camColRay = new THREE.Raycaster();
     const _camColDir = new THREE.Vector3();
     const _camColFrom = new THREE.Vector3();
