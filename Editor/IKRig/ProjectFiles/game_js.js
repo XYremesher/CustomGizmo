@@ -12181,7 +12181,7 @@ export function startGame(CharacterClass) {
             makeLevelOccluder(box, { grass: true });
             // Same reason as the frame wall's: at the block strength a step
             // this wide does not read as dissolving, it reads as missing.
-            box.userData.ditherStrengthOverride = window.ditherLevelStrength;
+            box.userData.ditherIsLevelPiece = true;
             // ...and tufts are planted ON it, the way they are on the forest
             // floor. Without this the scatter treats every step as an
             // obstacle - it rejects anything whose underside is lower than a
@@ -14337,7 +14337,7 @@ export function startGame(CharacterClass) {
                 // that vanishes is a hole in the world rather than a window.
                 makeLevelOccluder(inst, { grass: true });
                 inst.userData.ditherByMesh = true;
-                inst.userData.ditherStrengthOverride = window.ditherLevelStrength;
+                inst.userData.ditherIsLevelPiece = true;
                 return inst;
             };
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
@@ -17011,10 +17011,16 @@ export function startGame(CharacterClass) {
     // they read as a hole punched in the world - the thing itself disappears
     // rather than becoming see-through.
     //
-    // 0.55 leaves enough of the surface behind to still read as a wall you can
-    // now see through, which is what a screen door is supposed to look like.
-    // Per object via userData.ditherStrengthOverride, so a block keeps 0.98.
-    window.ditherLevelStrength = 0.55;
+    // 0.35 keeps two thirds of the surface, which is a wall you can see
+    // through rather than a gap where a wall was. Marked per object with
+    // userData.ditherIsLevelPiece, so a block you built keeps 0.98 - and read
+    // live, so this can be dialled from the console without a rebuild.
+    //
+    // It is a by-eye number and it is meant to be moved: what matters is that
+    // there is still visibly something there. Behind these pieces is usually
+    // sky, and a wall thinned against bright sky vanishes at a lower amount
+    // than one thinned against more world.
+    window.ditherLevelStrength = 0.35;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     // 15, up from 7. The dissolve is a readability aid - it exists so you can
@@ -17400,8 +17406,13 @@ export function startGame(CharacterClass) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
             if (!u) continue;
-            const full = obj.userData.ditherStrengthOverride !== undefined
-                ? obj.userData.ditherStrengthOverride : window.ditherStrength;
+            // Read LIVE, not copied in at build time. A number baked into
+            // userData when the level was made cannot be tuned without
+            // rebuilding it, and this is a by-eye setting - the whole reason
+            // it exists is that the right amount is whatever stops looking
+            // like a hole.
+            const full = obj.userData.ditherIsLevelPiece
+                ? window.ditherLevelStrength : window.ditherStrength;
             const blockTarget = obj.userData._ditherHold > 0 ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
