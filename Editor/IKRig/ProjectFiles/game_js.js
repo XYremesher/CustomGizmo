@@ -4038,6 +4038,23 @@ export function startGame(CharacterClass) {
         for (let i = 0; i < collidables.length; i++) {
             const ud = collidables[i].userData;
             if (ud && ud.isTreeCollider) continue;
+            // The practice bag does not block sight - and the reason is that
+            // it was blocking its OWN.
+            //
+            // The ray below stops 0.3 short of the target "to ignore the
+            // target's own body", which is the right margin for a character.
+            // The bag is a 1.2-wide box, so its collider is entered 0.6 before
+            // its centre: standing where the wall-stop leaves you, the eye is
+            // 1.21 from the aim point, the ray runs to 0.91, and the box
+            // starts at 0.55. The bag failed its own line-of-sight test, so it
+            // could never be locked on to, so the auto punch never fired at
+            // it - which is exactly "it does not swing at the sandbag".
+            //
+            // Dropped from the list rather than patched with a bigger margin:
+            // a waist-high prop is not something that should hide anything
+            // from anyone, and the same argument the tree colliders are
+            // excluded on applies to it.
+            if (ud && ud.isSandbagCollider) continue;
             _losList.push(collidables[i]);
         }
         return _losList;
