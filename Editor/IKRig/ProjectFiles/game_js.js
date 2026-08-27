@@ -848,7 +848,25 @@ export function startGame(CharacterClass) {
     // otherwise compute - this is what actually stops it from ever
     // visually sinking into the ground on a steep downward camera pitch.
     const COMPASS_MIN_FLOOR_CLEARANCE = 1.2;
+    // How far the needle is allowed to tip out of level, in degrees.
+    //
+    // lookAt aims it in full 3D, which is correct as an arrow and wrong as a
+    // compass: a compass lies flat and answers WHICH WAY, and the moment the
+    // target is above or below you the needle stands on end and stops
+    // reading as a direction at all. The level's own goal is the worst case -
+    // it sits up on the canopy platform about 10 units off the floor, so
+    // twenty units out the needle is already tilted 27 degrees and close up
+    // it is pointing nearly straight at the sky.
+    //
+    // Clamped rather than flattened, because some tilt is worth keeping: it
+    // is the only thing that says the goal is UP there rather than along the
+    // ground. 22 degrees is enough to read as "and upward" while leaving the
+    // needle's direction the thing you actually see. 0 makes it dead level.
+    window.compassMaxPitchDeg = 22;
     const _compassOffset = new THREE.Vector3();
+    // YXZ, so x really is pitch after yaw has been applied - in the default
+    // XYZ order the two are mixed and clamping x would swing the heading.
+    const _compassEuler = new THREE.Euler(0, 0, 0, 'YXZ');
 
     // Orthographic camera test, toggled from the settings panel - all the
     // existing follow/orbit/raycast/billboard logic below keeps driving the
@@ -24456,6 +24474,21 @@ export function startGame(CharacterClass) {
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
         compassMesh.lookAt(window.compassTarget || star.position);
+        // ...then levelled off. See compassMaxPitchDeg.
+        {
+            const lim = THREE.MathUtils.degToRad(window.compassMaxPitchDeg);
+            _compassEuler.setFromQuaternion(compassMesh.quaternion, 'YXZ');
+            const clamped = THREE.MathUtils.clamp(_compassEuler.x, -lim, lim);
+            if (clamped !== _compassEuler.x || _compassEuler.z !== 0) {
+                _compassEuler.x = clamped;
+                // Roll goes too. lookAt keeps the model upright against world
+                // up, so this is normally already zero - but it stops being
+                // zero the moment the target is near vertical, which is
+                // exactly the case being fixed.
+                _compassEuler.z = 0;
+                compassMesh.quaternion.setFromEuler(_compassEuler);
+            }
+        }
         compassMesh.updateMatrixWorld();
 
         // X-ray: if a wall sits between the camera and the player (camera
