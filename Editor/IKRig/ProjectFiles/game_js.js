@@ -12266,7 +12266,7 @@ export function startGame(CharacterClass) {
                 // Its lesson is the bag: collect it, hear what the button
                 // does, and there is something standing there to try it on.
                 { key: 'CompSky', x: bag.x - STORY_PAIR_HALF * 2, y: null, z: bag.z,
-                  say: STORY_AUTOPUNCH_LINE, noWake: true },
+                  say: STORY_AUTOPUNCH_LINE, quiet: true },
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
@@ -12288,7 +12288,7 @@ export function startGame(CharacterClass) {
                 // takes it away again, so its presence and followOverride
                 // always agree.
                 attachRecruitBeacon(comp);
-                _freeRecruits.push({ comp, at, noWake: !!sp.noWake });
+                _freeRecruits.push({ comp, at, quiet: !!sp.quiet });
             });
             // Every enemy in the level, placed now and asleep. One of them
             // per beat, where that beat happens: the first clearing, the far
@@ -13054,19 +13054,19 @@ export function startGame(CharacterClass) {
             // companion could pass with nothing happening at all. Waking the
             // nearest sleeper here ties the two together: you gain someone,
             // and something comes for you.
-            // The one at the bag brings no fight with it. Every other
-            // collection wakes the nearest sleeper - you gain someone and
-            // something comes for you - but this one's whole point is a
-            // stationary target and time to hit it, and the nearest sleeper
-            // to the corridor mouth is the yellow pair fifty units up the
-            // path. Waking them here would put a fight in the middle of the
-            // punch lesson.
+            // The one at the bag brings NOTHING with it - no fight and no
+            // card.
             //
-            // The LESSON still advances, which is why this is not simply a
-            // skip: showFightHint lives inside wakeNearestSleeper precisely so
-            // that collecting a companion always earns the next card, whether
-            // or not there was anything nearby to wake.
-            if (r.noWake) showFightHint(); else wakeNearestSleeper(r.at);
+            // No fight, because the nearest sleeper to the corridor mouth is
+            // the yellow pair fifty units up the path, and waking them here
+            // would put one in the middle of the punch lesson.
+            //
+            // No card either. The combo card is about a fight - it carries an
+            // enemy's face on it - and handing it over at the bag spends it
+            // before there is anything to use it on. This one's lesson is the
+            // bag standing in front of it and the line it says; the cards
+            // start with the first companion that comes with an enemy.
+            if (!r.quiet) wakeNearestSleeper(r.at);
         }
         // Nothing is spawned on reaching the top either - the red one has
         // been standing on that step since the level loaded.
