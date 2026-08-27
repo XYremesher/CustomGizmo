@@ -5426,11 +5426,17 @@ export function startGame(CharacterClass) {
         { key: 'CompDark', id: 'companion-3', color: 0x1b3fa0,
           retaliateChance: 1.0, punchCount: 1, charge: true, sideOffset: 0 },
         // The one waiting at the practice bag, a few strides from where you
-        // start. A mid blue between CompBlue's default and CompDark's navy, so
-        // the four of them read as the same crew at four depths rather than as
-        // four unrelated colours.
-        { key: 'CompSky', id: 'companion-4', color: 0x4fa3d9,
-          retaliateChance: 1.0, punchCount: 3, fullCombo: true, sideOffset: 0 },
+        // start. Teal rather than another blue: at 0x4fa3d9 it read as the
+        // blue companion in a different light, and the one you meet first is
+        // the one that most needs to be told apart at a glance.
+        //
+        // NO fullCombo, unlike the other three. It is demonstrating the punch
+        // you have just been given - plain alternating jabs, the thing the
+        // button does when you tap it. Showing you the five-hit string here
+        // would be showing you the lesson AFTER this one, and the card for
+        // that arrives with the next companion.
+        { key: 'CompSky', id: 'companion-4', color: 0x27c0c8,
+          retaliateChance: 1.0, punchCount: 3, sideOffset: 0 },
     ];
     const AI_BOT_SPECS = [
         { key: 'BotYellow', id: 'ai-bot-1', color: 0xffd633, offset: [3, 0, 3] },
@@ -12280,7 +12286,12 @@ export function startGame(CharacterClass) {
                 // of the same: the orange throws the five-hit combo, so you
                 // are keeping track of a flank AND something that does not
                 // stop after one punch, and you have someone with you for it.
-                const solo = (bag.z + m1.z) * 0.5;
+                // A third of the way to the first companion, not half.
+                // It is the fight the bag hands you straight over to, so it
+                // wants to be somewhere you reach shortly after putting your
+                // fists down - far enough that it is not standing over the
+                // lesson, near enough that it still belongs to it.
+                const solo = bag.z + (m1.z - bag.z) * 0.35;
                 botAt.BotYellow  = { x:  3.0, z: solo };
                 // Close enough TO EACH OTHER to wake together: collecting the
                 // companion wakes the nearest sleeper and then everything
@@ -13149,8 +13160,13 @@ export function startGame(CharacterClass) {
             // apart at a distance; once one is yours that distinction has
             // done its job, and a white dot is what marks it as collected.
             setCompanionMarkerColor(r.comp, 0xffffff);
-            // Anything this one was given to say, said now - the moment it
-            // becomes yours is the moment it has your attention.
+            // Whatever the last one was still saying is done. "Let's move
+            // on and find the others" is answered by finding one, so the line
+            // comes down when you do rather than sitting there through the
+            // fight it sent you into.
+            storySay(null, null, 'companion');
+            // ...and anything THIS one was given to say, said now - the moment
+            // it becomes yours is the moment it has your attention.
             if (r.comp._recruitLine) {
                 storySay(r.comp, r.comp._recruitLine, 'companion');
                 r.comp._recruitLine = null;
