@@ -771,6 +771,10 @@ export function startGame(CharacterClass) {
     // clamped to a minimum world Y afterward - a plain camera-child offset
     // has no such floor, so a steep enough downward pitch could swing the
     // offset point below ground level.
+    // The needle's white tail, kept so it can be hidden - see where it is
+    // picked out, and window.compassShowWhite.
+    let compassWhiteHalf = null;
+    window.compassShowWhite = false;
     const compassMesh = new THREE.Group();
     scene.add(compassMesh);
     window.compassMesh = compassMesh;
@@ -813,8 +817,20 @@ export function startGame(CharacterClass) {
                 // lighting response/gradient whatsoever - Lambert still
                 // varies continuously with the light angle (not flat
                 // enough), and Toon still bands in discrete steps.
+                // The needle is TWO cones sharing one node - measured off
+                // Compass.glb: material 0 is the yellow tip (0.80, 0.67,
+                // 0.01), material 1 is the white one (1, 1, 1). The white end
+                // is the tail, and the dialogue only ever promises the yellow
+                // one ("its yellow end always turns toward wherever you need
+                // to go"), so it is the half that can go.
+                //
+                // Picked by colour rather than by name because the two halves
+                // come in as one mesh split into primitives, and what three.js
+                // calls them depends on the loader's own numbering.
+                const col = c.material.color;
+                if (col && col.r > 0.9 && col.g > 0.9 && col.b > 0.9) compassWhiteHalf = c;
                 c.material = new THREE.MeshBasicMaterial({
-                    color: c.material.color ? c.material.color.clone() : 0xffffff,
+                    color: col ? col.clone() : 0xffffff,
                 });
                 // The needle sits inside the container's opaque volume,
                 // so its own near surface would normally depth-occlude
@@ -24485,6 +24501,7 @@ export function startGame(CharacterClass) {
         // into the ground on a steep downward pitch. Then just looks
         // straight at the level's exit (the yellow octahedron "star").
         compassMesh.visible = window.compass3DEnabled;
+        if (compassWhiteHalf) compassWhiteHalf.visible = window.compassShowWhite;
         _compassOffset.copy(COMPASS_LOCAL_OFFSET).applyQuaternion(camera.quaternion);
         compassMesh.position.copy(camera.position).add(_compassOffset);
         compassMesh.position.y = Math.max(compassMesh.position.y, floorY + COMPASS_MIN_FLOOR_CLEARANCE);
@@ -24501,9 +24518,22 @@ export function startGame(CharacterClass) {
         const compassTgt = window.compassTarget || star.position;
         const compassFrom = char.group.position;
         _compassFront.set(0, 0, -1).applyQuaternion(camera.quaternion);
-        const compassBearing =
-            Math.atan2(_compassFront.x, _compassFront.z)
-            - Math.atan2(compassTgt.x - compassFrom.x, compassTgt.z - compassFrom.z);
+        const compassCamYaw = Math.atan2(_compassFront.x, _compassFront.z);
+        const compassTgtYaw = Math.atan2(compassTgt.x - compassFrom.x, compassTgt.z - compassFrom.z);
+        const compassBearing = compassCamYaw - compassTgtYaw;
+        // Readable from the console while the arrow is visibly wrong, so the
+        // next look at this starts from numbers instead of a description.
+        // camPitch is in here because "it goes wrong when I tilt" is the one
+        // thing the maths says should NOT matter: the flattened forward keeps
+        // a horizontal length of at least 0.48 across the whole allowed pitch
+        // range (CAMERA_PHI 0.5..2.6), so the yaw it feeds cannot degenerate.
+        window.compassDbg = {
+            camYaw: THREE.MathUtils.radToDeg(compassCamYaw).toFixed(1),
+            tgtYaw: THREE.MathUtils.radToDeg(compassTgtYaw).toFixed(1),
+            bearing: THREE.MathUtils.radToDeg(compassBearing).toFixed(1),
+            camPitch: THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(_compassFront.y, -1, 1))).toFixed(1),
+            flat: !!window.compassFlat,
+        };
 
         if (window.compassFlat) {
             // The bearing as a direction in the camera's own frame - x right,
