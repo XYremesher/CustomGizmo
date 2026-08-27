@@ -13005,6 +13005,17 @@ export function startGame(CharacterClass) {
     // foot-plant like anything else - just pinned to a spot until you arrive.
     let _freeRecruits = [];
     let _freeRecruitT = 0;   // beacon bob clock
+    // How high off the forest floor counts as "up in the trees".
+    //
+    // The linear wood starts with no jump at all, which is right on the
+    // ground: everything down there is walked or climbed. Up on the canopies
+    // it stops being right - gaps between trees are exactly what a jump is
+    // for, and the level's own goal sits up there. So it is handed over the
+    // first time climbing has actually taken you somewhere high, and stays.
+    //
+    // Not un-handed on the way back down: a button that comes and goes as you
+    // climb would be worse than either having it or not.
+    const FOREST_JUMP_HEIGHT = 4.0;
     // Set on the first completed climb-up, cleared with the level.
     //
     // Declared HERE, next to the other level state, rather than beside the
@@ -13191,6 +13202,12 @@ export function startGame(CharacterClass) {
     // this ever appeared do not dismiss it unearned.
     let _hintComboFrom = 0;
     function updateHintCard(delta) {
+        // Watched here rather than at the pickup, so it catches every way of
+        // ending up carrying something - the button, the keyboard, the auto
+        // carry - without a third place to keep in step.
+        const carrying = !!window.isCarryingObj;
+        if (carrying && !_wasCarrying) showThrowHint();
+        _wasCarrying = carrying;
         if (!_hintId) return;
         _hintT += delta;
         if (_hintId === 'combo' && (window.comboLandedCount || 0) > _hintComboFrom) {
@@ -13208,6 +13225,9 @@ export function startGame(CharacterClass) {
             addNotificationToast('Got it!', window.playerIconDataUrl);
             return;
         }
+        // Put down or thrown, either way the lesson is over and the button
+        // it is about has gone with the load.
+        if (_hintId === 'throw' && !window.isCarryingObj) { hideHintCard(true); return; }
         if (_hintT > HINT_GIVE_UP) hideHintCard(false);
     }
     let _hintChargeFrom = 0;
@@ -13238,6 +13258,19 @@ export function startGame(CharacterClass) {
         showHintCard('carry',
             '<span class="hint-title">Carry</span><b>Hold</b> near a jar',
             null, { fromBtn: 'carry-btn' });
+    }
+    // ...and what to do with the thing once it is in your hands.
+    //
+    // Event-driven like the compass card rather than handed over by a
+    // companion: the moment that matters is the one where you are holding
+    // something, and that is not a moment anybody can be standing next to.
+    // The THROW button only exists while you are carrying, so a card about it
+    // has exactly that long to be useful.
+    let _wasCarrying = false;
+    function showThrowHint() {
+        showHintCard('throw',
+            '<span class="hint-title">Throw</span>Tap to <b>throw</b> it',
+            null, { fromBtn: 'throw-btn' });
     }
     // The compass, as a card rather than as a line over a companion's head.
     //
@@ -22886,6 +22919,13 @@ export function startGame(CharacterClass) {
                 if (!_climbPraised) {
                     _climbPraised = true;
                     addNotificationToast('Good climb!', window.playerIconDataUrl);
+                }
+                // ...and if that climb has put you up in the canopy, the jump
+                // is yours. See FOREST_JUMP_HEIGHT.
+                if (!window.jumpButtonEnabled && isLinearForest()
+                    && char.group.position.y > FOREST_JUMP_HEIGHT) {
+                    window.jumpButtonEnabled = true;
+                    addNotificationToast('Jump unlocked', window.playerIconDataUrl);
                 }
                 // A SHORT block after arriving on top, not the 0.5 the other
                 // exits use. Those are for letting GO of a ledge - jumping
