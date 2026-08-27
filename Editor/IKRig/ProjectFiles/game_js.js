@@ -17189,7 +17189,32 @@ export function startGame(CharacterClass) {
         const cb = window.combat;
         if (!cb) return;
         // The lock reaches further than the fist does - see autoPunchRange.
-        if (char.group.position.distanceTo(lockedBot.group.position) > window.autoPunchRange) return;
+        //
+        // Measured to the target's EDGE, not its centre. autoPunchRange is
+        // tuned against a character: separation holds two bodies about 1.15
+        // apart, so 1.6 has room to spare. A sandbag is a 1.2-wide box you
+        // stop dead against, so the same contact leaves its centre further
+        // away than a bot's ever is - the gap to the thing you are hitting is
+        // the same, and the number describing it is not. Read off the
+        // collider rather than written down, so a differently sized bag is
+        // still measured correctly.
+        let reach = window.autoPunchRange;
+        if (lockedBot.isSandbag && lockedBot.colliderMesh) {
+            const bb = lockedBot.colliderMesh.geometry.boundingBox;
+            if (bb) reach += Math.max(bb.max.x, bb.max.z);
+        }
+        const lockDist = char.group.position.distanceTo(lockedBot.group.position);
+        // Readable from the console while it is visibly not punching. Every
+        // guard above has already passed by here, so what this shows is the
+        // last one - and if it shows nothing locked at all, the answer is in
+        // updateLockTarget instead.
+        window.autoPunchDbg = {
+            target: lockedBot.isSandbag ? 'sandbag' : (lockedBot.id || 'bot'),
+            dist: lockDist.toFixed(2), reach: reach.toFixed(2),
+            inReach: lockDist <= reach, punchState: cb.punchState,
+            cooldown: autoPunchT.toFixed(2),
+        };
+        if (lockDist > reach) return;
 
         // Left, then right, then left again - not left, left, left.
         //
@@ -18638,12 +18663,21 @@ export function startGame(CharacterClass) {
         }
         // Only if nothing is trying to hit you.
         if (!found && window.sacks) {
-            let bagBest = window.lockOnRange;
+            let bagBest = Infinity;
             for (let i = 0; i < window.sacks.length; i++) {
                 const sk = window.sacks[i];
                 if (!usable(sk) || !inView(sk)) continue;
                 const d = p.distanceTo(sk.group.position);
-                if (d < bagBest) { bagBest = d; found = sk; }
+                // Its EDGE, not its centre - the same correction the auto
+                // punch makes, and for the same reason. lockOnRange is 2.0
+                // and a bot is a body you can stand right against; a bag is a
+                // box whose middle is half its width further off for the very
+                // same contact. Read off the collider so a differently sized
+                // bag still measures right.
+                let range = window.lockOnRange;
+                const bb = sk.colliderMesh && sk.colliderMesh.geometry.boundingBox;
+                if (bb) range += Math.max(bb.max.x, bb.max.z);
+                if (d < range && d < bagBest) { bagBest = d; found = sk; }
             }
         }
         lockedBot = found;
