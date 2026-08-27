@@ -17215,8 +17215,23 @@ export function startGame(CharacterClass) {
             ud._ditherHold = Math.max(0, (ud._ditherHold || 0) - delta);
         }
         let treeWanted = false;
+        // Nothing dissolves while you are on a ledge.
+        //
+        // Hanging is the one time the thing between you and the camera is the
+        // thing you are HOLDING. Dissolving it takes away the only context the
+        // move has - which lip, how far below it, what is under your feet -
+        // and leaves a body in mid-air over a hole where the cliff was. That
+        // is worse than not seeing yourself, and not seeing yourself is not
+        // what happens anyway: the x-ray ghost already draws the player
+        // through whatever is in front, which is the other half of this system
+        // and is exactly the case it was built for.
+        //
+        // Suppressed by not PROBING rather than by forcing the amounts to
+        // zero, so whatever was already dissolving fades back at its own
+        // speed instead of snapping solid the instant you catch a ledge.
+        const ditherHeld = !!window.isClimbing;
         _ditherDir.copy(playerPoint).sub(cam.position);
-        if (_ditherDir.lengthSq() > 1e-6) {
+        if (!ditherHeld && _ditherDir.lengthSq() > 1e-6) {
             _ditherDir.normalize();
             _ditherRight.crossVectors(_ditherDir, _upVec);
             if (_ditherRight.lengthSq() < 1e-6) _ditherRight.set(1, 0, 0); // looking straight down
@@ -17224,7 +17239,9 @@ export function startGame(CharacterClass) {
             _ditherUp.crossVectors(_ditherRight, _ditherDir).normalize();
         }
         const r = window.ditherProbeRadius;
-        for (let sIdx = 0; sIdx < 5; sIdx++) {
+        // ...and the probe itself, which is what actually arms anything. The
+        // block above only builds the axes it sweeps along.
+        for (let sIdx = 0; !ditherHeld && sIdx < 5; sIdx++) {
             _ditherTargetPoint.copy(playerPoint);
             if (sIdx === 1) _ditherTargetPoint.addScaledVector(_ditherRight, r);
             else if (sIdx === 2) _ditherTargetPoint.addScaledVector(_ditherRight, -r);
@@ -17315,7 +17332,7 @@ export function startGame(CharacterClass) {
             // compared against the radius. Squared distances throughout, so
             // there is no square root anywhere in the loop. Stops at the first
             // hit since every sphere can only set the same one flag.
-            if (!treeWanted) {
+            if (!ditherHeld && !treeWanted) {
                 for (let c = 0; c < ditherProbeSpheres.length; c++) {
                     const sp = ditherProbeSpheres[c];
                     const ox = sp.x - cam.position.x, oy = sp.y - cam.position.y, oz = sp.z - cam.position.z;
