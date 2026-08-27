@@ -17304,6 +17304,27 @@ export function startGame(CharacterClass) {
     // sky, and a wall thinned against bright sky vanishes at a lower amount
     // than one thinned against more world.
     window.ditherLevelStrength = 0.35;
+    // Whether the level's own big pieces dissolve at all. OFF.
+    //
+    // The amount has been tuned three times now - 0.98, 0.55, 0.35 - and each
+    // one still read wrong, which is the answer: the problem is not how much
+    // of a staircase is discarded, it is that discarding part of a staircase
+    // looks like damage rather than like transparency. A 3-unit block you
+    // built dissolves cleanly because it is small enough to be read as gone;
+    // a 52-wide flight and a wall that rings the level are the world, and the
+    // world going patchy reads as a fault.
+    //
+    // Nothing is lost by switching it off, because the other half of this
+    // system already covers the case: when anything stands between the camera
+    // and you, the x-ray ghost draws you through it. That is what carries the
+    // ledge-hang, where the dissolve is suppressed outright for the same
+    // reason - and that one has not been complained about.
+    //
+    // Left in and switched off rather than torn out: the pieces are still
+    // registered and still carry their own strength, so this is one live flag
+    // to compare the two, and the grass on them comes from the same call that
+    // registers them.
+    window.ditherLevelPieces = false;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     // 15, up from 7. The dissolve is a readability aid - it exists so you can
@@ -17694,9 +17715,13 @@ export function startGame(CharacterClass) {
             // rebuilding it, and this is a by-eye setting - the whole reason
             // it exists is that the right amount is whatever stops looking
             // like a hole.
-            const full = obj.userData.ditherIsLevelPiece
-                ? window.ditherLevelStrength : window.ditherStrength;
-            const blockTarget = obj.userData._ditherHold > 0 ? full : 0;
+            const isLevelPiece = !!obj.userData.ditherIsLevelPiece;
+            const full = isLevelPiece ? window.ditherLevelStrength : window.ditherStrength;
+            // See ditherLevelPieces. Driven to 0 rather than skipped, so
+            // turning it off fades whatever was mid-dissolve back to solid
+            // instead of snapping it.
+            const wants = obj.userData._ditherHold > 0 && (!isLevelPiece || window.ditherLevelPieces);
+            const blockTarget = wants ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
     }
