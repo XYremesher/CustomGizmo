@@ -2858,6 +2858,9 @@ export function startGame(CharacterClass) {
     window.aiVisionHold = 35;
     // ...and even inside that, someone this much closer takes the fight over.
     // Without it a bot chases a distant player past a companion hitting it.
+    // How much closer a companion has to be than the player before a bot
+    // goes for it instead. See aiBotPickVictim.
+    window.aiPlayerBias = 5.0;
     window.aiVisionSteal = 1.5;
     window.warpRingDist = 2.0;   // how far from you a warped agent lands
     // Upper/lower split on bot and companion punches. Off: every punch plays
@@ -4245,8 +4248,21 @@ export function startGame(CharacterClass) {
         const seen = (v) => !quat || blind ||
             inVisionCone(pos, quat, v.group.position, window.aiVisionDeg);
         let best = null, bestD = Infinity;
+        // The player counts as nearer than they are.
+        //
+        // Nearest-wins is the right shape, but it makes the fight belong to
+        // whoever happens to be standing closest - and at a staged wake that
+        // is the companion you have just collected, because it was put next to
+        // the sleepers on purpose. So the enemies you woke by picking someone
+        // up would all turn on that someone and never come at you, which is
+        // the fight happening beside you rather than to you.
+        //
+        // A bias rather than a rule: a companion that is genuinely much closer
+        // still gets the attention, which is what makes a companion useful as
+        // something to draw a fight. window.aiPlayerBias = 0 restores plain
+        // nearest-wins.
         if (aiBotVictimAvailable(char) && seen(char)) {
-            const d = pos.distanceTo(char.group.position);
+            const d = pos.distanceTo(char.group.position) - window.aiPlayerBias;
             if (d < bestD) { bestD = d; best = char; }
         }
         for (let i = 0; i < companions.length; i++) {
