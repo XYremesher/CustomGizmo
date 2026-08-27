@@ -5162,6 +5162,20 @@ export function startGame(CharacterClass) {
     const RECRUIT_BEACON_R = 0.42;
     const RECRUIT_BEACON_Y = 2.5;    // clear of the head
     const RECRUIT_BEACON_BOB = 0.12;
+    // What a waiting recruit says, and how close you have to be to hear it.
+    //
+    // The beacon says "someone is here" from across the wood - that is what a
+    // marker is for. The bubble says "come and get me", which only means
+    // anything once you are close enough to do it, and a world label is drawn
+    // at a fixed size however far away it is: three of them shouting across a
+    // 176-long level would be three signposts, not three people.
+    const RECRUIT_HAIL = 'Hey!';
+    const RECRUIT_HAIL_RANGE = 30;
+    // Clear of the beacon rather than under it. The triangle sits at
+    // RECRUIT_BEACON_Y with radius RECRUIT_BEACON_R, so its top edge is at
+    // 2.92 and the default bubble anchor of 2.35 would have put the text
+    // inside it.
+    const RECRUIT_HAIL_Y = RECRUIT_BEACON_Y + RECRUIT_BEACON_R + RECRUIT_BEACON_BOB + 0.3;
     const _beaconToCam = new THREE.Vector3();
     const _compDownAt = new THREE.Vector3(), _compDownBeacon = new THREE.Vector3();
     function attachRecruitBeacon(comp, color) {
@@ -5200,6 +5214,23 @@ export function startGame(CharacterClass) {
         group.position.y = RECRUIT_BEACON_Y;
         comp.group.add(group);
         comp._beacon = group;
+        // Hung off the beacon deliberately, not off the story's bubble slot:
+        // the two mean the same thing - this one is still waiting - and tying
+        // them together is what stops one outliving the other. The beacon's
+        // presence is already what the rest of the code reads as
+        // "uncollected".
+        //
+        // Only for a WAITING RECRUIT, though. This same beacon is reused to
+        // mark a companion of yours that has been knocked down and needs
+        // picking up, and there it is deliberately placed over the BODY -
+        // ragdoll drives the bones and leaves group frozen where the fall
+        // started. A world label is positioned from its owner's group, so a
+        // bubble on a downed companion would hang wherever it fell over from
+        // while the beacon marked where it actually lies. followOverride is
+        // what tells the two apart; the downed path checks the same field.
+        if (comp.followOverride) {
+            comp._hailBubble = makeWorldLabel(RECRUIT_HAIL, comp, RECRUIT_HAIL_Y);
+        }
     }
     function removeRecruitBeacon(comp) {
         if (!comp || !comp._beacon) return;
@@ -5209,6 +5240,7 @@ export function startGame(CharacterClass) {
         });
         if (comp._beacon.parent) comp._beacon.parent.remove(comp._beacon);
         comp._beacon = null;
+        if (comp._hailBubble) { removeWorldLabel(comp._hailBubble); comp._hailBubble = null; }
     }
     // Turned to the camera and bobbed. The yaw is worked out in WORLD terms
     // and then the companion's own rotation is subtracted, because the beacon
@@ -5222,6 +5254,13 @@ export function startGame(CharacterClass) {
                 Math.atan2(_beaconToCam.x, _beaconToCam.z) - comp.group.rotation.y;
         }
         comp._beacon.position.y = RECRUIT_BEACON_Y + Math.sin(tSec * 2.2) * RECRUIT_BEACON_BOB;
+        // Only within earshot - see RECRUIT_HAIL_RANGE. The label layer reads
+        // this flag itself, so nothing is created or destroyed as you walk in
+        // and out of range.
+        if (comp._hailBubble) {
+            comp._hailBubble.visible =
+                char.group.position.distanceTo(comp.group.position) < RECRUIT_HAIL_RANGE;
+        }
     }
 
     // Recolours a companion's ground dot. Both of the marker's meshes carry
