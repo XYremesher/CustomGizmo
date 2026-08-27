@@ -1275,7 +1275,9 @@ export function startGame(CharacterClass) {
     const _groundTintUniforms = {
         uForestMask: { value: null },
         uForestTintOn: { value: 0 },
-        uForestArea: { value: 1 },
+        // vec2, not a float: the wood is not always square, and dividing
+        // both axes by one number stretches the mask across a strip.
+        uForestArea: { value: new THREE.Vector2(1, 1) },
         // Target colour for the worn ground, and how far to go toward it.
         // A per-channel MULTIPLIER was tried first and cannot reach beige:
         // the grass texture's green channel is the strongest, so scaling
@@ -1298,7 +1300,7 @@ export function startGame(CharacterClass) {
             .replace('#include <common>', `#include <common>
                 uniform sampler2D uForestMask;
                 uniform float uForestTintOn;
-                uniform float uForestArea;
+                uniform vec2 uForestArea;
                 uniform vec3 uForestTintColor;
                 uniform float uForestTintAmt;
                 varying vec3 vGroundWorld;`)
@@ -1567,7 +1569,13 @@ export function startGame(CharacterClass) {
         if (toggle && !toggle.checked) return;
         const total = Math.max(0, Math.round(window.grassCount));
         if (!total) return;
-        const half = window.grassArea;
+        // Square by default. On a forest level it also has to REACH the wood:
+        // the linear one is 176 long, and a scatter box of 80 either way would
+        // stop growing grass well short of both ends. Taken as the larger of
+        // the two so the square forests, whose 64 sits inside the 80, are
+        // untouched - candidates outside the land fail the ground ray anyway.
+        const halfX = isForestLevel() ? Math.max(window.grassArea, forestSlabHalfX()) : window.grassArea;
+        const halfZ = isForestLevel() ? Math.max(window.grassArea, forestSlabHalfZ()) : window.grassArea;
         const blockers = collidables.filter(c => c !== ground);
         // Two buckets per texture: instances inside the shadow camera's own
         // box get receiveShadow, instances outside it don't - see
@@ -1679,8 +1687,8 @@ export function startGame(CharacterClass) {
                 x = t.x + Math.cos(a) * rr;
                 z = t.z + Math.sin(a) * rr;
             } else {
-                x = (Math.random() * 2 - 1) * half;
-                z = (Math.random() * 2 - 1) * half;
+                x = (Math.random() * 2 - 1) * halfX;
+                z = (Math.random() * 2 - 1) * halfZ;
                 // With the exemption above, a uniformly placed blade can now
                 // land inside a trunk. The raycast cannot catch that - the
                 // collider is front-faced, so a ray straight down the middle
@@ -1710,7 +1718,7 @@ export function startGame(CharacterClass) {
                     if ((x - L.x) * (x - L.x) + (z - L.z) * (z - L.z) < rr * rr) { inWater = true; break; }
                 }
                 // The river channel, plus its banks for the same reason.
-                if (!inWater && Math.abs(x - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + FOREST_GAP_CLEAR) inWater = true;
+                if (!inWater && inForestGap(x, z, FOREST_GAP_CLEAR)) inWater = true;
                 if (inWater) continue;
             }
             _grassFrom.set(x, 60, z);
@@ -1921,7 +1929,13 @@ export function startGame(CharacterClass) {
         if (toggle && !toggle.checked) return;
         const total = Math.max(0, Math.round(window.flowerCount));
         if (!total) return;
-        const half = window.grassArea;
+        // Square by default. On a forest level it also has to REACH the wood:
+        // the linear one is 176 long, and a scatter box of 80 either way would
+        // stop growing grass well short of both ends. Taken as the larger of
+        // the two so the square forests, whose 64 sits inside the 80, are
+        // untouched - candidates outside the land fail the ground ray anyway.
+        const halfX = isForestLevel() ? Math.max(window.grassArea, forestSlabHalfX()) : window.grassArea;
+        const halfZ = isForestLevel() ? Math.max(window.grassArea, forestSlabHalfZ()) : window.grassArea;
         const blockers = collidables.filter(c => c !== ground);
         const maxFlowerClearance = window.flowerSize * 1.3 + 0.3;
         const perTemplate = [[], []];
@@ -1929,8 +1943,8 @@ export function startGame(CharacterClass) {
         const maxAttempts = total * 6;
         let placed = 0;
         while (placed < total && attempts++ < maxAttempts) {
-            const x = (Math.random() * 2 - 1) * half;
-            const z = (Math.random() * 2 - 1) * half;
+            const x = (Math.random() * 2 - 1) * halfX;
+            const z = (Math.random() * 2 - 1) * halfZ;
             _flowerFrom.set(x, 60, z);
             _flowerRay.set(_flowerFrom, _grassDown);
             const hits = _flowerRay.intersectObjects(blockers, true);
@@ -8614,7 +8628,7 @@ export function startGame(CharacterClass) {
     let levelExitScene = null, _forestExitGate = null;
     function placeForestExitGate() {
         if (!isForestLevel()) return;
-        const gz = forestSlabHalf();
+        const gz = forestSlabHalfZ();
         const topY = forestFrameTopY();
         // No bridge any more. It existed to carry the gate across the hole
         // the corridor cuts in the frame wall - but the landing now runs from
@@ -8630,7 +8644,7 @@ export function startGame(CharacterClass) {
         _forestExitGate = levelExitScene.clone(true);
         _forestExitGate.scale.setScalar(FOREST_EXIT_SCALE);
         _forestExitGate.position.set(
-            FOREST_EXIT_X, topY + FOREST_EXIT_HALF_H * FOREST_EXIT_SCALE, gz);
+            forestExitX(), topY + FOREST_EXIT_HALF_H * FOREST_EXIT_SCALE, gz);
         // Deliberately NOT a collidable: it is a doorway, and the star inside
         // it is what ends the level. A solid gate would stop you reaching it.
         levelGroup.add(_forestExitGate);
@@ -8812,6 +8826,13 @@ export function startGame(CharacterClass) {
     // Same names/defaults as the Unity components' inspector fields, so the
     // numbers the author already tuned there transfer directly.
     window.forestAreaSize = 120;
+    // The linear wood's footprint: a quarter as wide as it is long, which is
+    // the 1x4 the square 120x120 is not. Wide enough that the path still has
+    // trees either side of you rather than being a corridor with a hedge -
+    // 44 leaves about 16 units of wood past each shoulder once the frame wall
+    // and its margin are taken off.
+    window.forestLinearWidth = 44;
+    window.forestLinearLength = 176;
     window.forestGridSize = 60;
     window.forestNoiseScale = 18;
     window.forestTreeThreshold = 0.55;
@@ -11596,14 +11617,19 @@ export function startGame(CharacterClass) {
     // deciding what to plant, which is long before the player is placed.
     function forestMeetPoint() {
         const [z0, z1] = forestCorridorZ(-1);
-        return { x: FOREST_ENTRY_X, z: (z0 + z1) * 0.5 + STORY_FIRST_OFFSET };
+        return { x: forestEntryX(), z: (z0 + z1) * 0.5 + STORY_FIRST_OFFSET };
     }
     // ...and where the SECOND one waits, on the far island. It gets a clearing
     // of its own for the same reason the first does, and more so: that scene
     // is a cinematic with a charge punch thrown across it, and a charge punch
     // thrown inside a thicket is a charge punch nobody can see.
     function forestMeetPoint2() {
-        return { x: (FOREST_GAP_X + FOREST_GAP_W * 0.5 + forestSlabHalf()) * 0.5, z: 0 };
+        const [, g1] = forestGapSpan();
+        // Halfway between the far bank and the far end, on whichever axis the
+        // water cuts - the middle of the ground you reach by crossing it.
+        return isLinearForest()
+            ? { x: forestEntryX(), z: (g1 + forestPlatformZ0()) * 0.5 }
+            : { x: (g1 + forestSlabHalfX()) * 0.5, z: 0 };
     }
     const _forestSpawnPoint = new THREE.Vector3();
 
@@ -11791,11 +11817,19 @@ export function startGame(CharacterClass) {
     // wide enough to stand and look around on, with the jars on it, rather
     // than a last step straight onto a one-block-wide wall.
     const FOREST_PLATFORM_W = 12;    // matches the corridor's own width
-    const FOREST_PLATFORM_Z0 = 52;   // south edge, where the stairs meet it
+    // Derived from where the frame wall actually IS, not written down.
+    // 52 and 68 were that wall's own 64 minus 12 and plus 4, which is right
+    // for exactly one size of wood - in the linear one, four times as long,
+    // those numbers put the landing and the stairs out in the middle of the
+    // trees with the wall still forty units further on.
+    const FOREST_PLATFORM_BACK = 12;   // how far the landing reaches inward
+    const FOREST_PLATFORM_OUT = 4;     // ...and out past the wall, to the gate
+    function forestPlatformZ0() { return forestSlabHalfZ() - FOREST_PLATFORM_BACK; }
+    function forestPlatformZ1() { return forestSlabHalfZ() + FOREST_PLATFORM_OUT; }
     // Runs all the way out to the bridge rather than stopping short of the
     // wall - the fight up here needs room to back off and throw across, and a
     // narrow ledge turned it into a shoving match at the edge of a drop.
-    const FOREST_PLATFORM_Z1 = 68;
+
     // Dead centre of the exit corridor - the first thing in front of you when
     // you arrive, rather than off to one side where it can be walked past
     // without ever being noticed. It blocks the ground-level way out through
@@ -11807,7 +11841,7 @@ export function startGame(CharacterClass) {
     // down - so it threw "cannot access before initialization" and took the
     // whole of startGame with it, which is what left the game on its loading
     // screen forever. node --check cannot see this; only running it can.
-    function forestStepX() { return FOREST_EXIT_X; }
+    function forestStepX() { return forestExitX(); }
     // A platform up at canopy height in the middle of the wood. There are no
     // stairs to it on purpose - the trees around it ARE the route, which is
     // what makes it the place to teach a move you only need once you are up
@@ -11816,6 +11850,12 @@ export function startGame(CharacterClass) {
     const FOREST_CANOPY_Y = 8.5;     // just under the border wall's 11.8
     const FOREST_CANOPY_R = 5.0;     // half-width of the platform
     function forestCanopyPoint() {
+        // In the linear wood the diamond belongs at the FAR END. The level is
+        // a walk one way; a goal halfway along it is something you pass, and
+        // passing the end of a level is worse than not finding it. Still off
+        // the centre line and still up in the canopy, so it is something you
+        // climb for rather than a door at the end of a corridor.
+        if (isLinearForest()) return { x: -12, z: forestPlatformZ0() - 14 };
         // Near island, off the main line so it reads as somewhere you go out
         // of your way for rather than something on the route.
         return { x: -12, z: 6 };
@@ -11863,8 +11903,8 @@ export function startGame(CharacterClass) {
             collidables.push(box);
         };
         // The landing, level with the frame top.
-        const pz = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
-        put(FOREST_PLATFORM_W, top, FOREST_PLATFORM_Z1 - FOREST_PLATFORM_Z0, forestStepX(), pz);
+        const pz = (forestPlatformZ0() + forestPlatformZ1()) * 0.5;
+        put(FOREST_PLATFORM_W, top, forestPlatformZ1() - forestPlatformZ0(), forestStepX(), pz);
         // ...and the stairs up to it, marching south from its edge. Each rise
         // is one 3.0 cube - the same block Level 1 is built from, and the same
         // height as the island edges, which is what the player's jump-and-grab
@@ -11885,7 +11925,7 @@ export function startGame(CharacterClass) {
             // you up them stalled at the first one, since its step-up check
             // finds no ground ahead across a hole.
             put(FOREST_STEP_SIZE, h, FOREST_STEP_SIZE, forestStepX(),
-                FOREST_PLATFORM_Z0 - (steps - i) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5);
+                forestPlatformZ0() - (steps - i) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5);
         }
         // Laid out in front of where the carry teacher stands, not merely
         // somewhere on the landing - the lesson is "grab one of these", and
@@ -11977,7 +12017,7 @@ export function startGame(CharacterClass) {
             grantAllCompanions();
             return;
         }
-        if (currentLevel === 'local_forest_free') {
+        if (isFreeForest()) {
             // The REAL companions, waiting - not stand-ins.
             //
             // A stand-in is a plain RemoteAvatar, which means it sits outside
@@ -12020,8 +12060,8 @@ export function startGame(CharacterClass) {
                 { key: 'CompBlue', x: m1.x - STORY_PAIR_HALF, y: null, z: m1.z, awayFrom: botAt.BotYellow },
                 { key: 'CompDark', x: m2.x, y: null, z: m2.z, awayFrom: botAt.BotOrange },
                 // No bot shares this ledge - keeps its original facing.
-                { key: 'CompPale', x: FOREST_EXIT_X + 4.0, y: forestFrameTopY(),
-                  z: (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5 },
+                { key: 'CompPale', x: forestExitX() + 4.0, y: forestFrameTopY(),
+                  z: (forestPlatformZ0() + forestPlatformZ1()) * 0.5 },
             ];
             _freeRecruits = [];
             spots.forEach(sp => {
@@ -12043,7 +12083,7 @@ export function startGame(CharacterClass) {
             // per beat, where that beat happens: the first clearing, the far
             // island, and the top of the stairs. They wake when you get close
             // (see aiBot.dormant), so nothing is constructed mid-fight.
-            const topStepZ = FOREST_PLATFORM_Z0 - FOREST_STEP_SIZE * 0.5;
+            const topStepZ = forestPlatformZ0() - FOREST_STEP_SIZE * 0.5;
             const topStepY = Math.min(forestFrameTopY(),
                 Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE - 1) * FOREST_STEP_SIZE);
             // Facing away from the companion in the same clearing - the other
@@ -12233,14 +12273,18 @@ export function startGame(CharacterClass) {
             comp.followOverride = null;
             return;
         }
-        // Which bank: the one the compass is sending you toward. The chasm is
-        // a strip along Z, so the side is decided entirely by x.
-        const tx = window.compassTarget ? window.compassTarget.x : char.group.position.x;
-        const east = tx > FOREST_GAP_X;
-        _riverExit.set(
-            east ? FOREST_GAP_X + FOREST_GAP_W * 0.5 + STORY_BANK_STEP
-                 : FOREST_GAP_X - FOREST_GAP_W * 0.5 - STORY_BANK_STEP,
-            0, c.z);
+        // Which bank: the one the compass is sending you toward. Decided by
+        // whichever axis the water cuts across - a strip along z in the square
+        // wood, a stream across the path in the linear one - so the bank to
+        // aim for moves with it. Only the crossed axis is set; the other keeps
+        // the companion's own position, so it climbs out beside you rather
+        // than walking the length of the bank first.
+        const tgt = window.compassTarget || char.group.position;
+        const far = forestGapOffset(tgt.x, tgt.z) > 0;
+        const [g0, g1] = forestGapSpan();
+        const bank = far ? g1 + STORY_BANK_STEP : g0 - STORY_BANK_STEP;
+        if (isLinearForest()) _riverExit.set(c.x, 0, bank);
+        else _riverExit.set(bank, 0, c.z);
         comp.followOverride = _riverExit;
     }
 
@@ -12527,13 +12571,13 @@ export function startGame(CharacterClass) {
     function forestDebugStartAtEnd() {
         if (window.forestDebugEnd !== true) return;
         // The FOOT of the stairs, not the landing. The stairs march south from
-        // FOREST_PLATFORM_Z0 in FOREST_STEP_SIZE rises, so one step's depth
+        // forestPlatformZ0() in FOREST_STEP_SIZE rises, so one step's depth
         // clear of the lowest one puts you on flat ground looking up at the
         // whole run - which is the thing being debugged, rather than the top
         // of it.
         const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
         const x = forestStepX();
-        const z = FOREST_PLATFORM_Z0 - (steps + 1) * FOREST_STEP_SIZE;
+        const z = forestPlatformZ0() - (steps + 1) * FOREST_STEP_SIZE;
         const y = storyGroundY(x, z, 0);
         char.group.position.set(x, y, z);
         // Facing +Z, up the stairs. rotation.y 0 IS +Z here, same convention
@@ -12728,7 +12772,7 @@ export function startGame(CharacterClass) {
     }
 
     function updateFreeRecruits(delta) {
-        if (currentLevel !== 'local_forest_free' || !_freeRecruits.length) return;
+        if (!isFreeForest() || !_freeRecruits.length) return;
         _freeRecruitT += delta || 0;
         const p = char.group.position;
         let released = false;
@@ -12964,8 +13008,8 @@ export function startGame(CharacterClass) {
             // getting to it IS the climb it is about to talk about, and the
             // jars are right there for the carry lesson that follows.
             storyNpc = storySpawnNpcAt('story-companion-3', storySpecColor('CompPale'),
-                FOREST_EXIT_X + 4.0, forestFrameTopY(),
-                (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5);
+                forestExitX() + 4.0, forestFrameTopY(),
+                (forestPlatformZ0() + forestPlatformZ1()) * 0.5);
             const comp1 = storyCompanionOf('CompBlue');
             if (comp1) storySay(comp1, STORY_CLIMB_HINT, 'companion');
             // The heavy one, waiting on the landing at the top of the stairs.
@@ -12973,8 +13017,8 @@ export function startGame(CharacterClass) {
             // offsets from wherever you are standing, and you are still on the
             // forest floor when this runs, twelve metres below it.
             _aiBotSpawnOverride = new THREE.Vector3(
-                FOREST_EXIT_X - 4.0, forestFrameTopY(),
-                (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5);
+                forestExitX() - 4.0, forestFrameTopY(),
+                (forestPlatformZ0() + forestPlatformZ1()) * 0.5);
             window.spawnBotRed = true;
             const rb = document.getElementById('spawn-BotRed');
             if (rb) rb.checked = true;
@@ -12994,7 +13038,7 @@ export function startGame(CharacterClass) {
         // the moment the route stops being along the ground and starts going
         // up, and nothing else in the level tells you that.
         if (!_forestStairsSeen && p.y < forestFrameTopY() - 4 &&
-            Math.hypot(p.x - FOREST_EXIT_X, p.z - (FOREST_PLATFORM_Z0 - 6)) < STORY_STAIRS_REACH) {
+            Math.hypot(p.x - forestExitX(), p.z - (forestPlatformZ0() - 6)) < STORY_STAIRS_REACH) {
             _forestStairsSeen = true;
             const atFoot = storyCompanionOf('CompBlue');
             if (atFoot) storySay(atFoot, STORY_STAIRS_LINE, 'companion');
@@ -13005,16 +13049,16 @@ export function startGame(CharacterClass) {
         // line, and getting up it deserves acknowledging.
         if (storyStage === 'toThird' && !_forestTopReached &&
             p.y > forestFrameTopY() - 2.0 &&
-            Math.abs(p.x - FOREST_EXIT_X) < FOREST_PLATFORM_W &&
-            p.z > FOREST_PLATFORM_Z0 - 4) {
+            Math.abs(p.x - forestExitX()) < FOREST_PLATFORM_W &&
+            p.z > forestPlatformZ0() - 4) {
             _forestTopReached = true;
             const lead = storyCompanionOf('CompBlue');
             if (lead) storySay(lead, STORY_TOP_LINE, 'companion');
             // The landing is the last fight. Both of them, either side of the
             // stairs you just came up, so arriving is walking into it.
-            const tz = (FOREST_PLATFORM_Z0 + FOREST_PLATFORM_Z1) * 0.5;
-            storyPlaceBot('BotYellow', FOREST_EXIT_X - 4.5, forestFrameTopY(), tz + 2.5);
-            storyPlaceBot('BotOrange', FOREST_EXIT_X + 4.5, forestFrameTopY(), tz + 2.5);
+            const tz = (forestPlatformZ0() + forestPlatformZ1()) * 0.5;
+            storyPlaceBot('BotYellow', forestExitX() - 4.5, forestFrameTopY(), tz + 2.5);
+            storyPlaceBot('BotOrange', forestExitX() + 4.5, forestFrameTopY(), tz + 2.5);
         }
 
         if (storyStage === 'toThird') {
@@ -13051,7 +13095,26 @@ export function startGame(CharacterClass) {
     // checks stay pinned to 'local_forest' precisely because the other one is
     // defined by not having it.
     function isForestLevel() {
-        return currentLevel === 'local_forest' || currentLevel === 'local_forest_free';
+        return currentLevel === 'local_forest' || currentLevel === 'local_forest_free'
+            || currentLevel === 'local_forest_linear';
+    }
+    // The linear wood: the same builder, the same trees, the same three
+    // companions collected in order - laid out along a strip instead of
+    // scattered across a square. You walk one way, and the only choice on
+    // offer is how you deal with what is in front of you.
+    //
+    // Not a separate builder. Everything that made the forest square was a
+    // single half-extent used for both axes and a strait pinned to one of
+    // them; both are now asked for per axis, so the same code lays out either
+    // shape. A copy would have been the third place tree scatter, lake
+    // placement and frame walls live, and they would have drifted apart by the
+    // second change.
+    function isLinearForest() { return currentLevel === 'local_forest_linear'; }
+    // ...and the two levels with no story to play, which share their recruit
+    // layout: three companions standing where you find them, each waking the
+    // enemies near it when collected.
+    function isFreeForest() {
+        return currentLevel === 'local_forest_free' || currentLevel === 'local_forest_linear';
     }
     function buildForestLevel() {
         if (!treeModel) { pendingForestLevelBuild = true; return; }
@@ -13080,21 +13143,28 @@ export function startGame(CharacterClass) {
         // ---- Pass 1: decide where trees go (no geometry built yet) ----
         seedPerlin(window.forestSeed);
         buildForestGroundMask();
-        const area = window.forestAreaSize, grid = Math.max(2, Math.round(window.forestGridSize));
-        const step = area / grid, half = area * 0.5;
+        // Per axis, at one shared cell size, so a long wood gets MORE cells
+        // rather than the same number stretched - trees the same distance
+        // apart whatever shape the level is.
+        const areaX = forestAreaX(), areaZ = forestAreaZ();
+        const grid = Math.max(2, Math.round(window.forestGridSize));
+        const step = window.forestAreaSize / grid;
+        const gridX = Math.max(2, Math.round(areaX / step));
+        const gridZ = Math.max(2, Math.round(areaZ / step));
+        const halfX = areaX * 0.5, halfZ = areaZ * 0.5;
         const noiseScale = window.forestNoiseScale;
         // Chosen BEFORE the trees so the scatter can avoid them. The other
         // way round would mean deleting trees a lake happened to land on, or
         // leaving lakes with trunks standing in the middle of them.
-        const lakes = pickForestLakes(half, noiseScale);
+        const lakes = pickForestLakes(halfX, halfZ, noiseScale);
         const placements = [];
         const meet = forestMeetPoint();
         const meet2 = forestMeetPoint2();
         const _canopyPt = forestCanopyPoint();
-        for (let xi = 0; xi < grid; xi++) {
-            for (let zi = 0; zi < grid; zi++) {
-                const x = -half + xi * step;
-                const z = -half + zi * step;
+        for (let xi = 0; xi < gridX; xi++) {
+            for (let zi = 0; zi < gridZ; zi++) {
+                const x = -halfX + xi * step;
+                const z = -halfZ + zi * step;
                 const spawnNoise = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
                 if (spawnNoise < window.forestTreeThreshold) continue;
                 // Jitter within the cell, from a second noise lookup with the
@@ -13114,19 +13184,19 @@ export function startGame(CharacterClass) {
                 // its ring below is the only thing standing there.
                 if (Math.hypot(px - _canopyPt.x, pz - _canopyPt.z) < FOREST_CANOPY_R + 0.5) continue;
                 // ...and nothing standing over the chasm.
-                if (Math.abs(px - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + FOREST_GAP_CLEAR) continue;
+                if (inForestGap(px, pz, FOREST_GAP_CLEAR)) continue;
                 // ...and the entrance corridor stays a corridor. A tree in it
                 // would be exactly the thing the corridor exists to avoid: the
                 // camera, which sits behind the player and therefore INSIDE
                 // this passage, buried in foliage on the very first frame.
                 // Reaches a little past the corridor's mouth so you step out
                 // into a clearing rather than straight into a trunk.
-                if (Math.abs(px - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
-                    pz < -forestSlabHalf() + FOREST_ENTRY_LEN + FOREST_SPAWN_CLEAR_ENOUGH) continue;
+                if (Math.abs(px - forestEntryX()) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
+                    pz < -forestSlabHalfZ() + FOREST_ENTRY_LEN + FOREST_SPAWN_CLEAR_ENOUGH) continue;
                 // Same for the exit, so the goal diamond is not standing in a
                 // canopy and the last stretch reads as a way out.
-                if (Math.abs(px - FOREST_EXIT_X) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
-                    pz > forestSlabHalf() - FOREST_ENTRY_LEN - FOREST_SPAWN_CLEAR_ENOUGH) continue;
+                if (Math.abs(px - forestExitX()) < FOREST_ENTRY_W * 0.5 + FOREST_GAP_CLEAR &&
+                    pz > forestSlabHalfZ() - FOREST_ENTRY_LEN - FOREST_SPAWN_CLEAR_ENOUGH) continue;
                 // ...and keep the lakes clear, with a bank around them.
                 let inLake = false;
                 for (let L = 0; L < lakes.length; L++) {
@@ -13230,7 +13300,7 @@ export function startGame(CharacterClass) {
                 });
             }
         }
-        corridorTreeRows(FOREST_ENTRY_X, -1, 3.2, 2);
+        corridorTreeRows(forestEntryX(), -1, 3.2, 2);
         // No tree frame at the EXIT. It was 126 trees you walked straight
         // through - the invisible barriers do the stopping there, so it read
         // as decoration you could stand inside rather than as a passage.
@@ -13613,11 +13683,16 @@ export function startGame(CharacterClass) {
             // every box-based test in the game would read as the entire level
             // being solid. Nothing climbs an 11-unit wall, so a plain barrier
             // is all this has to be.
-            const bh = forestSlabHalf();
-            const gapLo = FOREST_GAP_X - FOREST_GAP_W * 0.5 - step;
-            const gapHi = FOREST_GAP_X + FOREST_GAP_W * 0.5 + step;
-            const entryLo = FOREST_ENTRY_X - FOREST_ENTRY_W * 0.5;
-            const entryHi = FOREST_ENTRY_X + FOREST_ENTRY_W * 0.5;
+            const bhx = forestSlabHalfX(), bhz = forestSlabHalfZ();
+            const [g0, g1] = forestGapSpan();
+            const gapLo = g0 - step, gapHi = g1 + step;
+            // Which pair of walls the water runs out through: the ones the gap
+            // cuts across. In the square wood that is the two z-edge walls; in
+            // the linear one, where the stream crosses the path, it is the two
+            // x-edge walls instead.
+            const gapOnX = !isLinearForest();
+            const entryLo = forestEntryX() - FOREST_ENTRY_W * 0.5;
+            const entryHi = forestEntryX() + FOREST_ENTRY_W * 0.5;
             const segs = [];
             // The collision wall has to have the same holes the VISIBLE wall
             // has, or you get stopped by nothing in the middle of an opening.
@@ -13633,15 +13708,23 @@ export function startGame(CharacterClass) {
                 });
                 return out;
             };
-            const exitLo = FOREST_EXIT_X - FOREST_ENTRY_W * 0.5;
-            const exitHi = FOREST_EXIT_X + FOREST_ENTRY_W * 0.5;
-            [bh, -bh].forEach(bz => {
-                let spans = spanMinus([[-bh, bh]], gapLo, gapHi);
+            const exitLo = forestExitX() - FOREST_ENTRY_W * 0.5;
+            const exitHi = forestExitX() + FOREST_ENTRY_W * 0.5;
+            // The two walls at the ends of the path: always cut for the
+            // corridor, and cut for the water too when the water runs that way.
+            [bhz, -bhz].forEach(bz => {
+                let spans = [[-bhx, bhx]];
+                if (gapOnX) spans = spanMinus(spans, gapLo, gapHi);
                 spans = bz < 0 ? spanMinus(spans, entryLo, entryHi)
                                : spanMinus(spans, exitLo, exitHi);
                 spans.forEach(([a, b]) => segs.push([(a + b) * 0.5, bz, b - a, step]));
             });
-            [bh, -bh].forEach(bx => segs.push([bx, 0, step, bh * 2]));
+            // ...and the two along the sides, cut only where the water leaves.
+            [bhx, -bhx].forEach(bx => {
+                let spans = [[-bhz, bhz]];
+                if (!gapOnX) spans = spanMinus(spans, gapLo, gapHi);
+                spans.forEach(([a, b]) => segs.push([bx, (a + b) * 0.5, step, b - a]));
+            });
             // Both corridors' side walls. The exit's are the stone boxes built
             // above; the entrance's are the tree rows, which are individually
             // collidable but have gaps you could squeeze through - so both get
@@ -13655,7 +13738,7 @@ export function startGame(CharacterClass) {
             // barrier is only honest when something you can see is holding it.
             {
                 const [z0, z1] = forestCorridorZ(-1);
-                forestCorridorWallX(FOREST_ENTRY_X).forEach(wx => {
+                forestCorridorWallX(forestEntryX()).forEach(wx => {
                     segs.push([wx, (z0 + z1) * 0.5, step, z1 - z0]);
                 });
             }
@@ -13739,7 +13822,7 @@ export function startGame(CharacterClass) {
         // nothing to hunt for and nowhere else the start could sensibly be.
         {
             const [cz0, cz1] = forestCorridorZ(-1);
-            const sx = FOREST_ENTRY_X;
+            const sx = forestEntryX();
             // The corridor's true midpoint, which now sits just OUTSIDE the
             // frame wall - so the first thing you do is walk in through the
             // opening rather than start already past it.
@@ -13921,18 +14004,20 @@ export function startGame(CharacterClass) {
         // lake meets the grass.
         if (ground && ground.material) applyShorelineFoam(ground.material);
     }
-    function pickForestLakes(half, noiseScale) {
+    function pickForestLakes(halfX, halfZ, noiseScale) {
         const lakes = [];
         for (let i = 0; i < 500 && lakes.length < FOREST_LAKE_COUNT; i++) {
-            const x = (forestHash01(i * 7.31, i * 2.17) - 0.5) * 2 * (half - 12);
-            const z = (forestHash01(i * 3.97, i * 5.73) - 0.5) * 2 * (half - 12);
+            // Per axis, or a narrow wood would keep proposing lakes out in the
+            // sea on its long side and never find room on its short one.
+            const x = (forestHash01(i * 7.31, i * 2.17) - 0.5) * 2 * (halfX - 12);
+            const z = (forestHash01(i * 3.97, i * 5.73) - 0.5) * 2 * (halfZ - 12);
             // Never on the spawn pocket - you would start in the water.
             if (Math.hypot(x, z) < window.forestClearingRadius + 8) continue;
             // Never straddling the chasm either. Measured against the BANK's
             // full reach, not the water's: the torus extends FOREST_LAKE_BANK
             // past the lake radius, and half a torus hanging over a drop is
             // worse than half a lake.
-            if (Math.abs(x - FOREST_GAP_X) < FOREST_LAKE_MAX_R + FOREST_LAKE_BANK + FOREST_GAP_W) continue;
+            if (inForestGap(x, z, FOREST_LAKE_MAX_R + FOREST_LAKE_BANK + FOREST_GAP_W * 0.5)) continue;
             // Only where the noise says the wood is open.
             const n = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
             if (n >= window.forestTreeThreshold) continue;
@@ -13948,7 +14033,7 @@ export function startGame(CharacterClass) {
             // slope across the way in.
             const [ez0, ez1] = forestCorridorZ(-1);
             const keepOut = r + FOREST_LAKE_BANK + FOREST_SPAWN_CLEAR_ENOUGH;
-            if (Math.abs(x - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5 + keepOut &&
+            if (Math.abs(x - forestEntryX()) < FOREST_ENTRY_W * 0.5 + keepOut &&
                 z < ez1 + keepOut && z > ez0 - keepOut) continue;
             let clash = false;
             for (let k = 0; k < lakes.length; k++) {
@@ -13965,14 +14050,14 @@ export function startGame(CharacterClass) {
     const FOREST_MASK_FEATHER = 0.12;
     function buildForestGroundMask() {
         const res = FOREST_MASK_RES;
-        const area = window.forestAreaSize;
+        const areaX = forestAreaX(), areaZ = forestAreaZ();
         const noiseScale = window.forestNoiseScale;
         const threshold = window.forestTreeThreshold;
         const data = new Uint8Array(res * res * 4);
         for (let j = 0; j < res; j++) {
             for (let i = 0; i < res; i++) {
-                const wx = ((i + 0.5) / res - 0.5) * area;
-                const wz = ((j + 0.5) / res - 0.5) * area;
+                const wx = ((i + 0.5) / res - 0.5) * areaX;
+                const wz = ((j + 0.5) / res - 0.5) * areaZ;
                 const n = perlin2((wx + window.forestSeed) / noiseScale, (wz + window.forestSeed) / noiseScale);
                 const openness = THREE.MathUtils.clamp((threshold - n) / FOREST_MASK_FEATHER, 0, 1);
                 const v = Math.round(openness * 255);
@@ -13988,7 +14073,7 @@ export function startGame(CharacterClass) {
         _forestMaskTex.wrapS = _forestMaskTex.wrapT = THREE.ClampToEdgeWrapping;
         _forestMaskTex.minFilter = _forestMaskTex.magFilter = THREE.LinearFilter;
         _groundTintUniforms.uForestMask.value = _forestMaskTex;
-        _groundTintUniforms.uForestArea.value = area;
+        _groundTintUniforms.uForestArea.value.set(areaX, areaZ);
         _groundTintUniforms.uForestTintOn.value = 1;
     }
 
@@ -14008,6 +14093,11 @@ export function startGame(CharacterClass) {
     // on the first frame. That makes the two sides unequal, which is the point
     // - a main wood and a smaller shelf reads better than two matching halves.
     const FOREST_GAP_X = 18;
+    // ...and where it sits in the linear wood, which cuts the other way - see
+    // forestGapOffset. Placed a little past halfway so the crossing lands
+    // between the second companion and the first, rather than splitting the
+    // walk in two equal halves with nothing to mark the middle.
+    const FOREST_GAP_Z = -6;
     // Width of the channel the river runs down. Wider than a jump now (the
     // player's flat reach is 5.33), which is fine because it is no longer a
     // drop into nothing: it has a bed you wade across. That also means there
@@ -14058,6 +14148,13 @@ export function startGame(CharacterClass) {
     // to that is what stops you walking a metre into a block that is still
     // standing there, and it puts the corridor's side walls flush against the
     // blocks that flank the opening rather than a metre inside them.
+    // Where the two corridors cut through the frame wall, on the x axis.
+    //
+    // The square wood puts them well apart - you come in near one corner and
+    // leave near the opposite one, so crossing it is a diagonal. The linear
+    // one is a strip a fraction of that wide, so both of those x values are
+    // outside it entirely; there both corridors sit on the centre line and the
+    // whole level is a walk straight up the z axis, which is the point of it.
     const FOREST_ENTRY_X = -25;
     const FOREST_ENTRY_W = 12;     // = 2 blocks; wide enough for the follow-cam
     const FOREST_ENTRY_LEN = 18;   // how far the corridor reaches inward
@@ -14071,6 +14168,8 @@ export function startGame(CharacterClass) {
     // -61 + 6k, and k=17 gives 41. That drops the blocks at 38 and 44 and
     // leaves a hole of exactly [35, 47] - visible and collision agreeing.
     const FOREST_EXIT_X = 41;
+    function forestEntryX() { return isLinearForest() ? 0 : FOREST_ENTRY_X; }
+    function forestExitX() { return isLinearForest() ? 0 : FOREST_EXIT_X; }
     // How far each corridor reaches OUTWARD, past the frame wall - and the
     // reason the sea is not in them. A ground tongue is built under this
     // stretch (see buildForestGroundBox); its top is at y=0, well above the
@@ -14102,7 +14201,7 @@ export function startGame(CharacterClass) {
     }
     // ...and its extent along z. dir -1 is the entrance (-Z), +1 the exit.
     function forestCorridorZ(dir) {
-        const bh = forestSlabHalf();
+        const bh = forestSlabHalfZ();
         return dir < 0
             ? [-bh - FOREST_ENTRY_APPROACH, -bh + FOREST_ENTRY_LEN]
             : [bh - FOREST_ENTRY_LEN, bh + FOREST_ENTRY_APPROACH];
@@ -14114,19 +14213,23 @@ export function startGame(CharacterClass) {
     // is - they are built in different passes, and any drift would leave trees
     // standing on nothing.
     function forestBorderLayout(cb) {
-        const bh = forestSlabHalf();
+        const bhx = forestSlabHalfX(), bhz = forestSlabHalfZ();
         const step = FOREST_BORDER_BLOCK;
         for (let side = 0; side < 4; side++) {
+            // Sides 0 and 1 run along x at the two z edges; 2 and 3 along z at
+            // the two x edges. Each now walks its OWN half-extent, so the
+            // frame closes on a rectangle rather than assuming a square.
+            const bh = (side < 2) ? bhx : bhz;
             for (let t = -bh; t <= bh + 0.01; t += step) {
-                const bx = (side < 2) ? t : (side === 2 ? bh : -bh);
-                const bz = (side === 0) ? bh : (side === 1 ? -bh : t);
+                const bx = (side < 2) ? t : (side === 2 ? bhx : -bhx);
+                const bz = (side === 0) ? bhz : (side === 1 ? -bhz : t);
                 // The sea has to continue past the islands rather than be
                 // dammed by the frame.
-                if (Math.abs(bx - FOREST_GAP_X) < FOREST_GAP_W * 0.5 + step) continue;
+                if (inForestGap(bx, bz, step)) continue;
                 // ...and the two corridors are cut out of the -Z wall (side 1,
                 // the way in) and the +Z wall (side 0, the way out).
-                if (side === 1 && Math.abs(bx - FOREST_ENTRY_X) < FOREST_ENTRY_W * 0.5) continue;
-                if (side === 0 && Math.abs(bx - FOREST_EXIT_X) < FOREST_ENTRY_W * 0.5) continue;
+                if (side === 1 && Math.abs(bx - forestEntryX()) < FOREST_ENTRY_W * 0.5) continue;
+                if (side === 0 && Math.abs(bx - forestExitX()) < FOREST_ENTRY_W * 0.5) continue;
                 cb(bx, bz);
             }
         }
@@ -14139,26 +14242,75 @@ export function startGame(CharacterClass) {
     // which now sit just inside it - with the border trees gone there is
     // nothing else out there to be stopped by, and being stopped at a visible
     // cliff edge reads far better than being stopped in open grass.
-    function forestSlabHalf() {
-        return window.forestAreaSize * 0.5 + FOREST_BOX_MARGIN;
+    // ---- The wood's footprint ----
+    //
+    // Square for the two original forests, a long strip for the linear one.
+    // Kept as two functions rather than one number because everything below
+    // reads it for ONE axis at a time - the corridor's length, the frame
+    // wall's runs, the exit gate's distance out - and a single half-extent
+    // silently assumes those are the same, which is exactly what stops the
+    // wood being any shape but a square.
+    //
+    // The linear level travels along +Z, the same direction the square one
+    // already enters and leaves by, so it is long in Z and narrow in X. That
+    // choice is what lets it share the corridors, the stairs and the exit gate
+    // unchanged instead of rotating all of them.
+    function forestAreaX() {
+        return isLinearForest() ? window.forestLinearWidth : window.forestAreaSize;
+    }
+    function forestAreaZ() {
+        return isLinearForest() ? window.forestLinearLength : window.forestAreaSize;
+    }
+    function forestSlabHalfX() { return forestAreaX() * 0.5 + FOREST_BOX_MARGIN; }
+    function forestSlabHalfZ() { return forestAreaZ() * 0.5 + FOREST_BOX_MARGIN; }
+
+    // ---- Which way the strait runs ----
+    //
+    // In the square wood it is a north-south channel at FOREST_GAP_X, and you
+    // cross it going from the entrance on one island to the exit on the other.
+    // In the linear one the PATH is the z axis, so a channel along z would run
+    // down the middle of the corridor for its whole length instead of across
+    // it. There it is an east-west stream at FOREST_GAP_Z.
+    //
+    // One predicate for both, because the gap is tested in eight different
+    // places - the tree scatter, the grass scatter, the lake picker, the frame
+    // wall's holes, its collision barriers, the ground slabs, the companions'
+    // bank approach - and any of them disagreeing about where the water is
+    // leaves trees standing in it or a wall damming it.
+    function forestGapOffset(x, z) {
+        return isLinearForest() ? z - FOREST_GAP_Z : x - FOREST_GAP_X;
+    }
+    function inForestGap(x, z, margin) {
+        return Math.abs(forestGapOffset(x, z)) < FOREST_GAP_W * 0.5 + margin;
+    }
+    // The gap as a span on whichever axis it cuts, for the code that builds
+    // the land either side of it rather than testing a point against it.
+    function forestGapSpan() {
+        const at = isLinearForest() ? FOREST_GAP_Z : FOREST_GAP_X;
+        return [at - FOREST_GAP_W * 0.5, at + FOREST_GAP_W * 0.5];
     }
     function buildForestGroundBox() {
-        const half = forestSlabHalf();
+        const halfX = forestSlabHalfX(), halfZ = forestSlabHalfZ();
         _forestGroundBoxes = [];
-        // [xMin, xMax] of each mass, either side of the chasm.
-        const spans = [
-            [-half, FOREST_GAP_X - FOREST_GAP_W * 0.5],
-            [FOREST_GAP_X + FOREST_GAP_W * 0.5, half],
-        ];
-        spans.forEach(([x0, x1]) => buildForestSlab(x0, x1, -half, half));
+        // The two land masses, either side of the water. Which axis they are
+        // split along is forestGapSpan's business - see it for why the linear
+        // wood cuts the other way.
+        const [g0, g1] = forestGapSpan();
+        if (isLinearForest()) {
+            buildForestSlab(-halfX, halfX, -halfZ, g0);
+            buildForestSlab(-halfX, halfX, g1, halfZ);
+        } else {
+            buildForestSlab(-halfX, g0, -halfZ, halfZ);
+            buildForestSlab(g1, halfX, -halfZ, halfZ);
+        }
         // The two corridor approaches, reaching out past the frame wall. These
         // are what keep the sea out of the corridors: without them each
         // corridor is a hole in a wall with open water immediately behind it,
         // so the way you came in is a cliff edge over the sea. Same top height
         // as the rest of the land, so it is one continuous walk in.
-        [[FOREST_ENTRY_X, -1], [FOREST_EXIT_X, 1]].forEach(([cx, dir]) => {
-            const z0 = dir < 0 ? -half - FOREST_ENTRY_APPROACH : half;
-            const z1 = dir < 0 ? -half : half + FOREST_ENTRY_APPROACH;
+        [[forestEntryX(), -1], [forestExitX(), 1]].forEach(([cx, dir]) => {
+            const z0 = dir < 0 ? -halfZ - FOREST_ENTRY_APPROACH : halfZ;
+            const z1 = dir < 0 ? -halfZ : halfZ + FOREST_ENTRY_APPROACH;
             buildForestSlab(cx - FOREST_ENTRY_TONGUE_HALF, cx + FOREST_ENTRY_TONGUE_HALF, z0, z1);
         });
         // The SEABED - one floor under the whole sea, not just under the
@@ -16047,7 +16199,8 @@ export function startGame(CharacterClass) {
         else if (currentLevel === "local_water") buildWaterTestLevel();
         else if (currentLevel === "local_json") buildLevelFromJson(level2Json);
         else if (currentLevel === "local_village") buildVillageLevel();
-        else if (currentLevel === "local_forest" || currentLevel === "local_forest_free") buildForestLevel();
+        else if (currentLevel === "local_forest" || currentLevel === "local_forest_free"
+                 || currentLevel === "local_forest_linear") buildForestLevel();
         else if (currentLevel === "local_voxel") buildVoxelLevel();
         else {
             try {
@@ -16082,7 +16235,7 @@ export function startGame(CharacterClass) {
 
     async function populateLevelsAndLoad() {
         const select = document.getElementById('level-select');
-        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_forest_free">Forest (no story)</option><option value="local_voxel">Voxel (authored)</option><option value="local_blank">Blank (UI screenshots)</option>';
+        select.innerHTML = '<option value="local_stairs">Level 1 (Stairs)</option><option value="local_glb">Level 2 (Model)</option><option value="local_json">Level 3 (JSON)</option><option value="local_water">Water Test</option><option value="local_village">Village</option><option value="local_forest">Forest</option><option value="local_forest_free">Forest (no story)</option><option value="local_forest_linear">Forest (linear)</option><option value="local_voxel">Voxel (authored)</option><option value="local_blank">Blank (UI screenshots)</option>';
         try {
             const res = await fetch('https://api.github.com/repos/XYremesher/CustomGizmo/contents/Levels');
             if (res.ok) {
