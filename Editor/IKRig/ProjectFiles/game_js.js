@@ -2921,6 +2921,23 @@ export function startGame(CharacterClass) {
     // companion's half-second swing are different lengths, and a fixed lead
     // would sit in a different part of each.
     const CHARGE_SWOOSH_LEAD = 0.12;
+    // Fires a whoosh once, as a timer crosses a moment.
+    //
+    // Every swing in the game now wants this and they all have the same shape:
+    // a clock that runs forward through a swing and is reset to 0 at the start
+    // of one, and a point in it where the arm is on its way out. Crossing
+    // tests rather than flags, for the reason the charge's own says - the
+    // crossing happens exactly once per swing with nothing to remember, and
+    // nothing to plumb through the save/restore that every per-agent scalar
+    // has to survive.
+    //
+    // The sound system's own per-sound gap (see SFX) is what stops a crowd of
+    // them from stacking into a click, and its distance falloff is what keeps
+    // a fight across the wood from being as loud as the one you are in.
+    function swooshAt(now, prev, at, pos, strong) {
+        if (now < at || prev >= at) return;
+        if (window.playSound) window.playSound(strong ? 'swooshStrong' : 'swoosh', pos);
+    }
     const AI_CHARGE_HOLD = 1.1;
     // Fraction into the swing clip where the fist connects - the player's own
     // number, so both charge punches land on the same frame of the same clip.
@@ -4707,10 +4724,8 @@ export function startGame(CharacterClass) {
                 // runs forward within a swing and is reset to 0 at the start
                 // of each, so the crossing happens exactly once per charge
                 // with nothing to remember or restore between bots.
-                const swooshAt = AI_CHARGE_HOLD + swingDur * (AI_CHARGE_HIT_T - CHARGE_SWOOSH_LEAD);
-                if (aiBotState.punchTimer >= swooshAt && aiBotState.punchTimer - delta < swooshAt) {
-                    if (window.playSound) window.playSound('swooshStrong', pos);
-                }
+                swooshAt(aiBotState.punchTimer, aiBotState.punchTimer - delta,
+                    AI_CHARGE_HOLD + swingDur * (AI_CHARGE_HIT_T - CHARGE_SWOOSH_LEAD), pos, true);
                 // One hit, at the same point in the clip the player's own
                 // charge connects, and only if the victim is still in front of
                 // it - the wind-up gives them a full second to leave, and the
@@ -4736,6 +4751,14 @@ export function startGame(CharacterClass) {
                 // visibly land on however long the clip happens to be.
                 const comboDur = comboAction.getClip().duration;
                 const nt = aiBotState.punchTimer / Math.max(comboDur, 1e-3);
+                // One per blow, ahead of each. The combo is a single clip
+                // holding five swings, so hanging one whoosh off the clip
+                // starting would give five visible punches a single sound -
+                // the same trap the player's own combo had.
+                const ntPrev = (aiBotState.punchTimer - delta) / Math.max(comboDur, 1e-3);
+                for (let i = 0; i < AI_COMBO_HIT_TIMES.length; i++) {
+                    swooshAt(nt, ntPrev, AI_COMBO_HIT_TIMES[i] - CHARGE_SWOOSH_LEAD, pos, false);
+                }
                 for (let i = aiBotState.comboIndex; i < AI_COMBO_HIT_TIMES.length; i++) {
                     if (nt < AI_COMBO_HIT_TIMES[i]) break;
                     aiBotState.comboIndex = i + 1;
@@ -4757,6 +4780,8 @@ export function startGame(CharacterClass) {
                 return;
             }
 
+            swooshAt(aiBotState.punchTimer, aiBotState.punchTimer - delta,
+                AI_PUNCH_HIT_TIME - CHARGE_SWOOSH_LEAD, pos, false);
             if (!aiBotState.punchHasHit && aiBotState.punchTimer >= AI_PUNCH_HIT_TIME) {
                 aiBotState.punchHasHit = true;
                 if (pv && aiBotVictimAvailable(pv) && pos.distanceTo(pvPos) < window.aiPunchRange + 0.6) {
@@ -7444,16 +7469,23 @@ export function startGame(CharacterClass) {
                 : (i + hitT) * COMP_PUNCH_SWING;
             const totalDur = chargeAction ? COMP_CHARGE_HOLD + COMP_CHARGE_SWING
                 : comboAction ? comboDur : hitCount * COMP_PUNCH_SWING;
-            // The arm going out, once per charge - same crossing test the bot
-            // uses, and for the same reason: _compPunchT runs forward within
-            // an attack and is reset to 0 at the start of one, so no extra
-            // scalar has to be plumbed through activateCompanion/saveCompanion
-            // to remember whether this already fired.
-            if (chargeAction) {
-                const swooshAt = hitAt(0) - COMP_CHARGE_SWING * CHARGE_SWOOSH_LEAD;
-                if (_compPunchT >= swooshAt && _compPunchT - delta < swooshAt) {
-                    if (window.playSound) window.playSound('swooshStrong', c);
-                }
+            // A whoosh ahead of each of its blows, the same way the player's
+            // and the bots' are done - hitAt(i) is where a blow lands, so the
+            // arm is on its way out a little before it.
+            //
+            // The lead is a fraction of THIS attack's own swing, not of a
+            // fixed one: a charge swings for COMP_CHARGE_SWING and the combo
+            // for its clip's whole duration, and a lead measured against the
+            // plain punch would sit in a different part of each.
+            //
+            // One loop for all three kinds. The charge used to have its own
+            // copy of this a few lines up, which this replaced rather than
+            // joined - two of them would have whooshed twice per swing.
+            const swingLen = chargeAction ? COMP_CHARGE_SWING
+                : comboAction ? comboDur : COMP_PUNCH_SWING;
+            for (let i = 0; i < hitCount; i++) {
+                swooshAt(_compPunchT, _compPunchT - delta,
+                    hitAt(i) - swingLen * CHARGE_SWOOSH_LEAD, c, !!chargeAction);
             }
             // Fire every hit frame this step crossed. A long frame can span a
             // whole swing, and skipping it would silently drop a punch.
