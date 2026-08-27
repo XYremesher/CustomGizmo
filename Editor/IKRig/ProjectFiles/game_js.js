@@ -12221,7 +12221,11 @@ export function startGame(CharacterClass) {
     // it somewhere to be that happens to be on top of a wall.
     const STORY_BANK_STEP = 2.5;      // how far past the lip to aim for
     const STORY_OUT_OF_WATER = 1.0;   // above the lip by this = climbed out
-    const STORY_RIVER_LINE = 'Come on! {jump} to the\nledge and climb up!';
+    // No {jump} in it any more. Assisted grab is on by default (see
+    // window.assistedGrab), which means walking into the bank climbs it - so
+    // the line was naming a button you do not have to press, and the one
+    // thing worse than no instruction is one that does not match what works.
+    const STORY_RIVER_LINE = 'Come on! Walk into the\nbank to climb out!';
     const _riverExit = new THREE.Vector3();
     // Its OWN bubble handle rather than the story's 'companion' slot: the two
     // are driven by different things and cleared at different moments, and
@@ -14017,7 +14021,7 @@ export function startGame(CharacterClass) {
             // full reach, not the water's: the torus extends FOREST_LAKE_BANK
             // past the lake radius, and half a torus hanging over a drop is
             // worse than half a lake.
-            if (inForestGap(x, z, FOREST_LAKE_MAX_R + FOREST_LAKE_BANK + FOREST_GAP_W * 0.5)) continue;
+            if (inForestGap(x, z, FOREST_LAKE_MAX_R + FOREST_LAKE_BANK + forestGapW() * 0.5)) continue;
             // Only where the noise says the wood is open.
             const n = perlin2((x + window.forestSeed) / noiseScale, (z + window.forestSeed) / noiseScale);
             if (n >= window.forestTreeThreshold) continue;
@@ -14104,6 +14108,15 @@ export function startGame(CharacterClass) {
     // is no way to strand yourself in it, which matters - there is NO fall
     // recovery anywhere in this game.
     const FOREST_GAP_W = 9.0;
+    // Wider in the linear wood. There it is the one crossing on the whole
+    // walk, and at 9 you are out of it almost before you have registered
+    // being in it - the drop, the wade and the climb out all inside two
+    // strides. The square wood's is a strait between two islands you are
+    // already going around, so it does not want the same size.
+    window.forestLinearGapW = 18;
+    function forestGapW() {
+        return isLinearForest() ? window.forestLinearGapW : FOREST_GAP_W;
+    }
     // The channel floor, and the water sitting in it.
     //
     // 3.0 deep, which is not an arbitrary "looks about right" - it is the
@@ -14281,13 +14294,13 @@ export function startGame(CharacterClass) {
         return isLinearForest() ? z - FOREST_GAP_Z : x - FOREST_GAP_X;
     }
     function inForestGap(x, z, margin) {
-        return Math.abs(forestGapOffset(x, z)) < FOREST_GAP_W * 0.5 + margin;
+        return Math.abs(forestGapOffset(x, z)) < forestGapW() * 0.5 + margin;
     }
     // The gap as a span on whichever axis it cuts, for the code that builds
     // the land either side of it rather than testing a point against it.
     function forestGapSpan() {
         const at = isLinearForest() ? FOREST_GAP_Z : FOREST_GAP_X;
-        return [at - FOREST_GAP_W * 0.5, at + FOREST_GAP_W * 0.5];
+        return [at - forestGapW() * 0.5, at + forestGapW() * 0.5];
     }
     function buildForestGroundBox() {
         const halfX = forestSlabHalfX(), halfZ = forestSlabHalfZ();
@@ -17758,7 +17771,23 @@ export function startGame(CharacterClass) {
     // starting value on load, so this has to be kept in sync by hand or
     // the two silently disagree until the user first touches the slider.
     let lastLedgeState = false, lockedHintAngle = null, ledgeGrabTimer = 0, ledgeGrabCooldown = 0, ledgeJumpMultiplier = 0.6, landingTimer = 0, initialLandingTimer = 0;
+    // Water breaks a fall, so it does not earn a heavy landing.
+    //
+    // Dropping into the river is a 3-unit fall onto the bed, which arrives at
+    // about 13 units/s - enough for the landing lock to run 0.67s with the
+    // walk speed crushed to a fraction for most of it. That is the pause
+    // between falling in and starting to climb out: nothing was broken, the
+    // character was still finishing the landing from a fall that had already
+    // been cushioned by 0.7 of a metre of water.
+    //
+    // Only the river/sea line is tested. The lakes sit 0.3 above their own bed
+    // so nothing ever falls into one hard enough to reach this branch anyway.
+    function landedInWater() {
+        return isForestLevel() && char.group.position.y < FOREST_RIVER_Y;
+    }
     let ledgeOffset = 0.06, ledgeMoveLocked = false, ledgeSidewaysGesture = false, baseLandingAnimDuration = 0.25, climbTransitionDuration = 0.20;
+    // See its use, at the end of a climb-up.
+    const LEDGE_REGRAB_AFTER_CLIMB = 0.12;
     // Jump-chain feel, live-tunable because how smooth is smooth enough is a
     // judgement made by watching it, not one that can be derived.
     //   airFade       crossfade seconds for takeoff/apex/land/recover
@@ -22065,7 +22094,21 @@ export function startGame(CharacterClass) {
                 char.climbLockedWorldPos = null;
                 char.smoothedArrowPos = new THREE.Vector3(0, 0.05, 0);
                 if (char.playerArrowGroup) char.playerArrowGroup.position.copy(char.smoothedArrowPos);
-                isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0; ledgeGrabCooldown = 0.5;
+                isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0;
+                // A SHORT block after arriving on top, not the 0.5 the other
+                // exits use. Those are for letting GO of a ledge - jumping
+                // off it, slipping, running out of stamina - where the ledge
+                // you just left is still right in front of you and half a
+                // second is what stops you catching it again immediately.
+                //
+                // Coming up over one is the opposite: you are standing on the
+                // surface you grabbed and it is behind you, and the grab ray
+                // is aimed at where you are moving. So the only thing 0.5
+                // bought here was a stall on the NEXT step of a staircase -
+                // long enough that the natural response is to let go of the
+                // stick and push again. A couple of frames is all that is
+                // needed for the position to settle.
+                ledgeGrabCooldown = LEDGE_REGRAB_AFTER_CLIMB;
             }
         } else if (isLedgeGrabbing) {
             yVelocity = 0; ledgeGrabTimer += delta;
@@ -23761,7 +23804,7 @@ export function startGame(CharacterClass) {
                         currentVel.y = yVelocity;
                         char.initRagdoll(currentVel, 'high');
                         isLedgeGrabbing = false; isClimbingUp = false; lockedHintAngle = null;
-                    } else if (yVelocity < -5) {
+                    } else if (yVelocity < -5 && !landedInWater()) {
                         landingTimer = baseLandingAnimDuration * (1.0 + (Math.abs(yVelocity) - 5) * 0.2);
                         initialLandingTimer = landingTimer;
                     } else { landingTimer = 0; initialLandingTimer = 0; }
