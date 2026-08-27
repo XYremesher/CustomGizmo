@@ -2137,7 +2137,12 @@ export function startGame(CharacterClass) {
     // from 3.2 to 2.2 also slowed every approach in every fight, which is
     // exactly the "bots feel slow" this is answering. Its own constant now, so
     // neither can move the other again.
-    const AI_CLOSE_SPEED = 4.2;
+    // Was 4.2, which is a walk: the player runs at 8.0, so a bot closing the
+    // last few metres moved at barely half the speed of the thing it was
+    // closing on, and you could stroll away from a fight already under way.
+    // 7.0 makes backing off a decision rather than a free escape, and is still
+    // under 8.0 - running away WORKS, it just costs you the ground you had.
+    const AI_CLOSE_SPEED = 7.0;
     // Speed the run clip is authored for - the player's own top speed, since
     // it is the same Running.fbx. Used to rate-match the animation below.
     const AI_RUN_ANIM_REF = 8.0;
@@ -3933,6 +3938,11 @@ export function startGame(CharacterClass) {
         }
         bot._lastDownAt = now;
     }
+    // What a knocked-out body turns into. Fading alone did not read at a
+    // glance - a faint yellow is still a yellow - and in a fight with three of
+    // them the one that is out has to be obvious. Draining the colour too is
+    // what makes it read as OUT rather than as far away.
+    const AI_KO_COLOR = 0x6b6b72;
     function setBotKnockedOutLook(bot, on) {
         if (bot._koLook === on) return;
         bot._koLook = on;
@@ -3942,6 +3952,13 @@ export function startGame(CharacterClass) {
             // A see-through body still writing depth hides whatever is behind
             // it, which reads as a hole in the world rather than a faded body.
             m.depthWrite = !on;
+            if (m.color) {
+                // Its own colour remembered ON the material, not in a map
+                // keyed by bot. These are per-bot materials, and the one place
+                // that cannot get out of step with a material is itself.
+                if (m.userData._koFrom === undefined) m.userData._koFrom = m.color.getHex();
+                m.color.setHex(on ? AI_KO_COLOR : m.userData._koFrom);
+            }
             m.needsUpdate = true;
         });
     }
@@ -5486,6 +5503,9 @@ export function startGame(CharacterClass) {
         { key: 'BotYellow3', id: 'ai-bot-5', color: 0xffd633, offset: [4, 0, 4] },
         { key: 'BotOrange2', id: 'ai-bot-6', color: 0xff7a1a, offset: [-4, 0, 4], combo: true },
         { key: 'BotRed2', id: 'ai-bot-7', color: 0xd42a2a, offset: [0, 0, 5.5], charge: true },
+        // The fourth plain one. The first beat takes two of them now, so
+        // without this the later beats would be borrowing from each other.
+        { key: 'BotYellow4', id: 'ai-bot-8', color: 0xffd633, offset: [6, 0, 2] },
     ];
     // Performance probe. Pads the roster out to window.enemyTestCount with
     // PLAIN yellows - no combo, no charge - so what is being measured is the
@@ -11978,6 +11998,7 @@ export function startGame(CharacterClass) {
         // this only drops the waiting list.
         _freeRecruits = [];
         _bagMoveOnT = -1;
+        _climbPraised = false;
         _forestTopReached = false;
         _forestStairsSeen = false;
         coachStep = -1;
@@ -12278,6 +12299,17 @@ export function startGame(CharacterClass) {
             // same field the punch demo uses to send one to the sandbag, so
             // "wait here" costs no new state: it walks to its own spot, gets
             // there, and idles.
+            // Nothing but the stick to begin with. Handed over as they are
+            // explained: the punch when the one at the bag tells you what the
+            // button does, the jump once you have used it and it says to move
+            // on. Only here - every other level starts with both.
+            if (isLinearForest()) {
+                window.punchButtonEnabled = false;
+                window.jumpButtonEnabled = false;
+            } else {
+                window.punchButtonEnabled = true;
+                window.jumpButtonEnabled = true;
+            }
             const m1 = forestMeetPoint(), m2 = forestMeetPoint2();
             const bag = forestBagPoint();
             spawnForestSandbag(bag.x, bag.z);
@@ -12329,22 +12361,29 @@ export function startGame(CharacterClass) {
                 // wants to be somewhere you reach shortly after putting your
                 // fists down - far enough that it is not standing over the
                 // lesson, near enough that it still belongs to it.
-                const solo = bag.z + (m1.z - bag.z) * 0.35;
-                botAt.BotYellow  = { x:  3.0, z: solo };
+                const first = bag.z + (m1.z - bag.z) * 0.35;
+                // TWO at the first beat, both plain. Two of the simplest enemy
+                // is a different fight from one - you have to watch a flank -
+                // without asking for a move you have not been taught, which is
+                // the reasoning the pair carried when it was the second beat.
+                // Side by side so they wake as one.
+                botAt.BotYellow  = { x:  3.0, z: first };
+                botAt.BotYellow2 = { x: -3.0, z: first + 2.5 };
                 // Close enough TO EACH OTHER to wake together: collecting the
                 // companion wakes the nearest sleeper and then everything
                 // within WAKE_PACK_RADIUS of it, which is 10. Standing them at
                 // the full standoff either side of the path put 22 between
                 // them, so only one would have got up and the pair would have
                 // arrived as two separate fights.
-                botAt.BotYellow2 = { x: m1.x - 5.0, z: m1.z + FREE_BOT_STANDOFF };
+                // ...then a plain one AND a combo one, which is the step up.
+                botAt.BotYellow3 = { x: m1.x - 5.0, z: m1.z + FREE_BOT_STANDOFF };
                 botAt.BotOrange  = { x: m1.x + 3.0, z: m1.z + FREE_BOT_STANDOFF + 2.0 };
                 // ...and all three kinds together at the second companion,
                 // which is the one that hands you the charge card. Inside
                 // WAKE_PACK_RADIUS of each other for the same reason the pair
                 // is: they have to get up together or they arrive as three
                 // separate fights.
-                botAt.BotYellow3 = { x: m2.x - 5.0, z: m2.z + FREE_BOT_STANDOFF };
+                botAt.BotYellow4 = { x: m2.x - 5.0, z: m2.z + FREE_BOT_STANDOFF };
                 botAt.BotOrange2 = { x: m2.x + 3.0, z: m2.z + FREE_BOT_STANDOFF + 2.0 };
                 botAt.BotRed2    = { x: m2.x - 1.0, z: m2.z + FREE_BOT_STANDOFF + 5.0 };
             }
@@ -12425,13 +12464,18 @@ export function startGame(CharacterClass) {
                 yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow.x, botAt.BotYellow.z));
             storyPlaceBot('BotYellow2', botAt.BotYellow2.x, storyGroundY(botAt.BotYellow2.x, botAt.BotYellow2.z, 0), botAt.BotYellow2.z, true,
                 yawTowards(m1.x - STORY_PAIR_HALF, m1.z, botAt.BotYellow2.x, botAt.BotYellow2.z));
+            if (isLinearForest()) {
+                const y3 = botAt.BotYellow3;
+                storyPlaceBot('BotYellow3', y3.x, storyGroundY(y3.x, y3.z, 0), y3.z, true,
+                    yawTowards(m1.x, m1.z, y3.x, y3.z));
+            }
             storyPlaceBot('BotOrange', botAt.BotOrange.x, storyGroundY(botAt.BotOrange.x, botAt.BotOrange.z, 0), botAt.BotOrange.z, true,
                 yawTowards(m2.x, m2.z, botAt.BotOrange.x, botAt.BotOrange.z));
             // The trio, asleep like the rest. Only in the linear wood - the
             // square one's beats are its own and adding three bodies to a
             // clearing there would rewrite a level nobody asked me to touch.
             if (isLinearForest()) {
-                ['BotYellow3', 'BotOrange2', 'BotRed2'].forEach(key => {
+                ['BotYellow4', 'BotOrange2', 'BotRed2'].forEach(key => {
                     const at = botAt[key];
                     storyPlaceBot(key, at.x, storyGroundY(at.x, at.z, 0), at.z, true,
                         yawTowards(m2.x, m2.z, at.x, at.z));
@@ -12896,6 +12940,15 @@ export function startGame(CharacterClass) {
     // foot-plant like anything else - just pinned to a spot until you arrive.
     let _freeRecruits = [];
     let _freeRecruitT = 0;   // beacon bob clock
+    // Set on the first completed climb-up, cleared with the level.
+    //
+    // Declared HERE, next to the other level state, rather than beside the
+    // ledge variables it belongs with - the level build clears it, and
+    // populateLevelsAndLoad builds a level from inside startGame's own body.
+    // A `let` declared further down the file is still in its dead zone at that
+    // point, so writing to it there would throw before the game ever drew a
+    // frame.
+    let _climbPraised = false;
     const FREE_WAVE_SPREAD = 3.5;   // how far either side of the spot they land
     // How far the sleeping enemy stands from the recruit sharing its clearing.
     // Deliberately outside enemyWakeRange's own 16, so it is wakeNearestSleeper
@@ -13211,11 +13264,17 @@ export function startGame(CharacterClass) {
                 _bagMoveOnT += delta || 0;
                 if (_bagMoveOnT >= BAG_MOVE_ON_DELAY) {
                     if (tutor) storySay(tutor, STORY_MOVE_ON_LINE, 'companion');
+                    // "Let's move on" is also when moving on becomes possible.
+                    // Nothing before this point needs a jump - the bag is on
+                    // flat ground and jumping at it was the distraction the
+                    // no-jump radius exists to stop.
+                    window.jumpButtonEnabled = true;
                     // By name, not by nearness: this beat is staged. The
                     // nearest sleeper to the bag IS the single yellow, but
                     // only because of where it was put - saying which one is
                     // what keeps that true when something moves.
                     wakeBot('BotYellow');
+                    wakeBot('BotYellow2');
                 }
             }
             return;
@@ -13250,6 +13309,11 @@ export function startGame(CharacterClass) {
             // comes down when you do rather than sitting there through the
             // fight it sent you into.
             storySay(null, null, 'companion');
+            // The punch arrives with the one that explains it. Guarded on the
+            // line rather than on the key, so it is the companion that TALKS
+            // about punching that hands it over - if that role moves, this
+            // moves with it.
+            if (r.comp._recruitLine === STORY_AUTOPUNCH_LINE) window.punchButtonEnabled = true;
             // ...and anything THIS one was given to say, said now - the moment
             // it becomes yours is the moment it has your attention.
             if (r.comp._recruitLine) {
@@ -19049,6 +19113,7 @@ export function startGame(CharacterClass) {
     const BAG_NO_JUMP_R = 4.0;
     function handleJump() {
         if (window.dialogueInputLocked) return;
+        if (!window.jumpButtonEnabled) return;
         if (_forestSandbag && isFreeForest()) {
             // The collider, not the group: the group sits on the floor and the
             // bag hangs above it, and measuring to the wrong one is how the
@@ -19636,6 +19701,15 @@ export function startGame(CharacterClass) {
     // also checks, it doesn't touch style directly (the per-frame update
     // would immediately overwrite a direct set here anyway).
     window.punchButtonEnabled = true;
+    // Same idea, for the jump. The linear wood withholds BOTH at the start and
+    // hands them over one at a time (see the bag beat) - you arrive with a
+    // stick and nothing else, and each control shows up at the moment
+    // something has just told you what it is for.
+    //
+    // Read by handleJump as well as by the button's visibility, so the
+    // keyboard and the auto-jump are withheld with it. A control you have not
+    // been given should not work by another route.
+    window.jumpButtonEnabled = true;
     const togglePunchBtnEl = document.getElementById('toggle-punch-btn');
     if (togglePunchBtnEl) {
         // Keep the checkbox showing the real state - it starts on now, and a
@@ -22663,6 +22737,14 @@ export function startGame(CharacterClass) {
                 char.smoothedArrowPos = new THREE.Vector3(0, 0.05, 0);
                 if (char.playerArrowGroup) char.playerArrowGroup.position.copy(char.smoothedArrowPos);
                 isClimbingUp = false; char.climbFinished = false; yVelocity = 0; isGrounded = true; landingTimer = 0;
+                // Once per level, on the first one you actually complete.
+                // Climbing is the one thing here nobody introduces - it just
+                // happens when you walk at a ledge - so saying it landed is
+                // what turns an accident into a move you meant.
+                if (!_climbPraised) {
+                    _climbPraised = true;
+                    addNotificationToast('Good climb!', window.playerIconDataUrl);
+                }
                 // A SHORT block after arriving on top, not the 0.5 the other
                 // exits use. Those are for letting GO of a ledge - jumping
                 // off it, slipping, running out of stamina - where the ledge
@@ -23224,6 +23306,8 @@ export function startGame(CharacterClass) {
             window.isClimbing = isLedgeGrabbing || isClimbingUp;
             const punchUsable = (window.punchButtonEnabled && !window.isClimbing && !window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping);
             if (punchBtnEl) punchBtnEl.style.display = punchUsable ? 'flex' : 'none';
+            const jumpBtnEl = document.getElementById('jump-btn');
+            if (jumpBtnEl) jumpBtnEl.style.display = window.jumpButtonEnabled ? 'flex' : 'none';
             // The toggles live and die with the button they modify - a lock
             // control on screen while punching is impossible is a dead switch.
             const lockBtn = document.getElementById('lock-target-btn');
