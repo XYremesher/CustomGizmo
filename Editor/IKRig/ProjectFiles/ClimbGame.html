@@ -860,7 +860,11 @@
            chargePunchChargeTime, 1.0s (10%-60%), and the release is the
            moment it is full. Red is the colour the live ring wears in the
            charge state. */
-        #hint-card.charge #hint-demo { animation: hint-hold 2s linear infinite; }
+        /* The carry card is a hold too, so it shares the charge's press and
+           its drain - see showCarryHint. Only the colour differs, and that is
+           copied from the live button rather than stated here. */
+        #hint-card.charge #hint-demo,
+        #hint-card.carry #hint-demo { animation: hint-hold 2s linear infinite; }
         @keyframes hint-hold {
             0%        { transform: scale(1); }
             8%, 58%   { transform: scale(0.88); }
@@ -870,6 +874,13 @@
         #hint-card.charge #hint-demo .hint-ring-fill {
             animation: hint-charge-sweep 2s linear infinite, hint-charge-colour 2s linear infinite;
         }
+        /* Same sweep, the carry button's own pink. */
+        #hint-card.carry #hint-demo .hint-ring-fill {
+            stroke: #ff3296;
+            animation: hint-charge-sweep 2s linear infinite;
+        }
+        #hint-card.carry #hint-text b { color: #ff8fc4; }
+        #hint-card.carry #hint-text .hint-title { color: rgba(255, 143, 196, 0.72); }
         /* Drains as it charges - updateUI is the same function, fed the
            charge's own growth instead of a swing's time. */
         @keyframes hint-charge-sweep {
@@ -1748,7 +1759,19 @@
     <div id="jump-btn">JUMP</div>
     <div id="build-btn">B</div>
     <div id="hold-btn">HOLD</div>
-    <div id="carry-btn">CARRY</div>
+    <div id="carry-btn">CARRY
+        <!-- The pickup wait, drawn the way the punch button draws a swing.
+             Built like that one and for the same reasons: the viewBox lets the
+             ring scale WITH the button instead of staying at its authored
+             size, and the -50%/-50% centring survives the button changing size
+             under body.ui-alt. r=32 in a 76 box, dasharray 2*pi*32 = 201.06,
+             so the numbers can be read against the punch's without conversion.
+             Driven from updateAutoCarry. -->
+        <svg viewBox="0 0 76 76" style="position: absolute; top: 50%; left: 50%; width: 71px; height: 71px; pointer-events: none; transform: translate(-50%, -50%) rotate(-90deg);">
+            <circle cx="38" cy="38" r="32" stroke="rgba(255, 255, 255, 0.15)" stroke-width="4" fill="transparent" />
+            <circle id="carry-ring-fill" cx="38" cy="38" r="32" stroke="#ff3296" stroke-width="4" fill="transparent" stroke-linecap="round" stroke-dasharray="201.06" stroke-dashoffset="0" />
+        </svg>
+    </div>
     <div id="drop-btn">DROP</div>
     <div id="throw-btn">THROW</div>
     

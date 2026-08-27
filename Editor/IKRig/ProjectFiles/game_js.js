@@ -13034,7 +13034,9 @@ export function startGame(CharacterClass) {
     // sits in state that anything else can clear - previewHint did exactly
     // that while the card was being tuned. An index only ever goes up, so
     // second companion means second lesson no matter what else has happened.
-    const HINT_ORDER = ['combo', 'charge'];
+    // Three lessons, one per companion that arrives with something to fight -
+    // the one at the bag is quiet and hands over none of them.
+    const HINT_ORDER = ['combo', 'charge', 'carry'];
     let _hintStep = 0;
     const HINT_GIVE_UP = 22.0;
     function showHintCard(id, html, iconUrl, opts) {
@@ -13055,6 +13057,11 @@ export function startGame(CharacterClass) {
         // The demo is a different gesture per lesson - a tap for the combo, a
         // hold for the charge - and the class is what selects it.
         card.classList.toggle('charge', id === 'charge');
+        // The carry lesson is a HOLD, like the charge - so it borrows the
+        // charge's own demo rather than the tap's. What differs between them
+        // is the colour of the thing being held, and that now comes off the
+        // real button.
+        card.classList.toggle('carry', id === 'carry');
         // Not every card is about the punch button. One that is about the
         // COMPASS has nothing to demonstrate with it, and leaving a picture of
         // a punch button on it would be pointing at the wrong control.
@@ -13067,7 +13074,7 @@ export function startGame(CharacterClass) {
         // different ring, is a picture of some other button. The live one is
         // 60px normally and 50 under body.ui-alt, which no fixed number in a
         // stylesheet can follow.
-        const realBtn = document.getElementById('punch-btn');
+        const realBtn = document.getElementById((opts && opts.fromBtn) || 'punch-btn');
         const realSvg = realBtn && realBtn.querySelector('svg');
         const demo = noDemo ? null : demoEl;
         const svg = demo && demo.querySelector('svg');
@@ -13086,9 +13093,19 @@ export function startGame(CharacterClass) {
             const ring = rs && rs.width ? rs.width : w + 12;
             svg.style.width = svg.style.height = ring + 'px';
             svg.style.inset = (-(ring - w) / 2) + 'px';
-            // Label size straight off the live button, rather than a ratio.
-            const fs = realBtn.ownerDocument.defaultView.getComputedStyle(realBtn).fontSize;
-            if (fs) demo.style.fontSize = fs;
+            // Label size straight off the live button, rather than a ratio -
+            // and its TEXT and its BACKGROUND with it, now that the card is
+            // not always about the punch. A demo that says PUNCH on a card
+            // about carrying is a picture of the wrong control, which is the
+            // whole thing this copying exists to avoid.
+            const cs = realBtn.ownerDocument.defaultView.getComputedStyle(realBtn);
+            if (cs.fontSize) demo.style.fontSize = cs.fontSize;
+            demo.style.background = cs.backgroundColor;
+            const srcLabel = Array.from(realBtn.childNodes)
+                .find(n => n.nodeType === 3 && n.nodeValue.trim());
+            const dstLabel = Array.from(demo.childNodes)
+                .find(n => n.nodeType === 3 && n.nodeValue.trim());
+            if (srcLabel && dstLabel) dstLabel.nodeValue = srcLabel.nodeValue.trim();
         }
         card.style.display = 'flex';
         // Next frame, so the transition has a start state to animate from.
@@ -13121,9 +13138,15 @@ export function startGame(CharacterClass) {
             addNotificationToast('Knockdown!', window.playerIconDataUrl);
             return;
         }
+        if (_hintId === 'carry' && (window.carryPickupCount || 0) > _hintCarryFrom) {
+            hideHintCard(true);
+            addNotificationToast('Got it!', window.playerIconDataUrl);
+            return;
+        }
         if (_hintT > HINT_GIVE_UP) hideHintCard(false);
     }
     let _hintChargeFrom = 0;
+    let _hintCarryFrom = 0;
     function showComboHint() {
         _hintComboFrom = window.comboLandedCount || 0;
         showHintCard('combo',
@@ -13134,6 +13157,22 @@ export function startGame(CharacterClass) {
         _hintChargeFrom = window.chargeLandedCount || 0;
         showHintCard('charge',
             '<span class="hint-title">Charge Punch</span><b>Hold</b>, then let go');
+    }
+    // The carry lesson, on the same card as the rest.
+    //
+    // Its demo is the CARRY button rather than the punch one, which is why
+    // showHintCard takes the id of the control to copy: the card has always
+    // measured a real button and drawn a copy of it, and the whole point of
+    // that is that it is a picture of the control you are being told about.
+    //
+    // No icon on the right. The combo card points at an enemy because that is
+    // who you tap at; there is no equivalent for picking something up, and an
+    // icon of a jar would be a picture of the thing rather than the lesson.
+    function showCarryHint() {
+        _hintCarryFrom = window.carryPickupCount || 0;
+        showHintCard('carry',
+            '<span class="hint-title">Carry</span><b>Hold</b> near a jar',
+            null, { fromBtn: 'carry-btn' });
     }
     // The compass, as a card rather than as a line over a companion's head.
     //
@@ -13170,6 +13209,7 @@ export function startGame(CharacterClass) {
         _hintStep++;
         if (next === 'combo') showComboHint();
         else if (next === 'charge') showChargeHint();
+        else if (next === 'carry') showCarryHint();
     }
 
     // The nearest bot still asleep, woken. Distance-ordered rather than
@@ -17597,6 +17637,9 @@ export function startGame(CharacterClass) {
     let _autoCarryT = 0;
     let _autoCarryFor = null;        // the object the current fill belongs to
     const AUTO_CARRY_CIRCUM = 125.66;   // 2 * pi * r, r = 20 in the SVG
+    // The carry button's own ring is built to the punch button's geometry
+    // (r = 32 in a 76 viewBox), so it carries the punch's circumference.
+    const PUNCH_RING_CIRCUM = 201.06;
     function updateAutoCarry(delta) {
         const btn = document.getElementById('auto-carry-btn');
         const ring = document.getElementById('auto-carry-ring-fill');
@@ -17622,15 +17665,34 @@ export function startGame(CharacterClass) {
         } else {
             _autoCarryT = 0;
         }
+        const t = target ? Math.min(1, _autoCarryT / Math.max(0.01, window.autoCarryTime)) : 0;
         if (ring) {
-            const t = target ? Math.min(1, _autoCarryT / Math.max(0.01, window.autoCarryTime)) : 0;
             ring.style.strokeDashoffset = AUTO_CARRY_CIRCUM * (1 - t);
+        }
+        // ...and the same wait on the CARRY button itself, where you are
+        // actually looking. The small toggle's ring says whether the feature
+        // is armed; this one says how long until the thing in front of you is
+        // in your hands.
+        //
+        // DRAINS, like the punch ring - it starts whole and empties as the
+        // wait runs out. The punch's does that because updateUI writes
+        // circumference * normalizedTime, and a control that fills where its
+        // neighbour empties would be two different languages on one screen.
+        const carryRing = document.getElementById('carry-ring-fill');
+        if (carryRing) {
+            carryRing.style.strokeDashoffset = PUNCH_RING_CIRCUM * t;
         }
     }
 
     carryBtn.addEventListener('pointerdown', () => {
         if (!window.isCarryingObj && !window.isCarryStarting && !window.isCarryDropping && !isMakingRoom && carryTargetObj) {
             window.isCarryStarting = true;
+            // Counted here rather than inferred from isCarryingObj, for the
+            // same reason bagHitCount is counted at the hit: this is the one
+            // place a pickup actually STARTS, however it was triggered - the
+            // button, the keyboard, or the auto-carry, which dispatches
+            // through this very handler.
+            window.carryPickupCount = (window.carryPickupCount || 0) + 1;
             carryStartElapsed = 0;
             heldCarryable = carryTargetObj;
 
