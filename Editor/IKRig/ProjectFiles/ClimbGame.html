@@ -940,6 +940,25 @@
            the arrow readable over a bright sky or a pale path. */
         #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 9; }
 
+        /* Inside a block: black, dithered, with a hole where you are.
+           The camera has no collision by choice - being pulled in filled the
+           screen with whatever you were standing on - so instead it goes
+           inside things and this covers what that looks like.
+           The screen door is a 2px checker rather than a flat fade, so it
+           matches what the game's own dissolve does to geometry: you can tell
+           you are looking THROUGH something rather than at a black screen.
+           The hole is a mask, positioned from JS onto the player's own place
+           on screen; without it this would be a black screen with nothing to
+           aim by. */
+        #cam-inside {
+            position: fixed; inset: 0; pointer-events: none; z-index: 8;
+            opacity: 0; transition: opacity 0.18s linear;
+            background-color: #000;
+            background-image:
+                repeating-linear-gradient(0deg, rgba(0,0,0,0.55) 0 1px, rgba(0,0,0,0) 1px 2px),
+                repeating-linear-gradient(90deg, rgba(0,0,0,0.55) 0 1px, rgba(0,0,0,0) 1px 2px);
+        }
+
         #fps-counter {
             display: block; /* toggled via the 'toggle-fps' Debug Vis checkbox, checked by default */
             position: fixed; bottom: 8px; right: 8px; z-index: 50;
@@ -1885,6 +1904,9 @@
          so it follows ASSET_BASE. -->
     <div id="compass-backdrop"></div>
     <img id="compass-arrow" alt="">
+    <!-- Drawn when the camera ends up inside solid level geometry. See
+         updateCameraInside in game_js.js for what turns it on. -->
+    <div id="cam-inside"></div>
     <div id="drag-deadzone-left" class="drag-deadzone"></div>
     <div id="drag-deadzone-right" class="drag-deadzone"></div>
 

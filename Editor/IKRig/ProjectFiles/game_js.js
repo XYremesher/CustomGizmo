@@ -18667,7 +18667,13 @@ export function startGame(CharacterClass) {
     let cameraTheta = 0, cameraPhi = Math.PI/3, cameraRadius = window.cameraDistance, yVelocity = 0;
     // The camera's own collision - see where it is used. Off restores the
     // orbit that goes through walls.
-    window.cameraCollide = true;
+    // OFF. Pulling the camera in was worse than the thing it was avoiding:
+    // held far enough back to frame anything it barely avoided a wall, and
+    // held close enough to avoid one it filled the screen with the ground.
+    // The camera goes inside geometry instead, and updateCameraInside covers
+    // what that looks like - which is the trade you asked for rather than a
+    // third attempt at a distance that does both.
+    window.cameraCollide = false;
     window.cameraCollidePad = 0.4;   // how far short of the surface it stops
     // How close it may ever get. 1.6 was far too near - a camera that hard
     // against your back fills the screen with whatever you are standing on and
@@ -18689,6 +18695,66 @@ export function startGame(CharacterClass) {
     const _camColDir = new THREE.Vector3();
     const _camColFrom = new THREE.Vector3();
     let _camColCache = null;
+    // ---- Being inside something ----
+    //
+    // A full-screen black layer with a hole where you are, faded in when the
+    // camera is inside solid level geometry. The layer is dithered in CSS
+    // rather than filled flat, so it reads as looking THROUGH something the
+    // way the game's own dissolve does, rather than as the screen going out.
+    //
+    // Tested as a point against bounding BOXES, not as a raycast. Everything
+    // this has to catch is an axis-aligned box - the ground slabs, the stair
+    // flights, the frame wall's blocks - so the box is the exact shape rather
+    // than an approximation of it, which is the same argument the dither
+    // occluders make for using boxes over meshes.
+    //
+    // Trees and the practice bag are excluded, from the same list the camera
+    // and the vision cones use: a camera inside a canopy should see the wood,
+    // not a black screen.
+    window.cameraInsideEnabled = true;
+    window.cameraInsideHole = 190;     // radius of the hole, in CSS pixels
+    window.cameraInsideFeather = 90;   // ...and how far it fades out over
+    const _camInsideBox = new THREE.Box3();
+    const _camInsideVec = new THREE.Vector3();
+    let _camInsideCache = null;
+    let _camInsideEl = null, _camInsideOn = null;
+    function updateCameraInside(cam, playerPoint) {
+        if (_camInsideEl === null) _camInsideEl = document.getElementById('cam-inside') || false;
+        if (!_camInsideEl) return;
+        let inside = false;
+        if (window.cameraInsideEnabled) {
+            if (!_camInsideCache) _camInsideCache = makeNearCache();
+            const near = getNearColliders(visionLosList(), cam.position, _camInsideCache);
+            for (let i = 0; i < near.length; i++) {
+                const ud = near[i].userData;
+                if (ud && (ud.isCarryable || ud.isSandbagCollider)) continue;
+                getObstacleBox(near[i], _camInsideBox);
+                if (_camInsideBox.containsPoint(cam.position)) { inside = true; break; }
+            }
+        }
+        if (inside) {
+            // The hole follows you, so it has to be written every frame it is
+            // up - the mask is in CSS pixels, which is what the layer is sized
+            // in, so this is the plain projection rather than the buffer-space
+            // one the shader's own hole needs.
+            _camInsideVec.copy(playerPoint).project(cam);
+            const px = (_camInsideVec.x * 0.5 + 0.5) * window.innerWidth;
+            const py = (-_camInsideVec.y * 0.5 + 0.5) * window.innerHeight;
+            const r0 = window.cameraInsideHole;
+            const r1 = r0 + window.cameraInsideFeather;
+            const mask = `radial-gradient(circle ${r1}px at ${px}px ${py}px,` +
+                ` rgba(0,0,0,0) 0, rgba(0,0,0,0) ${r0}px, #000 ${r1}px)`;
+            _camInsideEl.style.webkitMaskImage = mask;
+            _camInsideEl.style.maskImage = mask;
+        }
+        // Only written when it changes - the opacity transition is what fades
+        // it, and re-assigning the same value every frame restarts nothing but
+        // costs a style write on every one of them.
+        if (inside !== _camInsideOn) {
+            _camInsideOn = inside;
+            _camInsideEl.style.opacity = inside ? '1' : '0';
+        }
+    }
     // Clears whatever fall the character had accumulated. Level builders call
     // it after placing the spawn, because a build can happen DURING a fall:
     // a level whose geometry loads asynchronously has no collidables at all
@@ -25713,6 +25779,7 @@ export function startGame(CharacterClass) {
             camera.position.lerp(_tempVec2.set(targetCamX, targetCamY, targetCamZ), 15 * delta);
             camera.lookAt(camTarget.x, camTarget.y, camTarget.z);
         }
+        updateCameraInside(camera, camTarget);
         orthoCamera.position.copy(camera.position);
         orthoCamera.quaternion.copy(camera.quaternion);
 
