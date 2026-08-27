@@ -8602,24 +8602,6 @@ export function startGame(CharacterClass) {
     // right where you are looking". A tree behind or beside you never loses a
     // pixel.
     const ditherAlwaysOnMats = [];
-    // ...and materials held armed WITHOUT that probe.
-    //
-    // The frame wall is instanced exactly like the trees - one mesh for the
-    // whole ring - so it has the same problem: there is no per-block material
-    // to raise and lower, and no useful bounding box either, since one
-    // InstancedMesh reports a single box covering the entire level. So it
-    // takes the trees' solution, holding the amount at full and letting the
-    // shader's own screen-circle and depth test decide where anything is
-    // discarded.
-    //
-    // Its own list rather than ditherAlwaysOnMats, because that one is driven
-    // by whether a TREE is judged to be occluding you. A wall is not a tree,
-    // and gating it on the tree probe would leave it solid in exactly the
-    // place it matters - a corner of the level with no trees in it. Holding it
-    // armed is as correct as holding the trees armed, and for the same stated
-    // reason: the shader only discards inside the hole AND in front of the
-    // player, so a wall behind or beside you never loses a pixel.
-    const ditherArmedMats = [];
     const villageLoader = new GLTFLoader();
     const onVillageLoaded = (gltf) => {
         villageScene = gltf.scene;
@@ -12197,6 +12179,9 @@ export function startGame(CharacterClass) {
             // material per box, which is what keeps each one's fade its own;
             // see the note on it for what sharing one costs.
             makeLevelOccluder(box, { grass: true });
+            // Same reason as the frame wall's: at the block strength a step
+            // this wide does not read as dissolving, it reads as missing.
+            box.userData.ditherStrengthOverride = window.ditherLevelStrength;
             // ...and tufts are planted ON it, the way they are on the forest
             // floor. Without this the scatter treats every step as an
             // obstacle - it rejects anything whose underside is lower than a
@@ -14314,32 +14299,19 @@ export function startGame(CharacterClass) {
         {
             const step = FOREST_BORDER_BLOCK;
             const top = FOREST_BORDER_HEIGHT;
-            // The same build as the stairs: grey stone with grass projected
-            // onto whatever faces up. buildForestExitSteps takes this very
-            // material and adds applyTriplanarGrass to its own clone, so
-            // doing it here is what makes the frame and the flight at the end
-            // of the level read as the same stuff rather than as two greys.
-            //
-            // ...and ditherable with it, held armed - see ditherArmedMats for
-            // why the wall cannot use the per-object occluder path the stairs
-            // use. Registered once, guarded by the same _forestBorderMat null
-            // check that builds them, so rebuilding the level does not stack
-            // duplicate entries in that list.
+            // Plain here, and dressed per mesh below. makeLevelOccluder
+            // clones whatever it is given and adds the grass and the dissolve
+            // to the clone, so the stairs - which clone from this very
+            // material - and the wall both end up with the same treatment on
+            // their own copies, and neither can spend the other's uniform.
             if (!_forestBorderMat) {
                 _forestBorderMat = new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
-                applyTriplanarGrass(_forestBorderMat);
-                makeDitherable(_forestBorderMat);
-                ditherArmedMats.push(_forestBorderMat);
             }
             // The cap keeps its warmer earth base under the grass - it is the
             // soil the wall's own trees are planted in, and grey soil under a
-            // grass line reads as painted stone. Same treatment, different
-            // ground colour.
+            // grass line reads as painted stone.
             if (!_forestBorderCapMat) {
                 _forestBorderCapMat = new THREE.MeshToonMaterial({ color: 0xa89880, gradientMap: threeTone });
-                applyTriplanarGrass(_forestBorderCapMat);
-                makeDitherable(_forestBorderCapMat);
-                ditherArmedMats.push(_forestBorderCapMat);
             }
             const spots = [];
             forestBorderLayout((bx, bz) => spots.push([bx, bz]));
@@ -14358,6 +14330,14 @@ export function startGame(CharacterClass) {
                 inst.castShadow = true; inst.receiveShadow = true;
                 inst.frustumCulled = false;
                 levelGroup.add(inst);
+                // Dissolves like a block you built rather than being held
+                // permanently armed: it only goes when it is genuinely between
+                // you and the camera. ditherByMesh because its bounding box is
+                // the whole level, and the gentler strength because a wall
+                // that vanishes is a hole in the world rather than a window.
+                makeLevelOccluder(inst, { grass: true });
+                inst.userData.ditherByMesh = true;
+                inst.userData.ditherStrengthOverride = window.ditherLevelStrength;
                 return inst;
             };
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
@@ -17022,6 +17002,19 @@ export function startGame(CharacterClass) {
     // you can still judge what you are standing on/next to while seeing
     // through it.
     window.ditherStrength = 0.98;
+    // ...and a gentler one for the level's own big pieces.
+    //
+    // 0.98 discards almost every pixel, which is right for a 3-unit block you
+    // built: what is behind it is what matters and the block is small enough
+    // that losing it costs nothing. The staircase is 52 wide and the frame
+    // wall rings the whole level, and at 0.98 those do not read as dissolving,
+    // they read as a hole punched in the world - the thing itself disappears
+    // rather than becoming see-through.
+    //
+    // 0.55 leaves enough of the surface behind to still read as a wall you can
+    // now see through, which is what a screen door is supposed to look like.
+    // Per object via userData.ditherStrengthOverride, so a block keeps 0.98.
+    window.ditherLevelStrength = 0.55;
     // Seconds to fade in/out. Snapping straight to full dither pops
     // distractingly as the camera swings past a block edge.
     // 15, up from 7. The dissolve is a readability aid - it exists so you can
@@ -17293,6 +17286,21 @@ export function startGame(CharacterClass) {
                     }
                     continue;
                 }
+                // An InstancedMesh reports ONE bounding box for every copy
+                // it draws, so for the frame wall that box is the whole level
+                // and the test below would say "covering you" from anywhere in
+                // it. Raycast the object itself instead: three.js walks the
+                // instances, so what answers is the block actually in the way.
+                //
+                // Only for the things that ask for it. The box test is EXACT
+                // for an axis-aligned block and cheaper than walking triangles
+                // - see the note above - so nothing else should pay for this.
+                if (obj.userData.ditherByMesh) {
+                    if (_ditherRay.intersectObject(obj, false).length > 0) {
+                        obj.userData._ditherHold = window.ditherHoldTime;
+                    }
+                    continue;
+                }
                 getObstacleBox(obj, _ditherBox);
                 // Camera inside the block counts as covering: intersectBox
                 // would hand back the far exit point, which can sit past the
@@ -17371,16 +17379,13 @@ export function startGame(CharacterClass) {
             const m = ditherAlwaysOnMats[i];
             if (m.userData.ditherUniform) m.userData.ditherUniform.value = _ditherTreeAmount;
         }
-        const armed = window.ditherHoleEnabled ? window.ditherStrength : 0;
-        for (let i = 0; i < ditherArmedMats.length; i++) {
-            const m = ditherArmedMats[i];
-            if (m.userData.ditherUniform) m.userData.ditherUniform.value = armed;
-        }
         for (let i = 0; i < ditherOccluders.length; i++) {
             const obj = ditherOccluders[i];
             const u = obj.material && obj.material.userData.ditherUniform;
             if (!u) continue;
-            const blockTarget = obj.userData._ditherHold > 0 ? window.ditherStrength : 0;
+            const full = obj.userData.ditherStrengthOverride !== undefined
+                ? obj.userData.ditherStrengthOverride : window.ditherStrength;
+            const blockTarget = obj.userData._ditherHold > 0 ? full : 0;
             u.value += THREE.MathUtils.clamp(blockTarget - u.value, -step, step);
         }
     }
