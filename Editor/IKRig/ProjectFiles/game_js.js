@@ -12546,8 +12546,11 @@ export function startGame(CharacterClass) {
             // and climbing out of the river is exactly the moment you have
             // lost your bearings - so the reminder comes with the icon rather
             // than naming a thing you would then have to go and find.
-            const outComp = storyCompanionOf('CompBlue') || comp;
-            if (outComp) storySay(outComp, STORY_LEDGE_LINE, 'companion');
+            //
+            // A CARD now, not a line over a companion's head, so it does not
+            // need one to say it - which also means it still appears when you
+            // climb out alone.
+            showCompassHint();
         }
         if (!comp._riverTeaching) {
             // Both of you, not just the companion: it leading the way out of
@@ -12657,6 +12660,9 @@ export function startGame(CharacterClass) {
     const STORY_FIGHT_TIMEOUT = 75;    // ...before the story moves on regardless
     const STORY_TOP_LINE = 'We made it up! The way out\nis right there - careful, he is not alone.';
     const STORY_SURROUNDED_LINE = 'They have us surrounded -\nput them down, fast!';
+    // Kept, unused, deliberately: it is the wording the compass card came
+    // from, and the card is where that lesson lives now. See
+    // showCompassHint.
     const STORY_LEDGE_LINE = 'Good climb! {compass} Check the\ncompass for the way on.';
     // Every line that names the compass shows it. The needle is a 3D object
     // floating in the world, and reading which way it points often means
@@ -12922,7 +12928,7 @@ export function startGame(CharacterClass) {
     const HINT_ORDER = ['combo', 'charge'];
     let _hintStep = 0;
     const HINT_GIVE_UP = 22.0;
-    function showHintCard(id, html, iconUrl) {
+    function showHintCard(id, html, iconUrl, opts) {
         if (_hintDone[id] || _hintId === id) return;
         const card = document.getElementById('hint-card');
         const text = document.getElementById('hint-text');
@@ -12940,6 +12946,12 @@ export function startGame(CharacterClass) {
         // The demo is a different gesture per lesson - a tap for the combo, a
         // hold for the charge - and the class is what selects it.
         card.classList.toggle('charge', id === 'charge');
+        // Not every card is about the punch button. One that is about the
+        // COMPASS has nothing to demonstrate with it, and leaving a picture of
+        // a punch button on it would be pointing at the wrong control.
+        const demoEl = document.getElementById('hint-demo');
+        const noDemo = !!(opts && opts.noDemo);
+        if (demoEl) demoEl.style.display = noDemo ? 'none' : '';
         // Sized from the REAL button, measured now rather than guessed in CSS.
         // The card is pointing at a specific control, so the picture of it has
         // to be that control - a demo that is a different size, with a
@@ -12948,7 +12960,7 @@ export function startGame(CharacterClass) {
         // stylesheet can follow.
         const realBtn = document.getElementById('punch-btn');
         const realSvg = realBtn && realBtn.querySelector('svg');
-        const demo = document.getElementById('hint-demo');
+        const demo = noDemo ? null : demoEl;
         const svg = demo && demo.querySelector('svg');
         if (realBtn && demo && svg) {
             // Both boxes COPIED, not recomputed. The last version derived the
@@ -13013,6 +13025,23 @@ export function startGame(CharacterClass) {
         _hintChargeFrom = window.chargeLandedCount || 0;
         showHintCard('charge',
             '<span class="hint-title">Charge Punch</span><b>Hold</b>, then let go');
+    }
+    // The compass, as a card rather than as a line over a companion's head.
+    //
+    // It used to be spoken - "Good climb! Check the compass for the way on" -
+    // and a bubble is the wrong shape for it. The punch cards teach a control
+    // by putting it beside the words, and this is the same kind of lesson.
+    // Shown with no button demo (see noDemo) and the compass itself in the
+    // icon slot, so the thing being pointed at is on the card.
+    //
+    // No "performed" counter, unlike the combo and charge cards - there is no
+    // event that means "you read the compass" - so it leaves on HINT_GIVE_UP
+    // like any card nobody acts on. That is right here rather than a gap: it
+    // is a reminder, not a test.
+    function showCompassHint() {
+        showHintCard('compass',
+            '<span class="hint-title">Compass</span>Follow the <b>yellow</b> end',
+            window.compassIconDataUrl, { noDemo: true });
     }
     // For looking at either card without having to earn it first - the charge
     // one only appears after a combo has actually landed, which makes it
