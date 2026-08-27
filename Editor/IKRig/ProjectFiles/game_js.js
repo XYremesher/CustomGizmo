@@ -17512,6 +17512,23 @@ export function startGame(CharacterClass) {
     // the CAMERA is, not about any one mesh, and a camera inside one thing
     // should see out through everything between it and out.
     const _ditherInsideUniform = { value: 0 };
+    // How much is cut while the camera is INSIDE something, as opposed to the
+    // amount used from outside.
+    //
+    // They are different questions and they had been sharing one answer, which
+    // is why going inside a block made it vanish outright. From outside, the
+    // amount is 0.98 because the thing being cut is a tree and what you want
+    // from a tree in your way is for it to be GONE - 0.98 discards all but a
+    // couple of pixels in fifty. From inside, the same 0.98 applied to the
+    // only surface you can see takes the whole block with it, and the depth
+    // gate that would otherwise have spared most of it is deliberately
+    // dropped in there too.
+    //
+    // 0.55 leaves a real screen door: enough of the surface to see you are
+    // looking THROUGH the block you are standing in, and enough gone to see
+    // out of it.
+    window.ditherInsideStrength = 0.55;
+    const _ditherInsideCutUniform = { value: window.ditherInsideStrength };
     // Which way is UP, in the space the fragment shader's normals are in.
     //
     // Used to leave floors alone - see the skip-up variant below. vNormal is
@@ -17566,9 +17583,10 @@ export function startGame(CharacterClass) {
             shader.uniforms.uDitherDepthFade = _ditherDepthFadeUniform;
             shader.uniforms.uDitherInside = _ditherInsideUniform;
             shader.uniforms.uDitherUpView = _ditherUpViewUniform;
+            shader.uniforms.uDitherInsideCut = _ditherInsideCutUniform;
             shader.fragmentShader = shader.fragmentShader
                 .replace('void main() {',
-                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\nuniform vec3 uDitherUpView;\n${DITHER_GLSL}\nvoid main() {`)
+                    `uniform float uDitherAmount;\nuniform vec2 uDitherScreen;\nuniform float uDitherPlayerDepth;\nuniform float uDitherRadius;\nuniform float uDitherFeather;\nuniform float uDitherHoleOn;\nuniform float uDitherDepthFade;\nuniform float uDitherInside;\nuniform vec3 uDitherUpView;\nuniform float uDitherInsideCut;\n${DITHER_GLSL}\nvoid main() {`)
                 // First statement in main, before any lighting work is done
                 // for a fragment that is about to be thrown away.
                 //
@@ -17600,7 +17618,13 @@ export function startGame(CharacterClass) {
         // Inside, depth says nothing useful - see uDitherInside.
         float _dDepth = uDitherInside > 0.5 ? 1.0
             : 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
-        float _dCut = uDitherAmount * _dEdge * _dDepth;
+        // Inside, its own amount - see uDitherInsideCut. Still scaled by
+        // uDitherAmount's own on/off so a material that is not dissolving at
+        // all does not start to just because the camera went indoors.
+        float _dAmt = uDitherInside > 0.5
+            ? uDitherInsideCut * step(0.001, uDitherAmount)
+            : uDitherAmount;
+        float _dCut = _dAmt * _dEdge * _dDepth;
         ${skipUp}
         if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
     }
@@ -17693,6 +17717,7 @@ export function startGame(CharacterClass) {
         _ditherLevelRadiusUniform.value = window.ditherLevelHoleRadius * bufferScale / pixelDiv;
         // World up, rotated into the camera's frame. Written once a frame
         // here rather than derived per fragment.
+        _ditherInsideCutUniform.value = window.ditherInsideStrength;
         _ditherUpViewUniform.value.copy(_ditherUpWorld)
             .applyQuaternion(_ditherUpQuat.copy(cam.quaternion).invert());
         _ditherFeatherUniform.value = window.ditherHoleFeather;
