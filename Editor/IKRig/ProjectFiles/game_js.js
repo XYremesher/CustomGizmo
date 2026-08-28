@@ -867,6 +867,7 @@ export function startGame(CharacterClass) {
     // Where the camera faces, and the target in NDC - for the on-screen test.
     const _compassCamFwd = new THREE.Vector3();
     const _compassAimProj = new THREE.Vector3();
+    const _compassPlayerVec = new THREE.Vector3();
     // The arrow goes WHITE when the target is not on screen.
     //
     // The angle alone cannot say it. Pointing down means "behind you", but so
@@ -1299,6 +1300,27 @@ export function startGame(CharacterClass) {
     const groundTex = texLoader.load('ground.jpg');
     groundTex.wrapS = THREE.RepeatWrapping; groundTex.wrapT = THREE.RepeatWrapping;
     groundTex.repeat.set(150, 150);
+    // The SECOND ground texture: what the worn beige areas are made of.
+    //
+    // From ASSET_BASE, since it lives in Editor/IKRig beside the models rather
+    // than next to this file - ground.jpg is the odd one out there, not this.
+    //
+    // colorSpace is left alone deliberately, to match groundTex, which also
+    // does not set it. Marking one sRGB and not the other would put the two
+    // halves of the same ground through different decodes, and the seam
+    // between them is exactly what has to be invisible.
+    //
+    // Its repeat is NOT set here: it is sampled from world xz in the shader
+    // (see uStonyScale), not through UVs, so the texture's own repeat would do
+    // nothing. Wrapping still has to be on for the tiling to work at all.
+    const stonyTex = texLoader.load(ASSET_BASE + 'StonyGround.png');
+    stonyTex.wrapS = THREE.RepeatWrapping; stonyTex.wrapT = THREE.RepeatWrapping;
+    // Side of one tile, in world units. The grass is 1000/150 = 6.67; this is
+    // a little larger so the pebbles read as pebbles rather than as noise.
+    window.groundStonyTile = 10;
+    // How much of the worn area is the texture rather than the flat tint it
+    // used to be. 0 restores the old look exactly.
+    window.groundStonyMix = 1.0;
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshToonMaterial({ map: groundTex, gradientMap: threeTone }));
     ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
@@ -1334,6 +1356,10 @@ export function startGame(CharacterClass) {
         // the green behind.
         uForestTintColor: { value: new THREE.Color(0xd9c9a6) },
         uForestTintAmt: { value: 0.85 },
+        uStonyMap: { value: stonyTex },
+        // 1/tile, so the shader multiplies instead of dividing per fragment.
+        uStonyScale: { value: 1 / window.groundStonyTile },
+        uStonyMix: { value: window.groundStonyMix },
     };
     ground.material.onBeforeCompile = (shader) => {
         shader.uniforms.uForestMask = _groundTintUniforms.uForestMask;
@@ -1341,6 +1367,9 @@ export function startGame(CharacterClass) {
         shader.uniforms.uForestArea = _groundTintUniforms.uForestArea;
         shader.uniforms.uForestTintColor = _groundTintUniforms.uForestTintColor;
         shader.uniforms.uForestTintAmt = _groundTintUniforms.uForestTintAmt;
+        shader.uniforms.uStonyMap = _groundTintUniforms.uStonyMap;
+        shader.uniforms.uStonyScale = _groundTintUniforms.uStonyScale;
+        shader.uniforms.uStonyMix = _groundTintUniforms.uStonyMix;
         shader.vertexShader = shader.vertexShader
             .replace('#include <common>', '#include <common>\nvarying vec3 vGroundWorld;')
             .replace('#include <project_vertex>', '#include <project_vertex>\nvGroundWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
@@ -1351,6 +1380,9 @@ export function startGame(CharacterClass) {
                 uniform vec2 uForestArea;
                 uniform vec3 uForestTintColor;
                 uniform float uForestTintAmt;
+                uniform sampler2D uStonyMap;
+                uniform float uStonyScale;
+                uniform float uStonyMix;
                 varying vec3 vGroundWorld;`)
             .replace('#include <map_fragment>', `#include <map_fragment>
                 if (uForestTintOn > 0.5) {
@@ -1366,6 +1398,15 @@ export function startGame(CharacterClass) {
                         // through instead of the path becoming a flat blob.
                         float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
                         vec3 worn = uForestTintColor * (0.55 + 0.9 * lum);
+                        // ...and the stony texture over that, sampled from
+                        // WORLD xz rather than the plane's uv. The ground is
+                        // one 1000-unit quad whose uv spans the whole thing,
+                        // so a uv-based tiling would be locked to the grass's
+                        // own 150 repeats and could not be scaled apart from
+                        // it. World xz also means the tiling does not move if
+                        // the plane ever does.
+                        vec3 stony = texture2D(uStonyMap, vGroundWorld.xz * uStonyScale).rgb;
+                        worn = mix(worn, stony, uStonyMix);
                         diffuseColor.rgb = mix(diffuseColor.rgb, worn, openness * uForestTintAmt);
                     }
                 }`);
@@ -26413,8 +26454,23 @@ export function startGame(CharacterClass) {
                 // not an optimisation.
                 _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
                 _compassAimProj.subVectors(_compassAim, camera.position);
+                const aimDepth = _compassAimProj.dot(_compassCamFwd);
+                _compassPlayerVec.subVectors(char.group.position, camera.position);
+                const playerDepth = _compassPlayerVec.dot(_compassCamFwd);
+                // Nearer the camera than you are counts as off screen too.
+                //
+                // Depth along the view direction, both measured from the
+                // camera, so this is "the target has come between you and the
+                // camera". It can be dead centre of the viewport there and is
+                // still something you have to turn around for - it is BEHIND
+                // you in the only sense that matters, whatever the viewport
+                // says - so the arrow has no business being yellow.
+                //
+                // Compared against the player rather than against zero, which
+                // is what "in front of the camera" alone was measuring and why
+                // this case slipped through.
                 let onScreen = false;
-                if (_compassAimProj.dot(_compassCamFwd) > 0) {
+                if (aimDepth > 0 && aimDepth >= playerDepth) {
                     _compassAimProj.copy(_compassAim).project(camera);
                     onScreen = Math.abs(_compassAimProj.x) <= 1
                         && Math.abs(_compassAimProj.y) <= 1;
