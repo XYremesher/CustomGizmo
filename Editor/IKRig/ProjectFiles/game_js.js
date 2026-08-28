@@ -12450,7 +12450,9 @@ export function startGame(CharacterClass) {
             // it, both already on _forestBorderMat - see dressLevelMaterial.
             // Not registered per box on purpose: a clone here would give this
             // one step a private uniform and put back the seam between it and
-            // the step beside it.
+            // the step beside it. In the probe list, though - what a probe
+            // ASKS is per mesh, what it ANSWERS is shared.
+            ditherLevelMeshes.push(box);
             // ...and tufts are planted ON it, the way they are on the forest
             // floor. Without this the scatter treats every step as an
             // obstacle - it rejects anything whose underside is lower than a
@@ -14522,7 +14524,23 @@ export function startGame(CharacterClass) {
             // never to fall short. Oversize is invisible: the bank is above
             // the water everywhere past the contact ring, so the excess is
             // hidden under the slope.
-            const fillR = forestLakeInnerRadius(L.r, FOREST_LAKE_Y + FOREST_LAKE_WAVE_AMP) + FOREST_LAKE_FILL_BITE;
+            // ...plus however far the bank's inner face can WANDER off the
+            // ring it used to be. buildLakeRimGeo displaces each vertex by
+            // tube * cos(v) * (1 +/- noise * sin(v)), so on the inner half the
+            // radius moves by tube * |cos(v)| * noise * sin(v) - largest at
+            // v = 135deg, where it is tube * noise * 0.5 = 0.31 at the current
+            // settings (checked numerically against the generator, not
+            // estimated). Where it wanders INWARD the water covers it; where
+            // it wanders OUTWARD it pulls the shore away from a disc cut for a
+            // perfect ring, and that strip of bed showing through is the gap.
+            // It arrived with the disturbed rim and is the cost of it.
+            //
+            // Read off the same live noise the geometry uses, so tuning one
+            // cannot leave the other behind. Oversize costs nothing here, per
+            // the note above.
+            const rimWander = FOREST_LAKE_RIM_TUBE * window.forestLakeRimNoise * 0.5;
+            const fillR = forestLakeInnerRadius(L.r, FOREST_LAKE_Y + FOREST_LAKE_WAVE_AMP)
+                + FOREST_LAKE_FILL_BITE + rimWander;
             const lake = new THREE.Mesh(new THREE.CircleGeometry(fillR, 40), forestLakeBody.waterMaterial);
             lake.rotation.x = -Math.PI / 2;
             lake.position.set(L.x, FOREST_LAKE_Y, L.z);
@@ -14666,12 +14684,12 @@ export function startGame(CharacterClass) {
                 inst.castShadow = true; inst.receiveShadow = true;
                 inst.frustumCulled = false;
                 levelGroup.add(inst);
-                // Nothing to register. Its material is dressed and held on as
-                // a shared one, and an InstancedMesh is the case that shows
-                // why that is the right level to work at: one bounding box
-                // around every block in the wall is useless to a probe, but a
-                // per-pixel circle does not care how many instances share the
-                // material it is cutting.
+                // No uniform of its own - its material is dressed as a
+                // shared one. Probed by RAY rather than by box: one bounding
+                // box around every block in the wall is the whole level, so a
+                // box test would answer "covering you" from anywhere inside
+                // it. The probe branches on isInstancedMesh for this.
+                ditherLevelMeshes.push(inst);
                 return inst;
             };
             mk(new THREE.BoxGeometry(step, top, step), _forestBorderMat, top * 0.5);
@@ -15490,7 +15508,11 @@ export function startGame(CharacterClass) {
         // clone what it is handed - Array has no clone(), so registering the
         // slab that way throws during the build. Its two materials are dressed
         // as shared ones instead, up where mats is assembled.
+        //
+        // Still PROBED: the mesh joins the list the probe walks, it just does
+        // not carry a dither uniform of its own.
         slab.updateMatrixWorld(true);
+        ditherLevelMeshes.push(slab);
         levelGroup.add(slab);
         // Takes the plane's place as the level's floor - every ground scan,
         // foot IK probe and climb check reads this array.
@@ -17334,6 +17356,7 @@ export function startGame(CharacterClass) {
         // rebuild onward.
         ditherOccluders.length = 0;
         ditherProbeSpheres.length = 0;
+        ditherLevelMeshes.length = 0;
         shooters.forEach(s => scene.remove(s.mesh)); shooters.length = 0;
         projectiles.forEach(p => scene.remove(p.mesh)); projectiles.length = 0;
         carryables.forEach(c => { if (c.debugHelper) scene.remove(c.debugHelper); });
@@ -17749,6 +17772,19 @@ export function startGame(CharacterClass) {
     // canopy-sphere pass in buildForestLevel for why a mesh proxy was too
     // expensive at 193 trees.
     const ditherProbeSpheres = [];
+    // The level's own surfaces, for the probe - NOT for arming them one at a
+    // time. They share their materials (see dressLevelMaterial), so what comes
+    // out of this is a single yes/no for all of them, exactly like the wood's
+    // treeWanted: adjacent blocks are pierced together because one answer
+    // covers every surface made of the same stuff.
+    //
+    // Probed at all because holding them permanently on was wrong, and wrong
+    // in the way the comment on this whole block already warned: "in front of
+    // the player and inside the hole" is not an occlusion test. Held on, every
+    // wall, riser and cliff face within the hole dissolved whether or not it
+    // was covering anything, and the screen became a dithered mass.
+    const ditherLevelMeshes = [];
+    let _ditherLevelHold = 0;
     const _ditherRay = new THREE.Raycaster();
     // Separate from _ditherRay because that one carries a `far` clamped to the
     // camera-player distance, and the inside test has to see the whole mesh.
@@ -17843,6 +17879,7 @@ export function startGame(CharacterClass) {
             const ud = ditherOccluders[i].userData;
             ud._ditherHold = Math.max(0, (ud._ditherHold || 0) - delta);
         }
+        _ditherLevelHold = Math.max(0, _ditherLevelHold - delta);
         let treeWanted = false;
         // Nothing dissolves while you are on a ledge.
         //
@@ -17975,6 +18012,28 @@ export function startGame(CharacterClass) {
                     if (dx * dx + dy * dy + dz * dz <= sp.r * sp.r) { treeWanted = true; break; }
                 }
             }
+            // The level's surfaces, same question, one answer. Stops at the
+            // first hit - there is only the one flag to set.
+            if (!ditherHeld) {
+                for (let i = 0; i < ditherLevelMeshes.length; i++) {
+                    const m = ditherLevelMeshes[i];
+                    // An InstancedMesh reports one box for every copy it
+                    // draws, so for the frame wall that box is the whole
+                    // level. Raycast it and three.js walks the instances.
+                    if (m.isInstancedMesh) {
+                        if (_ditherRay.intersectObject(m, false).length > 0) {
+                            _ditherLevelHold = window.ditherHoldTime; break;
+                        }
+                        continue;
+                    }
+                    getObstacleBox(m, _ditherBox);
+                    if (_ditherBox.containsPoint(cam.position)) { _ditherLevelHold = window.ditherHoldTime; break; }
+                    if (_ditherRay.ray.intersectBox(_ditherBox, _ditherBoxHit) === null) continue;
+                    if (cam.position.distanceToSquared(_ditherBoxHit) <= _ditherRay.far * _ditherRay.far) {
+                        _ditherLevelHold = window.ditherHoldTime; break;
+                    }
+                }
+            }
         }
 
         // Diagnostic for the stacked-block flicker, off unless
@@ -18033,7 +18092,7 @@ export function startGame(CharacterClass) {
         // ground.material outlives the level it was dressed in, so driving it
         // unconditionally would have every other level dissolving its floor.
         const levelWanted = window.ditherLevelPieces && window.ditherHoleEnabled
-            && isForestLevel();
+            && _ditherLevelHold > 0;
         const levelTarget = levelWanted ? window.ditherLevelStrength : 0;
         _ditherLevelAmount += THREE.MathUtils.clamp(levelTarget - _ditherLevelAmount, -step, step);
         for (let i = 0; i < ditherLevelMats.length; i++) {
@@ -25075,7 +25134,23 @@ export function startGame(CharacterClass) {
                 // than at the grab itself - the grab decision is made before
                 // this ray is cast, so the object is not known there yet.
                 const isBagHit = wH.length > 0 && wH[0].object.userData?.isSandbagCollider;
-                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && !isBagHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
+                // Nor is a tree. Same refusal as the bag, one step further.
+                //
+                // A trunk is a dead-vertical face standing on the ground, so
+                // it passes the wall test on its own merits, and the ray
+                // upward from it lands on the CANOPY's bounding box - which is
+                // a box, not a canopy, and reports a nice flat "ledge" metres
+                // up. So you walked into a tree and climbed it. The grounded
+                // reach (grabFromGroundReach) is what put trunks in range,
+                // the same widening that turned the bag into furniture.
+                //
+                // isTreeCollider covers both shapes the game builds: the
+                // forest's one merged collider per tree, and the village's
+                // per-part colliders. Checked on wH[0].object directly
+                // because this cast is non-recursive, so hits land on the
+                // listed collidables themselves.
+                const isTreeHit = wH.length > 0 && wH[0].object.userData?.isTreeCollider;
+                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && !isBagHit && !isTreeHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
                     // Captured BEFORE the setY(0) flatten below destroys the
                     // real 3D normal - this is the grabbed face's actual
                     // steepness (its normal's angle from straight up; 90deg
@@ -26199,7 +26274,8 @@ export function startGame(CharacterClass) {
         // specific to go (see buildVillageLevel's forest-entrance quest),
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
-        compassMesh.lookAt(window.compassTarget || star.position);
+        const _compassAim = window.compassTarget || star.position;
+        compassMesh.lookAt(_compassAim);
         compassMesh.updateMatrixWorld();
 
         // ---- ...and the flat 2D arrow, driven BY it ----
@@ -26246,10 +26322,23 @@ export function startGame(CharacterClass) {
                 // one reading that stays correct with the target ahead,
                 // behind, or anywhere between.
                 //
-                // Still driven BY the 3D needle: its forward is the direction
-                // its own lookAt worked out, so the two can never disagree and
-                // window.compassTarget keeps working for both.
-                _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion);
+                // Measured from the PLAYER, not from the needle.
+                //
+                // The needle is a prop parked 1.5 in front of a camera that
+                // orbits at 13.0, so it reads the world from 11.5 behind you.
+                // For the level exit that is nothing. For what the compass
+                // actually points at most of the time - the next companion,
+                // metres away - it is most of the answer: a target 8 to your
+                // left is 90 degrees left of YOU and only 35 degrees left of a
+                // point 11.5 back, so the arrow said "bear slightly left" for
+                // something you had to turn square to face. It got worse the
+                // closer you were, which is exactly when you are looking at it.
+                //
+                // window.compassTarget still drives both, and the needle still
+                // does its own lookAt for the 3D prop - the two now differ by
+                // parallax alone, which is the honest difference between a
+                // floating object and a heading.
+                _compassFront.subVectors(_compassAim, char.group.position);
                 _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
                 const tx = _compassFront.x, tz = _compassFront.z;
                 const fx = _compassCamFwd.x, fz = _compassCamFwd.z;
@@ -26266,6 +26355,30 @@ export function startGame(CharacterClass) {
                 }
                 compassArrowEl.style.transform =
                     `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
+                window.__cf = (window.__cf||0)+1;
+                if (window.__cf === 90) {
+                    const gp = char.group.position, np = compassMesh.position;
+                    // Independent hand-derivation: world bearing of the target
+                    // minus the camera's world yaw.
+                    const tb = Math.atan2(_compassAim.x - gp.x, _compassAim.z - gp.z);
+                    const cy = Math.atan2(_compassCamFwd.x, _compassCamFwd.z);
+                    let exp = tb - cy;
+                    while (exp > Math.PI) exp -= 2*Math.PI;
+                    while (exp < -Math.PI) exp += 2*Math.PI;
+                    // What the needle-based version would have said.
+                    const od = new THREE.Vector3().subVectors(_compassAim, np);
+                    const ob = Math.atan2(od.x, od.z);
+                    let oldA = ob - cy;
+                    while (oldA > Math.PI) oldA -= 2*Math.PI;
+                    while (oldA < -Math.PI) oldA += 2*Math.PI;
+                    const deg = r => (r*180/Math.PI).toFixed(1);
+                    console.log('CPROBE shipped=' + deg(_compassArrowAngle)
+                        + ' handDerived=' + deg(exp)
+                        + ' oldNeedleBased=' + deg(oldA)
+                        + ' playerToTarget=' + gp.distanceTo(_compassAim).toFixed(2)
+                        + ' needleToTarget=' + np.distanceTo(_compassAim).toFixed(2)
+                        + ' | LAKE rimWander=' + (2.85*window.forestLakeRimNoise*0.5).toFixed(4));
+                }
             }
         }
 
