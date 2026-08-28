@@ -1321,6 +1321,14 @@ export function startGame(CharacterClass) {
     // How much of the worn area is the texture rather than the flat tint it
     // used to be. 0 restores the old look exactly.
     window.groundStonyMix = 1.0;
+    // Its normal map. NOT sRGB - and this one is not a judgement call the way
+    // the albedo's was: a normal map is direction data, not colour, and
+    // decoding it through a gamma curve bends every vector it stores. Left
+    // unset means linear, which is what it has to be.
+    const stonyNormalTex = texLoader.load(ASSET_BASE + 'StonyGround_normal.png');
+    stonyNormalTex.wrapS = THREE.RepeatWrapping; stonyNormalTex.wrapT = THREE.RepeatWrapping;
+    // How hard the pebbles catch the light. 0 is flat ground again.
+    window.groundStonyNormal = 1.0;
 
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshToonMaterial({ map: groundTex, gradientMap: threeTone }));
     ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
@@ -1360,6 +1368,8 @@ export function startGame(CharacterClass) {
         // 1/tile, so the shader multiplies instead of dividing per fragment.
         uStonyScale: { value: 1 / window.groundStonyTile },
         uStonyMix: { value: window.groundStonyMix },
+        uStonyNormalMap: { value: stonyNormalTex },
+        uStonyNormalAmt: { value: window.groundStonyNormal },
     };
     ground.material.onBeforeCompile = (shader) => {
         shader.uniforms.uForestMask = _groundTintUniforms.uForestMask;
@@ -1370,6 +1380,8 @@ export function startGame(CharacterClass) {
         shader.uniforms.uStonyMap = _groundTintUniforms.uStonyMap;
         shader.uniforms.uStonyScale = _groundTintUniforms.uStonyScale;
         shader.uniforms.uStonyMix = _groundTintUniforms.uStonyMix;
+        shader.uniforms.uStonyNormalMap = _groundTintUniforms.uStonyNormalMap;
+        shader.uniforms.uStonyNormalAmt = _groundTintUniforms.uStonyNormalAmt;
         shader.vertexShader = shader.vertexShader
             .replace('#include <common>', '#include <common>\nvarying vec3 vGroundWorld;')
             .replace('#include <project_vertex>', '#include <project_vertex>\nvGroundWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
@@ -1383,8 +1395,15 @@ export function startGame(CharacterClass) {
                 uniform sampler2D uStonyMap;
                 uniform float uStonyScale;
                 uniform float uStonyMix;
+                uniform sampler2D uStonyNormalMap;
+                uniform float uStonyNormalAmt;
                 varying vec3 vGroundWorld;`)
             .replace('#include <map_fragment>', `#include <map_fragment>
+                // Declared out here, not inside the branch: the normal stage
+                // below needs it, and that is a separate injection further
+                // down the same main(). This is how the two halves of "where
+                // is the ground worn" stay one answer instead of two.
+                float _stonyBlend = 0.0;
                 if (uForestTintOn > 0.5) {
                     // World xz -> mask uv. The mask only covers the forest
                     // area; outside it the ground stays plain grass, which is
@@ -1408,7 +1427,38 @@ export function startGame(CharacterClass) {
                         vec3 stony = texture2D(uStonyMap, vGroundWorld.xz * uStonyScale).rgb;
                         worn = mix(worn, stony, uStonyMix);
                         diffuseColor.rgb = mix(diffuseColor.rgb, worn, openness * uForestTintAmt);
+                        _stonyBlend = openness * uForestTintAmt * uStonyMix;
                     }
+                }`)
+            // The pebbles have to catch the light, or they are a picture of
+            // stones printed on a flat floor - which under toon shading, where
+            // a whole surface takes one band of the ramp, is exactly what they
+            // looked like.
+            //
+            // Hand-built TBN rather than material.normalMap. The slot would
+            // apply the map over the entire 1000-unit plane, grass included,
+            // through the plane's own uv - and that uv spans the whole quad,
+            // so it could not be tiled to match the albedo either. Both of
+            // those are the same objection the albedo had; the answer is the
+            // same one.
+            //
+            // The frame is exact rather than derived, because this surface is
+            // known: the ground is a single plane whose normal is +Y (a
+            // PlaneGeometry turned -90 about X), and it is sampled from world
+            // xz, so u runs along +X and v along +Z. That makes T=+X, B=+Z,
+            // N=+Y, and a tangent-space (x, y, z) lands in world as
+            // (x, z, y) with no matrix and no derivatives.
+            //
+            // Into VIEW space at the end, because three's fragment shader
+            // works there - `normal` at this point is view space, and mixing
+            // a world vector into it would be nonsense that happens to look
+            // plausible while the camera faces one way.
+            .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+                if (_stonyBlend > 0.001 && uStonyNormalAmt > 0.001) {
+                    vec3 nTex = texture2D(uStonyNormalMap, vGroundWorld.xz * uStonyScale).xyz * 2.0 - 1.0;
+                    vec3 nWorld = normalize(vec3(nTex.x, nTex.z, nTex.y));
+                    vec3 nView = normalize((viewMatrix * vec4(nWorld, 0.0)).xyz);
+                    normal = normalize(mix(normal, nView, _stonyBlend * uStonyNormalAmt));
                 }`);
     };
     // onBeforeCompile is not part of three's program cache key, so without
