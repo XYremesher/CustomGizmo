@@ -24701,9 +24701,28 @@ export function startGame(CharacterClass) {
                 if (isSliding) return ajNo('sliding');
                 if (window.isCarryingObj || window.isCarryStarting || window.dialogueInputLocked) return ajNo('carrying/dialogue');
                 if (char.isRagdoll || char.isStandingUp) return ajNo('down');
-                // The direction actually being TRAVELLED, not the facing - locked on
-                // to an enemy you can strafe into a wall while looking elsewhere, and
-                // the jump should follow your feet.
+                // Are you actually pressing anything RIGHT NOW.
+                //
+                // _lastMoveDir alone could not answer that. It is written from
+                // inside the movement block, and that block is gated on
+                // `moveMag > 0.1 || hitRecoveryStepActive` - so releasing the
+                // stick stops it being updated rather than clearing it, and it
+                // keeps the last direction you walked for the rest of the
+                // session. The "not moving" test below therefore never fired
+                // once you had moved at all: stand still on the lip of
+                // anything and it jumped, over and over, off a stick you were
+                // not touching.
+                //
+                // moveMag is this frame's own input and is read well before
+                // this runs, so it is the honest question. _lastMoveDir is
+                // still the right thing to take the DIRECTION from - locked on
+                // to an enemy you can strafe into a wall while looking
+                // elsewhere, and the jump should follow your feet, not your
+                // facing.
+                //
+                // Not cleared instead, deliberately: the lock-on strafe code
+                // reads _lastMoveDir too and wants it to persist.
+                if (moveMag <= 0.1) return ajNo('no input');
                 if (_lastMoveDir.lengthSq() < 1e-6) return ajNo('not moving');
                 _ajFwd.copy(_lastMoveDir).setY(0).normalize();
 
