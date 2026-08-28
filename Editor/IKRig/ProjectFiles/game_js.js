@@ -864,7 +864,12 @@ export function startGame(CharacterClass) {
     // see the block that uses them for why it is a bearing and not a
     // projection.
     const _compassFront = new THREE.Vector3();
-    const _compassCamFwd = new THREE.Vector3();
+    // The needle's two ends, projected each frame - see the block that uses
+    // them. Reused rather than allocated, this runs every frame.
+    const _compassTipA = new THREE.Vector3();
+    const _compassTipB = new THREE.Vector3();
+    // How far above the 3D compass the flat arrow sits, in CSS pixels.
+    window.compass2DAbove = 46;
     // Last readable arrow angle, held through the frames where both flattened
     // vectors vanish - the camera straight down, or the target overhead.
     let _compassArrowAngle = 0;
@@ -14539,8 +14544,19 @@ export function startGame(CharacterClass) {
             // cannot leave the other behind. Oversize costs nothing here, per
             // the note above.
             const rimWander = FOREST_LAKE_RIM_TUBE * window.forestLakeRimNoise * 0.5;
+            // ...and a slack term on top, which is BY EYE and admits it.
+            //
+            // The geometric bound above is satisfied - solving the displaced
+            // bank for where it crosses the waterline puts the shore inside
+            // the disc everywhere, so on the arithmetic there is no gap to
+            // close. There is one on screen, so the model is missing
+            // something (the perlin field never reaches the +/-0.5 extremes
+            // the bound assumes, and the foam band has a width of its own).
+            // Rather than pretend to a derivation that did not predict it,
+            // this is a number to turn. Free to overshoot: past the contact
+            // ring the bank stands above the water and hides the excess.
             const fillR = forestLakeInnerRadius(L.r, FOREST_LAKE_Y + FOREST_LAKE_WAVE_AMP)
-                + FOREST_LAKE_FILL_BITE + rimWander;
+                + FOREST_LAKE_FILL_BITE + rimWander + window.forestLakeFillSlack;
             const lake = new THREE.Mesh(new THREE.CircleGeometry(fillR, 40), forestLakeBody.waterMaterial);
             lake.rotation.x = -Math.PI / 2;
             lake.position.set(L.x, FOREST_LAKE_Y, L.z);
@@ -15004,6 +15020,9 @@ export function startGame(CharacterClass) {
     // How far the bank wanders, as a fraction of the tube. 0 is the plain
     // torus this used to be.
     window.forestLakeRimNoise = 0.22;
+    // Extra water radius beyond what the rim's own wander accounts for. See
+    // fillR - this one is by eye, not derived.
+    window.forestLakeFillSlack = 0.40;
     // How tightly it wanders. Bigger = the wobble repeats over a shorter
     // stretch of shoreline.
     window.forestLakeRimNoiseFreq = 0.55;
@@ -26294,63 +26313,61 @@ export function startGame(CharacterClass) {
             compassArrowEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (compassBackdropEl) compassBackdropEl.style.display = window.compass2DEnabled ? '' : 'none';
             if (window.compass2DEnabled) {
-                // A BEARING in the horizontal plane, not the needle's
-                // appearance on screen.
+                // The needle AS IT LOOKS ON SCREEN - its two ends projected.
                 //
-                // Both earlier versions asked the wrong question. Projecting
-                // the needle's two ends added a radial term that changes sign
-                // as the target passes you, so the arrow mirrored itself when
-                // the camera swung round to the far side. Taking the needle's
-                // direction in camera space dropped that, but then read the
-                // screen-space x and y as if y were "forward" - and y is the
-                // VERTICAL of the screen, not depth. A target dead ahead is
-                // (0, 0, -1) in camera space: x and y are both zero, so the
-                // angle was noise and the arrow froze on its last value. Tip
-                // the camera a little and the tiny leftover y decided
-                // everything - target below eye level meant y < 0 meant
-                // atan2(0, negative) = pi, and the arrow pointed DOWN at
-                // something straight in front of you. That is the whole of
-                // "sometimes right, sometimes wrong", and why tilting the
-                // camera changed the answer.
+                // This is asked for directly: the flat arrow has to point
+                // where the 3D one points, and the 3D one is a rendered
+                // object, so what it "points at" on screen is its own
+                // projection and nothing else. Any derivation that is not this
+                // projection can disagree with the thing it is copying, and
+                // every previous attempt here did.
                 //
-                // A HUD arrow is answering "which way do I turn", which is a
-                // compass bearing: the angle between where the camera faces
-                // and where the target is, both flattened onto the ground.
-                // Flattening is what makes it immune to pitch - looking up,
-                // down or from below cannot change a bearing - and it is the
-                // one reading that stays correct with the target ahead,
-                // behind, or anywhere between.
+                // A bearing flattened onto the ground was the last one, and it
+                // is the better HUD reading in the abstract - immune to pitch,
+                // right for "which way do I turn". It is not what the needle
+                // shows, and matching the needle is the requirement.
                 //
-                // Taken from the 3D NEEDLE's own forward, which is the
-                // direction its lookAt already worked out. The two cannot
-                // disagree, and window.compassTarget drives both.
-                //
-                // Measuring from the player instead was tried and reverted.
-                // The parallax is real - the needle sits 1.5 in front of a
-                // camera orbiting at 13.0, so it reads from 11.5 behind you,
-                // which for a target a few metres off is a large angle - but
-                // it reverses with the camera and reads as the arrow chasing
-                // the view rather than the target. Whatever the geometry says,
-                // the needle-derived one is the one that felt right, so the
-                // needle is the source. Do not "correct" this again without
-                // looking at it on screen first.
+                // The ends are the needle's own origin and a point one unit
+                // along its forward. Both sit right next to the camera (the
+                // needle is parked 1.5 in front of it), so both are always in
+                // front of the near plane and the perspective divide is safe -
+                // which is exactly why projecting the TARGET does not work,
+                // and why this projects the needle instead.
                 _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion);
-                _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
-                const tx = _compassFront.x, tz = _compassFront.z;
-                const fx = _compassCamFwd.x, fz = _compassCamFwd.z;
-                // Camera right, in the ground plane: forward turned -90 about
-                // Y. The arrow's angle is then measured off forward, positive
-                // toward the right, which is the direction CSS rotate() turns.
-                const fwdDot = tx * fx + tz * fz;
-                const rightDot = tx * -fz + tz * fx;
-                // Both flat vectors vanish only if the camera is looking
-                // straight down or the target is directly overhead. Hold the
-                // last readable angle rather than letting the arrow spin.
-                if (fwdDot * fwdDot + rightDot * rightDot > 1e-8) {
-                    _compassArrowAngle = Math.atan2(rightDot, fwdDot);
-                }
+                _compassTipA.copy(compassMesh.position);
+                _compassTipB.copy(compassMesh.position).add(_compassFront);
+                _compassTipA.project(camera);
+                _compassTipB.project(camera);
+                // NDC to screen. y flips, because NDC counts up and the screen
+                // counts down.
+                const sdx = (_compassTipB.x - _compassTipA.x) * window.innerWidth * 0.5;
+                const sdy = -(_compassTipB.y - _compassTipA.y) * window.innerHeight * 0.5;
+                // CSS rotate is clockwise from an arrow that points UP, i.e.
+                // toward -y on screen. Straight up is atan2(0, +1) = 0.
+                //
+                // Near-zero when the needle points at or away from the camera
+                // and has no screen direction left. Hold the last readable
+                // angle rather than letting the arrow spin on the spot.
+                if (sdx * sdx + sdy * sdy > 1e-6) _compassArrowAngle = Math.atan2(sdx, -sdy);
+                // ---- ...and sat ON the 3D compass, not at a fixed spot ----
+                //
+                // Placed from the needle's own projected position, so the two
+                // stay together wherever the needle drifts as the camera
+                // pitches. A fixed top/left had them agreeing only when the
+                // camera happened to be level.
+                const cx = (_compassTipA.x * 0.5 + 0.5) * window.innerWidth;
+                const cy = (-_compassTipA.y * 0.5 + 0.5) * window.innerHeight;
+                const ay = cy - window.compass2DAbove;
+                compassArrowEl.style.left = cx + 'px';
+                compassArrowEl.style.top = ay + 'px';
                 compassArrowEl.style.transform =
-                    `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
+                    `translate(-50%, -50%) rotate(${_compassArrowAngle}rad)`;
+                if (compassBackdropEl) {
+                    compassBackdropEl.style.left = cx + 'px';
+                    compassBackdropEl.style.top = ay + 'px';
+                    compassBackdropEl.style.marginLeft = '0';
+                    compassBackdropEl.style.transform = 'translate(-50%, -50%)';
+                }
             }
         }
 
