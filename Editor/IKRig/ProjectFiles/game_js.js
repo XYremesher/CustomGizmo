@@ -1479,6 +1479,28 @@ export function startGame(CharacterClass) {
     const grassTex2 = texLoader.load('grass2.png');
     const grassTex3 = texLoader.load('grass3.png');
     [grassTex2, grassTex3].forEach(t => { t.colorSpace = THREE.SRGBColorSpace; });
+    // The canopy's own pair, replacing what Tree.glb carries for
+    // TreeLeaveBunch - the 1024 leaf sheet and a normal map cut to the same
+    // silhouette.
+    //
+    // Every setting here is matched to the texture being REPLACED, measured
+    // off the loaded model rather than assumed: flipY false, sRGB, repeat
+    // wrapping. flipY is the one that bites - GLTFLoader loads with flipY
+    // false because glTF uv space runs the other way, while TextureLoader
+    // defaults to true, so a straight swap would have hung the canopy upside
+    // down against uvs authored for the original.
+    //
+    // The normal map is the exception to the sRGB half: direction data, so it
+    // stays linear.
+    const treeTopTex = texLoader.load(ASSET_BASE + 'TreeTop.png');
+    const treeTopNormalTex = texLoader.load(ASSET_BASE + 'TreeTop_normal.png');
+    [treeTopTex, treeTopNormalTex].forEach(t => {
+        t.flipY = false;
+        t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.RepeatWrapping;
+    });
+    treeTopTex.colorSpace = THREE.SRGBColorSpace;
+    // How deep the leaf edges read. 0 is the flat canopy again.
+    window.treeTopNormalScale = 1.0;
     // alphaTest instead of transparent: cutout foliage sorts badly as
     // transparent (tufts flicker against each other depending on camera
     // angle), and grass edges don't need real blending.
@@ -9078,8 +9100,15 @@ export function startGame(CharacterClass) {
                 // the tree still blocks and shadows exactly as before.
                 // isLeaf covers both and only drives the normal-flip shader
                 // fix below, which they equally need.
+                let isTreeTop = false;
                 if (name === 'leave') { alphaTest = window.grassAlphaTest; isLeaf = true; isCosmeticLeaf = true; }
-                else if (name === 'TreeLeaveBunch') { alphaTest = 0.85; isLeaf = true; }
+                // The canopy chunks, and the only ones that get the new sheet.
+                // The 'leave' fringe is a different texture at a different
+                // size (128 against 1024, measured off the model) and the
+                // normal map is cut to this one's silhouette, so handing it to
+                // the fringe would be mapping one drawing through another's
+                // uvs.
+                else if (name === 'TreeLeaveBunch') { alphaTest = 0.85; isLeaf = true; isTreeTop = true; }
                 // DoubleSide, and FrontSide was tried and measured worse on
                 // both counts it was supposed to help. The idea was sound -
                 // these are closed-ish volumes, so culling backfaces should
@@ -9090,12 +9119,14 @@ export function startGame(CharacterClass) {
                 // entirely. It also came out SLOWER: 121fps against 134.
                 // Reverted rather than chased.
                 const mat = new THREE.MeshToonMaterial({
-                    map: m && m.map ? m.map : null,
+                    map: isTreeTop ? treeTopTex : (m && m.map ? m.map : null),
+                    normalMap: isTreeTop ? treeTopNormalTex : null,
                     gradientMap: threeTone,
                     side: THREE.DoubleSide,
                     alphaTest,
                     transparent: false,
                 });
+                if (isTreeTop) mat.normalScale.set(window.treeTopNormalScale, window.treeTopNormalScale);
                 if (isCosmeticLeaf) {
                     // Read back per-mesh by the level builders to drop both
                     // shadow casting and collision on exactly the meshes
@@ -9128,10 +9159,31 @@ export function startGame(CharacterClass) {
                     // otherwise uniform lighting - reads as half the canopy
                     // patchy/two-toned rather than reflecting anything real
                     // about the geometry or the light.
+                    //
+                    // Read at COMPILE time, so mat.normalMap is already set.
+                    // normal_fragment_begin is not only where the double-side
+                    // flip happens - it is also where `tbn` is built, from
+                    // getTangentFrame, and where nonPerturbedNormal is
+                    // declared. Overwriting the whole chunk with one line was
+                    // fine while nothing here had a normal map; the moment one
+                    // does, normal_fragment_maps runs `normalize( tbn * mapN )`
+                    // against a tbn that no longer exists and the shader will
+                    // not compile.
+                    //
+                    // So the canopy's version puts those back, minus the one
+                    // thing being cancelled: no faceDirection on the normal,
+                    // and none on the tbn either - flipping the frame for
+                    // backfaces would reintroduce through the map exactly the
+                    // two-toned canopy the cancel exists to stop.
                     mat.onBeforeCompile = (shader) => {
+                        const replacement = mat.normalMap
+                            ? `float faceDirection = gl_FrontFacing ? 1.0 : -1.0;
+                               vec3 normal = normalize( vNormal );
+                               mat3 tbn = getTangentFrame( - vViewPosition, normal, vNormalMapUv );
+                               vec3 nonPerturbedNormal = normal;`
+                            : 'vec3 normal = normalize( vNormal );';
                         shader.fragmentShader = shader.fragmentShader.replace(
-                            '#include <normal_fragment_begin>',
-                            'vec3 normal = normalize( vNormal );'
+                            '#include <normal_fragment_begin>', replacement
                         );
                     };
                 }
