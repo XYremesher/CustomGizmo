@@ -24605,11 +24605,27 @@ export function startGame(CharacterClass) {
             // is 5.33 units of ground. Scanning past that would promise jumps
             // that fall short, which is worse than not jumping at all.
             // Ground height straight down at a point, ignoring canopies.
-            function autoJumpGroundAt(x, z, fromY) {
+            // allowTrees: whether a canopy counts as a surface.
+            //
+            // It never did, and that was inconsistent with the rest of the
+            // game: the ordinary ground scan (getGroundScanCollidables) drops
+            // decorative bumps and the practice bag and keeps trees, so you
+            // can and do stand on top of one. Only this test disagreed, so a
+            // tree was somewhere you could be standing but never somewhere
+            // auto-jump would aim for - which is "it will not jump from a
+            // block across to a tree even though there is clearly somewhere to
+            // land".
+            //
+            // Still off for finding the EDGE. That question is "has the
+            // ground under my feet run out", and answering it with a canopy
+            // that happens to hang at the same height would report solid
+            // footing over a hole. Landing is a different question - can I
+            // come down there - and the answer to that one is yes.
+            function autoJumpGroundAt(x, z, fromY, allowTrees) {
                 rayDown.set(_tempVec1.set(x, fromY, z), _downVec);
                 const hits = rayDown.intersectObjects(playerNear(x, z), true);
                 for (let i = 0; i < hits.length; i++) {
-                    if (hits[i].object.userData.isTreeCollider) continue;
+                    if (!allowTrees && hits[i].object.userData.isTreeCollider) continue;
                     return hits[i].point.y;
                 }
                 return -Infinity;
@@ -24648,7 +24664,7 @@ export function startGame(CharacterClass) {
                 let fallback = -1;
                 for (let d = edgeDist + 0.5; d <= window.autoJumpGapReach; d += 0.5) {
                     const ly = autoJumpGroundAt(p0.x + _ajFwd.x * d, p0.z + _ajFwd.z * d,
-                        p0.y + window.autoJumpMaxRise + 1.0);
+                        p0.y + window.autoJumpMaxRise + 1.0, true);
                     if (ly === -Infinity) continue;
                     // A landing has to be roughly level with you: too high and
                     // the jump clips the face of it, too low and you were
@@ -24657,7 +24673,7 @@ export function startGame(CharacterClass) {
                     if (p0.y - ly > window.autoJumpGapFall) continue;
                     const dd = d + window.autoJumpGapClear;
                     const beyond = dd <= window.autoJumpGapReach
-                        ? autoJumpGroundAt(p0.x + _ajFwd.x * dd, p0.z + _ajFwd.z * dd, ly + 1.0)
+                        ? autoJumpGroundAt(p0.x + _ajFwd.x * dd, p0.z + _ajFwd.z * dd, ly + 1.0, true)
                         : ly;   // past our reach anyway - do not fail it for that
                     if (Math.abs(beyond - ly) > 0.6) { if (fallback < 0) fallback = d; continue; }
                     _autoJumpCd = window.autoJumpGapCooldown;
