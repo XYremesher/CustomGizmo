@@ -2678,6 +2678,13 @@ export function startGame(CharacterClass) {
     // back and collect. Comfortably wider than the follow distance (2.6) so
     // ordinary jostling around you never reads as leaving.
     window.compBreakOffDist = 7.0;
+    // How close you have to be before a companion will demonstrate on its
+    // demoTarget. 8.2 is the measured spawn-to-bag distance in the linear
+    // forest, so this has to sit under it or the lesson plays to an empty
+    // clearing; 7.0 leaves it silent where you start and swinging by the time
+    // you have taken a step toward it, which is the whole approach to watch it
+    // over.
+    window.compDemoWatchDist = 7.0;
     window.compAttackCooldown = 2.6;
     // How much of that cooldown is randomly ADDED on top, so two companions
     // beside the same bot do not lock into the same rhythm and swing in
@@ -7393,7 +7400,25 @@ export function startGame(CharacterClass) {
         // fight, and range-gated the same way, so it starts swinging only once
         // it has walked over rather than shadow-boxing on the way.
         if (!_compPunchTarget && _compAttackCD <= 0 && canStartAttack && companion.demoTarget) {
-            if (c.distanceTo(companion.demoTarget.group.position) < COMP_PUNCH_RANGE) {
+            // ...and only while there is somebody to demonstrate TO.
+            //
+            // The one at the bag stands 1.5 from it, inside COMP_PUNCH_RANGE
+            // (1.9), so with nothing but its own range to satisfy it started
+            // swinging on the first frame of the level and never stopped. You
+            // spawn 8.2 away from that bag: far enough that the demonstration
+            // is offscreen and pointless, close enough that the impact carries.
+            // Idling at the start meant a tap-tap-tap that never let up.
+            //
+            // Measured from the TARGET, not from the companion, because what
+            // travels is the sound of the bag being hit and that is where it
+            // comes from. And from char.group.position rather than the p above
+            // - p is followOverride for a recruit still waiting to be
+            // collected, which is its own standing spot, so every "is the
+            // player near" test written with p is answered by the companion
+            // asking about itself.
+            const dp = char.group.position, dt = companion.demoTarget.group.position;
+            const watched = Math.hypot(dp.x - dt.x, dp.z - dt.z) < window.compDemoWatchDist;
+            if (watched && c.distanceTo(dt) < COMP_PUNCH_RANGE) {
                 startAttack(companion.demoTarget);
             }
         }
