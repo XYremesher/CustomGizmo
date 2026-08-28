@@ -25343,8 +25343,27 @@ export function startGame(CharacterClass) {
                 // the slide mechanic entirely from the side even on ramps
                 // whose actual sloped face is well within normal
                 // slide/walk range.
-                const realWallNormal = wH.length > 0 ? wH[0].face.normal.clone().transformDirection(wH[0].object.matrixWorld) : null;
-                const isRampHit = wH.length > 0 && wH[0].object.userData?.isSlopeRamp;
+                // Trees are SKIPPED, and the first thing behind them is
+                // used - they are not a reason to refuse the whole climb.
+                //
+                // This was a flat refusal when the first hit was a tree, and
+                // that broke auto-climb across the wood. In a forest a trunk
+                // is very often the nearest thing at chest height, so a stair
+                // riser or a bank with a tree standing anywhere in front of it
+                // stopped being climbable at all - the ray found bark, the
+                // whole test bailed, and walking at the wall did nothing.
+                //
+                // updateAutoJump had this right from the start: `continue` past
+                // canopies and take the next hit. Same thing here. The tree
+                // itself still cannot be climbed, because it is never the hit
+                // that gets tested - which was the whole point of refusing it.
+                let wall = null;
+                for (let i = 0; i < wH.length; i++) {
+                    if (wH[i].object.userData?.isTreeCollider) continue;
+                    wall = wH[i]; break;
+                }
+                const realWallNormal = wall ? wall.face.normal.clone().transformDirection(wall.object.matrixWorld) : null;
+                const isRampHit = !!wall && wall.object.userData?.isSlopeRamp;
                 // A practice bag is not a ledge.
                 //
                 // Its collider is a 1.2x2.4x1.2 box flagged isObstacle/isWall,
@@ -25360,7 +25379,7 @@ export function startGame(CharacterClass) {
                 // Refused here, at the "is this a climbable wall" test, rather
                 // than at the grab itself - the grab decision is made before
                 // this ray is cast, so the object is not known there yet.
-                const isBagHit = wH.length > 0 && wH[0].object.userData?.isSandbagCollider;
+                const isBagHit = !!wall && wall.object.userData?.isSandbagCollider;
                 // Nor is a tree. Same refusal as the bag, one step further.
                 //
                 // A trunk is a dead-vertical face standing on the ground, so
@@ -25373,11 +25392,11 @@ export function startGame(CharacterClass) {
                 //
                 // isTreeCollider covers both shapes the game builds: the
                 // forest's one merged collider per tree, and the village's
-                // per-part colliders. Checked on wH[0].object directly
-                // because this cast is non-recursive, so hits land on the
-                // listed collidables themselves.
-                const isTreeHit = wH.length > 0 && wH[0].object.userData?.isTreeCollider;
-                if (wH.length > 0 && wH[0].distance < 0.8 && !isRampHit && !isBagHit && !isTreeHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
+                // per-part colliders. The skip above is what enforces it,
+                // and it reads userData off the hit objects directly because
+                // this cast is non-recursive, so hits land on the listed
+                // collidables themselves.
+                if (wall && wall.distance < 0.8 && !isRampHit && !isBagHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
                     // Captured BEFORE the setY(0) flatten below destroys the
                     // real 3D normal - this is the grabbed face's actual
                     // steepness (its normal's angle from straight up; 90deg
@@ -25388,7 +25407,7 @@ export function startGame(CharacterClass) {
                     const grabWallAngleDeg = realWallNormal.angleTo(_upVec) * 180 / Math.PI;
                     const grabWallNormalWorld = realWallNormal.clone();
                     const n = realWallNormal.setY(0).normalize();
-                    const top = wH[0].point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wH[0].point.y+3.0);
+                    const top = wall.point.clone().add(fwd.clone().multiplyScalar(0.2)).setY(wall.point.y+3.0);
                     rayDown.set(top, _downVec); const lH = rayDown.intersectObjects(solidCollidables);
                     // Ceiling on how high a ledge can be and still get
                     // grabbed - was a flat char.group.position.y+3.5, which
@@ -25433,8 +25452,8 @@ export function startGame(CharacterClass) {
                     const maxLedgeY = char.group.position.y
                         + (grabFromGround ? groundReach : remainingRise + 1.85);
                     if (lH.length > 0 && lH[0].point.y > char.group.position.y && lH[0].point.y < maxLedgeY) {
-                        const hangX = wH[0].point.x + n.x*ledgeOffset;
-                        const hangZ = wH[0].point.z + n.z*ledgeOffset;
+                        const hangX = wall.point.x + n.x*ledgeOffset;
+                        const hangZ = wall.point.z + n.z*ledgeOffset;
                         const hangGroupY = lH[0].point.y - 1.85;
                         // A hang has to actually lift you off the ground.
                         //
@@ -25460,7 +25479,7 @@ export function startGame(CharacterClass) {
                         const minLift = window.assistedGrabMinLift !== undefined ? window.assistedGrabMinLift : 0.2;
                         const liftsOffGround = !grabFromGround || hangGroupY > char.group.position.y + minLift;
 
-                        if (liftsOffGround && isHangPositionClear(hangX, hangGroupY, hangZ, wH[0].object)) {
+                        if (liftsOffGround && isHangPositionClear(hangX, hangGroupY, hangZ, wall.object)) {
                             isLedgeGrabbing = true; ledgeMoveLocked = true; justGrabbedLedge = true;
                             // Drop a punch that is still mid-swing. Blocking
                             // new ones is not enough on its own: a jab thrown
