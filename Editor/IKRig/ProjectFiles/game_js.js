@@ -1499,8 +1499,19 @@ export function startGame(CharacterClass) {
         t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.RepeatWrapping;
     });
     treeTopTex.colorSpace = THREE.SRGBColorSpace;
-    // How deep the leaf edges read. 0 is the flat canopy again.
+    // How deep the leaf edges read. 0 is the flat canopy again, exactly as
+    // it was before the map arrived.
+    //
+    // LIVE - see the sync in the dither update. It is worth being able to turn
+    // this off from the console without a reload, because a normal map on this
+    // particular surface is the one thing here that can go wrong per viewing
+    // angle: the canopy is DoubleSide and has no tangents, so its frame comes
+    // from screen-space derivatives, and on a back face that frame is mirrored
+    // while the normal deliberately is not (see the flip cancel). Set it to 0
+    // and if the trees go back to reading correctly, that is the culprit
+    // rather than anything in the dissolve.
     window.treeTopNormalScale = 1.0;
+    const _treeTopMats = [];
     // alphaTest instead of transparent: cutout foliage sorts badly as
     // transparent (tufts flicker against each other depending on camera
     // angle), and grass edges don't need real blending.
@@ -9126,7 +9137,10 @@ export function startGame(CharacterClass) {
                     alphaTest,
                     transparent: false,
                 });
-                if (isTreeTop) mat.normalScale.set(window.treeTopNormalScale, window.treeTopNormalScale);
+                if (isTreeTop) {
+                    mat.normalScale.set(window.treeTopNormalScale, window.treeTopNormalScale);
+                    _treeTopMats.push(mat);
+                }
                 if (isCosmeticLeaf) {
                     // Read back per-mesh by the level builders to drop both
                     // shadow casting and collision on exactly the meshes
@@ -16832,6 +16846,9 @@ export function startGame(CharacterClass) {
         // survivable: without it the floor under your feet, being nearer to
         // the camera than you are every frame, dissolves as you stand on it.
         mat.userData.ditherSkipUp = true;
+        // ...and it is one of the things the camera can be INSIDE. Only these
+        // read uDitherInside - see makeDitherable.
+        mat.userData.ditherInsideAware = true;
         mat.userData.ditherRadiusUniform = _ditherLevelRadiusUniform;
         makeDitherable(mat);
         ditherLevelMats.push(mat);
@@ -17860,6 +17877,24 @@ export function startGame(CharacterClass) {
         // it took the ground out from under your feet completely and left you
         // looking at the sky through your own floor. The undersides and the
         // walls are what you see out through indoors, and neither faces up.
+        // uDitherInside is ONE uniform shared by every ditherable material,
+        // and reading it everywhere was wrong. The camera going inside a block
+        // dropped the depth gate for the whole world - so every tree inside
+        // the hole dissolved too, in front of the player or behind them, near
+        // or far. That is "the trees vanish when I look out from inside a
+        // block", and it is also why the wood seemed to dissolve badly at
+        // certain angles: those were the angles that put the camera inside
+        // something.
+        //
+        // Being inside a block is only a fact about that BLOCK. So the branch
+        // is injected only into the materials the camera can be inside, and
+        // everything else compiles the plain depth test it always wanted -
+        // fewer instructions for them, and no shared uniform steering them.
+        const insideAware = !!material.userData.ditherInsideAware;
+        const insideGate = insideAware ? 'uDitherInside > 0.5 || ' : '';
+        const insideDepth = insideAware ? 'uDitherInside > 0.5 ? 1.0 : ' : '';
+        const insideAmt = insideAware
+            ? 'uDitherInside > 0.5 ? uDitherInsideCut * step(0.001, uDitherAmount) : ' : '';
         const skipUp = material.userData.ditherSkipUp
             ? 'if (dot(normalize(vNormal), uDitherUpView) > 0.55) _dCut = 0.0;'
             : '';
@@ -17902,7 +17937,7 @@ export function startGame(CharacterClass) {
                 // player dissolves, so the far side of the same block, and
                 // anything behind the player, stays solid.
                 .replace('#include <clipping_planes_fragment>',
-                    `if (uDitherAmount > 0.001 && (uDitherInside > 0.5 || vViewPosition.z < uDitherPlayerDepth - 0.35)) {
+                    `if (uDitherAmount > 0.001 && (${insideGate}vViewPosition.z < uDitherPlayerDepth - 0.35)) {
         float _dr = length(gl_FragCoord.xy - uDitherScreen) / max(uDitherRadius, 1.0);
         float _dHole = 1.0 - smoothstep(1.0 - uDitherFeather, 1.0, _dr);
         float _dEdge = mix(1.0, _dHole, uDitherHoleOn);
@@ -17920,14 +17955,11 @@ export function startGame(CharacterClass) {
         // step and read as a sawn-off stump. Ramping the amount across a depth
         // band instead lets the trunk thin out along its length.
         // Inside, depth says nothing useful - see uDitherInside.
-        float _dDepth = uDitherInside > 0.5 ? 1.0
-            : 1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
+        float _dDepth = ${insideDepth}1.0 - smoothstep(uDitherPlayerDepth - uDitherDepthFade, uDitherPlayerDepth - 0.35, vViewPosition.z);
         // Inside, its own amount - see uDitherInsideCut. Still scaled by
         // uDitherAmount's own on/off so a material that is not dissolving at
         // all does not start to just because the camera went indoors.
-        float _dAmt = uDitherInside > 0.5
-            ? uDitherInsideCut * step(0.001, uDitherAmount)
-            : uDitherAmount;
+        float _dAmt = ${insideAmt}uDitherAmount;
         float _dCut = mix(_dAmt, 1.0, _dCore * step(0.001, _dAmt)) * _dEdge * _dDepth;
         ${skipUp}
         if (_dCut > 0.001 && _ditherBayer4(gl_FragCoord.xy) < _dCut) discard;
@@ -18036,6 +18068,13 @@ export function startGame(CharacterClass) {
         // here rather than derived per fragment.
         _ditherInsideCutUniform.value = window.ditherInsideStrength;
         _ditherCoreEdgeUniform.value = window.ditherCoreEdge;
+        // Canopy normal strength, live. Cheap: one compare and at most a
+        // couple of materials, and normalScale is a plain uniform so nothing
+        // recompiles when it changes.
+        for (let i = 0; i < _treeTopMats.length; i++) {
+            const ns = _treeTopMats[i].normalScale;
+            if (ns.x !== window.treeTopNormalScale) ns.set(window.treeTopNormalScale, window.treeTopNormalScale);
+        }
         _ditherUpViewUniform.value.copy(_ditherUpWorld)
             .applyQuaternion(_ditherUpQuat.copy(cam.quaternion).invert());
         _ditherFeatherUniform.value = window.ditherHoleFeather;
@@ -19183,6 +19222,10 @@ export function startGame(CharacterClass) {
     // and the vision cones use: a camera inside a canopy should see the wood,
     // not a black screen.
     window.cameraInsideEnabled = true;
+    // How much of the block you can see through once the camera is inside
+    // it. 1 is solid; the shell is still drawn at 1, which is the point.
+    window.cameraInsideOpacity = 0.28;
+    let _camInsideMatsOn = false;
     window.cameraInsideHole = 190;     // radius of the hole, in CSS pixels
     window.cameraInsideFeather = 90;   // ...and how far it fades out over
     // How dark it goes, and the two cases are not the same case.
@@ -19235,6 +19278,41 @@ export function startGame(CharacterClass) {
         // Told to the shader as well as to the black layer - the two are
         // answering the same question, so this is the one place that asks it.
         _ditherInsideUniform.value = inside ? 1 : 0;
+        // ...and the surfaces themselves turn into a transparent shell.
+        //
+        // From inside, a FrontSide box shows you nothing but its own culled
+        // back faces - the block simply is not there, which reads as the world
+        // falling away rather than as being indoors. DoubleSide puts the walls
+        // back, and the opacity is what lets you still see out through them.
+        //
+        // Switched only on the CHANGE. transparent and side are both part of
+        // the program key, so writing them every frame would recompile the
+        // shader every frame; twice per entry is nothing. depthWrite goes off
+        // with it, or the shell writes depth over the things you are trying to
+        // look at through it.
+        if (inside !== _camInsideMatsOn) {
+            _camInsideMatsOn = inside;
+            for (let i = 0; i < ditherLevelMats.length; i++) {
+                const m = ditherLevelMats[i];
+                if (inside) {
+                    if (m.userData._camSaved === undefined) {
+                        m.userData._camSaved = {
+                            transparent: m.transparent, opacity: m.opacity,
+                            side: m.side, depthWrite: m.depthWrite,
+                        };
+                    }
+                    m.transparent = true;
+                    m.opacity = window.cameraInsideOpacity;
+                    m.side = THREE.DoubleSide;
+                    m.depthWrite = false;
+                } else if (m.userData._camSaved) {
+                    const sv = m.userData._camSaved;
+                    m.transparent = sv.transparent; m.opacity = sv.opacity;
+                    m.side = sv.side; m.depthWrite = sv.depthWrite;
+                }
+                m.needsUpdate = true;
+            }
+        }
         const want = inside ? window.cameraInsideDark
             : occludedOnly ? window.cameraOccludedDark : 0;
         if (want > 0) {
