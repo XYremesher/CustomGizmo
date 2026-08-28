@@ -26274,8 +26274,7 @@ export function startGame(CharacterClass) {
         // specific to go (see buildVillageLevel's forest-entrance quest),
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
-        const _compassAim = window.compassTarget || star.position;
-        compassMesh.lookAt(_compassAim);
+        compassMesh.lookAt(window.compassTarget || star.position);
         compassMesh.updateMatrixWorld();
 
         // ---- ...and the flat 2D arrow, driven BY it ----
@@ -26322,23 +26321,20 @@ export function startGame(CharacterClass) {
                 // one reading that stays correct with the target ahead,
                 // behind, or anywhere between.
                 //
-                // Measured from the PLAYER, not from the needle.
+                // Taken from the 3D NEEDLE's own forward, which is the
+                // direction its lookAt already worked out. The two cannot
+                // disagree, and window.compassTarget drives both.
                 //
-                // The needle is a prop parked 1.5 in front of a camera that
-                // orbits at 13.0, so it reads the world from 11.5 behind you.
-                // For the level exit that is nothing. For what the compass
-                // actually points at most of the time - the next companion,
-                // metres away - it is most of the answer: a target 8 to your
-                // left is 90 degrees left of YOU and only 35 degrees left of a
-                // point 11.5 back, so the arrow said "bear slightly left" for
-                // something you had to turn square to face. It got worse the
-                // closer you were, which is exactly when you are looking at it.
-                //
-                // window.compassTarget still drives both, and the needle still
-                // does its own lookAt for the 3D prop - the two now differ by
-                // parallax alone, which is the honest difference between a
-                // floating object and a heading.
-                _compassFront.subVectors(_compassAim, char.group.position);
+                // Measuring from the player instead was tried and reverted.
+                // The parallax is real - the needle sits 1.5 in front of a
+                // camera orbiting at 13.0, so it reads from 11.5 behind you,
+                // which for a target a few metres off is a large angle - but
+                // it reverses with the camera and reads as the arrow chasing
+                // the view rather than the target. Whatever the geometry says,
+                // the needle-derived one is the one that felt right, so the
+                // needle is the source. Do not "correct" this again without
+                // looking at it on screen first.
+                _compassFront.set(0, 0, 1).applyQuaternion(compassMesh.quaternion);
                 _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
                 const tx = _compassFront.x, tz = _compassFront.z;
                 const fx = _compassCamFwd.x, fz = _compassCamFwd.z;
@@ -26355,30 +26351,6 @@ export function startGame(CharacterClass) {
                 }
                 compassArrowEl.style.transform =
                     `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
-                window.__cf = (window.__cf||0)+1;
-                if (window.__cf === 90) {
-                    const gp = char.group.position, np = compassMesh.position;
-                    // Independent hand-derivation: world bearing of the target
-                    // minus the camera's world yaw.
-                    const tb = Math.atan2(_compassAim.x - gp.x, _compassAim.z - gp.z);
-                    const cy = Math.atan2(_compassCamFwd.x, _compassCamFwd.z);
-                    let exp = tb - cy;
-                    while (exp > Math.PI) exp -= 2*Math.PI;
-                    while (exp < -Math.PI) exp += 2*Math.PI;
-                    // What the needle-based version would have said.
-                    const od = new THREE.Vector3().subVectors(_compassAim, np);
-                    const ob = Math.atan2(od.x, od.z);
-                    let oldA = ob - cy;
-                    while (oldA > Math.PI) oldA -= 2*Math.PI;
-                    while (oldA < -Math.PI) oldA += 2*Math.PI;
-                    const deg = r => (r*180/Math.PI).toFixed(1);
-                    console.log('CPROBE shipped=' + deg(_compassArrowAngle)
-                        + ' handDerived=' + deg(exp)
-                        + ' oldNeedleBased=' + deg(oldA)
-                        + ' playerToTarget=' + gp.distanceTo(_compassAim).toFixed(2)
-                        + ' needleToTarget=' + np.distanceTo(_compassAim).toFixed(2)
-                        + ' | LAKE rimWander=' + (2.85*window.forestLakeRimNoise*0.5).toFixed(4));
-                }
             }
         }
 
