@@ -864,6 +864,25 @@ export function startGame(CharacterClass) {
     // see the block that uses them for why it is a bearing and not a
     // projection.
     const _compassFront = new THREE.Vector3();
+    // Where the camera faces, for the behind-you test below.
+    const _compassCamFwd = new THREE.Vector3();
+    // The arrow goes WHITE when the target is behind the camera.
+    //
+    // The angle alone cannot say it. Pointing down means "behind you", but so
+    // does a target below and ahead once the needle leans far enough, and the
+    // two look identical - you turn the wrong way and the arrow barely moves,
+    // which reads as the compass being broken rather than as you being about
+    // to walk away from it.
+    //
+    // brightness(0) invert(1) rather than a second image: the arrow is one
+    // flat colour on transparency, so flattening it to black and inverting
+    // gives exactly its own silhouette in white. The drop-shadow has to be
+    // repeated in both, because setting filter from JS replaces the whole
+    // property the stylesheet set.
+    const COMPASS_SHADOW = 'drop-shadow(0 0 3px rgba(0,0,0,0.6))';
+    const COMPASS_FILTER_AHEAD = COMPASS_SHADOW;
+    const COMPASS_FILTER_BEHIND = 'brightness(0) invert(1) ' + COMPASS_SHADOW;
+    let _compassBehindOn = null;
     // The needle's two ends, projected each frame - see the block that uses
     // them. Reused rather than allocated, this runs every frame.
     const _compassTipA = new THREE.Vector3();
@@ -26373,6 +26392,21 @@ export function startGame(CharacterClass) {
                 // and has no screen direction left. Hold the last readable
                 // angle rather than letting the arrow spin on the spot.
                 if (sdx * sdx + sdy * sdy > 1e-6) _compassArrowAngle = Math.atan2(sdx, -sdy);
+                // Behind the camera, from the needle's own forward - it starts
+                // 1.5 in front of the camera, so its heading is the direction
+                // from the camera to the target for this purpose, and it is
+                // already computed. Negative dot with the view direction means
+                // the target is past the camera plane.
+                //
+                // Written only on a change: this runs every frame and a style
+                // assignment is not free.
+                const behind = _compassFront.dot(
+                    _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion)) < 0;
+                if (behind !== _compassBehindOn) {
+                    _compassBehindOn = behind;
+                    compassArrowEl.style.filter = behind
+                        ? COMPASS_FILTER_BEHIND : COMPASS_FILTER_AHEAD;
+                }
                 // Position stays FIXED, in the CSS, at the top of the screen.
                 //
                 // Following the needle's projected position was tried: the two
