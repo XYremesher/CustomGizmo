@@ -16846,6 +16846,27 @@ export function startGame(CharacterClass) {
     // strip what makes it look like itself. makeDitherable chains onto the
     // handler that is already there.
     const ditherLevelMats = [];
+    // The see-through stand-in a block wears while the camera is inside it.
+    //
+    // One per source material, built once and reused, rather than a clone of
+    // the source: Material.clone() drops onBeforeCompile, so a cloned wall
+    // would silently lose its grass and its dissolve. This is not a copy of
+    // the block, it is a different thing the block turns into - flat colour,
+    // two-sided so the walls exist when seen from within, and not writing
+    // depth so it cannot paint over what you are looking at through it.
+    const _shellMats = new Map();
+    function shellMaterialFor(src) {
+        let sh = _shellMats.get(src);
+        if (!sh) {
+            sh = new THREE.MeshToonMaterial({
+                color: src.color, gradientMap: src.gradientMap,
+                transparent: true, side: THREE.DoubleSide, depthWrite: false,
+            });
+            _shellMats.set(src, sh);
+        }
+        sh.opacity = window.cameraInsideOpacity;
+        return sh;
+    }
     function dressLevelMaterial(mat, opts) {
         if (!mat || mat.userData._levelDressed) return;
         mat.userData._levelDressed = true;
@@ -16858,9 +16879,13 @@ export function startGame(CharacterClass) {
         // survivable: without it the floor under your feet, being nearer to
         // the camera than you are every frame, dissolves as you stand on it.
         mat.userData.ditherSkipUp = true;
-        // ...and it is one of the things the camera can be INSIDE. Only these
-        // read uDitherInside - see makeDitherable.
-        mat.userData.ditherInsideAware = true;
+        // Deliberately NOT ditherInsideAware any more. uDitherInside is shared
+        // by whoever reads it, and these materials are shared by every piece
+        // of the level - so "the camera is inside a block" dissolved every
+        // block made of the same stuff, right across the map. Being inside one
+        // block is handled per MESH now, by swapping that one mesh to a shell
+        // material (see shellMaterialFor), which is the only granularity that
+        // can tell the block you are in from the one on the far hill.
         mat.userData.ditherRadiusUniform = _ditherLevelRadiusUniform;
         makeDitherable(mat);
         ditherLevelMats.push(mat);
@@ -19237,7 +19262,7 @@ export function startGame(CharacterClass) {
     // How much of the block you can see through once the camera is inside
     // it. 1 is solid; the shell is still drawn at 1, which is the point.
     window.cameraInsideOpacity = 0.28;
-    let _camInsideMatsOn = false;
+    let _shelledMesh = null;
     window.cameraInsideHole = 190;     // radius of the hole, in CSS pixels
     window.cameraInsideFeather = 90;   // ...and how far it fades out over
     // How dark it goes, and the two cases are not the same case.
@@ -19276,7 +19301,7 @@ export function startGame(CharacterClass) {
         // being INSIDE something can hide the world without hiding you, so
         // both are asked rather than one standing in for the other.
         let occludedOnly = !!occluded;
-        let inside = false;
+        let inside = false, insideMesh = null;
         if (window.cameraInsideEnabled) {
             if (!_camInsideCache) _camInsideCache = makeNearCache();
             const near = getNearColliders(visionLosList(), cam.position, _camInsideCache);
@@ -19298,7 +19323,7 @@ export function startGame(CharacterClass) {
                 if (ud && (ud.isCarryable || ud.isSandbagCollider
                     || ud.isGroundSlab || ud.softObstacle)) continue;
                 getObstacleBox(near[i], _camInsideBox);
-                if (_camInsideBox.containsPoint(cam.position)) { inside = true; break; }
+                if (_camInsideBox.containsPoint(cam.position)) { inside = true; insideMesh = near[i]; break; }
             }
         }
         // Told to the shader as well as to the black layer - the two are
@@ -19316,29 +19341,29 @@ export function startGame(CharacterClass) {
         // shader every frame; twice per entry is nothing. depthWrite goes off
         // with it, or the shell writes depth over the things you are trying to
         // look at through it.
-        if (inside !== _camInsideMatsOn) {
-            _camInsideMatsOn = inside;
-            for (let i = 0; i < ditherLevelMats.length; i++) {
-                const m = ditherLevelMats[i];
-                if (m.userData.ditherNoShell) continue;
-                if (inside) {
-                    if (m.userData._camSaved === undefined) {
-                        m.userData._camSaved = {
-                            transparent: m.transparent, opacity: m.opacity,
-                            side: m.side, depthWrite: m.depthWrite,
-                        };
-                    }
-                    m.transparent = true;
-                    m.opacity = window.cameraInsideOpacity;
-                    m.side = THREE.DoubleSide;
-                    m.depthWrite = false;
-                } else if (m.userData._camSaved) {
-                    const sv = m.userData._camSaved;
-                    m.transparent = sv.transparent; m.opacity = sv.opacity;
-                    m.side = sv.side; m.depthWrite = sv.depthWrite;
-                }
-                m.needsUpdate = true;
+        // Only the block you are actually in. Tracked by mesh, so walking
+        // from one into another hands the shell over rather than leaving the
+        // first one glass.
+        //
+        // Arrays are refused: a multi-material mesh would need a shell per
+        // slot, and the one mesh built that way - the ground slab - is already
+        // out of the containment test above.
+        const shellTarget = (inside && insideMesh && !Array.isArray(insideMesh.material)
+            && !insideMesh.material.userData.ditherNoShell) ? insideMesh : null;
+        if (shellTarget !== _shelledMesh) {
+            if (_shelledMesh && _shelledMesh.userData._shellFrom) {
+                _shelledMesh.material = _shelledMesh.userData._shellFrom;
+                _shelledMesh.userData._shellFrom = null;
             }
+            _shelledMesh = shellTarget;
+            if (_shelledMesh) {
+                _shelledMesh.userData._shellFrom = _shelledMesh.material;
+                _shelledMesh.material = shellMaterialFor(_shelledMesh.material);
+            }
+        } else if (_shelledMesh) {
+            // Opacity is live, and changing it on a material that is already
+            // transparent costs nothing.
+            _shelledMesh.material.opacity = window.cameraInsideOpacity;
         }
         const want = inside ? window.cameraInsideDark
             : occludedOnly ? window.cameraOccludedDark : 0;
