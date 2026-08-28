@@ -2649,11 +2649,16 @@ export function startGame(CharacterClass) {
     //
     // Trees stay in _compGroundList - they still have to block walking, and
     // the forward wall rays want them. They are only wrong as a FLOOR.
+    //
+    // ...unless the player is up one. Then the canopy IS the floor, and
+    // skipping it hands back the forest floor several metres down, so every
+    // follow spot fails the "same level as the player" test and the companion
+    // is steered at a point below the branch it is standing on.
     function compSpotGroundY(x, z, fromY) {
         rayDown.set(_compSpotVec.set(x, fromY, z), _downVec);
         const hits = rayDown.intersectObjects(_compGroundList, true);
         for (let i = 0; i < hits.length; i++) {
-            if (hits[i].object.userData.isTreeCollider) continue;
+            if (!_compPlayerOnTree && hits[i].object.userData.isTreeCollider) continue;
             return hits[i].point.y;
         }
         return -Infinity;
@@ -2676,6 +2681,8 @@ export function startGame(CharacterClass) {
     // through. Refusing only the LIFT keeps that, and leaves getting onto a
     // tree to the climb system, which is how the player does it.
     const TREE_LIFT_EPS = 0.05;   // numeric slack, not a step allowance
+    // Set once per companion frame - see where _compGroundList is rebuilt.
+    let _compPlayerOnTree = false;
     function groundHitNoTreeLift(hits, currentY) {
         for (let i = 0; i < hits.length; i++) {
             const ud = hits[i].object.userData;
@@ -6028,7 +6035,8 @@ export function startGame(CharacterClass) {
             // comfortably inside that cap, which is exactly how a companion
             // ends up walking up a tree.
             const ud = hits[i].object.userData;
-            if (ud && ud.isTreeCollider && hits[i].point.y > fallbackY + TREE_LIFT_EPS) continue;
+            if (ud && ud.isTreeCollider && !_compPlayerOnTree
+                && hits[i].point.y > fallbackY + TREE_LIFT_EPS) continue;
             return hits[i].point.y;
         }
         // Everything here is overhead - nothing to stand on at this height.
@@ -7347,6 +7355,33 @@ export function startGame(CharacterClass) {
         // code never ran. The same false floor spans the void past the island
         // edges, so nothing out there read as a cliff either.
         if (ground.visible) _compGroundList.push(ground);
+
+        // Is the player standing on a tree right now?
+        //
+        // Companions are forbidden from being LIFTED by a tree, so that a
+        // trunk's flare cannot be walked up (see companionGroundY). That is
+        // right while you are on the ground and exactly wrong once you are up
+        // in the canopy: your companions have to get up there too, and with
+        // the refusal in force their floor read as the forest floor far below,
+        // so they sank into the tree instead of following you across it.
+        //
+        // The discriminating question is not "is this surface a tree" - it is
+        // "is being up a tree where we are supposed to be", and the player is
+        // the only thing that can answer it. One ray a frame, cast from the
+        // same list and reused by every companion.
+        _compPlayerOnTree = false;
+        {
+            const pp = char.group.position;
+            rayDown.set(_compSpotVec.set(pp.x, pp.y + 1.0, pp.z), _downVec);
+            const ph = rayDown.intersectObjects(_compGroundList, true);
+            for (let i = 0; i < ph.length; i++) {
+                // Only what is actually underfoot - a canopy hanging lower
+                // than the player is not what they are standing on.
+                if (ph[i].point.y > pp.y + 0.5) continue;
+                _compPlayerOnTree = !!(ph[i].object.userData && ph[i].object.userData.isTreeCollider);
+                break;
+            }
+        }
 
         // The story can send a companion somewhere other than the player's
         // heel for a moment - walking over to the practice bag to show you how
