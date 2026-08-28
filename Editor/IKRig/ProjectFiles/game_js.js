@@ -23329,7 +23329,28 @@ export function startGame(CharacterClass) {
             const snap = v => Math.floor(v / cubeSize) * cubeSize + cubeSize/2;
             _tempVec1.set(0,0,1).applyQuaternion(char.group.quaternion);
             const targetPos = _tempVec2.copy(char.group.position).add(_tempVec1.multiplyScalar(cubeSize*1.5));
-            const px = snap(targetPos.x), py = snap(char.group.position.y + 1.5) + buildHeightOffset, pz = snap(targetPos.z);
+            // Y rests on YOUR feet; only x and z are snapped to the grid.
+            //
+            // It used to be snap(feet + 1.5), and that half-cube nudge is the
+            // bug: snap floors to the grid, so standing anywhere in the upper
+            // half of a cell pushed the sample over the line and the block was
+            // built one cell TOO HIGH - hanging in the air with its underside
+            // above your head. The chest ray that decides "is this a climbable
+            // wall" fires at feet + 1.1 and passed straight underneath it, so
+            // walking into your own block did nothing at all. Worked out over
+            // ground heights in half-unit steps, 5 of 11 came out floating,
+            // the worst by a clear 1.5.
+            //
+            // feet + cubeSize/2 puts the underside exactly on the ground you
+            // are standing on, every time, so the top is always 3.0 up - the
+            // same rise as the stair risers and the river bank, which is the
+            // height the whole level is built around and comfortably inside
+            // the grounded grab's 3.5 reach (see grabFromGroundReach).
+            //
+            // Stacking still lines up without a grid: stand on a block and
+            // your feet ARE the top of it, so the next one lands squarely on
+            // it. buildHeightOffset still raises it deliberately from there.
+            const px = snap(targetPos.x), py = char.group.position.y + cubeSize/2 + buildHeightOffset, pz = snap(targetPos.z);
             buildPreview.position.set(px, py, pz); gridHelper.position.set(px, py-cubeSize/2+0.05, pz);
             canPlace = true;
             for (let o of solidCollidables) if (o !== ground && o.position.distanceTo(buildPreview.position) < 0.1) canPlace = false;
