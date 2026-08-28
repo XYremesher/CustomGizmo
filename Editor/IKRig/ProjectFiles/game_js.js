@@ -24611,6 +24611,32 @@ export function startGame(CharacterClass) {
             // carrying, so it can never see the carry end.
             if (!window.isCarryingObj) _ctCarryAge = 0;
 
+            // A ragdoll ends the carry.
+            //
+            // Nothing used to end it, so the object stayed glued to
+            // handMidpoint - and during a ragdoll those hands are verlet
+            // particles being flung by the blow that put you down. The jar
+            // went with them, into whatever they passed through, and since it
+            // is a collidable the per-frame overlap resolution then ejected it
+            // from the geometry it had been teleported inside, in one step.
+            // That ejection is the "it leaps miles away", not the punch.
+            //
+            // Ended HERE rather than at each initRagdoll call site - there are
+            // several (a melee hit, a network hit, fall damage) and they are
+            // the places a ragdoll STARTS, not the places that know about
+            // carrying. Reading the state instead catches all of them, and any
+            // added later.
+            //
+            // Before the placement below, deliberately: the drop leaves the
+            // mesh wherever it already is, so what it keeps is last frame's
+            // position - held in two hands, above the ground - rather than
+            // this frame's, which is already wherever the ragdoll has thrown
+            // them. And with no velocity, so it falls from there instead of
+            // inheriting a fling.
+            if (heldCarryable && (char.isRagdoll || char.isStandingUp)) {
+                forceDropCarriedObject();
+            }
+
             if (window.isCarryStarting && heldCarryable) {
                 carryStartElapsed += delta;
                 // Was the raw carry_start clip's own length - reasonable
