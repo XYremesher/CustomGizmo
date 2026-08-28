@@ -868,8 +868,6 @@ export function startGame(CharacterClass) {
     // them. Reused rather than allocated, this runs every frame.
     const _compassTipA = new THREE.Vector3();
     const _compassTipB = new THREE.Vector3();
-    // How far above the 3D compass the flat arrow sits, in CSS pixels.
-    window.compass2DAbove = 46;
     // Last readable arrow angle, held through the frames where both flattened
     // vectors vanish - the camera straight down, or the target overhead.
     let _compassArrowAngle = 0;
@@ -26349,25 +26347,17 @@ export function startGame(CharacterClass) {
                 // and has no screen direction left. Hold the last readable
                 // angle rather than letting the arrow spin on the spot.
                 if (sdx * sdx + sdy * sdy > 1e-6) _compassArrowAngle = Math.atan2(sdx, -sdy);
-                // ---- ...and sat ON the 3D compass, not at a fixed spot ----
+                // Position stays FIXED, in the CSS, at the top of the screen.
                 //
-                // Placed from the needle's own projected position, so the two
-                // stay together wherever the needle drifts as the camera
-                // pitches. A fixed top/left had them agreeing only when the
-                // camera happened to be level.
-                const cx = (_compassTipA.x * 0.5 + 0.5) * window.innerWidth;
-                const cy = (-_compassTipA.y * 0.5 + 0.5) * window.innerHeight;
-                const ay = cy - window.compass2DAbove;
-                compassArrowEl.style.left = cx + 'px';
-                compassArrowEl.style.top = ay + 'px';
+                // Following the needle's projected position was tried: the two
+                // travel together, which sounds right and is not - the needle
+                // drifts with camera pitch, so the HUD element wandered around
+                // the top of the screen while you looked about. A readout you
+                // have to find again every time you move the camera is worse
+                // than one that is always in the same place, whatever it costs
+                // in tidiness. Only the ANGLE comes from the needle.
                 compassArrowEl.style.transform =
-                    `translate(-50%, -50%) rotate(${_compassArrowAngle}rad)`;
-                if (compassBackdropEl) {
-                    compassBackdropEl.style.left = cx + 'px';
-                    compassBackdropEl.style.top = ay + 'px';
-                    compassBackdropEl.style.marginLeft = '0';
-                    compassBackdropEl.style.transform = 'translate(-50%, -50%)';
-                }
+                    `translateX(-50%) rotate(${_compassArrowAngle}rad)`;
             }
         }
 
