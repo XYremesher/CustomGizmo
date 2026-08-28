@@ -864,15 +864,16 @@ export function startGame(CharacterClass) {
     // see the block that uses them for why it is a bearing and not a
     // projection.
     const _compassFront = new THREE.Vector3();
-    // Where the camera faces, for the behind-you test below.
+    // Where the camera faces, and the target in NDC - for the on-screen test.
     const _compassCamFwd = new THREE.Vector3();
-    // The arrow goes WHITE when the target is behind the camera.
+    const _compassAimProj = new THREE.Vector3();
+    // The arrow goes WHITE when the target is not on screen.
     //
     // The angle alone cannot say it. Pointing down means "behind you", but so
     // does a target below and ahead once the needle leans far enough, and the
     // two look identical - you turn the wrong way and the arrow barely moves,
     // which reads as the compass being broken rather than as you being about
-    // to walk away from it.
+    // to walk away from it. Yellow means "it is on your screen, look for it".
     //
     // brightness(0) invert(1) rather than a second image: the arrow is one
     // flat colour on transparency, so flattening it to black and inverting
@@ -26336,7 +26337,8 @@ export function startGame(CharacterClass) {
         // specific to go (see buildVillageLevel's forest-entrance quest),
         // cleared (null) by any level that doesn't use it, so this always
         // falls back to the original star-pointing behavior everywhere else.
-        compassMesh.lookAt(window.compassTarget || star.position);
+        const _compassAim = window.compassTarget || star.position;
+        compassMesh.lookAt(_compassAim);
         compassMesh.updateMatrixWorld();
 
         // ---- ...and the flat 2D arrow, driven BY it ----
@@ -26392,19 +26394,39 @@ export function startGame(CharacterClass) {
                 // and has no screen direction left. Hold the last readable
                 // angle rather than letting the arrow spin on the spot.
                 if (sdx * sdx + sdy * sdy > 1e-6) _compassArrowAngle = Math.atan2(sdx, -sdy);
-                // Behind the camera, from the needle's own forward - it starts
-                // 1.5 in front of the camera, so its heading is the direction
-                // from the camera to the target for this purpose, and it is
-                // already computed. Negative dot with the view direction means
-                // the target is past the camera plane.
+                // White when the target is OFF SCREEN - which is the
+                // question, and is not the same as behind the camera.
                 //
+                // Behind the camera was the first version and it is only half
+                // the cases. A target 80 degrees off to the side is in front
+                // of the camera plane by any dot product and still nowhere on
+                // screen, so the arrow stayed yellow for something you could
+                // not see - and yellow has to mean "it is there, look" or it
+                // means nothing. The honest test is whether the point lands
+                // inside the viewport.
+                //
+                // In front FIRST, then project. project() divides by w, and
+                // for a point behind the camera w is negative: the result
+                // comes back mirrored through the origin and lands inside the
+                // NDC box for things squarely behind you. Testing the
+                // half-space first is what makes the projection meaningful,
+                // not an optimisation.
+                _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+                _compassAimProj.subVectors(_compassAim, camera.position);
+                let onScreen = false;
+                if (_compassAimProj.dot(_compassCamFwd) > 0) {
+                    _compassAimProj.copy(_compassAim).project(camera);
+                    onScreen = Math.abs(_compassAimProj.x) <= 1
+                        && Math.abs(_compassAimProj.y) <= 1;
+                }
                 // Written only on a change: this runs every frame and a style
-                // assignment is not free.
-                const behind = _compassFront.dot(
-                    _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion)) < 0;
-                if (behind !== _compassBehindOn) {
-                    _compassBehindOn = behind;
-                    compassArrowEl.style.filter = behind
+                // assignment is not free. Compared against a value that starts
+                // null, so the very first frame always writes - whichever
+                // state it is in, the stylesheet has not been told yet.
+                const offScreen = !onScreen;
+                if (offScreen !== _compassBehindOn) {
+                    _compassBehindOn = offScreen;
+                    compassArrowEl.style.filter = offScreen
                         ? COMPASS_FILTER_BEHIND : COMPASS_FILTER_AHEAD;
                 }
                 // Position stays FIXED, in the CSS, at the top of the screen.
