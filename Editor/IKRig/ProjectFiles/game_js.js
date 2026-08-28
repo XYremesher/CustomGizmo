@@ -15680,7 +15680,18 @@ export function startGame(CharacterClass) {
         // them so the pair cannot disagree, and keeps its pixels anyway
         // because it faces up.
         dressLevelMaterial(_forestBoxSideMaterial);
-        dressLevelMaterial(ground.material);
+        // The ground gets the dissolve but NOT the transparent shell.
+        //
+        // This material is two things at once: the slab tops AND the
+        // 1000-unit ground plane every level stands on. Turning it
+        // transparent to let you see out of a block turned the floor of the
+        // whole world to glass - and with depthWrite off it drew over
+        // everything behind it, which is a green sheet across the screen.
+        //
+        // Nothing is lost. What you need to see out through from inside a
+        // block is its WALLS, and those are _forestBoxSideMaterial. The top
+        // face points up, and skipUp already spares it.
+        dressLevelMaterial(ground.material, { noShell: true });
         const topMat = topY < 0 ? _forestBoxSideMaterial : ground.material;
         const mats = [
             _forestBoxSideMaterial, _forestBoxSideMaterial, topMat,
@@ -16841,6 +16852,7 @@ export function startGame(CharacterClass) {
         // Grass first, so the two onBeforeCompile handlers chain in the order
         // makeLevelOccluder uses.
         if (opts && opts.grass) applyTriplanarGrass(mat);
+        if (opts && opts.noShell) mat.userData.ditherNoShell = true;
         // Both read by makeDitherable as it builds the shader, so both have to
         // be set before it runs. skipUp is what makes holding it on
         // survivable: without it the floor under your feet, being nearer to
@@ -19270,7 +19282,21 @@ export function startGame(CharacterClass) {
             const near = getNearColliders(visionLosList(), cam.position, _camInsideCache);
             for (let i = 0; i < near.length; i++) {
                 const ud = near[i].userData;
-                if (ud && (ud.isCarryable || ud.isSandbagCollider)) continue;
+                // Only things whose BOX is actually their shape can answer
+                // "am I inside it", and softObstacle is the flag this codebase
+                // already uses for the ones that are not - see the lake rim,
+                // whose own comment says a torus's box is mostly empty air.
+                // The camera passing low over a lake sits inside that box
+                // across the whole clearing, so it reported enclosed out in
+                // the open and turned the world to glass.
+                //
+                // The ground slab goes too, for the neighbouring reason: its
+                // box is the entire level, so being inside it means only
+                // "below the surface" and says nothing about being enclosed.
+                // Same objection the dither probe makes to testing the frame
+                // wall's InstancedMesh by box rather than by ray.
+                if (ud && (ud.isCarryable || ud.isSandbagCollider
+                    || ud.isGroundSlab || ud.softObstacle)) continue;
                 getObstacleBox(near[i], _camInsideBox);
                 if (_camInsideBox.containsPoint(cam.position)) { inside = true; break; }
             }
@@ -19294,6 +19320,7 @@ export function startGame(CharacterClass) {
             _camInsideMatsOn = inside;
             for (let i = 0; i < ditherLevelMats.length; i++) {
                 const m = ditherLevelMats[i];
+                if (m.userData.ditherNoShell) continue;
                 if (inside) {
                     if (m.userData._camSaved === undefined) {
                         m.userData._camSaved = {
