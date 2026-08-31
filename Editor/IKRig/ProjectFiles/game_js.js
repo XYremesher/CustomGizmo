@@ -138,7 +138,6 @@ export function startGame(CharacterClass) {
     // this one, so anything pushed into the throwaway copy was never
     // reachable and just silently never showed.
     window.debugHelpers = debugHelpers;
-    const activeShards = [];
 
     const _tempVec1 = new THREE.Vector3();
     const _tempVec2 = new THREE.Vector3();
@@ -4880,6 +4879,27 @@ export function startGame(CharacterClass) {
 
             if (chargeAction) {
                 const swingDur = chargeAction.getClip().duration;
+                // The build-up, for as long as the wind-up lasts - renewed per
+                // frame rather than started once at the top of it, so the
+                // level follows the bot. The whole point of a telegraph this
+                // long is that you can run from it, and a level fixed when it
+                // began would keep a bot you sprinted away from as loud as one
+                // you stayed next to.
+                //
+                // Stopped OUTRIGHT the frame the wind-up ends rather than left
+                // to holdChargeSound's watchdog, even though the watchdog
+                // would get there. That grace is a quarter of a second and the
+                // fade another eighth, which together reach past
+                // AI_CHARGE_HIT_T - so the build-up would still be sounding
+                // under the swoosh and the impact, on top of the two sounds
+                // the release already has to get through. The watchdog is for
+                // the ways out that never reach this line at all: a punch that
+                // ragdolls the bot mid-wind-up returns out of updateAiBot
+                // hundreds of lines above here.
+                if (window.holdChargeSound) {
+                    if (charging) window.holdChargeSound(aiBot.id, pos);
+                    else window.stopChargeSound(aiBot.id);
+                }
                 // The arm going out. Written as a crossing test - was it
                 // before this instant last frame and past it now - rather than
                 // as another flag on aiBotState, because the timer only ever
@@ -7695,6 +7715,23 @@ export function startGame(CharacterClass) {
                 swooshAt(_compPunchT, _compPunchT - delta,
                     hitAt(i) - swingLen * CHARGE_SWOOSH_LEAD, c, !!chargeAction);
             }
+            // ...and, for the charge, the wind-up it comes out of. Renewed per
+            // frame so the level follows the companion, and cut on
+            // COMP_CHARGE_HOLD - the same number swingAnim below uses to
+            // decide it has stopped winding up and started swinging, so the
+            // build-up ends exactly where the hold clip does and the swoosh
+            // above takes over from there.
+            //
+            // The explicit stop matters for the same reason the bot's does:
+            // holdChargeSound's watchdog would eventually notice, but a
+            // quarter-second late, which here is half the swing. What the
+            // watchdog is for is the branches ABOVE this one, all of which
+            // return - a companion knocked out of its swing never reaches any
+            // line that could turn a sound off.
+            if (chargeAction && window.holdChargeSound) {
+                if (_compPunchT < COMP_CHARGE_HOLD) window.holdChargeSound(companion.id, c);
+                else window.stopChargeSound(companion.id);
+            }
             // Fire every hit frame this step crossed. A long frame can span a
             // whole swing, and skipping it would silently drop a punch.
             while (_compPunchIndex < hitCount && _compPunchT >= hitAt(_compPunchIndex)) {
@@ -9442,6 +9479,31 @@ export function startGame(CharacterClass) {
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         return !mats.some(m => m && m.userData && m.userData.noShadow);
     }
+    // Was this hit on the WOOD, or on the leaves?
+    //
+    // The climbing tests need the two apart. A canopy is a surface you can
+    // already stand on, land on and walk a companion across, so it is a
+    // perfectly good ledge; a trunk is a dead-vertical face standing on the
+    // ground, and letting that be a ledge means walking into any tree climbs
+    // it. Both used to be refused together, under one isTreeCollider test.
+    //
+    // It has to be answered PER HIT, not per object, because the forest's
+    // collider is a single merged mesh carrying the trunk and all four canopy
+    // chunks at once (see treeCollisionGeo) - so the object's own flags cannot
+    // say which of them the ray actually landed on. The merge writes a
+    // per-vertex `treeTrunkPart` for exactly this, and a non-indexed geometry
+    // gives face.a straight back as a vertex index.
+    //
+    // The village trees take the other branch: they keep one collidable per
+    // part and only the trunk carries isTreeTrunk, so there the object IS the
+    // answer and there is no attribute to read.
+    function isTreeTrunkHit(hit) {
+        const obj = hit && hit.object;
+        if (!obj || !obj.userData || !obj.userData.isTreeCollider) return false;
+        const attr = obj.geometry && obj.geometry.getAttribute('treeTrunkPart');
+        if (attr && hit.face) return attr.getX(hit.face.a) > 0.5;
+        return !!obj.userData.isTreeTrunk;
+    }
 
     // ---- Forest level ----
     // Procedural, ported from the Unity generators the author supplied
@@ -9955,53 +10017,72 @@ export function startGame(CharacterClass) {
     }
     window.debugTriggerKeyInsertion = triggerKeyInsertion;
 
-    function shatterJar(position, impactVelocity) {
-        const shardCount = 14;
+    // ---- Broken-jar pool ----
+    //
+    // A shatter used to build everything it needed and then throw it away:
+    // brokenJarTemplate.clone() for the group, one shinyJarMat.clone() PER
+    // SHARD, and on the fallback path a BoxGeometry per shard with jittered
+    // vertices and computeVertexNormals - fourteen fresh geometries to upload.
+    // All of it disposed four seconds later, and all of it paid again by the
+    // next jar. That is the hitch on breaking one.
+    //
+    // Nothing about a shatter is per-shatter. The pieces are the same pieces
+    // every time; only where they are and how fast they are going changes. So
+    // a set is built once, hidden when it expires, and handed straight back
+    // out on the next break. After the first jar of a session, breaking one
+    // allocates nothing at all.
+    //
+    // ONE MATERIAL PER SET, not per shard. The fade was the only reason they
+    // were ever separate, and the shards of a single jar fade together anyway
+    // - the template path already gave every one of them the same 4.0
+    // lifespan. So the lifespan belongs to the set, not the shard. Two jars
+    // breaking at once still fade independently, because each holds its own
+    // set. (The fallback path loses a little variety here: its shards used to
+    // wink out over a 3.5-4.5 spread rather than together. It only runs when
+    // Jar_Broken.fbx failed to load, and one material beats fourteen.)
+    //
+    // The meshes live in `scene` and are never removed, only hidden - three
+    // skips an invisible object and everything under it, so an idle set costs
+    // a flag test in the render traversal.
+    const shardSetPool = [];
+    const activeShardSets = [];
+    const SHARD_LIFE = 4.0;
 
-        if (brokenJarTemplate) {
+    function buildShardSet() {
+        const material = shinyJarMat.clone();
+        const shards = [];
+        const procedural = !brokenJarTemplate;
+        if (!procedural) {
             const brokenJar = brokenJarTemplate.clone();
-            scene.add(brokenJar); 
-            brokenJar.position.copy(position);
+            // At the ORIGIN, so each piece's world transform below is a pure
+            // offset from the jar's centre - which is what makes it reusable:
+            // the next shatter just adds it to wherever that jar was standing.
+            brokenJar.position.set(0, 0, 0);
             brokenJar.updateMatrixWorld(true);
-
-            const shardsToExtract = [];
-            brokenJar.traverse((child) => {
-                if (child.isMesh) shardsToExtract.push(child);
+            const meshes = [];
+            brokenJar.traverse((child) => { if (child.isMesh) meshes.push(child); });
+            meshes.forEach((shard) => {
+                const homePos = new THREE.Vector3();
+                const homeQuat = new THREE.Quaternion();
+                const homeScale = new THREE.Vector3();
+                shard.getWorldPosition(homePos);
+                shard.getWorldQuaternion(homeQuat);
+                shard.getWorldScale(homeScale);
+                scene.add(shard);
+                shard.material = material;
+                shard.visible = false;
+                // Geometry is the TEMPLATE's, shared by every set - Object3D
+                // .clone() shares rather than copies. Nothing here ever
+                // disposes it; that used to free the buffers the next shatter
+                // needed and pay to upload them again.
+                shard.userData = { homePos, homeQuat, homeScale, velocity: new THREE.Vector3() };
+                shards.push(shard);
             });
-
-            shardsToExtract.forEach((shard) => {
-                const worldPos = new THREE.Vector3();
-                const worldQuat = new THREE.Quaternion();
-                const worldScale = new THREE.Vector3();
-                
-                shard.getWorldPosition(worldPos);
-                shard.getWorldQuaternion(worldQuat);
-                shard.getWorldScale(worldScale);
-
-                scene.add(shard); 
-                shard.position.copy(worldPos);
-                shard.quaternion.copy(worldQuat);
-                shard.scale.copy(worldScale);
-
-                const randomScatter = new THREE.Vector3((Math.random() - 0.5) * 6.0, Math.random() * 4.0 + 3.5, (Math.random() - 0.5) * 6.0);
-                if (impactVelocity) randomScatter.addScaledVector(impactVelocity, 0.45);
-
-                const fadeMat = shinyJarMat.clone();
-                shard.material = fadeMat;
-                // ownGeometry deliberately absent: Object3D.clone shares the
-                // geometry rather than copying it, so these shards are drawing
-                // the TEMPLATE's buffers. See the cleanup in animate - it must
-                // not dispose them, or every shatter frees the geometry the
-                // next one needs and pays to upload it again.
-                shard.userData = { velocity: randomScatter, lifespan: 4.0, material: fadeMat };
-                activeShards.push(shard);
-            });
-            scene.remove(brokenJar); 
+            scene.remove(brokenJar);
         } else {
-            for (let i = 0; i < shardCount; i++) {
+            for (let i = 0; i < 14; i++) {
                 const sizeVal = 0.12 + Math.random() * 0.16;
                 const geom = new THREE.BoxGeometry(sizeVal, sizeVal, sizeVal);
-                
                 const posAttr = geom.attributes.position;
                 for (let j = 0; j < posAttr.count; j++) {
                     posAttr.setX(j, posAttr.getX(j) + (Math.random() - 0.5) * 0.04);
@@ -10009,23 +10090,98 @@ export function startGame(CharacterClass) {
                     posAttr.setZ(j, posAttr.getZ(j) + (Math.random() - 0.5) * 0.04);
                 }
                 geom.computeVertexNormals();
-
-                const fadeMat = shinyJarMat.clone();
-                const shardMesh = new THREE.Mesh(geom, fadeMat);
+                const shardMesh = new THREE.Mesh(geom, material);
                 shardMesh.castShadow = true; shardMesh.receiveShadow = true;
-                shardMesh.position.copy(position).add(new THREE.Vector3((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3));
-                shardMesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+                shardMesh.visible = false;
+                shardMesh.userData = { velocity: new THREE.Vector3() };
                 scene.add(shardMesh);
-
-                const randomScatter = new THREE.Vector3((Math.random() - 0.5) * 5.0, Math.random() * 5.0 + 2.5, (Math.random() - 0.5) * 5.0);
-                if (impactVelocity) randomScatter.addScaledVector(impactVelocity, 0.35);
-
-                // This path DOES build a geometry per shard (jittered vertices
-                // on its own box), so this one owns it and must free it.
-                shardMesh.userData = { velocity: randomScatter, lifespan: 3.5 + Math.random() * 1.0, material: fadeMat, ownGeometry: true };
-                activeShards.push(shardMesh);
+                shards.push(shardMesh);
             }
         }
+        return { shards, material, procedural, lifespan: 0 };
+    }
+
+    function shatterJar(position, impactVelocity) {
+        let set = shardSetPool.pop();
+        // A set built before Jar_Broken.fbx finished loading is fourteen
+        // boxes, and pooling means it would stay in rotation for the rest of
+        // the session once the real pieces arrived - every so often a jar
+        // would break into the wrong debris for no visible reason. Dropped
+        // rather than kept: there is at most one of them, and its geometry is
+        // the only geometry in here that is worth freeing (the template path
+        // shares the template's).
+        while (set && set.procedural && brokenJarTemplate) {
+            set.shards.forEach(s => { scene.remove(s); if (s.geometry) s.geometry.dispose(); });
+            set.material.dispose();
+            set = shardSetPool.pop();
+        }
+        if (!set) set = buildShardSet();
+        // Nothing to throw - hand it back rather than rebuilding an empty set
+        // on every break.
+        if (!set.shards.length) { shardSetPool.push(set); return; }
+        set.lifespan = SHARD_LIFE;
+        set.material.opacity = 1;
+        // The two paths keep their own scatter numbers rather than being
+        // merged onto one: they were tuned against different debris (real
+        // modelled pieces vs. fourteen little boxes) and this is a pool, not a
+        // retune.
+        const spread = set.procedural ? 5.0 : 6.0;
+        const lift = set.procedural ? 2.5 : 3.5, liftVary = set.procedural ? 5.0 : 4.0;
+        const impactShare = set.procedural ? 0.35 : 0.45;
+        for (let i = 0; i < set.shards.length; i++) {
+            const shard = set.shards[i];
+            if (shard.userData.homePos) {
+                shard.position.copy(position).add(shard.userData.homePos);
+                shard.quaternion.copy(shard.userData.homeQuat);
+                shard.scale.copy(shard.userData.homeScale);
+            } else {
+                shard.position.set(
+                    position.x + (Math.random() - 0.5) * 0.3,
+                    position.y + (Math.random() - 0.5) * 0.3,
+                    position.z + (Math.random() - 0.5) * 0.3);
+                shard.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+            }
+            shard.userData.velocity.set(
+                (Math.random() - 0.5) * spread,
+                Math.random() * liftVary + lift,
+                (Math.random() - 0.5) * spread);
+            if (impactVelocity) shard.userData.velocity.addScaledVector(impactVelocity, impactShare);
+            // Forgetting the floor is the point of reuse - this set may last
+            // have been used on a completely different surface.
+            shard.userData.floorY = undefined;
+            shard.userData.floorT = 0;
+            shard.visible = true;
+        }
+        activeShardSets.push(set);
+    }
+
+    function retireShardSet(set) {
+        for (let i = 0; i < set.shards.length; i++) set.shards[i].visible = false;
+        shardSetPool.push(set);
+    }
+
+    // The one way a jar breaks.
+    //
+    // Six places used to call shatterJar and destroyJarCarryable as a pair: a
+    // projectile, a thrown object that connected, and four separate landing
+    // and overlap branches in the carryable physics. A pair that has to be
+    // kept in step at six call sites is a pair that comes apart, and this one
+    // did - see the guard below for what it cost.
+    function breakJar(jarMesh, impactVelocity) {
+        // Idempotent, and it has to be. Two of those call sites can reach the
+        // same jar within one frame: the obstacle loop is a forEach, whose
+        // `return` ends one callback rather than the loop, and the branch that
+        // breaks a jar returns without zeroing its velocity - so a jar wedged
+        // against two blocks passed the |vy| > 5 test once per block.
+        //
+        // What that looked like was TWO STAR KEYS out of one jar, overlapping
+        // and shoving each other around forever. The array splices in
+        // destroyJarCarryable are already no-ops the second time through, but
+        // containsKey was still set on the mesh, so the key spawned again.
+        if (jarMesh.userData.jarBroken) return;
+        jarMesh.userData.jarBroken = true;
+        shatterJar(jarMesh.position.clone(), impactVelocity ? impactVelocity.clone() : null);
+        destroyJarCarryable(jarMesh);
     }
 
     function destroyJarCarryable(jarMesh) {
@@ -10337,7 +10493,13 @@ export function startGame(CharacterClass) {
         companions.slice().forEach(removeCompanion);
         // Both hold per-level objects the wipe has already detached.
         activeLockInstances.length = 0;
-        activeShards.forEach(sh => scene.remove(sh)); activeShards.length = 0;
+        // Shards live in `scene`, not levelGroup, so the wipe above does not
+        // reach them and a level swap has to retire them by hand. Back to the
+        // pool rather than removed from the scene: the meshes are the same
+        // meshes on every level and the pool is what makes a shatter free (see
+        // buildShardSet). An idle set is invisible, which three skips outright.
+        activeShardSets.slice().forEach(retireShardSet);
+        activeShardSets.length = 0;
 
         if(data.voxels) {
             data.voxels.forEach(v => {
@@ -13269,6 +13431,15 @@ export function startGame(CharacterClass) {
         // crosses the shot instead of going over its own shoulder - you can
         // see the whole move, and it still travels into open ground.
         const c = storyNpc.group.position;
+        // The demonstration gets the build-up too - this is the scene that
+        // TEACHES the charge, and a wind-up you are being told to listen for
+        // should be the one place it is unmissable. It loops, so the stop is
+        // not optional here the way it might look: without it the pause
+        // between throws would still be humming.
+        if (window.holdChargeSound) {
+            if (winding) window.holdChargeSound(storyNpc.id, c);
+            else window.stopChargeSound(storyNpc.id);
+        }
         const toPlayerYaw = Math.atan2(char.group.position.x - c.x, char.group.position.z - c.z);
         _npcFaceEuler.set(0, toPlayerYaw, 0);
         _npcFaceTalk.setFromEuler(_npcFaceEuler);
@@ -14612,6 +14783,22 @@ export function startGame(CharacterClass) {
         // sets, and collision needs nothing else - Mesh.raycast derives the
         // hit face normal from the triangle's own vertices, not from a
         // normal attribute.
+        // Which merged triangles are the TRUNK, written per vertex.
+        //
+        // The merge is what makes this necessary: one mesh per tree is worth
+        // ~960 fewer collidables, but it also means a ray hitting a tree comes
+        // back with no way to say whether it found bark or leaves - and the
+        // climbing tests need exactly that distinction (see isTreeTrunkHit).
+        // A vertex attribute survives the merge, rides along in the tree's own
+        // frame for free, and is read back through face.a because these
+        // geometries are non-indexed.
+        //
+        // Position-only was the rule here and this breaks it by one float per
+        // vertex, on ONE geometry shared by every placement: 1152 verts, 4.6KB
+        // for the whole forest. mergeGeometries needs the attribute sets to
+        // match, so every part gets it, trunk or not.
+        //
+        // noShadow identifies the trunk, the same test treeTrunkGeo below uses.
         const collisionParts = [];
         sources.forEach(src => {
             if (src.visualOnly) return;
@@ -14619,6 +14806,10 @@ export function startGame(CharacterClass) {
             const part = new THREE.BufferGeometry();
             part.setAttribute('position', flat.getAttribute('position').clone());
             part.applyMatrix4(src.rel);
+            const isTrunk = !!(src.material && src.material.userData && src.material.userData.noShadow);
+            const flags = new Float32Array(part.getAttribute('position').count);
+            if (isTrunk) flags.fill(1);
+            part.setAttribute('treeTrunkPart', new THREE.BufferAttribute(flags, 1));
             collisionParts.push(part);
             flat.dispose();
         });
@@ -15366,30 +15557,113 @@ export function startGame(CharacterClass) {
     }
 
     let _forestMaskTex = null;
-    const FOREST_MASK_RES = 256;
+    // Texels per world unit, not a fixed resolution.
+    //
+    // 256 across the 120-unit square wood is the density this mask was tuned
+    // at, so that ratio is what is preserved. It has to be a density now
+    // because the area is no longer one number: the mask covers the slab and
+    // the corridor tongues as well as the wood (see the extent below), and the
+    // linear wood is four times longer than it is wide. A fixed square texture
+    // over a rectangle has to stretch, which is what had the linear level's z
+    // axis sampled at 1.45 texels/unit against its x axis's 5.8.
+    const FOREST_MASK_DENSITY = 256 / 120;
+    // A ceiling, because the density is applied to an extent that could in
+    // principle be dragged anywhere from the panel. 512 on both axes is 1MB of
+    // mask and a quarter-million perlin samples in the frame the level is
+    // built; neither level comes close (the biggest axis in use is the linear
+    // wood's 224 units, 478 texels).
+    const FOREST_MASK_MAX_RES = 512;
     const FOREST_MASK_FEATHER = 0.12;
+    // How far outside the wood the forced-open rim fades in over. The mask
+    // stops asking the noise out there (see below), and swapping between the
+    // two rules on a line would draw exactly the straight edge this widening
+    // exists to remove.
+    //
+    // 6 is one FOREST_BORDER_BLOCK - the width of the wall that stands on this
+    // boundary, so the blend is hidden under it along the sides and reads as
+    // the wood thinning out at the corridor mouths. Written as the number
+    // rather than as that name because FOREST_BORDER_BLOCK is declared further
+    // down this file and a const cannot reach forward to it.
+    const FOREST_MASK_RIM_FADE = 6;
     function buildForestGroundMask() {
-        const res = FOREST_MASK_RES;
-        const areaX = forestAreaX(), areaZ = forestAreaZ();
+        // The WOOD's own extent: where trees are actually scattered, and so
+        // the only place the noise is an honest answer to "is this a clearing".
+        const woodX = forestAreaX(), woodZ = forestAreaZ();
+        const halfWoodX = woodX * 0.5, halfWoodZ = woodZ * 0.5;
+        // ...and the extent of everything you can STAND on, which is bigger,
+        // and is what the mask has to cover.
+        //
+        // It did not, and the seam landed where it is least affordable: the
+        // spawn. The entrance corridor's midpoint sits at
+        // -(slabHalfZ + (APPROACH - LEN) / 2) = -65 in the square wood and -93
+        // in the linear one, and both woods end at half their area - 60 and 88.
+        // So the level opened five units outside its own mask, on a straight
+        // line with plain meadow grass under your feet and worn path starting
+        // just ahead of them. The sides had the same seam a block wide, mostly
+        // hidden under the frame wall.
+        //
+        // z reaches a full FOREST_ENTRY_APPROACH past the slab, for the two
+        // corridor tongues. x only as far as the slab, because both tongues
+        // are narrower than it is wide - the exit is the worse case at
+        // FOREST_EXIT_X 41 plus a 15-unit half-width = 56, inside the square
+        // slab's 64 - but it is written as a max rather than assumed, since
+        // moving a corridor is a one-constant change.
+        const areaX = Math.max(forestSlabHalfX(),
+            Math.abs(forestEntryX()) + FOREST_ENTRY_TONGUE_HALF,
+            Math.abs(forestExitX()) + FOREST_ENTRY_TONGUE_HALF) * 2;
+        const areaZ = (forestSlabHalfZ() + FOREST_ENTRY_APPROACH) * 2;
+        const resX = THREE.MathUtils.clamp(
+            Math.round(areaX * FOREST_MASK_DENSITY), 64, FOREST_MASK_MAX_RES);
+        const resZ = THREE.MathUtils.clamp(
+            Math.round(areaZ * FOREST_MASK_DENSITY), 64, FOREST_MASK_MAX_RES);
         const noiseScale = window.forestNoiseScale;
         const threshold = window.forestTreeThreshold;
-        const data = new Uint8Array(res * res * 4);
-        for (let j = 0; j < res; j++) {
-            for (let i = 0; i < res; i++) {
-                const wx = ((i + 0.5) / res - 0.5) * areaX;
-                const wz = ((j + 0.5) / res - 0.5) * areaZ;
+        const data = new Uint8Array(resX * resZ * 4);
+        for (let j = 0; j < resZ; j++) {
+            for (let i = 0; i < resX; i++) {
+                const wx = ((i + 0.5) / resX - 0.5) * areaX;
+                const wz = ((j + 0.5) / resZ - 0.5) * areaZ;
                 const n = perlin2((wx + window.forestSeed) / noiseScale, (wz + window.forestSeed) / noiseScale);
-                const openness = THREE.MathUtils.clamp((threshold - n) / FOREST_MASK_FEATHER, 0, 1);
+                let openness = THREE.MathUtils.clamp((threshold - n) / FOREST_MASK_FEATHER, 0, 1);
+                // Past the wood's edge the noise is not an answer to anything.
+                // No tree was ever scattered out here - the border is wall and
+                // the tongues are carved corridor - so letting the noise speak
+                // would paint meadow green down a passage that is bare by
+                // construction, which is the same wrong ground the widening is
+                // meant to fix, in a different colour.
+                //
+                // The ramp reaches full AT the wood's edge and fades INWARD
+                // over the last block of it, rather than outward from it.
+                // Outward was the obvious way round and it puts the blend on
+                // the wrong ground: you spawn 5 units out, which is five
+                // sixths of the way through a 6-unit fade, so the one piece of
+                // floor the fix exists for would still have been the one piece
+                // not fully painted. Fading inward makes every unit of ground
+                // outside the wood read exactly as the path inside it does,
+                // and hides the blend under the frame wall - which stands on
+                // this boundary and is one FOREST_BORDER_BLOCK wide.
+                //
+                // Taken as a max rather than a replacement, so the ramp can
+                // only ever open ground up: inside the wood the trees keep
+                // their green, and where the noise already says clearing the
+                // two agree with no join to see at all.
+                const outside = Math.max(Math.abs(wx) - halfWoodX, Math.abs(wz) - halfWoodZ);
+                openness = Math.max(openness,
+                    THREE.MathUtils.clamp(1 + outside / FOREST_MASK_RIM_FADE, 0, 1));
                 const v = Math.round(openness * 255);
-                const o = (j * res + i) * 4;
+                const o = (j * resX + i) * 4;
                 data[o] = v; data[o + 1] = v; data[o + 2] = v; data[o + 3] = 255;
             }
         }
         if (_forestMaskTex) _forestMaskTex.dispose();
-        _forestMaskTex = new THREE.DataTexture(data, res, res);
+        // width is the x axis and height the z axis, matching both the row
+        // stride above and the shader's muv (x from world x, y from world z).
+        _forestMaskTex = new THREE.DataTexture(data, resX, resZ);
         _forestMaskTex.needsUpdate = true;
         // Clamped, or the mask would tile across the whole 1000-unit plane and
-        // paint paths far outside the wood.
+        // paint paths far outside the wood. It also means the rim's fully-open
+        // edge is what the sampler returns for anything just past the texture,
+        // rather than the pattern starting over.
         _forestMaskTex.wrapS = _forestMaskTex.wrapT = THREE.ClampToEdgeWrapping;
         _forestMaskTex.minFilter = _forestMaskTex.magFilter = THREE.LinearFilter;
         _groundTintUniforms.uForestMask.value = _forestMaskTex;
@@ -23601,8 +23875,7 @@ export function startGame(CharacterClass) {
             let jarDestroyed = false;
             for (let c of carryables) {
                 if (c.mesh.userData.isJar && p.mesh.position.distanceTo(c.mesh.position) < 0.8) {
-                    shatterJar(c.mesh.position.clone(), p.velocity.clone());
-                    destroyJarCarryable(c.mesh);
+                    breakJar(c.mesh, p.velocity);
                     scene.remove(p.mesh); projectiles.splice(i, 1);
                     jarDestroyed = true;
                     break;
@@ -23626,39 +23899,82 @@ export function startGame(CharacterClass) {
             }
         }
 
-        for (let i = activeShards.length - 1; i >= 0; i--) {
-            const shard = activeShards[i];
-            shard.userData.lifespan -= delta;
+        for (let si = activeShardSets.length - 1; si >= 0; si--) {
+            const set = activeShardSets[si];
+            set.lifespan -= delta;
 
-            if (shard.userData.lifespan <= 0) {
-                scene.remove(shard);
-                // Only the procedurally-built shards own their geometry. The
-                // ones cloned off brokenJarTemplate share ITS geometry, and
-                // disposing that here freed the template's GPU buffers on
-                // every shatter - the next one silently re-uploaded them.
-                if (shard.userData.ownGeometry && shard.geometry) shard.geometry.dispose();
-                if (shard.material) {
-                    if (Array.isArray(shard.material)) shard.material.forEach(m => m.dispose());
-                    else shard.material.dispose();
-                }
-                activeShards.splice(i, 1);
+            if (set.lifespan <= 0) {
+                // Hidden and handed back, never disposed - see the pool. The
+                // geometry is the template's and shared by every set, and the
+                // material is the set's own and outlives it.
+                activeShardSets.splice(si, 1);
+                retireShardSet(set);
                 continue;
             }
 
-            shard.userData.velocity.y -= 25 * delta;
-            shard.position.addScaledVector(shard.userData.velocity, delta);
+            // One fade for the whole set, on its one material.
+            set.material.opacity = set.lifespan < 1.0 ? set.lifespan : 1;
 
-            if (shard.position.y < 0.1) {
-                shard.position.y = 0.1;
-                shard.userData.velocity.y *= -0.3;
-                shard.userData.velocity.x *= 0.75;
-                shard.userData.velocity.z *= 0.75;
-            }
+            for (let i = 0; i < set.shards.length; i++) {
+                const shard = set.shards[i];
+                shard.userData.velocity.y -= 25 * delta;
+                shard.position.addScaledVector(shard.userData.velocity, delta);
 
-            if (shard.userData.lifespan < 1.0) {
-                if (shard.material) {
-                    if (Array.isArray(shard.material)) shard.material.forEach(m => m.opacity = shard.userData.lifespan);
-                    else shard.material.opacity = shard.userData.lifespan;
+                // The floor a shard lands on.
+                //
+                // This was a hardcoded 0.1 - a shard's half-height above the world
+                // ground plane - which is exactly the assumption the carryables'
+                // own floor used to make, and wrong in exactly the same way. Break
+                // a jar where it is staged and every shard falls straight through
+                // the thing it was standing on: spawnStairJar puts one on stair_1,
+                // top y = 5.7, so the shards dropped 5.6 units and came to rest
+                // INSIDE a 3.0-tall cube. The jar grid never showed it because
+                // that grid sits on the ground at y = 0.5, where 0.1 happens to be
+                // right.
+                //
+                // Same shape as the carryable floor a few lines below, for the
+                // same reasons. Cast from ABOVE, so a resting shard finds the
+                // surface rather than starting inside it. Re-measured on a timer
+                // rather than sampled once at the shatter, because a shard
+                // SKITTERS - it bounces at -0.3 and keeps 75% of its horizontal
+                // speed each time, so where it broke is not where it settles, and
+                // one that runs off the edge of the block has to find the ground
+                // underneath.
+                //
+                // 0.12s is the carryables' own interval. Fourteen shards on it is
+                // about two rays a frame at 60fps, and it stops altogether when
+                // they fade out four seconds later.
+                //
+                // The lift is 0.5 rather than the carryables' 1.2: a shard is a
+                // few centimetres across and only has to clear what it is sitting
+                // on, while every extra unit is another chance to catch something
+                // overhead and read that as the floor. It is still four times the
+                // furthest one falls in a frame - they leave at 7.5 upward at
+                // most, so they arrive at about the same, which is 0.125 at 60fps.
+                shard.userData.floorT = (shard.userData.floorT || 0) - delta;
+                if (shard.userData.floorT <= 0 || shard.userData.floorY === undefined) {
+                    shard.userData.floorT = 0.12;
+                    rayDown.set(_tempVec1.set(shard.position.x, shard.position.y + 0.5, shard.position.z), _downVec);
+                    const fh = rayDown.intersectObjects(playerNear(shard.position.x, shard.position.z), true);
+                    let fy = 0;
+                    for (let k = 0; k < fh.length; k++) {
+                        // Canopies excluded, the same way the carryables exclude
+                        // them - a jar does not rest on leaves, so neither should
+                        // what is left of one. Nothing to exclude for self here:
+                        // shards are never added to collidables.
+                        if (fh[k].object.userData.isTreeCollider) continue;
+                        fy = fh[k].point.y; break;
+                    }
+                    shard.userData.floorY = fy;
+                }
+                // Falling back to 0.1 when the ray finds nothing is the old
+                // behaviour exactly, which is what should happen over open ground.
+                const shardRestY = Math.max(0.1, shard.userData.floorY + 0.1);
+                if (shard.position.y < shardRestY) {
+                    shard.position.y = shardRestY;
+                    shard.userData.velocity.y *= -0.3;
+                    shard.userData.velocity.x *= 0.75;
+                    shard.userData.velocity.z *= 0.75;
                 }
             }
         }
@@ -23734,8 +24050,7 @@ export function startGame(CharacterClass) {
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
                         if (c.mesh.userData.isJar && speed > 5.0) {
-                            shatterJar(c.mesh.position.clone(), c.velocity.clone());
-                            destroyJarCarryable(c.mesh);
+                            breakJar(c.mesh, c.velocity);
                             earlyExit = true; return;
                         }
                         const overlapX = Math.min(carryBox.max.x - obstacleBox.min.x, obstacleBox.max.x - carryBox.min.x);
@@ -23773,8 +24088,7 @@ export function startGame(CharacterClass) {
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
                         if (c.mesh.userData.isJar && speed > 5.0) {
-                            shatterJar(c.mesh.position.clone(), c.velocity.clone());
-                            destroyJarCarryable(c.mesh);
+                            breakJar(c.mesh, c.velocity);
                             earlyExit = true; return;
                         }
                         const overlapZ = Math.min(carryBox.max.z - obstacleBox.min.z, obstacleBox.max.z - carryBox.min.z);
@@ -23837,8 +24151,7 @@ export function startGame(CharacterClass) {
                 if (c.mesh.position.y < restY) {
                     c.mesh.position.y = restY;
                     if (c.mesh.userData.isJar && Math.abs(c.velocity.y) > 5.0) {
-                        shatterJar(c.mesh.position.clone(), c.velocity.clone());
-                        destroyJarCarryable(c.mesh); break;
+                        breakJar(c.mesh, c.velocity); break;
                     }
                     c.velocity.y = 0;
                     c.velocity.x *= Math.pow(0.85, 1 / subSteps); 
@@ -23875,8 +24188,7 @@ export function startGame(CharacterClass) {
 
                         if (resolvedDirY > 0) { 
                             if (c.mesh.userData.isJar && Math.abs(c.velocity.y) > 5.0) {
-                                shatterJar(c.mesh.position.clone(), c.velocity.clone());
-                                destroyJarCarryable(c.mesh); earlyExit = true; return;
+                                breakJar(c.mesh, c.velocity); earlyExit = true; return;
                             }
                             c.velocity.y = 0;
                             c.velocity.x *= Math.pow(0.85, 1 / subSteps); 
@@ -24061,8 +24373,7 @@ export function startGame(CharacterClass) {
                     // from inside this same forEach - accepted existing
                     // behavior, not something new introduced here.
                     if (consumed && c.mesh.userData.isJar) {
-                        shatterJar(c.mesh.position.clone(), incomingVelocity.clone());
-                        destroyJarCarryable(c.mesh);
+                        breakJar(c.mesh, incomingVelocity);
                     }
 
                     // One hit per throw, same as a punch's own punchesHitFlags -
@@ -24901,8 +25212,12 @@ export function startGame(CharacterClass) {
                 let wall = null;
                 for (let i = 0; i < wallHits.length; i++) {
                     const ud = wallHits[i].object.userData;
-                    // Canopies are not walls, and neither is anything you are carrying.
-                    if (ud.isTreeCollider || ud.isCarryable) continue;
+                    // Trunks are not walls, and neither is anything you are
+                    // carrying. Canopies ARE - see the assisted grab's own copy
+                    // of this rule; the two have to agree or walking at a
+                    // treetop would auto-jump onto it while walking at it with
+                    // the stick held did nothing, or the reverse.
+                    if (ud.isCarryable || isTreeTrunkHit(wallHits[i])) continue;
                     wall = wallHits[i]; break;
                 }
                 if (!wall || wall.distance > window.autoJumpProbe) {
@@ -24921,13 +25236,24 @@ export function startGame(CharacterClass) {
                 }
 
                 // Where the top of that wall is: straight down from above, just past
-                // the face, skipping canopies the same way.
+                // the face.
+                //
+                // A trunk is never a lip. A canopy is one only when the canopy
+                // is what you are climbing - conditional, unlike the wall test
+                // above, because this ray comes down from over the player's
+                // head and a branch reaching over a block would otherwise be
+                // read as that block's top. The rise measured off it is metres
+                // out, which fails the maxRise test and refuses a jump that was
+                // perfectly good: an overhanging tree would switch off
+                // auto-jump for the wall underneath it.
+                const wallIsTree = !!(wall.object.userData && wall.object.userData.isTreeCollider);
                 const px = wall.point.x + _ajFwd.x * 0.35, pz = wall.point.z + _ajFwd.z * 0.35;
                 rayDown.set(_tempVec1.set(px, char.group.position.y + window.autoJumpMaxRise + 2.0, pz), _downVec);
                 const topHits = rayDown.intersectObjects(playerNear(px, pz), true);
                 let lipY = null;
                 for (let i = 0; i < topHits.length; i++) {
-                    if (topHits[i].object.userData.isTreeCollider) continue;
+                    if (isTreeTrunkHit(topHits[i])) continue;
+                    if (!wallIsTree && topHits[i].object.userData.isTreeCollider) continue;
                     lipY = topHits[i].point.y; break;
                 }
                 // Not a ledge worth jumping - but "there is something ahead"
@@ -25547,7 +25873,7 @@ export function startGame(CharacterClass) {
                 // the slide mechanic entirely from the side even on ramps
                 // whose actual sloped face is well within normal
                 // slide/walk range.
-                // Trees are SKIPPED, and the first thing behind them is
+                // TRUNKS are skipped, and the first thing behind them is
                 // used - they are not a reason to refuse the whole climb.
                 //
                 // This was a flat refusal when the first hit was a tree, and
@@ -25557,13 +25883,18 @@ export function startGame(CharacterClass) {
                 // stopped being climbable at all - the ray found bark, the
                 // whole test bailed, and walking at the wall did nothing.
                 //
-                // updateAutoJump had this right from the start: `continue` past
-                // canopies and take the next hit. Same thing here. The tree
-                // itself still cannot be climbed, because it is never the hit
-                // that gets tested - which was the whole point of refusing it.
+                // CANOPIES are walls now, where they used to be skipped
+                // alongside the wood. The rest of the game had already stopped
+                // agreeing with that: a canopy is somewhere you stand, and
+                // somewhere auto-jump aims for, and somewhere a companion
+                // follows you across - so it was the one surface in the game
+                // you could be on top of but never pull yourself onto. The
+                // refusal that covered both was aimed at the trunk case, and
+                // isTreeTrunkHit is what tells them apart per hit; the forest's
+                // one merged collider per tree cannot answer it per object.
                 let wall = null;
                 for (let i = 0; i < wH.length; i++) {
-                    if (wH[i].object.userData?.isTreeCollider) continue;
+                    if (isTreeTrunkHit(wH[i])) continue;
                     wall = wH[i]; break;
                 }
                 const realWallNormal = wall ? wall.face.normal.clone().transformDirection(wall.object.matrixWorld) : null;
@@ -25584,22 +25915,20 @@ export function startGame(CharacterClass) {
                 // than at the grab itself - the grab decision is made before
                 // this ray is cast, so the object is not known there yet.
                 const isBagHit = !!wall && wall.object.userData?.isSandbagCollider;
-                // Nor is a tree. Same refusal as the bag, one step further.
+                // A TRUNK is refused the same way, and only the trunk.
                 //
-                // A trunk is a dead-vertical face standing on the ground, so
-                // it passes the wall test on its own merits, and the ray
-                // upward from it lands on the CANOPY's bounding box - which is
-                // a box, not a canopy, and reports a nice flat "ledge" metres
-                // up. So you walked into a tree and climbed it. The grounded
-                // reach (grabFromGroundReach) is what put trunks in range,
-                // the same widening that turned the bag into furniture.
+                // It is a dead-vertical face standing on the ground, so it
+                // passes the wall test on its own merits, and the ray upward
+                // from it finds the canopy - so you walked into a tree and
+                // climbed it. The grounded reach (grabFromGroundReach) is what
+                // put trunks in range, the same widening that turned the bag
+                // into furniture.
                 //
-                // isTreeCollider covers both shapes the game builds: the
-                // forest's one merged collider per tree, and the village's
-                // per-part colliders. The skip above is what enforces it,
-                // and it reads userData off the hit objects directly because
-                // this cast is non-recursive, so hits land on the listed
-                // collidables themselves.
+                // Where the bag needs a test HERE and the trunk does not: the
+                // bag is a whole object and can be refused once a wall has been
+                // picked, while a tree has to be judged before the pick, hit by
+                // hit, or a trunk in front of a climbable wall would take the
+                // wall down with it. That is the skip above.
                 if (wall && wall.distance < 0.8 && !isRampHit && !isBagHit && realWallNormal.angleTo(_upVec) > SLOPE_WALL_CUTOFF) {
                     // Captured BEFORE the setY(0) flatten below destroys the
                     // real 3D normal - this is the grabbed face's actual

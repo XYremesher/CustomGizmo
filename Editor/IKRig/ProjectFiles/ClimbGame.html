@@ -2284,57 +2284,158 @@
         //
         // Everything else here is fire-and-forget, which is right for a blow -
         // it is over before you could cancel it. A charge is the opposite: it
-        // lasts exactly as long as you hold the button, and it has to end when
-        // you let go, when it is thrown, and when it is taken off you by a hit
-        // on the way up. So this one keeps a handle.
+        // lasts exactly as long as the wind-up does, and it has to end when it
+        // is thrown, when it is let go of, and when it is taken off whoever is
+        // holding it by a hit on the way up. So these keep a handle.
         //
-        // LOOPED, because the hold has no upper bound. The take is about five
-        // seconds and a charge held past that would otherwise go quiet at the
-        // exact moment it is most wound up.
+        // ONE VOICE PER CHARGER, keyed. The player is not the only one who
+        // winds this punch up: every red enemy and the dark-blue companion
+        // throw the same move off the same two clips, and a pair of them
+        // charging at once are two build-ups at two different distances that
+        // have to start, follow and stop independently. The key is the agent's
+        // own id, which is unique and already what the rest of the game uses
+        // to tell them apart; the player, who has no id, is 'player'.
+        //
+        // LOOPED, because a hold has no upper bound. The take is about three
+        // and a quarter seconds and a charge held past that would otherwise go
+        // quiet at the exact moment it is most wound up.
         //
         // Faded rather than stopped dead, at both ends. A buffer cut mid-cycle
         // is a click, and the click lands on the same frame as the release -
         // which already has its own swoosh and impact to get through.
-        let _chargeSrc = null, _chargeGain = null;
+        const _chargeVoices = new Map();
         window.chargeSoundFadeIn = 0.06;
         window.chargeSoundFadeOut = 0.12;
-        window.startChargeSound = function(pos) {
+        // How long a HELD voice (see holdChargeSound) survives without being
+        // renewed. Comfortably longer than any frame the game actually serves,
+        // including a hitch, so a slow frame does not chop the sound up; short
+        // enough that the tail left over when a wind-up ends lands under the
+        // swoosh and impact that follow it.
+        window.chargeSoundGrace = 0.25;
+        const CHARGE_WATCH_MS = 60;
+        let _chargeWatch = null;
+
+        // The level a charge at `pos` should be heard at, on playSound's own
+        // falloff and measured from the same ear (see SFX_NEAR). No pos means
+        // full level, which is right for the player's own fists.
+        function chargeVol(pos) {
             const snd = SFX.chargeLoad;
-            if (!_sfxCtx || !snd || !snd.bufs || !snd.bufs.length) return;
-            // Already running: the charge was restarted without a stop. Let
-            // the one that is playing carry on rather than stacking a second
-            // copy over it.
-            if (_chargeSrc) return;
-            if (_sfxCtx.state === 'suspended') _sfxCtx.resume();
             let vol = 1;
             const self = window.combat && window.combat.char && window.combat.char.group;
             if (pos && self) vol = Math.min(1, SFX_NEAR / Math.max(self.position.distanceTo(pos), 0.001));
-            vol *= snd.vol * window.sfxVolume;
+            return Math.max(vol * snd.vol * window.sfxVolume, 0.0001);
+        }
+
+        function startChargeVoice(key, pos, held) {
+            const snd = SFX.chargeLoad;
+            if (!_sfxCtx || !snd || !snd.bufs || !snd.bufs.length) return null;
+            // A context can be suspended again by the tab losing focus, so
+            // this is checked per play rather than once at arming time.
+            if (_sfxCtx.state === 'suspended') _sfxCtx.resume();
             const now = _sfxCtx.currentTime;
-            _chargeSrc = _sfxCtx.createBufferSource();
-            _chargeSrc.buffer = snd.bufs[0];
-            _chargeSrc.loop = true;
-            _chargeGain = _sfxCtx.createGain();
-            _chargeGain.gain.setValueAtTime(0.0001, now);
-            _chargeGain.gain.exponentialRampToValueAtTime(Math.max(vol, 0.0002), now + window.chargeSoundFadeIn);
-            _chargeGain.connect(_sfxCtx.destination);
-            _chargeSrc.connect(_chargeGain);
-            _chargeSrc.start();
+            const src = _sfxCtx.createBufferSource();
+            src.buffer = snd.bufs[0];
+            src.loop = true;
+            const gain = _sfxCtx.createGain();
+            // setTargetAtTime rather than a ramp to a fixed level, because for
+            // a held voice the level is NOT fixed: it is re-aimed at its
+            // charger's current distance every frame. One mechanism doing both
+            // the fade-in and the tracking means there is never a scheduled
+            // ramp still running for the next update to collide with. tau is a
+            // third of the fade, which puts it 95% of the way there in the
+            // fade's own time.
+            gain.gain.setValueAtTime(0.0001, now);
+            gain.gain.setTargetAtTime(chargeVol(pos), now, Math.max(window.chargeSoundFadeIn, 0.001) / 3);
+            gain.connect(_sfxCtx.destination);
+            src.connect(gain);
+            src.start();
+            const voice = { src, gain, held, at: now };
+            _chargeVoices.set(key, voice);
+            return voice;
+        }
+
+        // Started and stopped by hand. This is the PLAYER's lifetime: the
+        // button going down and coming up are events you own, so the two ends
+        // can be named outright.
+        window.startChargeSound = function(pos, key) {
+            const k = key === undefined ? 'player' : key;
+            // Already running: the charge was restarted without a stop. Let
+            // the one that is playing carry on rather than stacking a second
+            // copy over it.
+            if (_chargeVoices.has(k)) return;
+            startChargeVoice(k, pos, false);
         };
+
+        // Renewed, not started and stopped. This is an AGENT's lifetime, and
+        // it is a different shape: nothing hands a bot its charge and nothing
+        // takes it back. The wind-up is a clock inside an update that can
+        // simply stop being reached - because the swing ended, because a punch
+        // ragdolled it halfway up, because it was despawned with the level, or
+        // because the whole update was skipped when the editor opened. Only
+        // the first of those runs any code that could know a sound is playing.
+        //
+        // So the caller says "this one is still winding up, and here is where
+        // it is" once a frame, and NOT saying it is the stop. Every way out is
+        // covered by the same silence, including the ones nobody wrote down.
+        //
+        // pos is re-read every call rather than sampled once at the start,
+        // because a wind-up lasts about a second and the whole point of the
+        // telegraph is that you can run from it. A level fixed at the moment it
+        // began would keep a bot you sprinted away from as loud as one you
+        // stayed next to.
+        window.holdChargeSound = function(key, pos) {
+            if (!_sfxCtx) return;
+            let v = _chargeVoices.get(key);
+            if (!v) {
+                v = startChargeVoice(key, pos, true);
+                if (!v) return;
+            }
+            v.at = _sfxCtx.currentTime;
+            try {
+                v.gain.gain.setTargetAtTime(chargeVol(pos), v.at,
+                    Math.max(window.chargeSoundFadeIn, 0.001) / 3);
+            } catch (e) {}
+            if (v.held) startChargeWatch();
+        };
+
+        // The watchdog behind holdChargeSound: it stops what stopped being
+        // renewed.
+        //
+        // On its own timer rather than in the frame loop, because the frame
+        // loop is one of the things that can stop - a watchdog that only ticks
+        // while its subject is running is not a watchdog. It exists only while
+        // something is actually being held and clears itself the moment
+        // nothing is, so the cost of having it is nothing at all.
+        function startChargeWatch() {
+            if (_chargeWatch !== null) return;
+            _chargeWatch = setInterval(() => {
+                let held = 0;
+                // Deleting the entry being visited is well defined for a Map,
+                // which is what stopChargeSound does on the line below.
+                for (const [k, v] of _chargeVoices) {
+                    if (!v.held) continue;
+                    if (!_sfxCtx || _sfxCtx.currentTime - v.at > window.chargeSoundGrace) window.stopChargeSound(k);
+                    else held++;
+                }
+                if (!held) { clearInterval(_chargeWatch); _chargeWatch = null; }
+            }, CHARGE_WATCH_MS);
+        }
+
         // Idempotent on purpose. The cancel path and the release path can both
         // reach it for the same charge - resetState runs on the way out of a
         // thrown one too - and "stop what is not playing" has to be free.
-        window.stopChargeSound = function() {
-            if (!_chargeSrc || !_sfxCtx) return;
-            const src = _chargeSrc, gain = _chargeGain;
-            _chargeSrc = null; _chargeGain = null;
+        window.stopChargeSound = function(key) {
+            const k = key === undefined ? 'player' : key;
+            const v = _chargeVoices.get(k);
+            if (!v || !_sfxCtx) return;
+            _chargeVoices.delete(k);
             const now = _sfxCtx.currentTime, t = now + window.chargeSoundFadeOut;
             try {
-                gain.gain.cancelScheduledValues(now);
-                gain.gain.setValueAtTime(Math.max(gain.gain.value, 0.0001), now);
-                gain.gain.exponentialRampToValueAtTime(0.0001, t);
-                src.stop(t);
-            } catch (e) { try { src.stop(); } catch (e2) {} }
+                v.gain.gain.cancelScheduledValues(now);
+                v.gain.gain.setValueAtTime(Math.max(v.gain.gain.value, 0.0001), now);
+                v.gain.gain.exponentialRampToValueAtTime(0.0001, t);
+                v.src.stop(t);
+            } catch (e) { try { v.src.stop(); } catch (e2) {} }
         };
 
         window.speedParticles = [];

@@ -239,6 +239,40 @@ window.ragdollTimeHigh = 1.1;
 // The floor clamp is NOT part of this - it runs every iteration regardless.
 // It costs nothing (no array walk) and it is what stops a body sinking.
 window.ragdollCollisionIters = 8;
+// How fast something you were CARRYING may be moving when a knockdown takes
+// it out of your hands.
+//
+// This replaced a x1.5 on the body's own launch velocity, which sent the
+// object off FASTER than the body that dropped it. Two separate things were
+// wrong with that.
+//
+// THE UNITS DID NOT MATCH. initialVelocity is tuned for the ragdoll SOLVER,
+// where 20 constraint iterations, damping and the floor eat most of it within
+// a few frames - the throw-hit path says as much where it picks
+// chargePunchKnockback over the raw force: "feeding it straight into a limp
+// body flings it across the level". A carryable has none of that machinery.
+// Its integrator is bare, position += velocity under gravity 30, so the same
+// number means something entirely different to it. An AI charge punch or a
+// thrown object hands the body 60; x1.5 is 90, against a
+// throwHorizontalSpeed of 10 for a throw you actually meant. Being punched
+// threw the jar nine times harder than you can throw it.
+//
+// AND THE SIGN OF IT WAS BACKWARDS. A body going limp lets go of what it is
+// holding. It does not pitch it.
+//
+// 4.0 is derived from where the thing should land. Released at hand height
+// ~1.2 under gravity 30, it touches down after sqrt(2*1.2/30) = 0.283s, so it
+// lands 4 * 0.283 = 1.1 units away - at your feet, which is what dropping
+// something looks like. The old 90 put it 25 units away, most of the way
+// across a clearing. For scale, a full deliberate throw lands at 2.8.
+//
+// A CAP rather than a scale, so a gentle knockdown still gives a gentle drop:
+// a bad landing hands the body its own fall velocity (~25 for the -22 that
+// triggers one), which is a different number from a punch's and deserves to
+// stay a different number. Only what is over the cap is brought down to it,
+// and the direction is left alone - the object still tumbles the way you were
+// hit, just feebly.
+window.carryDropSpeedMax = 4.0;
 
 export const RagdollPhysics = {
     getParticle(id) {
@@ -253,7 +287,13 @@ export const RagdollPhysics = {
         if (!this.fbxModel || this.isRagdoll) return;
 
         if (this.isLocalPlayer && window.forceDropCarriedObject) {
-            window.forceDropCarriedObject(initialVelocity.clone().multiplyScalar(1.5));
+            // Direction from the blow, speed from the cap - see
+            // window.carryDropSpeedMax for why this is not the body's own
+            // launch velocity.
+            const drop = initialVelocity.clone();
+            const cap = window.carryDropSpeedMax !== undefined ? window.carryDropSpeedMax : 4.0;
+            if (drop.lengthSq() > cap * cap) drop.setLength(cap);
+            window.forceDropCarriedObject(drop);
             window.isCarryingObj = false;
         }
         
