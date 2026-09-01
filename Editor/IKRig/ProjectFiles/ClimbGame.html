@@ -1544,8 +1544,8 @@
                     <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
                     <label>Orange Recoil Force: <span id="orange-recoil-val">60.0</span></label><br>
                     <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="60.0" style="width: 100%;"><br>
-                    <label>Head Size (all characters): <span id="head-scale-val">0.40</span></label><br>
-                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.40" style="width: 100%;"><br>
+                    <label>Head Size (all characters): <span id="head-scale-val">0.70</span></label><br>
+                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.70" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -4052,7 +4052,15 @@
                     this.setupActionProperties(name, fullBodyAction);
                     this.actions[name] = fullBodyAction;
 
+                    // 'sliding'/'stop_sliding' are in this list so that carrying
+                    // something down a slope can keep the carry pose: without a
+                    // split there is no version of the slide that leaves the
+                    // spine and arms alone, and layering carry_upper over the
+                    // full-body clip BLENDS the two rather than overriding, so
+                    // the hold comes out half-slide. See the sliding branch in
+                    // animate().
                     if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land', 'punch_walk',
+                         'sliding', 'stop_sliding',
                          'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward', 'run_backward'].includes(name)) {
                         const lowerClip = makeLowerBodyClip(clip);
                         const lowerAction = this.mixer.clipAction(lowerClip);
@@ -4737,6 +4745,7 @@
 
                 if (isCarrying) {
                     if (['idle', 'walk', 'run', 'jump_start', 'fall', 'land',
+                         'sliding', 'stop_sliding',
                          'strafe_left_walk', 'strafe_right_walk', 'strafe_left_run', 'strafe_right_run', 'walk_backward', 'run_backward'].includes(name)) {
                         targetActionName = name + '_lower';
                     }
@@ -5271,12 +5280,42 @@ updateClimbing(delta) {
                 } else if (state === 'pull') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('pull', dur);
+                // Sliding KEEPS THE CARRY POSE when there is something in your
+                // hands. It used to stop the upper action outright, which hands
+                // the whole body to Slide.fbx - so the arms went into the slide
+                // pose and the carried object, positioned from the midpoint of
+                // the two hand bones, went with them. You slid down a ramp
+                // waving the thing around at your side.
+                //
+                // fadeToAction remaps to 'sliding_lower' by itself while
+                // carrying (see its carry remap), so the legs still slide;
+                // carry_upper owns the spine and arms on top of it, and the
+                // object rides where the hold puts it.
+                //
+                // No resumeAt dance here, unlike the main carry branch: coming
+                // into a slide from a carry walk leaves activeUpperAction
+                // already ON carry_upper, so fadeToUpperAction's own
+                // same-action guard returns without touching the clip's time.
+                //
+                // ...and while carrying, the LEGS come from idle rather than
+                // from the slide. Slide.fbx is authored as a crouched,
+                // leaning-back pose and that lean lives in the hips, which are
+                // the root: everything above them inherits it, so layering
+                // carry_upper over sliding_lower held the arms in the carry
+                // pose on a torso that was already tipped backwards. Holding
+                // the hips instead is not an option here - see the carry
+                // damping notes in CLAUDE.md, that was tried and it wrecks the
+                // legs. Standing upright and sliding is both the simpler
+                // answer and the one that reads right for someone carrying
+                // something down a slope.
                 } else if (state === 'sliding') {
-                    this.stopUpperAction(dur);
-                    this.fadeToAction('sliding', dur);
+                    if (window.isCarryingObj) this.fadeToUpperAction('carry_upper', dur);
+                    else this.stopUpperAction(dur);
+                    this.fadeToAction(window.isCarryingObj ? 'idle' : 'sliding', dur);
                 } else if (state === 'stop_sliding') {
-                    this.stopUpperAction(dur);
-                    this.fadeToAction('stop_sliding', dur);
+                    if (window.isCarryingObj) this.fadeToUpperAction('carry_upper', dur);
+                    else this.stopUpperAction(dur);
+                    this.fadeToAction(window.isCarryingObj ? 'idle' : 'stop_sliding', dur);
                 } else if (state === 'runup') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('runup', dur);

@@ -863,17 +863,19 @@ export function startGame(CharacterClass) {
     // see the block that uses them for why it is a bearing and not a
     // projection.
     const _compassFront = new THREE.Vector3();
-    // Where the camera faces, and the target in NDC - for the on-screen test.
+    // Where the camera faces and where the target lies, both flattened to the
+    // ground - for the ahead test.
     const _compassCamFwd = new THREE.Vector3();
-    const _compassAimProj = new THREE.Vector3();
     const _compassPlayerVec = new THREE.Vector3();
-    // The arrow goes WHITE when the target is not on screen.
+    // The arrow goes WHITE when the target is not AHEAD of you.
     //
     // The angle alone cannot say it. Pointing down means "behind you", but so
     // does a target below and ahead once the needle leans far enough, and the
     // two look identical - you turn the wrong way and the arrow barely moves,
     // which reads as the compass being broken rather than as you being about
-    // to walk away from it. Yellow means "it is on your screen, look for it".
+    // to walk away from it. Yellow means "it is this way, keep going".
+    //
+    // It used to mean "on screen", which never fired - see the test itself.
     //
     // brightness(0) invert(1) rather than a second image: the arrow is one
     // flat colour on transparency, so flattening it to black and inverting
@@ -884,6 +886,19 @@ export function startGame(CharacterClass) {
     const COMPASS_FILTER_AHEAD = COMPASS_SHADOW;
     const COMPASS_FILTER_BEHIND = 'brightness(0) invert(1) ' + COMPASS_SHADOW;
     let _compassBehindOn = null;
+    // The frontal arc the arrow counts as "ahead" and goes yellow in - the
+    // FULL arc, so the test is against half of it.
+    //
+    // 120 rather than the camera's own horizontal FOV, which is the obvious
+    // choice and is not a constant: at 75 vertical it works out at 107.5 deg
+    // on a 16:9 landscape screen, 91 on 4:3, and 43 on the portrait phone this
+    // game is mostly played on. Tying the colour to the aspect ratio would
+    // mean the compass behaves differently per device for no reason the player
+    // could ever see. A fixed 120 sits just outside the landscape figure, so
+    // the arrow turns yellow a moment BEFORE the target edges into view, which
+    // is the right way round for something telling you where to go.
+    window.compassAheadDeg = 120;
+    const _compassAheadCos = () => Math.cos(window.compassAheadDeg * 0.5 * Math.PI / 180);
     // The needle's two ends, projected each frame - see the block that uses
     // them. Reused rather than allocated, this runs every frame.
     const _compassTipA = new THREE.Vector3();
@@ -6812,7 +6827,7 @@ export function startGame(CharacterClass) {
     // these particular clips and not a guarantee. Writing it after the
     // avatars have updated costs a handful of assignments and cannot be
     // silently undone by a clip that does carry a scale track.
-    window.headScale = 0.4;
+    window.headScale = 0.7;
     function getHeadBone(avatar) {
         if (!avatar || !avatar.fbxModel) return null;
         if (avatar._headBone !== undefined) return avatar._headBone;
@@ -9504,6 +9519,26 @@ export function startGame(CharacterClass) {
         if (attr && hit.face) return attr.getX(hit.face.a) > 0.5;
         return !!obj.userData.isTreeTrunk;
     }
+    // Is this hit on something you can pick up?
+    //
+    // Walked up the PARENTS rather than read off the hit object, because the
+    // rays that ask are recursive and a carryable can be a Group: the StarKey
+    // is buildStarAssembly's group of base, container and star, so the hit
+    // lands on a child mesh while isCarryable sits on the group above it. A
+    // jar is a single mesh and answered correctly all along - which is exactly
+    // why the key was the only thing in the level that auto-jump tried to
+    // climb when you walked up to it.
+    //
+    // The same trap the carryable floor scan and the carry-target pick both
+    // already walk ancestry for; this is the third place that needed it.
+    function isCarryableHit(hit) {
+        let o = hit && hit.object;
+        while (o) {
+            if (o.userData && o.userData.isCarryable) return true;
+            o = o.parent;
+        }
+        return false;
+    }
 
     // ---- Forest level ----
     // Procedural, ported from the Unity generators the author supplied
@@ -9874,6 +9909,16 @@ export function startGame(CharacterClass) {
         return buildStarAssembly(keyBase, keyStarContainer, star, scale, false);
     }
 
+    // May this lock be climbed onto?
+    //
+    // Normally only once its key is in: while locked it is meant to be a solid
+    // obstacle, and both the ground-follow stand check and the wall-stop read
+    // that. climbableWhenLocked opts a single instance out - the forest
+    // approach's lock is a stepping stone on the way to the stairs and has to
+    // work as one before anybody has found a key.
+    function lockIsClimbable(g) {
+        return !!(g && g.userData && (g.userData.keyInserted || g.userData.climbableWhenLocked));
+    }
     function createLockInstance() {
         if (!keyTemplateParts || !keyTemplateParts.lockBase || !keyTemplateParts.lockStarContainer) return null;
         const { lockBase, lockStarContainer, star, scale } = keyTemplateParts;
@@ -10197,6 +10242,20 @@ export function startGame(CharacterClass) {
 
         if (spawnKey) {
             const keyGroup = createKeyInstance();
+            // Said out loud rather than dropped. createKeyInstance returns null
+            // whenever StarKey.glb has not arrived, and this is the one place
+            // where that silently costs the player the thing they broke the jar
+            // FOR - the level looks finished and simply has no key in it. The
+            // jar is already gone by now, so there is nothing to retry.
+            if (!keyGroup) console.error('Jar held the key but StarKey.glb is not loaded - no key spawned.');
+            // WHERE it went, not just that it went. A key is born wherever its
+            // jar died, and a jar dies where it was thrown - which on the exit
+            // landing can be over the edge, down the ramp or in the sea. "No
+            // key came out" and "the key came out somewhere you were not
+            // looking" are the same thing to a player and completely different
+            // things to fix, and this is the line that tells them apart.
+            else console.log('Jar key spawned at (' + spawnPos.x.toFixed(1) + ', '
+                + spawnPos.y.toFixed(1) + ', ' + spawnPos.z.toFixed(1) + ')');
             if (keyGroup) {
                 keyGroup.position.copy(spawnPos);
                 keyGroup.userData.isCarryable = true;
@@ -10327,6 +10386,18 @@ export function startGame(CharacterClass) {
         for (let k = 0; k < collidables.length; k++) {
             const obj = collidables[k];
             if (obj === ground || obj === excludeObj || obj === excludeObj2) continue;
+            // A lock you are meant to stand on sits this test out, for exactly
+            // the reason softObstacle does below: its cachedBox3 is a tall
+            // narrow column nothing like its real shape, so it declared the
+            // whole space above and around itself solid. That is what stopped
+            // the climb - isOnActiveLock already lets the STAND check past,
+            // but the assisted grab's own hang test came here and was refused.
+            //
+            // It could not be excluded by the caller either: the grab passes
+            // the wall's hit object, which is a child mesh (baseClone /
+            // containerClone), while what is in `collidables` is the GROUP
+            // above it - so the identity test on the line above never matched.
+            if (lockIsClimbable(obj)) continue;
             // Objects flagged softObstacle sit this test out. It compares
             // against an AXIS-ALIGNED BOUNDING BOX, which is fine for the
             // blocks it was written for (a box IS their shape) but wildly
@@ -10500,6 +10571,11 @@ export function startGame(CharacterClass) {
         // buildShardSet). An idle set is invisible, which three skips outright.
         activeShardSets.slice().forEach(retireShardSet);
         activeShardSets.length = 0;
+        // Same reasoning, and the target it was tracking has just been wiped
+        // out from under it - left alone it would follow a detached object's
+        // stale matrix until something else happened to be picked.
+        carryTargetObj = null;
+        disposeCarryOutline();
 
         if(data.voxels) {
             data.voxels.forEach(v => {
@@ -12814,6 +12890,140 @@ export function startGame(CharacterClass) {
     function forestStairW() {
         return isLinearForest() ? forestSlabHalfX() * 2 : FOREST_PLATFORM_W;
     }
+    // ---- Past the landing: the slide down, and what is at the bottom ----
+    //
+    // The wood used to END at the exit landing - the carry lesson was handed
+    // over up there and that was the last thing in the level. This is the
+    // beat after it: you come off the landing down a ramp, walk a second or
+    // so along the shore, and find the star lock with a step beside it.
+    //
+    // EVERY position here is measured off the existing helpers rather than
+    // written as a number, so the whole approach follows the wood if its
+    // length, its wall height or its exit x ever move. The only free choices
+    // are the five constants at the top.
+    //
+    // 45 degrees for the ramp. isSlopeRamp makes it a pure slide surface with
+    // no grabbable edges (see buildSlopeTestRamp), which is what "you slide
+    // down it" asks for, and 45 is well under RAMP_WALK_BLOCK_ANGLE (58) so
+    // it can also just be walked down. The drop is the frame height, 11.8, so
+    // at 45 the horizontal run is the same 11.8 - which is what keeps the
+    // whole approach inside the sea's own extent (FOREST_SEA_SIZE/2 = 128,
+    // and the last step lands at 126).
+    const FOREST_APPROACH_RAMP_DEG = 45;
+    const FOREST_APPROACH_W = 28;          // the shore strip's width
+    const FOREST_APPROACH_LOCK_GAP = 5.2;  // ramp foot -> lock, about a second
+    const FOREST_APPROACH_STEP_GAP = 4.0;  // lock -> the step you jump onto
+    // How far the step's top sits above the lock's top. The jump apexes at
+    // v^2/2g = 10^2/60 = 1.67, so 1.2 clears it with room to spare and
+    // without needing the ledge grab. Measured against the lock's REAL
+    // bounding box at build time rather than a guessed height - the lock is a
+    // Group of scaled clones and its height is not a number written anywhere.
+    const FOREST_APPROACH_STEP_RISE = 1.2;
+    function buildForestExitApproach() {
+        const mat = _forestBorderMat ||
+            new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
+        const cx = forestStepX();
+        const topY = forestFrameTopY();
+        // The landing's far edge - where the ramp starts.
+        const z0 = forestPlatformZ1();
+        const ang = FOREST_APPROACH_RAMP_DEG * Math.PI / 180;
+        const run = topY / Math.tan(ang);
+        const slope = topY / Math.sin(ang);
+        const footZ = z0 + run;
+
+        // Same slab-with-grass treatment the stairs get, so the new ground
+        // reads as the same place rather than as a grey box bolted on.
+        const put = (w, h, d, px, py, pz) => {
+            const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+            box.position.set(px, py, pz);
+            box.castShadow = true; box.receiveShadow = true;
+            box.userData.isGroundSlab = true;
+            box.updateMatrixWorld(true);
+            ditherLevelMeshes.push(box);
+            levelGroup.add(box);
+            collidables.push(box);
+            return box;
+        };
+
+        // The shore itself, top at y = 0 - the same height as the wood's own
+        // slabs, which puts it 2.3 above FOREST_RIVER_Y. Land at the water's
+        // edge rather than in it: you come down to the sea, you do not wade.
+        const stripZ0 = footZ - 2, stripZ1 = footZ + 20;
+        put(FOREST_APPROACH_W, 6, stripZ1 - stripZ0, cx, -3, (stripZ0 + stripZ1) * 0.5);
+
+        // The ramp, laid so its top face meets the landing's lip at one end
+        // and the shore at the other.
+        //
+        // POSITIVE rotation about X, the same sign buildSlopeTestRamp uses.
+        // Rotating about +X sends the +Z end DOWN and the -Z end up, and the
+        // landing is at the -Z end (z0) with the shore out at +Z - so a
+        // negative angle, which is what this had, tilted the whole thing the
+        // other way and ran the slope uphill away from the landing.
+        //
+        // The height is the same construction as buildSlopeTestRamp's:
+        // half the rise puts the top face's mid-point level with the middle of
+        // the drop, then back off half the slab's thickness measured along its
+        // own normal - times cos, not divided by it. Checks out at both ends:
+        // centre 5.688, top face centre 5.9, and +/- (slope/2)*sin = 5.9 lands
+        // the high end at exactly 11.8 and the low end at exactly 0.
+        const rampT = 0.6;
+        const ramp = new THREE.Mesh(
+            new THREE.BoxGeometry(forestStairW(), rampT, slope), mat);
+        ramp.rotation.x = ang;
+        ramp.position.set(cx, topY * 0.5 - (rampT * 0.5) * Math.cos(ang), (z0 + footZ) * 0.5);
+        ramp.castShadow = true; ramp.receiveShadow = true;
+        ramp.userData.isSlopeRamp = true;
+        ramp.userData.rampAngleRad = ang;
+        ramp.updateMatrixWorld(true);
+        ditherLevelMeshes.push(ramp);
+        levelGroup.add(ramp);
+        collidables.push(ramp);
+
+        // The lock, a walk past the foot of the ramp.
+        //
+        // Its absence must NOT take the rest of the approach with it, which is
+        // what an early return here did. createLockInstance returns null until
+        // StarKey.glb has arrived, and the forest has no retro-spawn for it the
+        // way Level 1 does - so on a cold load the ramp led to a bare shore
+        // with no step and no stairs, and nothing ever put them back. The
+        // ground is the level; the lock is a prop on it.
+        const lock = createLockInstance();
+        if (lock) {
+            lock.position.set(cx, lock.userData.floorOffset * window.keyScale, footZ + FOREST_APPROACH_LOCK_GAP);
+            // Facing the way you ARRIVE FROM, which here is -Z: you come down
+            // the ramp heading +Z. Level 1's own lock uses Math.PI for the
+            // same intent because its player walks the other way (spawn at
+            // z=0, lock at z=-8), and copying that number rather than the
+            // reasoning left this one showing you its back.
+            lock.rotation.y = 0;
+            lock.userData.isLock = true;
+            // Climbable without a key - see lockIsClimbable. Here the lock is
+            // the step up to the block and the stairs beyond it, so it has to
+            // be standable on its own; gating that on the key would make the
+            // way forward depend on finding one.
+            lock.userData.climbableWhenLocked = true;
+            lock.updateMatrixWorld(true);
+            levelGroup.add(lock);
+            collidables.push(lock);
+            activeLockInstances.push(lock);
+        }
+
+        // ...and the step you get onto FROM it. Its top is read off the lock's
+        // real bounding box, so this stays a jump whatever keyScale is set to.
+        // With no lock to measure, the step falls back to one ordinary rise -
+        // the stairs still exist and are still climbable, they just are not
+        // pitched against something that is not there.
+        const lockTop = lock ? new THREE.Box3().setFromObject(lock).max.y : FOREST_STEP_SIZE - FOREST_APPROACH_STEP_RISE;
+        const stepTop = lockTop + FOREST_APPROACH_STEP_RISE;
+        const stepZ = footZ + FOREST_APPROACH_LOCK_GAP + FOREST_APPROACH_STEP_GAP;
+        put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ);
+        // The run continuing up from it - the first step is the one you jumped
+        // onto, so these are the ones after it.
+        for (let i = 1; i <= 3; i++) {
+            const h = stepTop + i * FOREST_STEP_SIZE;
+            put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE);
+        }
+    }
     function buildForestExitSteps() {
         const top = forestFrameTopY();
         const mat = _forestBorderMat ||
@@ -12886,6 +13096,9 @@ export function startGame(CharacterClass) {
     // destroyJarCarryable spawning the key when the right one shatters - so
     // the carry lesson is taught on the real prop rather than a stand-in.
     const FOREST_JAR_COLS = 3, FOREST_JAR_ROWS = 2;   // 6, in front of the teacher
+    // Centre of the grid, written by spawnForestJars each build. Null until
+    // the wood has been built at least once.
+    let _forestJarsAt = null;
     // A stand-in jar, built from primitives. jarTemplate comes from an FBX on
     // a GitHub raw URL, and if that is slow, blocked or missing there is no
     // template - so the carry lesson had nothing to carry and the landing was
@@ -12924,6 +13137,13 @@ export function startGame(CharacterClass) {
             carryables.push(carryJar);
             addCarryableDebugHelper(carryJar);
         }
+        // Where the grid ended up, recorded rather than re-derived. The debug
+        // start stands you at it (see forestDebugStartAtEnd), and copying
+        // `forestStepX() - 1.3` and `pz - 0.65` into a second place is exactly
+        // how the two drift apart the first time the landing moves.
+        _forestJarsAt = new THREE.Vector3(
+            x + (FOREST_JAR_COLS - 1) * 1.3 * 0.5, y,
+            z + (FOREST_JAR_ROWS - 1) * 1.3 * 0.5);
         console.log(`Forest jars: ${n} (${jarTemplate ? 'model' : 'fallback'}) placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
     }
 
@@ -13695,29 +13915,51 @@ export function startGame(CharacterClass) {
     // does not exist in a normal playthrough, so what gets debugged is the
     // real thing.
     //
-    // OFF by default - the forest now starts where the level starts, at the
-    // corridor mouth, with all three recruits still waiting to be found.
+    // >>> ON by default, and that is a DEBUG default that has to come out <<<
     //
-    // window.forestDebugEnd = true, then reload, to jump back to the foot of
-    // the stairs with two companions already collected. That was the default
-    // while the companion ledge behaviour was being fixed, because reaching
-    // that state by playing takes a few minutes and the bugs only happen up
-    // there. It is kept whole rather than deleted for the next time that is
-    // the thing being worked on.
+    // The level currently opens at the jar grid on the exit landing with two
+    // companions already collected - not at the corridor mouth - because the
+    // end of the wood is what is being built and walking the whole corridor to
+    // reach it costs a few minutes per attempt.
+    //
+    // window.forestDebugEnd = false, then reload, for the real opening: the
+    // corridor mouth with all three recruits still waiting to be found. Set
+    // the default back to false before this ships, or the game skips its own
+    // tutorial.
+    //
+    // It was off by default until now, which is why setting it here was
+    // needed at all - the flag was never assigned anywhere, so it read
+    // undefined and this returned on its first line.
+    if (window.forestDebugEnd === undefined) window.forestDebugEnd = true;
     function forestDebugStartAtEnd() {
         if (window.forestDebugEnd !== true) return;
-        // The FOOT of the stairs, not the landing. The stairs march south from
-        // forestPlatformZ0() in FOREST_STEP_SIZE rises, so one step's depth
-        // clear of the lowest one puts you on flat ground looking up at the
-        // whole run - which is the thing being debugged, rather than the top
-        // of it.
-        const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
-        const x = forestStepX();
-        const z = forestPlatformZ0() - (steps + 1) * FOREST_STEP_SIZE;
+        // AT THE JARS, on the landing.
+        //
+        // It used to be the foot of the stairs, which was the right answer
+        // while the stairs were the last thing in the level. They are not any
+        // more: the landing carries the carry lesson and the jar grid, and
+        // everything built since - the ramp down, the lock, the run of steps
+        // after it - is on the far side of it. Starting below the stairs meant
+        // climbing them before reaching any of it.
+        //
+        // A step and a half short of the grid on the -Z side, so you arrive
+        // looking at the jars rather than standing inside them, with the ramp
+        // beyond. Read off where spawnForestJars actually put them, not
+        // re-derived - and falling back to the old foot-of-the-stairs spot if
+        // the wood somehow has no jars.
+        let x, z;
+        if (_forestJarsAt) {
+            x = _forestJarsAt.x;
+            z = _forestJarsAt.z - (FOREST_JAR_ROWS - 1) * 1.3 * 0.5 - 2.0;
+        } else {
+            const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
+            x = forestStepX();
+            z = forestPlatformZ0() - (steps + 1) * FOREST_STEP_SIZE;
+        }
         const y = storyGroundY(x, z, 0);
         char.group.position.set(x, y, z);
-        // Facing +Z, up the stairs. rotation.y 0 IS +Z here, same convention
-        // as the corridor spawn above.
+        // Facing +Z - the jars, then the ramp. rotation.y 0 IS +Z here, same
+        // convention as the corridor spawn above.
         char.group.rotation.y = 0;
         // Respawn point too: dying up here should not send you back to the
         // corridor mouth, which would undo the whole point of this.
@@ -15287,6 +15529,8 @@ export function startGame(CharacterClass) {
         // something you go and take rather than a door you walk through, and
         // it gives that platform a reason to exist beyond the throw lesson.
         buildForestExitSteps();
+        // After the steps, because it hangs off the landing they build.
+        buildForestExitApproach();
         {
             const cp = buildForestCanopyPlatform();
             star.position.set(cp.x, FOREST_CANOPY_Y + 1.6, cp.z);
@@ -17163,6 +17407,39 @@ export function startGame(CharacterClass) {
     // the block, it is a different thing the block turns into - flat colour,
     // two-sided so the walls exist when seen from within, and not writing
     // depth so it cannot paint over what you are looking at through it.
+    //
+    // ---- ...and it is pushed IN along its own normals ----
+    //
+    // The shell sits exactly where the block sits, so its bottom face is
+    // coplanar with the ground and its side faces are coplanar with whatever
+    // block is stacked against it. Two surfaces in the same plane, one of them
+    // transparent and depth-write-off, is a coin flip per fragment per frame:
+    // the shell wins some pixels and loses others and the boundary crawls.
+    // That is the flicker, and it is worst exactly where the shell is most
+    // useful - along the edge that tells you where the block ends.
+    //
+    // Shrinking the whole mesh would not do it. A scale is about the object's
+    // ORIGIN, so it pulls the far faces in and the near ones too but by
+    // amounts that depend on where the origin happens to sit, and it moves
+    // vertices along the diagonal rather than off their own surface. Pushing
+    // each vertex back down its own normal moves every face the same distance
+    // perpendicular to itself, which is the only motion that reliably breaks a
+    // coplanar pair whatever shape it is.
+    //
+    // objectNormal is what <beginnormal_vertex> puts in scope, and three
+    // includes it before <begin_vertex> - so by the time `transformed` exists
+    // the normal is already there to subtract.
+    const _shellUniforms = { uShellInset: { value: 0.02 } };
+    // In object space, so a non-uniformly scaled mesh gets a non-uniform
+    // inset. Everything this applies to is a level block at scale 1.
+    //
+    // 0.02 is far more than the depth buffer needs and far less than the eye
+    // can see. At the camera's ~15 units out with near 0.1 and a 24-bit
+    // buffer, one depth step is about z^2/(near * 2^24) = 1.3e-4 units, so
+    // this is ~150 steps of separation; against a 3.0 block it is a 0.7%
+    // shrink. Live, because the number that stops the crawl and the number
+    // that starts to look like a gap are found by looking.
+    window.shellInset = 0.02;
     const _shellMats = new Map();
     function shellMaterialFor(src) {
         let sh = _shellMats.get(src);
@@ -17171,9 +17448,22 @@ export function startGame(CharacterClass) {
                 color: src.color, gradientMap: src.gradientMap,
                 transparent: true, side: THREE.DoubleSide, depthWrite: false,
             });
+            sh.onBeforeCompile = (shader) => {
+                shader.uniforms.uShellInset = _shellUniforms.uShellInset;
+                shader.vertexShader = shader.vertexShader
+                    .replace('#include <common>', '#include <common>\nuniform float uShellInset;')
+                    .replace('#include <begin_vertex>',
+                        '#include <begin_vertex>\ntransformed -= normalize(objectNormal) * uShellInset;');
+            };
+            // onBeforeCompile is not part of three's program cache key, so
+            // without this a shell could be handed an identically-configured
+            // material's compiled program and silently lose the inset - the
+            // same trap the ground tint documents.
+            sh.customProgramCacheKey = () => 'inside-shell-inset';
             _shellMats.set(src, sh);
         }
         sh.opacity = window.cameraInsideOpacity;
+        _shellUniforms.uShellInset.value = window.shellInset;
         return sh;
     }
     function dressLevelMaterial(mat, opts) {
@@ -19483,6 +19773,180 @@ export function startGame(CharacterClass) {
     }
     window.forceDropCarriedObject = forceDropCarriedObject;
 
+    // ---- White outline on what you are about to pick up ----
+    //
+    // The grab button already appears, but it is at the bottom of the screen
+    // and the thing it refers to is in the middle of it - in a row of nine
+    // jars, nothing said WHICH one. This marks the one the button would take.
+    //
+    // An inverted hull rather than a post-process outline pass: the game's
+    // composer has no OutlinePass (the level editor has its own, which is not
+    // reachable from here), and a hull needs nothing but a second draw. The
+    // shape is cloned, scaled up a few percent and drawn BackSide, so only the
+    // rim that pokes out past the real object is visible.
+    //
+    // Held as ONE object, rebuilt only when the target actually changes -
+    // this runs every frame and the target is null most of the time.
+    //
+    // Kept OUT of the target's own subtree, which is the obvious place for it
+    // and wrong: getObstacleBox measures a Group carryable with
+    // Box3.setFromObject, so a scaled-up child would quietly grow the StarKey's
+    // collision box. It follows the target's world matrix instead.
+    let _carryOutline = null, _carryOutlineFor = null;
+    // How thick the rim is, pushed out along the normals - NOT a scale.
+    //
+    // A scale was the first version and it is proportional, which is the one
+    // thing an outline must not be. buildStarAssembly gives the StarKey's
+    // group scale window.keyScale, currently 2.0, and scales its pieces again
+    // on top of that - so the same 5% that drew a fine hairline round a jar
+    // drew a slab round the key. Same rule the shell inset follows, pointing
+    // the other way: move every vertex off its own surface by a fixed
+    // distance and every object gets the same rim whatever size it is.
+    //
+    // 0.03 world units, against a jar about a unit across.
+    window.carryOutlineWidth = 0.03;
+    const _carryOutlineUniforms = { uOutlineWidth: { value: 0.03 } };
+    const _carryOutlineMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, side: THREE.BackSide,
+    });
+    // `normal`, NOT `objectNormal` - and this is the whole reason the outline
+    // did not appear at all rather than appearing wrong.
+    //
+    // objectNormal is what the shell's own injection uses, and that is correct
+    // there because it sits in a MeshToonMaterial, whose vertex shader
+    // includes <beginnormal_vertex> unconditionally. MeshBasicMaterial does
+    // not: in three 0.160.0 that include is wrapped in
+    //   #if defined ( USE_ENVMAP ) || defined ( USE_SKINNING )
+    // and this material has neither, so objectNormal is never declared. The
+    // shader failed to compile and the mesh silently drew nothing.
+    //
+    // `attribute vec3 normal` is in three's own vertex prefix for every
+    // non-raw material, so it is always there whatever the includes do. It is
+    // the un-skinned, un-morphed normal, which is exactly right for a prop.
+    _carryOutlineMat.onBeforeCompile = (shader) => {
+        shader.uniforms.uOutlineWidth = _carryOutlineUniforms.uOutlineWidth;
+        shader.vertexShader = shader.vertexShader
+            .replace('#include <common>', '#include <common>\nuniform float uOutlineWidth;')
+            .replace('#include <begin_vertex>',
+                '#include <begin_vertex>\ntransformed += normalize(normal) * uOutlineWidth;');
+    };
+    // See the shell's own copy of this: onBeforeCompile is not part of three's
+    // program cache key, so without it this could be handed a plain white
+    // MeshBasicMaterial's program and lose the offset entirely.
+    _carryOutlineMat.customProgramCacheKey = () => 'carry-outline-width';
+    // ---- Drawn AFTER the composer, not inside the scene ----
+    //
+    // In the scene it lost: RenderPixelatedPass draws a dark depth edge along
+    // every silhouette, and a carryable's silhouette is exactly where the rim
+    // is - so the pass painted its own line straight over the white one. No
+    // width fixed that, because the two are always in the same pixels.
+    //
+    // So the outline lives in its own scene and is rendered on top of the
+    // finished frame, with the depth buffer cleared first. That also makes it
+    // sharp rather than pixelated, which is right for a highlight: it is UI
+    // about the world, not part of it.
+    //
+    // The rim needs the object's own depth to be a rim at all - drawn alone,
+    // an expanded back-faced hull is a solid blob. So the overlay holds TWO
+    // clones: a MASK at the object's real size that writes depth and no
+    // colour, and the hull over it. Where the hull is behind the mask it is
+    // discarded; where it pokes past the silhouette there is nothing to
+    // discard it, and that sliver is the outline.
+    const _outlineScene = new THREE.Scene();
+    const _outlineMaskMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+    let _carryOutlineMask = null;
+    function disposeCarryOutline() {
+        if (_carryOutline) _outlineScene.remove(_carryOutline);
+        if (_carryOutlineMask) _outlineScene.remove(_carryOutlineMask);
+        // Geometry is the target's own - Object3D.clone shares it - so there
+        // is nothing here to free. Both materials are shared by every outline.
+        _carryOutline = null;
+        _carryOutlineMask = null;
+        _carryOutlineFor = null;
+    }
+    // Called from the render block, after the composer has finished.
+    function renderCarryOutline(cam) {
+        if (!_carryOutline) return;
+        const wasAutoClear = renderer.autoClear;
+        renderer.autoClear = false;
+        // Depth only - the colour on screen is the finished frame and must
+        // survive.
+        renderer.clearDepth();
+        renderer.render(_outlineScene, cam);
+        renderer.autoClear = wasAutoClear;
+    }
+    function updateCarryOutline() {
+        // Only while it is a target. Once it is IN YOUR HANDS the outline has
+        // nothing left to say, and it would be drawn through the character.
+        const target = (carryTargetObj && !window.isCarryingObj &&
+            !window.isCarryStarting && !window.isCarryDropping) ? carryTargetObj : null;
+        if (target !== _carryOutlineFor) {
+            disposeCarryOutline();
+            if (target) {
+                // Nothing in either clone may answer a ray or cast a shadow:
+                // they are decals on top of an object that already does both,
+                // and a second surface at the same place would be picked by
+                // the carry ray that put it there.
+                const strip = (root, mat) => {
+                    root.traverse(c => {
+                        c.raycast = () => {};
+                        if (c.isMesh) {
+                            c.material = mat;
+                            c.castShadow = false; c.receiveShadow = false;
+                        }
+                        c.userData = {};
+                    });
+                    return root;
+                };
+                const mask = strip(target.clone(true), _outlineMaskMat);
+                const hull = strip(target.clone(true), _carryOutlineMat);
+                // Mask first, or the hull tests against a depth buffer that
+                // does not have the object in it yet and comes out solid.
+                mask.renderOrder = 0;
+                hull.renderOrder = 1;
+                _carryOutlineMask = mask;
+                _carryOutline = hull;
+                _carryOutlineFor = target;
+                _outlineScene.add(mask);
+                _outlineScene.add(hull);
+            }
+        }
+        if (!_carryOutline) return;
+        // Followed by world matrix rather than by copying position/quaternion:
+        // a carryable can be a Group whose pieces sit at their own offsets, and
+        // the clone reproduces the subtree only if the root is placed the way
+        // the original root is placed.
+        target.updateWorldMatrix(true, false);
+        // The target's world transform EXACTLY - no inflation here any more,
+        // that is the shader's job. The object-space offset means the rim is
+        // divided by whatever scale the object carries, so it is written back
+        // multiplied by it: the StarKey's group is at keyScale 2.0, and
+        // without this its rim would come out half as thick as a jar's.
+        // DECOMPOSE, not setFromRotationMatrix.
+        //
+        // That method's contract is an UNSCALED matrix, and the StarKey's is
+        // not: buildStarAssembly puts window.keyScale (2.0) on the group. Fed
+        // a scaled matrix it returns a quaternion that is not unit length, and
+        // Matrix4.compose - which assumes unit - squares that norm straight
+        // back into the outline's own matrix. Measured across a turn, the hull
+        // came out anywhere from 2.07 to 5.36 instead of a flat 2.0, growing
+        // and shrinking as the key rotated and sitting visibly off the shape
+        // it is supposed to trace. Jars are scale 1, the norm is 1, and
+        // nothing was wrong with them - which is why only the key showed it.
+        //
+        // decompose pulls the scale out before reading the rotation, so all
+        // three come back clean.
+        target.matrixWorld.decompose(
+            _carryOutline.position, _carryOutline.quaternion, _carryOutline.scale);
+        // The mask rides the same transform - it is the same object, at its
+        // real size.
+        _carryOutlineMask.position.copy(_carryOutline.position);
+        _carryOutlineMask.quaternion.copy(_carryOutline.quaternion);
+        _carryOutlineMask.scale.copy(_carryOutline.scale);
+        const s = Math.max(_carryOutline.scale.x, 1e-4);
+        _carryOutlineUniforms.uOutlineWidth.value = window.carryOutlineWidth / s;
+    }
+
     const input = { left: { x: 0, y: 0 }, right: { x: 0, y: 0 } };
     // shift: held to run on keyboard - see the moveMag calc below, WASD
     // alone only ever walks now instead of always landing at full run
@@ -19603,7 +20067,58 @@ export function startGame(CharacterClass) {
     const _camInsideVec = new THREE.Vector3();
     let _camInsideCache = null;
     let _camInsideEl = null, _camInsideOn = null;
-    function updateCameraInside(cam, playerPoint, occluded) {
+    // What may be turned into a shell at all.
+    //
+    // The shell swaps a mesh's MATERIAL, so everything here is about not
+    // handing that swap something where one material does not mean one
+    // surface:
+    //
+    //   INSTANCED. The forest's frame wall is one InstancedMesh covering ~85
+    //   blocks, so shelling it would glass the whole perimeter at once - the
+    //   very fault 'Only the block you are inside turns to glass' was written
+    //   to fix, just moved from shared materials to shared meshes.
+    //
+    //   INVISIBLE. A tree's collider is a real mesh with a visible:false
+    //   material. Shelling it does not open anything up; it CONJURES a
+    //   translucent box where the player could previously see nothing at all.
+    //   The tree's own dissolve is what handles trees, and the occlusion test
+    //   defers to it already.
+    //
+    //   MULTI-MATERIAL. A shell per slot, for the one mesh built that way.
+    //
+    //   THE GROUND, by identity and by flag. This one was a live regression:
+    //   the shell used to be reachable only by containing the camera, and
+    //   that test excludes the ground explicitly - "its box is the entire
+    //   level, so being inside it means only below the surface". Opening the
+    //   shell up to occluders walked straight past that, and the ground is
+    //   the commonest occluder there is: the camera dips, the plane crosses
+    //   the line to the player, and a 1000-unit sheet with depthWrite off
+    //   paints over the entire screen.
+    //
+    //   ditherNoShell alone does NOT cover it, which is what made this bite.
+    //   That flag is set in exactly one place - buildForestSlab - so in the
+    //   forest the ground opts out and in every other level it is never
+    //   dressed at all and carries no flag. Tested by identity as well, so it
+    //   holds wherever the level came from.
+    //
+    //   ...and the same exclusions the containment test already lists, for
+    //   the same reason it lists them: a carryable, the practice bag and a
+    //   softObstacle (canopies, the lake rim) are all things whose volume is
+    //   not a wall you could be shut in by.
+    //
+    // Also the plain existence checks: the containment test walks collidables,
+    // which may hold a Group, and a Group has no material to read.
+    function canShell(m) {
+        if (!m || !m.isMesh || m.isInstancedMesh) return false;
+        if (m === ground) return false;
+        const ud = m.userData;
+        if (ud && (ud.isTreeCollider || ud.isGroundSlab || ud.isCarryable
+            || ud.isSandbagCollider || ud.softObstacle)) return false;
+        const mat = m.material;
+        if (!mat || Array.isArray(mat) || mat.visible === false) return false;
+        return !(mat.userData && mat.userData.ditherNoShell);
+    }
+    function updateCameraInside(cam, playerPoint, occluded, occluderMesh) {
         if (_camInsideEl === null) _camInsideEl = document.getElementById('cam-inside') || false;
         if (!_camInsideEl) return;
         // Occluded is the common case and the box test is the extreme one -
@@ -19654,11 +20169,23 @@ export function startGame(CharacterClass) {
         // from one into another hands the shell over rather than leaving the
         // first one glass.
         //
-        // Arrays are refused: a multi-material mesh would need a shell per
-        // slot, and the one mesh built that way - the ground slab - is already
-        // out of the containment test above.
-        const shellTarget = (inside && insideMesh && !Array.isArray(insideMesh.material)
-            && !insideMesh.material.userData.ditherNoShell) ? insideMesh : null;
+        // ...and the same for something standing BETWEEN you and the camera,
+        // which is the commoner case of the two. Being inside a block is the
+        // loud version; the ordinary one is a wall you are hanging off, or a
+        // rise the camera has ended up behind. cameraCollide normally pulls
+        // the camera in short of an obstacle so nothing gets the chance - but
+        // it is deliberately switched off while climbing, which is exactly
+        // when a wall is most likely to be in the way.
+        //
+        // The occluder is the one the ghost already picked (see
+        // playerOccluded): the nearest thing hiding you that is not already
+        // dissolving to show you. Being the nearest is what makes it the right
+        // one to open up - it is the surface in your face.
+        //
+        // Inside wins when both are true. It is the stronger statement about
+        // where the camera is, and they are usually the same mesh anyway.
+        const shellTarget = (inside && canShell(insideMesh)) ? insideMesh
+            : (canShell(occluderMesh) ? occluderMesh : null);
         if (shellTarget !== _shelledMesh) {
             if (_shelledMesh && _shelledMesh.userData._shellFrom) {
                 _shelledMesh.material = _shelledMesh.userData._shellFrom;
@@ -19671,8 +20198,10 @@ export function startGame(CharacterClass) {
             }
         } else if (_shelledMesh) {
             // Opacity is live, and changing it on a material that is already
-            // transparent costs nothing.
+            // transparent costs nothing. So is the inset - it is one shared
+            // uniform, so writing it here reaches every shell there is.
             _shelledMesh.material.opacity = window.cameraInsideOpacity;
+            _shellUniforms.uShellInset.value = window.shellInset;
         }
         const want = inside ? window.cameraInsideDark
             : occludedOnly ? window.cameraOccludedDark : 0;
@@ -20226,8 +20755,17 @@ export function startGame(CharacterClass) {
     // to it until you turn onto it exactly. With this on, the nearest one
     // inside carryLockRange counts wherever it is standing, and the character
     // turns onto it so the pick-up animation aims somewhere sensible.
-    window.carryAutoLock = false;
+    //
+    // ON by default now. Turning onto something you have walked up to is what
+    // makes the grab button mean anything: without it you stand beside a jar
+    // being told you can pick it up and cannot, because the ray is pointing
+    // past it. The range is short enough (2.5 against the ray's own 1.5) that
+    // it only ever fires when you are already standing at the thing.
+    window.carryAutoLock = true;
     window.carryLockRange = 2.5;
+    // The arc the carry lock will reach into - see the pick loop. 180 is
+    // hard left to hard right and nothing behind.
+    window.carryLockFovDeg = 180;
     let lockedCarry = null;
     window.lockTargetEnabled = true;    // on by default - see the lock buttons
     window.autoPunchEnabled = true;     // ...and so is auto punch
@@ -20246,8 +20784,26 @@ export function startGame(CharacterClass) {
     if (window.instantCompanions === undefined) window.instantCompanions = false;
     window.lockFovDeg = 140;       // how wide the character's view cone is
     if (window.showLockFov === undefined) window.showLockFov = false;  // debug aid, off by default
-    window.lockOnRange = 2.0;      // close enough to be "in a fight"
-    window.lockOnDrop = 5.0;       // ...and how far before it lets go
+    // How close something has to be before the lock takes hold.
+    //
+    // Was 2.0, and that is inside the fight rather than on the way into it.
+    // autoPunchRange is 1.6 and the player's own melee reach is 1.7, so the
+    // whole approach the split between those two numbers exists to create -
+    // "you close the distance FACING your target, and the punches start when
+    // they can land", see autoPunchRange - was 0.4 units wide. A twentieth of
+    // a second at a run. You did not turn onto an enemy and walk in; you
+    // arrived, and the lock caught up afterwards, which is why it read as only
+    // working when you were already on top of them.
+    //
+    // 5.0 is the old DROP range. The number the game already considered close
+    // enough to keep a fight alive is now close enough to start one, which
+    // gives 3.4 units of approach - 0.42s at a run, 0.85s carrying, where
+    // carrying is the case this was noticed in because it moves at half speed.
+    //
+    // The cost is that a wide cone (lockFovDeg 140) now catches things further
+    // off your path, and a lock steers your facing. Both live on sliders.
+    window.lockOnRange = 5.0;      // close enough to be "in a fight"
+    window.lockOnDrop = 8.0;       // ...and how far before it lets go
     window.autoPunchInterval = 0.55;
     // Auto punch has its OWN, shorter reach than the lock.
     //
@@ -20260,6 +20816,33 @@ export function startGame(CharacterClass) {
     // Defaulted just outside the bot's own punch range, so you begin swinging at
     // about the distance a bot does.
     window.autoPunchRange = 1.6;
+    // ...and the lock does not TURN YOU until you are about to use it.
+    //
+    // Three ranges now, each with one job: lockOnRange picks the target,
+    // this one points you at it, autoPunchRange starts the swing. They were
+    // two, and the missing split is what made the lock feel like it was
+    // grabbing the camera - acquiring at 5 also meant your body was yanked
+    // onto anything within 5 whether or not you were going to fight it, so
+    // walking PAST an enemy turned into orbiting it.
+    //
+    // 2.5 is derived from how long the turn takes. CHAR_TURN_RATE 28 in a
+    // per-frame slerp is an exponential approach: 95% of the way round in
+    // ln(20)/28 = 0.107s, which at the player's top speed of 8 is 0.86 units
+    // of travel. So starting at autoPunchRange + 0.86 = 2.46 means the turn
+    // has finished by the moment the first punch could land, and no earlier.
+    //
+    // A live punch overrides it at any distance - see the facing block. A
+    // charge is aimed and committed, and dropping the aim halfway through
+    // because the target backed off is the fault chargeAutoRange exists to
+    // prevent; this must not reintroduce it from the other side.
+    window.lockFaceRange = 2.5;
+    // How much NEARER a second bot has to be before it takes the lock off the
+    // one you already have. Pure hysteresis: at 0 two bots standing the same
+    // distance away would swap it every frame and the character would shiver
+    // between them. 0.5 is about a third of the punching range, so a bot that
+    // has genuinely stepped inside the other one wins and a bot merely
+    // jostling beside it does not.
+    window.lockSwitchMargin = 0.5;
     // How far the lock is HELD while a charge is being wound up.
     //
     // Was 4.5, which is SHORTER than the ordinary lockOnDrop of 5 - the lock
@@ -20271,11 +20854,15 @@ export function startGame(CharacterClass) {
     //
     // What actually matters is that the wind-up takes a full second and you
     // are committed for all of it. A bot circling or backing off covers 4.6
-    // units in that time, so a lock acquired at lockOnRange (2.0) has to
-    // survive the target gaining another 4.6 - about 6.6 - before you even
-    // release. At 4.5 the lock dropped mid-charge and you finished the move
-    // pointing somewhere else. 8.0 covers it with margin.
-    window.chargeAutoRange = 8.0;
+    // units in that time, so a lock acquired at lockOnRange has to survive the
+    // target gaining another 4.6 before you even release. At 4.5 the lock
+    // dropped mid-charge and you finished the move pointing somewhere else.
+    //
+    // Re-derived when lockOnRange moved to 5.0: 5.0 + 4.6 = 9.6, so 10.0. It
+    // has to keep moving with that number or the argument stops holding - at
+    // the old 8.0 it would now be BELOW lockOnDrop, which is the exact
+    // inversion this constant was written to fix, just from the other side.
+    window.chargeAutoRange = 10.0;
     let lockedBot = null;
     let autoPunchT = 0;
     const _lockVec = new THREE.Vector3();
@@ -20283,6 +20870,10 @@ export function startGame(CharacterClass) {
     // movement block. The animation dispatch runs several hundred lines later,
     // in a different scope, and finalMoveDir is long out of it by then.
     const _lastMoveDir = new THREE.Vector3();
+    // Whether the lock is actually steering the body this frame - see
+    // lockFaceRange. Published for the same reason _lastMoveDir is: the
+    // animation dispatch runs in a different scope, hundreds of lines later.
+    let _lockFacingActive = false;
     // Re-evaluated every frame: the current target if it is still valid and
     // still near, otherwise the nearest one inside lockOnRange. The two radii
     // differ on purpose - one threshold would make the lock chatter on and off
@@ -20520,6 +21111,11 @@ export function startGame(CharacterClass) {
     window.refreshWarpButtons = refreshWarpButtons;
 
     function updateLockTarget() {
+        // Cleared here, at the start of the frame, and set later by the facing
+        // block if it actually steers. That block is skipped while sliding or
+        // recovering from a hit, so a flag only ever written inside it would
+        // stay true through both and leave the legs playing sidesteps.
+        _lockFacingActive = false;
         if (!window.lockTargetEnabled || char.isRagdoll || char.isStandingUp) { lockedBot = null; return; }
 
         const p = char.group.position;
@@ -20548,8 +21144,25 @@ export function startGame(CharacterClass) {
         // longer hit. punchState 4 is the wind-up.
         const charging = window.combat && window.combat.punchState === 4;
         const holdRange = charging ? window.chargeAutoRange : window.lockOnDrop;
-        if (isBot(lockedBot) && usable(lockedBot) &&
-            p.distanceTo(lockedBot.group.position) <= holdRange) return;
+        // The lock you have HOLDS, but it no longer ends the search.
+        //
+        // This used to return outright, so the first bot acquired owned you
+        // for as long as it stayed inside the generous drop radius - another
+        // one could walk up to arm's length and the character kept facing the
+        // first, across the clearing. That is backwards: the nearest is the
+        // one hitting you.
+        //
+        // So the hold is recorded and the scan below runs anyway; the switch
+        // happens at the end, and only for a bot that is CLEARLY nearer. The
+        // margin is what stops two of them at matched distance trading the
+        // lock every frame, which would read as the character shivering
+        // between them.
+        const holding = (isBot(lockedBot) && usable(lockedBot) &&
+            p.distanceTo(lockedBot.group.position) <= holdRange) ? lockedBot : null;
+        // A charge is the exception: it is aimed and you are committed to it
+        // for the whole wind-up, so swapping targets mid-move would throw the
+        // punch at someone you never pointed it at.
+        if (holding && charging) return;
 
         // Acquiring also needs the target to be IN VIEW. Holding one does not:
         // once you are squared up to something, turning slightly away should
@@ -20557,7 +21170,19 @@ export function startGame(CharacterClass) {
         const inView = (t) => inVisionCone(p, char.group.quaternion, t.group.position,
             window.lockFovDeg);
 
-        let best = window.lockOnRange, found = null;
+        // ACQUIRING reaches as far as holding does while a charge is up.
+        //
+        // Only the hold range was widened for the charge, which covers keeping
+        // a target you already had and does nothing for the commoner case:
+        // winding one up at something you have not locked yet. Beyond
+        // lockOnRange there was simply no lock, so the charge was thrown at
+        // whatever direction the stick happened to be pointing - "I keep
+        // throwing it at the wrong place".
+        //
+        // Same number for both, because they are the same question asked at
+        // two moments, and a charge that can HOLD a target at 10 but cannot
+        // TAKE one past 5 is the inconsistency that produced this.
+        let best = charging ? window.chargeAutoRange : window.lockOnRange, found = null;
         for (let i = 0; i < aiBots.length; i++) {
             const b = aiBots[i].bot;
             if (!usable(b) || !inView(b)) continue;
@@ -20582,6 +21207,21 @@ export function startGame(CharacterClass) {
                 if (bb) range += Math.max(bb.max.x, bb.max.z);
                 if (d < range && d < bagBest) { bagBest = d; found = sk; }
             }
+        }
+        // Nothing new in view: keep whatever is still being held, or let go.
+        if (!found) { lockedBot = holding; return; }
+        // A live bot never loses the lock to a practice bag, however close the
+        // bag is - the rule the bag branch above is written around, which the
+        // nearest-wins switch below would otherwise quietly undo. A bag only
+        // reaches here when no bot was in view this frame, so this is exactly
+        // the "holding a bot, standing at the bag" case.
+        if (holding && !isBot(found)) { lockedBot = holding; return; }
+        // Something new, and something held. The newcomer takes the lock only
+        // if it is nearer by more than the margin - see `holding` above.
+        if (holding && found !== holding) {
+            const dHold = p.distanceTo(holding.group.position);
+            const dNew = p.distanceTo(found.group.position);
+            if (dNew > dHold - window.lockSwitchMargin) { lockedBot = holding; return; }
         }
         lockedBot = found;
     }
@@ -23431,12 +24071,13 @@ export function startGame(CharacterClass) {
                 // Same coarse-AABB problem as the hemisphere/ramps, but for
                 // the lock: its cachedBox3 fallback is a tall, narrow shape
                 // nothing like a normal climbable step, so stepping onto it
-                // reads as blocked almost everywhere. Only bypassed once
-                // unlocked (userData.keyInserted, set in
-                // triggerKeyInsertion) - while still locked it must stay a
-                // solid, un-standable obstacle.
+                // reads as blocked almost everywhere. Bypassed only for a lock
+                // that is meant to be stood on - normally that means its key
+                // is in, since while locked it should stay a solid obstacle,
+                // but an instance can opt out of the gate outright. See
+                // lockIsClimbable.
                 const hitLockGroup = groundHitObject && groundHitObject.parent && groundHitObject.parent.userData && groundHitObject.parent.userData.isLock ? groundHitObject.parent : null;
-                const isOnActiveLock = !!(hitLockGroup && hitLockGroup.userData.keyInserted);
+                const isOnActiveLock = lockIsClimbable(hitLockGroup);
                 const isSteppingUp = highestY > char.group.position.y + 0.05;
                 const blockedByStandCheck = isSteppingUp && !isSteepSlope && !isOnRamp && !isOnHemisphere && !isOnActiveLock &&
                     !isStandPositionClear(char.group.position.x, highestY + 0.05, char.group.position.z, null);
@@ -24988,11 +25629,27 @@ export function startGame(CharacterClass) {
                         while(target && (!target.userData || !target.userData.isCarryable) && target.parent) target = target.parent;
                         carryTargetObj = target;
                     } else if (window.carryAutoLock) {
-                        // Nearest carryable in range, regardless of facing.
+                        // Nearest carryable in range and IN FRONT OF YOU.
+                        //
+                        // "Regardless of facing" is what this did, and it is
+                        // too much: it reaches carryLockRange in every
+                        // direction, so a jar you had walked past and left
+                        // behind you was still offered, and the grab took it
+                        // over your own shoulder. The point of this branch is
+                        // the jar half a step to your SIDE, which the forward
+                        // ray misses - not the one at your back.
+                        //
+                        // 180 is the widest arc that still means "in front":
+                        // everything from hard left to hard right, nothing
+                        // behind. Its own number rather than lockFovDeg (140),
+                        // which is a vision cone for spotting enemies and has
+                        // no business deciding what your hands can reach.
                         let best = window.carryLockRange, found = null;
                         for (let ci = 0; ci < carryables.length; ci++) {
                             const m = carryables[ci].mesh;
                             if (!m || carryables[ci].isCarried) continue;
+                            if (!inVisionCone(char.group.position, char.group.quaternion,
+                                m.position, window.carryLockFovDeg)) continue;
                             const d = char.group.position.distanceTo(m.position);
                             if (d < best) { best = d; found = m; }
                         }
@@ -25065,6 +25722,9 @@ export function startGame(CharacterClass) {
             // Cheap: returns immediately unless the roster actually changed.
             refreshWarpButtons();
             updateLockTarget();
+            // After the carry-target pick above, so the outline marks what the
+            // grab button is offering THIS frame rather than last frame's.
+            updateCarryOutline();
             updateLockFovViz();
             updateAutoPunch(delta);
             updateEnemyCounters();
@@ -25211,13 +25871,17 @@ export function startGame(CharacterClass) {
                 const wallHits = rayFwd.intersectObjects(playerNear(), true);
                 let wall = null;
                 for (let i = 0; i < wallHits.length; i++) {
-                    const ud = wallHits[i].object.userData;
-                    // Trunks are not walls, and neither is anything you are
-                    // carrying. Canopies ARE - see the assisted grab's own copy
+                    // Trunks are not walls, and neither is anything you can
+                    // pick up. Canopies ARE - see the assisted grab's own copy
                     // of this rule; the two have to agree or walking at a
                     // treetop would auto-jump onto it while walking at it with
                     // the stick held did nothing, or the reverse.
-                    if (ud.isCarryable || isTreeTrunkHit(wallHits[i])) continue;
+                    //
+                    // The carryable test walks ancestry now. Read off the hit
+                    // object it only ever caught single-mesh carryables, so
+                    // the StarKey - a Group - was read as a wall and walking
+                    // up to it made you jump.
+                    if (isCarryableHit(wallHits[i]) || isTreeTrunkHit(wallHits[i])) continue;
                     wall = wallHits[i]; break;
                 }
                 if (!wall || wall.distance > window.autoJumpProbe) {
@@ -25254,6 +25918,12 @@ export function startGame(CharacterClass) {
                 for (let i = 0; i < topHits.length; i++) {
                     if (isTreeTrunkHit(topHits[i])) continue;
                     if (!wallIsTree && topHits[i].object.userData.isTreeCollider) continue;
+                    // A jar standing on the block is not the block's top. It
+                    // would raise the measured rise by its own height and push
+                    // a perfectly good jump past autoJumpMaxRise - the same
+                    // failure the overhanging-canopy line above prevents, from
+                    // a prop instead of a branch.
+                    if (isCarryableHit(topHits[i])) continue;
                     lipY = topHits[i].point.y; break;
                 }
                 // Not a ledge worth jumping - but "there is something ahead"
@@ -25660,7 +26330,8 @@ export function startGame(CharacterClass) {
                     // must stop reading as a wall too, or the character
                     // never gets close enough to climb onto it.
                     const hitParent = actualHits[0].object.parent;
-                    const isActiveLockWall = !!(hitParent && hitParent.userData && hitParent.userData.isLock && hitParent.userData.keyInserted);
+                    const isActiveLockWall = !!(hitParent && hitParent.userData
+                        && hitParent.userData.isLock && lockIsClimbable(hitParent));
                     let treatAsWall = !isActiveLockWall && realSurfaceAngle > wallCutoffForHit;
                     // Slidable-but-climbable faces (past the slide-entry
                     // angle but under the hard cutoff above) are a wall
@@ -25775,12 +26446,43 @@ export function startGame(CharacterClass) {
                     // Locked on: face the enemy, not the way you are walking.
                     // That inversion is the whole feature - the stick stops
                     // steering your facing and starts orbiting you around it.
-                    // An enemy outranks a jar - if both are in reach you are in
-                    // a fight, and turning away from it to face scenery would
-                    // be the wrong call every time.
+                    //
+                    // A JAR OUTRANKS AN ENEMY, which is the other way round
+                    // from how this started. The old rule reasoned that if
+                    // both are in reach you are in a fight - true, but the
+                    // carry lock only reaches carryLockRange (2.5) and only
+                    // onto something you have walked right up to, and at that
+                    // point you are not deciding whether to fight, you are
+                    // reaching for a thing and being turned away from it. The
+                    // enemy still has the lock and the auto-punch; it just
+                    // does not get your shoulders while your hands are busy.
+                    // ...but only once you are close enough to use it, or are
+                    // already using it. See lockFaceRange: acquiring a target
+                    // and being turned onto it are two different moments, and
+                    // running them together meant walking past an enemy
+                    // orbited it instead.
+                    //
+                    // A punch in flight keeps the aim at ANY distance. The
+                    // wind-up commits you for a full second and the target can
+                    // back off during it - letting go then is exactly what
+                    // chargeAutoRange was widened to prevent.
                     const lb = lockedBot;
-                    const lockPos = lb ? lb.group.position
-                        : (window.carryAutoLock && lockedCarry && !window.isCarryingObj ? lockedCarry.position : null);
+                    const punching = !!(window.combat && window.combat.punchState > 0);
+                    const lockEngaged = !!lb && (punching ||
+                        char.group.position.distanceTo(lb.group.position) <= window.lockFaceRange);
+                    // Published for the animation dispatch a few hundred lines
+                    // down, which picks strafe/backward clips off the lock. If
+                    // the body is not being steered, the legs must not act as
+                    // though it is - it would play a sidestep while walking
+                    // straight ahead.
+                    const carryPos = (window.carryAutoLock && lockedCarry && !window.isCarryingObj)
+                        ? lockedCarry.position : null;
+                    // False when the jar wins, not just when nothing does: the
+                    // legs read this to pick strafe clips off the enemy lock,
+                    // and sidestepping around a bot you are not facing is the
+                    // one combination that cannot look right.
+                    _lockFacingActive = lockEngaged && !carryPos;
+                    const lockPos = carryPos || (lockEngaged ? lb.group.position : null);
                     const faceAng = lockPos
                         ? Math.atan2(lockPos.x - char.group.position.x,
                                      lockPos.z - char.group.position.z)
@@ -26444,7 +27146,7 @@ export function startGame(CharacterClass) {
                     let moveState = 'walk';
                     window._chargeStrafeSide = null;
                     window._chargeMovingBack = false;
-                    if (lockedBot && _lastMoveDir.lengthSq() > 1e-6) {
+                    if (lockedBot && _lockFacingActive && _lastMoveDir.lengthSq() > 1e-6) {
                         _lockVec.copy(_lastMoveDir).applyQuaternion(
                             _tempQuat.copy(char.group.quaternion).invert());
                         // +X in the character's local space is its LEFT, not
@@ -27127,28 +27829,41 @@ export function startGame(CharacterClass) {
                 // NDC box for things squarely behind you. Testing the
                 // half-space first is what makes the projection meaningful,
                 // not an optimisation.
+                // Yellow means the target is AHEAD of you, on a flat bearing.
+                //
+                // It used to mean "inside the viewport", which is a stricter
+                // thing than it sounds and in practice never happened. The
+                // default level's goal sits at the end of the raised walkway,
+                // y = 15.53, against a spawn at y = 3 - twelve metres up. The
+                // vertical half of the viewport test is what fails there, and
+                // it fails for the whole walk: to make the arrow yellow you
+                // had to pitch the camera up and frame a point on a tower,
+                // which is not something anyone does while playing. So the
+                // arrow was white for the entire level and the colour carried
+                // no information at all.
+                //
+                // Flattened to the ground, the height stops mattering and the
+                // question becomes the one the arrow is already answering:
+                // is it this way? Measured from the PLAYER, not the camera -
+                // "in front" is about you, and it also handles for free the
+                // case the old depth test needed a second clause for: a target
+                // between you and the camera is behind YOU, and comes out
+                // negative here without being asked about separately.
+                //
+                // Compared against the CAMERA's flat forward rather than the
+                // character's, because this is a screen-space HUD: the arrow
+                // points straight up exactly when the target lies along the
+                // camera's forward, so yellow and up have to agree, or the
+                // arrow would sit dead centre and white.
                 _compassCamFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
-                _compassAimProj.subVectors(_compassAim, camera.position);
-                const aimDepth = _compassAimProj.dot(_compassCamFwd);
-                _compassPlayerVec.subVectors(char.group.position, camera.position);
-                const playerDepth = _compassPlayerVec.dot(_compassCamFwd);
-                // Nearer the camera than you are counts as off screen too.
-                //
-                // Depth along the view direction, both measured from the
-                // camera, so this is "the target has come between you and the
-                // camera". It can be dead centre of the viewport there and is
-                // still something you have to turn around for - it is BEHIND
-                // you in the only sense that matters, whatever the viewport
-                // says - so the arrow has no business being yellow.
-                //
-                // Compared against the player rather than against zero, which
-                // is what "in front of the camera" alone was measuring and why
-                // this case slipped through.
+                _compassCamFwd.y = 0;
+                _compassPlayerVec.subVectors(_compassAim, char.group.position);
+                _compassPlayerVec.y = 0;
                 let onScreen = false;
-                if (aimDepth > 0 && aimDepth >= playerDepth) {
-                    _compassAimProj.copy(_compassAim).project(camera);
-                    onScreen = Math.abs(_compassAimProj.x) <= 1
-                        && Math.abs(_compassAimProj.y) <= 1;
+                if (_compassCamFwd.lengthSq() > 1e-8 && _compassPlayerVec.lengthSq() > 1e-8) {
+                    _compassCamFwd.normalize();
+                    _compassPlayerVec.normalize();
+                    onScreen = _compassPlayerVec.dot(_compassCamFwd) >= _compassAheadCos();
                 }
                 // Written only on a change: this runs every frame and a style
                 // assignment is not free. Compared against a value that starts
@@ -27187,7 +27902,7 @@ export function startGame(CharacterClass) {
 
         const toPlayer = _tempVec3.copy(trackingPoint).sub(camera.position);
         const distToPlayer = toPlayer.length();
-        let playerOccluded = false;
+        let playerOccluded = false, playerOccluder = null;
         if (distToPlayer > 0.01) {
             xrayRaycaster.set(camera.position, toPlayer.normalize());
             xrayRaycaster.far = distToPlayer - 0.3;
@@ -27206,7 +27921,28 @@ export function startGame(CharacterClass) {
                     const u = m && !Array.isArray(m) && m.userData ? m.userData.ditherUniform : null;
                     if (u && u.value > 0.3) continue;
                 }
-                playerOccluded = true;
+                // Kept, not just counted. The shell wants the same mesh this
+                // loop has already done the work of finding: nearest first,
+                // skipping anything that is dissolving on its own account.
+                playerOccluder = obj;
+                // The GHOST, though, only if this one is not ALREADY opened up
+                // for you - which is the same rule the dissolve gets three
+                // lines above, applied to the shell.
+                //
+                // Asked as "is it the currently shelled mesh" rather than by
+                // reading its material, and the difference matters. A shell is
+                // a plain MeshToonMaterial with no ditherUniform on it, so the
+                // material test above cannot see one and would leave the ghost
+                // stacked on top of a surface already showing you through
+                // itself - the doubled, washed-out look that test exists to
+                // prevent.
+                //
+                // And it must not feed back into the shell. If the shell were
+                // gated on playerOccluded, turning the ghost off would turn
+                // the shell off, which would turn the ghost back on: a
+                // two-frame oscillation. playerOccluder is decided here and
+                // the ghost is decided from it, never the other way round.
+                playerOccluded = obj !== _shelledMesh;
                 break;
             }
         }
@@ -27225,7 +27961,7 @@ export function startGame(CharacterClass) {
         // occluders whose own dither is up. So a tree in the way still just
         // dissolves, and the ground, the stairs and the frame wall, which no
         // longer dissolve at all, get the black instead.
-        updateCameraInside(camera, trackingPoint, playerOccluded);
+        updateCameraInside(camera, trackingPoint, playerOccluded, playerOccluder);
 
         if (char.fbxModel) char.fbxModel.visible = true;
         char.syncColliders();
@@ -27276,6 +28012,11 @@ if (leftArrow) {
         } else {
             renderer.render(scene, activeCamera);
         }
+        // On top of the finished frame, either way - see renderCarryOutline.
+        // Both paths, because the pixel pass being off does not make an
+        // in-scene outline correct; it just removes the line that was beating
+        // it. One place, one behaviour.
+        renderCarryOutline(activeCamera);
         // After everything this frame drew, since the counters no longer reset
         // themselves. The FPS counter reads these on the next frame.
         _lastDrawCalls = renderer.info.render.calls;
