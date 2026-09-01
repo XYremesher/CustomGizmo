@@ -7089,6 +7089,13 @@ export function startGame(CharacterClass) {
     // Everything else in here is per-companion via activateCompanion/
     // saveCompanion, and a scalar that forgets to be plumbed through those is
     // the oldest bug in this file - fields on the object cannot forget.
+    // OFF. Companions do not go and fetch jars.
+    //
+    // The whole routine below is kept rather than deleted - it is the one
+    // thing in a companion's repertoire that picks anything up, it took
+    // building, and it is wired through the per-companion save/restore
+    // correctly. Turning it back on is this one flag.
+    window.companionCarry = false;
     const COMP_JAR_REACH = 1.7;        // close enough to pick one up
     const COMP_JAR_LIFT_TIME = 0.55;   // the pick-up itself
     const COMP_JAR_THROW_AT = 9.0;     // how close it gets before throwing
@@ -7128,6 +7135,10 @@ export function startGame(CharacterClass) {
     }
     function updateCompanionJar(delta) {
         if (!companion._jarPhase) return;
+        // Switched off mid-run: let go of whatever is in its hands rather than
+        // freezing with a jar stuck to it. `true` so the jar is released to
+        // the physics instead of being left flagged as carried by nobody.
+        if (!window.companionCarry) { endCompanionJar(true); return; }
         companion._jarT = (companion._jarT || 0) + delta;
         if (companion._jarT > COMP_JAR_GIVE_UP) { endCompanionJar(true); return; }
         const c = companion.group.position;
@@ -13104,9 +13115,6 @@ export function startGame(CharacterClass) {
     // destroyJarCarryable spawning the key when the right one shatters - so
     // the carry lesson is taught on the real prop rather than a stand-in.
     const FOREST_JAR_COLS = 3, FOREST_JAR_ROWS = 2;   // 6, in front of the teacher
-    // Centre of the grid, written by spawnForestJars each build. Null until
-    // the wood has been built at least once.
-    let _forestJarsAt = null;
     // A stand-in jar, built from primitives. jarTemplate comes from an FBX on
     // a GitHub raw URL, and if that is slow, blocked or missing there is no
     // template - so the carry lesson had nothing to carry and the landing was
@@ -13145,13 +13153,6 @@ export function startGame(CharacterClass) {
             carryables.push(carryJar);
             addCarryableDebugHelper(carryJar);
         }
-        // Where the grid ended up, recorded rather than re-derived. The debug
-        // start stands you at it (see forestDebugStartAtEnd), and copying
-        // `forestStepX() - 1.3` and `pz - 0.65` into a second place is exactly
-        // how the two drift apart the first time the landing moves.
-        _forestJarsAt = new THREE.Vector3(
-            x + (FOREST_JAR_COLS - 1) * 1.3 * 0.5, y,
-            z + (FOREST_JAR_ROWS - 1) * 1.3 * 0.5);
         console.log(`Forest jars: ${n} (${jarTemplate ? 'model' : 'fallback'}) placed at (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`);
     }
 
@@ -13941,29 +13942,27 @@ export function startGame(CharacterClass) {
     if (window.forestDebugEnd === undefined) window.forestDebugEnd = true;
     function forestDebugStartAtEnd() {
         if (window.forestDebugEnd !== true) return;
-        // AT THE JARS, on the landing.
+        // ONE STEP DOWN FROM THE TOP OF THE RUN.
         //
-        // It used to be the foot of the stairs, which was the right answer
-        // while the stairs were the last thing in the level. They are not any
-        // more: the landing carries the carry lesson and the jar grid, and
-        // everything built since - the ramp down, the lock, the run of steps
-        // after it - is on the far side of it. Starting below the stairs meant
-        // climbing them before reaching any of it.
+        // It was the foot of the stairs while they were the last thing in the
+        // level, then the jar grid on the landing once the ramp and the lock
+        // were built past it. This sits between the two: high enough that the
+        // landing and everything beyond it is a few paces away, low enough
+        // that the top of the climb is still in front of you.
         //
-        // A step and a half short of the grid on the -Z side, so you arrive
-        // looking at the jars rather than standing inside them, with the ramp
-        // beyond. Read off where spawnForestJars actually put them, not
-        // re-derived - and falling back to the old foot-of-the-stairs spot if
-        // the wood somehow has no jars.
-        let x, z;
-        if (_forestJarsAt) {
-            x = _forestJarsAt.x;
-            z = _forestJarsAt.z - (FOREST_JAR_ROWS - 1) * 1.3 * 0.5 - 2.0;
-        } else {
-            const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
-            x = forestStepX();
-            z = forestPlatformZ0() - (steps + 1) * FOREST_STEP_SIZE;
-        }
+        // Derived from buildForestExitSteps' own placement rather than
+        // written out, so it keeps pointing at the same tread if the frame
+        // height or the step size ever move. Step i's top is (i+1)*STEP and
+        // it sits half a step north of its own point, which is what makes the
+        // treads meet; the topmost is steps-1, so one below it is steps-2.
+        // clamped at 0 for a run too short to have one.
+        const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
+        const stepIndex = Math.max(0, steps - 2);
+        const x = forestStepX();
+        const z = forestPlatformZ0() - (steps - stepIndex) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5;
+        // Cast from well above rather than trusted to arithmetic - the tread's
+        // own top is what the character has to stand on, and storyGroundY
+        // finds it whatever the step is actually built as.
         const y = storyGroundY(x, z, 0);
         char.group.position.set(x, y, z);
         // Facing +Z - the jars, then the ramp. rotation.y 0 IS +Z here, same
@@ -14383,7 +14382,7 @@ export function startGame(CharacterClass) {
             // than worked out from what it says or which key it is, so moving
             // a lesson between companions is one word in one place.
             // Off to find a jar, if this is the one that teaches carrying.
-            if (r.demoJar) { r.comp._jarPhase = 'seek'; r.comp._jarT = 0; }
+            if (r.demoJar && window.companionCarry) { r.comp._jarPhase = 'seek'; r.comp._jarT = 0; }
             // ...and one of the enemies off after the next companion.
             // Resolved here rather than written into the spot, because who is
             // next depends on what you have already collected.
