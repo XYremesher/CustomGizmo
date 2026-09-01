@@ -538,6 +538,10 @@ export function startGame(CharacterClass) {
     const _remoteCollideNormal = new THREE.Vector3();
     const _cubeSizeVec = new THREE.Vector3(3.0, 3.0, 3.0);
     const _carrySizeVec = new THREE.Vector3(1.0, 1.0, 1.0);
+    // How far below its home a carryable has to fall before it is put back.
+    // Two units is past any step in the game, so nothing is snatched off a
+    // surface you deliberately set it down on - see the homePos check.
+    const CARRY_RESPAWN_DROP = 2.0;
     const _rampLocalPos = new THREE.Vector3();
     const _rampLocalHead = new THREE.Vector3();
     const _rampInvMatrix = new THREE.Matrix4();
@@ -3305,8 +3309,27 @@ export function startGame(CharacterClass) {
         rayFwd.set(_stepWallFrom, _stepWallDir);
         const prevFar = rayFwd.far;
         rayFwd.far = len + AI_AVOID_RADIUS;
-        const wall = rayFwd.intersectObjects(near)[0];
+        const stepHits = rayFwd.intersectObjects(near);
         rayFwd.far = prevFar;
+        // A WALKABLE SLOPE IS NOT A WALL.
+        //
+        // This ray leaves 0.9 above the feet and travels flat, so on a 45
+        // degree ramp it meets the surface about 0.9 ahead - the same 0.9 it
+        // started above them. Every agent that uses this test therefore
+        // stopped dead at the foot of a ramp and could never get onto it or
+        // off it, which is companions unable to get from the approach ramp up
+        // to the flat.
+        //
+        // The player already has this rule and does not go through here: see
+        // RAMP_WALK_BLOCK_ANGLE, which exempts a slope ramp from the wall stop
+        // until it is past 58 degrees. This is the same exemption for the
+        // agents, keyed off the same flag, so the two agree about what counts
+        // as ground.
+        let wall = null;
+        for (let i = 0; i < stepHits.length; i++) {
+            if (stepHits[i].object.userData && stepHits[i].object.userData.isSlopeRamp) continue;
+            wall = stepHits[i]; break;
+        }
         if (wall) {
             const allowed = Math.max(0, wall.distance - AI_AVOID_RADIUS);
             out.set(px + _stepWallDir.x * allowed, pz + _stepWallDir.z * allowed);
@@ -12938,6 +12961,21 @@ export function startGame(CharacterClass) {
     // bounding box at build time rather than a guessed height - the lock is a
     // Group of scaled clones and its height is not a number written anywhere.
     const FOREST_APPROACH_STEP_RISE = 1.2;
+    // The LAST rise, and why it is not another ordinary one.
+    //
+    // A jump apexes at v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below
+    // the lip it holds, so a lip up to 3.52 above your feet can be caught
+    // off a standing jump - which is why the 3.0 rises below are all
+    // simply climbable. 4.0 is past that: from the tread you cannot reach
+    // it however well you time it.
+    //
+    // Stand on the cube and you can. It is 1.0 tall, so your feet start
+    // 1.0 higher and the lip is 3.0 away - an ordinary rise again. That
+    // window, (3.52, 4.52], is the whole design: too high alone, in reach
+    // off the block, and it is what makes carrying the thing up the run
+    // the point rather than scenery.
+    const FOREST_APPROACH_LAST_RISE = 4.0;
+    const FOREST_APPROACH_CUBE = 1.0;
     function buildForestExitApproach() {
         const mat = _forestBorderMat ||
             new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
@@ -13037,11 +13075,69 @@ export function startGame(CharacterClass) {
         const stepZ = footZ + FOREST_APPROACH_LOCK_GAP + FOREST_APPROACH_STEP_GAP;
         put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ);
         // The run continuing up from it - the first step is the one you jumped
-        // onto, so these are the ones after it.
-        for (let i = 1; i <= 3; i++) {
+        // onto, so these are the ones after it. Two ordinary rises...
+        for (let i = 1; i <= 2; i++) {
             const h = stepTop + i * FOREST_STEP_SIZE;
             put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE);
         }
+        // ...and a last one you cannot make on your own. See
+        // FOREST_APPROACH_LAST_RISE.
+        const penultTop = stepTop + 2 * FOREST_STEP_SIZE;
+        const lastTop = penultTop + FOREST_APPROACH_LAST_RISE;
+        put(forestStairW(), lastTop, FOREST_STEP_SIZE, cx, lastTop * 0.5, stepZ + 3 * FOREST_STEP_SIZE);
+
+        // The cube that gets you up it, sitting on the tread below.
+        //
+        // Off to the side rather than dead centre, so arriving on that step
+        // does not mean walking into it - it is the thing you go and pick up,
+        // not an obstacle in the path.
+        const cubeGeo = new RoundedBoxGeometry(
+            FOREST_APPROACH_CUBE, FOREST_APPROACH_CUBE, FOREST_APPROACH_CUBE, 1, 0.06);
+        const cube = new THREE.Mesh(cubeGeo,
+            new THREE.MeshToonMaterial({ color: 0xffaa00, gradientMap: threeTone }));
+        cube.position.set(cx + 2.0, penultTop + FOREST_APPROACH_CUBE * 0.5,
+            stepZ + 2 * FOREST_STEP_SIZE);
+        cube.castShadow = true; cube.receiveShadow = true;
+        cube.userData.isCarryable = true;
+        // Where it belongs, and where it is put back from. A cube thrown off
+        // the shore is not a mistake you can walk back from - the last step is
+        // the only way on and this is the only way up it - so it returns
+        // rather than ending the level quietly. See the homePos check in the
+        // carryable physics.
+        cube.userData.homePos = cube.position.clone();
+        cube.updateMatrixWorld(true);
+        levelGroup.add(cube);
+        collidables.push(cube);
+        const carryCube = { mesh: cube, velocity: new THREE.Vector3(),
+                            isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
+        carryables.push(carryCube);
+        addCarryableDebugHelper(carryCube);
+
+        // Where the shore fight is staged from - see stageForestShoreBots,
+        // which cannot run from here.
+        _forestShoreFootZ = footZ;
+    }
+    // Somebody waiting at the bottom of the ramp.
+    //
+    // Dormant, so they wake as you come down rather than being awake through
+    // the whole descent, and facing -Z - back up the ramp, the way you arrive
+    // from. Moved rather than spawned: storyPlaceBot puts a bot AT a spot
+    // whether or not it already exists, which matters because by this point in
+    // the wood these two have been met already and are very likely lying down
+    // somewhere far below.
+    //
+    // SEPARATE from buildForestExitApproach, and called after startForestStory
+    // rather than during the build. The story does its own staging - it places
+    // BotYellow3 among others - and it runs later, so anything set from inside
+    // the build would simply be picked up and moved back into the wood. Last
+    // writer wins, so this has to be the last writer.
+    let _forestShoreFootZ = null;
+    function stageForestShoreBots() {
+        if (_forestShoreFootZ === null) return;
+        const cx = forestStepX(), z = _forestShoreFootZ;
+        // The shore's own top, the same y buildForestExitApproach lays it at.
+        storyPlaceBot('BotYellow4', cx - 3.5, 0, z + 6.0, true, Math.PI);
+        storyPlaceBot('BotOrange2', cx + 3.5, 0, z + 9.0, true, Math.PI);
     }
     function buildForestExitSteps() {
         const top = forestFrameTopY();
@@ -13940,51 +14036,101 @@ export function startGame(CharacterClass) {
     // needed at all - the flag was never assigned anywhere, so it read
     // undefined and this returned on its first line.
     if (window.forestDebugEnd === undefined) window.forestDebugEnd = true;
+    // How far in from the landing's own lip the debug start stands. A body
+    // is 0.45 across (see isVerticalSpaceClear's bodyRadius), so one full
+    // width in puts the whole of it on the deck with the edge still
+    // underfoot.
+    const FOREST_LANDING_LIP_INSET = 0.9;
+    // Side-to-side gap between the companions the debug start hands over. A
+    // body is 0.45 across (bodyRadius, see isVerticalSpaceClear), so 1.4
+    // leaves half a body of daylight between neighbours - they arrive
+    // standing apart rather than inside one another.
+    const FOREST_DEBUG_COMP_SPACING = 1.4;
+    // ...and how far IN FRONT of the player they stand. Behind was right
+    // while the start was partway up the run; from the landing's lip it is
+    // off the deck - z - 1.2 lands on the top step or in the seam beside
+    // it, and they would spawn falling. Forward puts every one of them on
+    // the platform and in shot.
+    const FOREST_DEBUG_COMP_AHEAD = 1.2;
     function forestDebugStartAtEnd() {
         if (window.forestDebugEnd !== true) return;
-        // ONE STEP DOWN FROM THE TOP OF THE RUN.
+        // TOPPED OUT, at the landing's near lip.
         //
         // It was the foot of the stairs while they were the last thing in the
-        // level, then the jar grid on the landing once the ramp and the lock
-        // were built past it. This sits between the two: high enough that the
-        // landing and everything beyond it is a few paces away, low enough
-        // that the top of the climb is still in front of you.
+        // level, then the jar grid, then a step below the top. This is the
+        // moment right after the climb: the whole landing, the jars and the
+        // ramp beyond them are laid out in front of you, and the run you just
+        // came up is at your heels.
         //
-        // Derived from buildForestExitSteps' own placement rather than
-        // written out, so it keeps pointing at the same tread if the frame
-        // height or the step size ever move. Step i's top is (i+1)*STEP and
-        // it sits half a step north of its own point, which is what makes the
-        // treads meet; the topmost is steps-1, so one below it is steps-2.
-        // clamped at 0 for a run too short to have one.
-        const steps = Math.max(1, Math.ceil(forestFrameTopY() / FOREST_STEP_SIZE) - 1);
-        const stepIndex = Math.max(0, steps - 2);
+        // forestPlatformZ0 is the landing's own -Z edge, where the last step
+        // meets it - taken from the builder rather than written out, so this
+        // follows the deck if the wood's length or its platform depth move.
+        // Stepped a body's width in from that line: at the edge, which is
+        // what was asked for, but standing ON the deck rather than balanced
+        // on the seam between it and the top step.
         const x = forestStepX();
-        const z = forestPlatformZ0() - (steps - stepIndex) * FOREST_STEP_SIZE + FOREST_STEP_SIZE * 0.5;
-        // Cast from well above rather than trusted to arithmetic - the tread's
+        const z = forestPlatformZ0() + FOREST_LANDING_LIP_INSET;
+        // Cast from well above rather than trusted to arithmetic - the deck's
         // own top is what the character has to stand on, and storyGroundY
-        // finds it whatever the step is actually built as.
+        // finds it whatever it is actually built as.
         const y = storyGroundY(x, z, 0);
         char.group.position.set(x, y, z);
         // Facing +Z - the jars, then the ramp. rotation.y 0 IS +Z here, same
         // convention as the corridor spawn above.
         char.group.rotation.y = 0;
+        // PUNCH AND JUMP ALREADY EARNED.
+        //
+        // startForestStory withholds both for the linear wood - they are
+        // handed over by the second and third recruits - and it runs just
+        // before this, so the flags are off by the time we get here whatever
+        // they were. Set rather than left to the two recruits collected
+        // below: which lesson each carries is a property of the spec, and a
+        // debug start that silently loses the punch button the day those are
+        // reordered is worse than one that says what it wants.
+        window.punchButtonEnabled = true;
+        window.jumpButtonEnabled = true;
         // Respawn point too: dying up here should not send you back to the
         // corridor mouth, which would undo the whole point of this.
         _forestSpawnPoint.set(x, y, z);
         if (window.faceCameraAlongPlayer) window.faceCameraAlongPlayer();
         if (window.resetPlayerMomentum) window.resetPlayerMomentum();
 
+        // ALL of them, not the first two. Getting here on foot means having
+        // walked the whole corridor and picked everyone up, so a start that
+        // stands in for that walk should hand over the whole party.
         let taken = 0;
-        for (let i = 0; i < _freeRecruits.length && taken < 2; i++) {
+        for (let i = 0; i < _freeRecruits.length; i++) {
             const r = _freeRecruits[i];
             if (!r.comp) continue;
+            // ...except the one already standing up here, which is left to be
+            // met. It is the carry teacher, and walking over to it is the
+            // first thing there is to do from this start - collecting it
+            // hands over the carry lesson and puts its card up, which is the
+            // whole reason to begin on this platform.
+            //
+            // Found by where it STANDS rather than by name or by position in
+            // the list: its spot is the only one given an explicit y,
+            // forestFrameTopY, because it is the only one on the platform.
+            // Every other recruit is placed on the forest floor.
+            if (r.at.y > forestFrameTopY() - 1.0) continue;
+            // Its lesson counts as taught - see skipFightHint. Gated on quiet
+            // exactly the way the real collection gates waking a sleeper, so
+            // the companion at the bag hands over nothing here either.
+            if (!r.quiet) skipFightHint();
             r.comp.followOverride = null;
             removeRecruitBeacon(r.comp);
             setCompanionMarkerColor(r.comp, 0xffffff);
-            // Side by side and slightly behind, where following would have
-            // left them - not stacked on the player, which is exactly the
-            // overlap being investigated and would muddy the first frame.
-            r.comp.group.position.set(x + (taken === 0 ? -1.2 : 1.2), y, z - 1.2);
+            // Fanned out in a row rather than dropped on one spot. The old
+            // placement was written for two and read `taken === 0 ? -1.2 :
+            // 1.2`, so the third and every one after it landed on the same
+            // point as the second - which is the spawning-inside-each-other.
+            // Alternating outward from the middle gives -1.4, +1.4, -2.8,
+            // +2.8 and keeps going for as many as there are.
+            const side = (taken % 2 === 0) ? -1 : 1;
+            const rank = Math.floor(taken / 2) + 1;
+            r.comp.group.position.set(
+                x + side * rank * FOREST_DEBUG_COMP_SPACING,
+                y, z + FOREST_DEBUG_COMP_AHEAD);
             r.comp.group.rotation.y = 0;
             taken++;
         }
@@ -14245,6 +14391,18 @@ export function startGame(CharacterClass) {
         if (next === 'combo') showComboHint();
         else if (next === 'charge') showChargeHint();
         else if (next === 'carry') showCarryHint();
+    }
+
+    // The lesson a companion WOULD have handed over, marked as given without
+    // putting the card up.
+    //
+    // For the debug start, which stands in for having walked the stretch that
+    // earns them: a card for a fight you never had is noise, but the counter
+    // still has to move. Without it the one companion left waiting would hand
+    // over lesson zero - the combo - instead of the one it actually carries,
+    // because _hintStep is an index and nothing else had advanced it.
+    function skipFightHint() {
+        if (HINT_ORDER[_hintStep]) _hintStep++;
     }
 
     // The nearest bot still asleep, woken. Distance-ordered rather than
@@ -15548,6 +15706,9 @@ export function startGame(CharacterClass) {
         // ...and the compass is immediately re-pointed at the first companion
         // by the story, which owns it from here.
         startForestStory();
+        // After the story's own staging, or it would move these back into
+        // the wood - see stageForestShoreBots.
+        stageForestShoreBots();
         forestDebugStartAtEnd();
         // The two numbers that decide raycast cost in this level: how many
         // objects every ray has to walk, and how many triangles each tree
@@ -24647,6 +24808,24 @@ export function startGame(CharacterClass) {
                 c.debugHelper.visible = document.getElementById('toggle-hitbox').checked;
             }
             if (c.isCarried) return;
+            // A carryable with a home comes back if it ends up below it.
+            //
+            // For the forest approach's cube: the last step is the only way on
+            // and the cube is the only way up it, so a cube thrown off the
+            // shore, into the sea or down the ramp is a level you cannot
+            // finish and no way to tell. Nothing else carries a homePos, so
+            // this costs one undefined check for every other prop.
+            //
+            // Height only. Carrying it AROUND is the whole mechanic, so a
+            // distance leash would keep snatching it out of your hands; going
+            // DOWN is the one direction it cannot come back from on its own.
+            if (c.mesh.userData.homePos &&
+                c.mesh.position.y < c.mesh.userData.homePos.y - CARRY_RESPAWN_DROP) {
+                c.mesh.position.copy(c.mesh.userData.homePos);
+                c.velocity.set(0, 0, 0);
+                c.wasThrown = false;
+                c._floorY = undefined;
+            }
             // Placed by hand and never touched: it sits exactly where it was
             // put, with no gravity and no collision run against it at all.
             //
