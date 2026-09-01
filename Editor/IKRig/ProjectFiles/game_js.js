@@ -10296,16 +10296,36 @@ export function startGame(CharacterClass) {
             // key came out" and "the key came out somewhere you were not
             // looking" are the same thing to a player and completely different
             // things to fix, and this is the line that tells them apart.
-            else console.log('Jar key spawned at (' + spawnPos.x.toFixed(1) + ', '
-                + spawnPos.y.toFixed(1) + ', ' + spawnPos.z.toFixed(1) + ')');
             if (keyGroup) {
                 keyGroup.position.copy(spawnPos);
                 keyGroup.userData.isCarryable = true;
                 keyGroup.userData.isKey = true;
+                // Somewhere to come back to - see the homePos rule in the
+                // carryable physics. A key is born wherever its jar died, and
+                // the ways a jar dies include being thrown off the landing, so
+                // without this the one thing you broke the jar FOR can end up
+                // in the sea with no way to know that is what happened.
+                //
+                // Only when it broke over solid ground, and only when that
+                // ground is close under it. A home in mid-air would have the
+                // key falling, being put back, and falling again forever.
+                const gy = storyGroundY(spawnPos.x, spawnPos.z, -Infinity);
+                const grounded = gy > -Infinity && spawnPos.y - gy < 4.0;
+                if (grounded) keyGroup.userData.homePos = spawnPos.clone();
                 levelGroup.add(keyGroup);
                 collidables.push(keyGroup);
                 const carryKey = { mesh: keyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
                 carryables.push(carryKey); addCarryableDebugHelper(carryKey);
+                // Everything needed to tell the three failures apart without
+                // another round trip: WHERE it was born, whether it has ground
+                // under it, and the resting offset the physics will hold it
+                // at. That last one is the number the floorOffset fix turns
+                // on - if it is large the key hovers, if it is near zero the
+                // fix is a no-op and the fault is somewhere else entirely.
+                console.log('Jar key spawned at ('
+                    + spawnPos.x.toFixed(1) + ', ' + spawnPos.y.toFixed(1) + ', ' + spawnPos.z.toFixed(1)
+                    + ')  ground ' + (grounded ? gy.toFixed(1) : 'NONE')
+                    + '  restOffset ' + (keyGroup.userData.floorOffset * window.keyScale).toFixed(2));
             }
         }
     }
