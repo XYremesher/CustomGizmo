@@ -10225,6 +10225,14 @@ export function startGame(CharacterClass) {
         // containsKey was still set on the mesh, so the key spawned again.
         if (jarMesh.userData.jarBroken) return;
         jarMesh.userData.jarBroken = true;
+        // One smash per jar, and here rather than in shatterJar because this
+        // is the guarded side: shatterJar is also what the pool talks to, and
+        // a jar reached twice in a frame would sound twice from there.
+        //
+        // At the jar, so the level's own distance falloff applies - a row of
+        // them going off across the landing should not be as loud as the one
+        // in your hands.
+        if (window.playSound) window.playSound('glassBreak', jarMesh.position);
         shatterJar(jarMesh.position.clone(), impactVelocity ? impactVelocity.clone() : null);
         destroyJarCarryable(jarMesh);
     }
@@ -20766,6 +20774,19 @@ export function startGame(CharacterClass) {
     // The arc the carry lock will reach into - see the pick loop. 180 is
     // hard left to hard right and nothing behind.
     window.carryLockFovDeg = 180;
+    // Whether a carried body still leans onto the slope it is sliding down.
+    // Off: you slide upright. See the setSlopeTilt call for why - a 45 degree
+    // ramp tilts the whole model 45 degrees back, and the carry damping holds
+    // the spine in a frame that tilt sits outside of.
+    window.carrySlopeTilt = false;
+    // A rotated slab's AXIS-ALIGNED box is nothing like the slab: a 45 degree
+    // ramp's AABB is a block reaching from its foot to its lip, so a jar
+    // thrown at one met an invisible wall well above the surface and
+    // shattered in mid-air against it. Carryables skip slope ramps in the box
+    // phase for the same reason softObstacle exists; their floor scan is a
+    // RAY, which finds the real sloped face and rests them on it.
+    //
+    // Level 1's test ramps had this too - nobody had thrown a jar at one.
     let lockedCarry = null;
     window.lockTargetEnabled = true;    // on by default - see the lock buttons
     window.autoPunchEnabled = true;     // ...and so is auto punch
@@ -24686,7 +24707,8 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -24724,7 +24746,8 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -24788,7 +24811,24 @@ export function startGame(CharacterClass) {
                     }
                     c._floorY = fy;
                 }
-                const restY = Math.max(0.5, c._floorY + 0.5);
+                // How high this object's ORIGIN sits above the floor it rests
+                // on. 0.5 is half a jar, and it was applied to everything -
+                // which buries anything taller than a jar.
+                //
+                // The StarKey is the case that showed it. buildStarAssembly
+                // hangs its group origin on the star container's centre and
+                // records the real distance down to the bottom as floorOffset;
+                // spawnTestKeyAndLock places a key at exactly that height, so
+                // the two disagreed and the physics won. A key dropped from a
+                // broken jar sank into the deck by floorOffset*keyScale - 0.5
+                // and read as having vanished. The lock is placed by the same
+                // number and is not a carryable, so it never showed it.
+                //
+                // Scaled by keyScale here for the same reason those call sites
+                // scale it: floorOffset is measured before that multiplier.
+                const restOffset = c.mesh.userData.floorOffset !== undefined
+                    ? c.mesh.userData.floorOffset * window.keyScale : 0.5;
+                const restY = Math.max(restOffset, c._floorY + restOffset);
                 if (c.mesh.position.y < restY) {
                     c.mesh.position.y = restY;
                     if (c.mesh.userData.isJar && Math.abs(c.velocity.y) > 5.0) {
@@ -24819,7 +24859,8 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider || activeLockInstances.includes(obj)) return;
+                    if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const overlapY = Math.min(carryBox.max.y - obstacleBox.min.y, obstacleBox.max.y - carryBox.min.y);
@@ -27217,7 +27258,24 @@ export function startGame(CharacterClass) {
             // bone is rotated back to its as-authored orientation, as if
             // the ground weren't sloped - legs get carried with it and
             // legIK (later this frame) re-plants the feet on the slope.
-            char.setSlopeTilt(isGenuinelySliding ? groundNormal : _upVec, delta, isGenuinelySliding ? slideDir : null, char.turnLeanAngle, char.hitTwistAngle);
+            // The whole model is tilted onto the slope's normal while sliding,
+            // and on a 45 degree ramp that is a 45 degree backward lean of
+            // EVERYTHING - legs included. That is the backward bend while
+            // carrying, and it is why swapping the leg clip to idle did
+            // nothing: the pose was never the problem, the model's own
+            // orientation was. The carry damping cannot save it either - that
+            // holds the spine and arms, and fbxModel sits outside the frame it
+            // holds them in.
+            //
+            // So while carrying, the tilt is fed the identity case - straight
+            // up, no slide direction - which is the same branch the ledge grab
+            // above uses to level a body out. You slide upright with the thing
+            // held in front of you.
+            //
+            // window.carrySlopeTilt = true puts the lean back.
+            const tiltUpright = window.isCarryingObj && !window.carrySlopeTilt;
+            const tiltSliding = isGenuinelySliding && !tiltUpright;
+            char.setSlopeTilt(tiltSliding ? groundNormal : _upVec, delta, tiltSliding ? slideDir : null, char.turnLeanAngle, char.hitTwistAngle);
             if (isGenuinelySliding) char.levelPelvisWhileSliding();
             char.setArrowTilt(isOnSlopeSurface ? groundNormal : _upVec, delta, arrowTiltRefDir);
             // Leg IK: plants each foot on the ground actually under it

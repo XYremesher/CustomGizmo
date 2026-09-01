@@ -2125,6 +2125,28 @@
             // one-shots want is wrong for something you hear all the way
             // through.
             chargeLoad:   { files: ['ChargeLoading.mp3'], vol: 0.55, semis: 0, tone: 0, vary: 0, gap: 0 },
+            // A jar going. THREE takes, which is what the shuffle bag above
+            // was built for - it never deals the same take twice running, so
+            // breaking a row of them is three different smashes rather than
+            // one played over and over. Measured off the files: 2.16s, 5.18s
+            // and 1.70s, all 48kHz.
+            //
+            // semis 2.0, well under the punch's 4.0. Glass has a voice that
+            // heavy pitch-shifting turns into a different material, and with
+            // three real takes there is already variety to draw on - the
+            // shifting is here to stop repeats sounding identical, not to
+            // manufacture the variety itself.
+            //
+            // tone 8000, the highest floor in the table. The lowpass exists to
+            // make some plays read as dull and close, and glass is the one
+            // sound here that lives at the top end: dropping its ceiling takes
+            // the shatter out and leaves a thud.
+            //
+            // gap 0.08 - long enough that two jars breaking on the same frame
+            // do not stack into a click, short enough that breaking them one
+            // after another still sounds like each one.
+            glassBreak:   { files: ['break_glass_1.mp3', 'break_glass_2.mp3', 'break_glass_3.mp3'],
+                            vol: 0.75, semis: 2.0, tone: 8000, vary: 0.18, gap: 0.08 },
         };
         window.sfx = SFX;
         window.sfxVolume = 1.0;
@@ -5297,25 +5319,23 @@ updateClimbing(delta) {
                 // already ON carry_upper, so fadeToUpperAction's own
                 // same-action guard returns without touching the clip's time.
                 //
-                // ...and while carrying, the LEGS come from idle rather than
-                // from the slide. Slide.fbx is authored as a crouched,
-                // leaning-back pose and that lean lives in the hips, which are
-                // the root: everything above them inherits it, so layering
-                // carry_upper over sliding_lower held the arms in the carry
-                // pose on a torso that was already tipped backwards. Holding
-                // the hips instead is not an option here - see the carry
-                // damping notes in CLAUDE.md, that was tried and it wrecks the
-                // legs. Standing upright and sliding is both the simpler
-                // answer and the one that reads right for someone carrying
-                // something down a slope.
+                // The LEGS keep the slide either way - fadeToAction remaps to
+                // sliding_lower while carrying, so the feet do the slide and
+                // carry_upper owns the spine and arms above them.
+                //
+                // They were swapped to idle for a while, chasing a backward
+                // bend that this was not causing: the lean was setSlopeTilt
+                // rotating the whole model onto a 45 degree ramp's normal,
+                // legs and all. That is fixed where it belongs (see the
+                // setSlopeTilt call in game_js.js) and the slide is back.
                 } else if (state === 'sliding') {
                     if (window.isCarryingObj) this.fadeToUpperAction('carry_upper', dur);
                     else this.stopUpperAction(dur);
-                    this.fadeToAction(window.isCarryingObj ? 'idle' : 'sliding', dur);
+                    this.fadeToAction('sliding', dur);
                 } else if (state === 'stop_sliding') {
                     if (window.isCarryingObj) this.fadeToUpperAction('carry_upper', dur);
                     else this.stopUpperAction(dur);
-                    this.fadeToAction(window.isCarryingObj ? 'idle' : 'stop_sliding', dur);
+                    this.fadeToAction('stop_sliding', dur);
                 } else if (state === 'runup') {
                     this.stopUpperAction(dur);
                     this.fadeToAction('runup', dur);
