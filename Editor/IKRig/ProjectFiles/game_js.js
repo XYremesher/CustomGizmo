@@ -6863,9 +6863,43 @@ export function startGame(CharacterClass) {
         avatar._headBone = found;   // cached, including a null result
         return found;
     }
+    // The bone the size is applied TO, which is the NECK and not the head.
+    //
+    // A bone's scale works about its OWN origin. The head bone's origin sits
+    // at the base of the skull, so scaling it shrinks the head toward that
+    // point and leaves the neck at full length underneath - a small head
+    // perched on top of a stalk, with a step where the two meet. Scaling the
+    // neck instead takes the neck and everything above it, about the neck's
+    // own origin down at the shoulders, so the whole assembly comes down
+    // together and stays joined to the body. That is what "scale it from the
+    // neck" means and it is the only pivot in the chain that has the shoulders
+    // under it.
+    //
+    // FIRST match of each word, and the two searched separately. A Mixamo rig
+    // runs Neck -> Head -> HeadTop_End, so a loop that scaled every bone whose
+    // name contains 'head' would hit two in the same chain and multiply.
+    // Falling back to the head bone if a rig has no neck at all leaves the old
+    // behaviour rather than no scaling.
+    //
+    // Cached apart from getHeadBone's own cache: that one is still the HEAD,
+    // because the vision cone wants the head's world position and nothing
+    // about the neck would do.
+    function getHeadScaleBone(avatar) {
+        if (!avatar || !avatar.fbxModel) return null;
+        if (avatar._headScaleBone !== undefined) return avatar._headScaleBone;
+        let neck = null, head = null;
+        avatar.fbxModel.traverse(o => {
+            if (!o.isBone) return;
+            const n = o.name.toLowerCase();
+            if (!neck && n.includes('neck')) neck = o;
+            if (!head && n.includes('head')) head = o;
+        });
+        avatar._headScaleBone = neck || head;
+        return avatar._headScaleBone;
+    }
     function applyHeadScale() {
         const s = window.headScale;
-        const set = (a) => { const b = getHeadBone(a); if (b) b.scale.setScalar(s); };
+        const set = (a) => { const b = getHeadScaleBone(a); if (b) b.scale.setScalar(s); };
         set(char);
         companions.forEach(r => set(r.comp));
         aiBots.forEach(r => set(r.bot));
@@ -11876,12 +11910,25 @@ export function startGame(CharacterClass) {
     // players never open this, so the extra FBX fetch + renderer/scene
     // setup only happens the first time the button is actually clicked.
     const Viewer = { scene: null, camera: null, renderer: null, composer: null, controls: null, active: false, playerModel: null, companionGroup: null, enemyGroup: null, loaded: false, mixers: [], clock: new THREE.Clock(), category: 'player' };
+    // The viewer's own copy, and the same two corrections applyHeadScale just
+    // got: the NECK carries the size, and only the first match of it.
+    //
+    // This scaled every bone whose name contains 'head', which on a Mixamo rig
+    // is Head AND HeadTop_End - one inside the other, so anything bound to the
+    // second was scaled twice and the model in the viewer never quite matched
+    // the one in the game.
     function applyViewerHeadScale(root) {
         if (!root) return;
         const scale = window.headScale !== undefined ? window.headScale : 0.4;
+        let neck = null, head = null;
         root.traverse(obj => {
-            if (obj.isBone && obj.name.toLowerCase().includes('head')) obj.scale.setScalar(scale);
+            if (!obj.isBone) return;
+            const n = obj.name.toLowerCase();
+            if (!neck && n.includes('neck')) neck = obj;
+            if (!head && n.includes('head')) head = obj;
         });
+        const bone = neck || head;
+        if (bone) bone.scale.setScalar(scale);
     }
     function ensureViewerLoaded() {
         if (Viewer.loaded) return;
