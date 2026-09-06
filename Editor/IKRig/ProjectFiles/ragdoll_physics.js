@@ -8,6 +8,9 @@ const _tempQuat2 = new THREE.Quaternion();
 const _tempMat4 = new THREE.Matrix4();
 const _fwdVec = new THREE.Vector3(0, 0, 1);
 const _zeroVec = new THREE.Vector3();
+const _ragdollFloorRay = new THREE.Raycaster();
+const _ragdollFloorOrigin = new THREE.Vector3();
+const _ragdollFloorDown = new THREE.Vector3(0, -1, 0);
 const _recoilStep = new THREE.Vector3();
 // Below this the lean is invisible, so it is treated as gone rather than left
 // to decay asymptotically forever. Same value and same reasoning as
@@ -840,6 +843,47 @@ export const RagdollPhysics = {
             }
         }
 
+        // ---- Per-particle floor, once per frame ----
+        //
+        // The clamp below used to compare every particle against the SAME
+        // floorY - one raycast, taken under the hips, by the caller
+        // (_ragdollFloorY in remote_avatar.js, or the player's own
+        // equivalent in game_js.js). That is right on flat ground, where the
+        // floor under the hips is the floor under everything else too. It is
+        // wrong on a slope: a body lying along a 45 degree ramp has
+        // particles a metre or more apart along the incline, and a metre of
+        // incline at 45 degrees is a metre of real height difference.
+        // Clamping every one of them to the hips' own floor height held the
+        // downhill half of the body above the ramp's real surface - "the
+        // ragdoll ends up floating over the ramp, not on it".
+        //
+        // One extra raycast per particle, done HERE (once per frame) rather
+        // than inside the 20-iteration loop below, where it would cost 20x
+        // for no benefit - the constraint solver mostly redistributes an
+        // already-settled shape within a single frame; it does not need the
+        // floor re-asked 20 times to use it once. Falls back to the single
+        // floorY the caller passed in when nothing is found under a
+        // particular particle, which keeps the existing "-Infinity means
+        // keep falling" behaviour for a body that has not landed on
+        // anything yet.
+        for (let i = 0; i < this.ragdollParticles.length; i++) {
+            const p = this.ragdollParticles[i];
+            _ragdollFloorOrigin.copy(p.pos);
+            _ragdollFloorOrigin.y += 1.0;
+            _ragdollFloorRay.set(_ragdollFloorOrigin, _ragdollFloorDown);
+            const hits = _ragdollFloorRay.intersectObjects(collidables);
+            let found = ragdollFloor;
+            // Same rule as every ground read in the game: a canopy is a
+            // perfectly good hit for a downward ray and a bad answer for
+            // "what is under me" - see _ragdollFloorY's own copy of this.
+            for (let h = 0; h < hits.length; h++) {
+                if (hits[h].object.userData && hits[h].object.userData.isTreeCollider) continue;
+                found = hits[h].point.y;
+                break;
+            }
+            p._slopeFloorY = found;
+        }
+
         const collisionIters = window.ragdollCollisionIters !== undefined ? window.ragdollCollisionIters : 8;
         const collisionFrom = 20 - Math.max(1, Math.min(20, Math.round(collisionIters)));
         for (let iter = 0; iter < 20; iter++) {
@@ -862,15 +906,21 @@ export const RagdollPhysics = {
             this.applyHingeLimit('spine', 'hips', 'rThigh', 0.5, 2.0);
 
             this.ragdollParticles.forEach(p => {
-                    // floorY, not 0. This clamp is what stops a ragdoll
-                    // sinking, and it was hardcoded to the world origin - so a
-                    // body falling through open space had every particle
-                    // snapped back up to y=0, which reads as being flung
-                    // upward out of the fall. -Infinity (no ground anywhere
-                    // below) makes the comparison false and the body simply
-                    // keeps falling, which is the point.
-                    if (p.pos.y < ragdollFloor + p.radius) {
-                        p.pos.y = ragdollFloor + p.radius;
+                    // p._slopeFloorY, not the single shared floorY - see the
+                    // per-particle floor pass above this loop for why: each
+                    // particle answers for the ground under ITS OWN xz, so a
+                    // body lying across a slope is held along the slope
+                    // instead of at one flat height taken from the hips.
+                    //
+                    // floorY (now per particle), not 0. This clamp is what
+                    // stops a ragdoll sinking, and it was once hardcoded to
+                    // the world origin - so a body falling through open space
+                    // had every particle snapped back up to y=0, which reads
+                    // as being flung upward out of the fall. -Infinity (no
+                    // ground anywhere below) makes the comparison false and
+                    // the body simply keeps falling, which is the point.
+                    if (p.pos.y < p._slopeFloorY + p.radius) {
+                        p.pos.y = p._slopeFloorY + p.radius;
                         // Absorb the vertical velocity on landing instead of just
                         // repositioning: oldPos.y still reflected the pre-landing
                         // (falling) height, so next frame's implicit velocity

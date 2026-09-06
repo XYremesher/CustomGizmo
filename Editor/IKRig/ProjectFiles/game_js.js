@@ -6771,6 +6771,22 @@ export function startGame(CharacterClass) {
                 const dx = o.position.x - pos.x, dz = o.position.z - pos.z;
                 if (dx * dx + dz * dz > r2) continue;
             }
+            // A WALKABLE RAMP IS NOT AN OBSTACLE. Both companionRayClear and
+            // moveAiBotToward's own candidate-angle scan below treat any hit
+            // in this list as "blocked, try a different direction" - and a
+            // forward ray toward or along a ramp's own sloped surface always
+            // hits it, since that surface is real, solid geometry standing
+            // directly in the path. Every candidate angle that pointed up or
+            // along the forest approach ramp therefore read as blocked, which
+            // is "companions cannot get from the ramp onto the flat" - they
+            // could not even choose a direction that used the ramp at all.
+            //
+            // The player never goes through this list - walking is direct
+            // input, not steered around obstacles - and already has the
+            // matching rule for the same reason: RAMP_WALK_BLOCK_ANGLE
+            // exempts a slope ramp from the wall-stop below 58 degrees. This
+            // is that same exemption for the steering system.
+            if (ud && ud.isSlopeRamp) continue;
             _steerList.push(o);
         }
         return _steerList;
