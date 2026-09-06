@@ -13182,6 +13182,13 @@ export function startGame(CharacterClass) {
         ramp.castShadow = true; ramp.receiveShadow = true;
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = ang;
+        // NOT flagged softObstacle - that flag is shared with
+        // isVerticalSpaceClear, the camera-containment test and the
+        // carryable box phase, none of which have this ramp's problem, and
+        // exempting it from THEM too risks a carry-drop or ledge-clearance
+        // check reading "clear" over ground that is actually still solid.
+        // The ragdoll's own candidate filter checks isSlopeRamp directly
+        // instead - see the comment there.
         ramp.updateMatrixWorld(true);
         ditherLevelMeshes.push(ramp);
         levelGroup.add(ramp);
@@ -17420,6 +17427,9 @@ export function startGame(CharacterClass) {
         // SLOPE_WALL_CUTOFF used for natural terrain like the hemisphere.
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = angleRad;
+        // NOT softObstacle - see the forest approach ramp's own copy of this
+        // comment (buildForestExitApproach) for why that shared flag is the
+        // wrong tool here.
         levelGroup.add(ramp); collidables.push(ramp);
         makeLevelOccluder(ramp, { grass: true });
 

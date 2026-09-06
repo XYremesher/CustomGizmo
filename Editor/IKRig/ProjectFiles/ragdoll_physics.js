@@ -818,7 +818,25 @@ export const RagdollPhysics = {
             // isVerticalSpaceClear); the ragdoll was the one place still doing
             // it. Landing is unaffected - that comes from floorY, which is a
             // real raycast against the actual surface.
-            if (obj.userData && obj.userData.softObstacle) continue;
+            //
+            // isSlopeRamp joins it here, but is NOT also flagged softObstacle
+            // on the ramp itself - that shared flag reaches isVerticalSpaceClear,
+            // the camera-containment test and the carryable box phase too, and
+            // none of them have this problem; exempting a ramp from THOSE risks
+            // a carry-drop or ledge-clearance check reading "clear" over ground
+            // that is still solid. This is the ragdoll's own, narrower version
+            // of the same reasoning: a ramp is a long box rotated up to 45+
+            // degrees, so its AABB reaches nearly as high as the box is long
+            // rather than the 0.6 it is actually thick - a particle resting on
+            // its real surface can still read as "inside" that inflated box,
+            // and get shoved out along whichever axis has the smallest overlap,
+            // which for a shape this elongated is very often straight up. That
+            // fought the per-particle floor clamp below rather than agreeing
+            // with it - a body would be pushed up by this box test on one
+            // iteration and pulled back down by the real-surface raycast on the
+            // next, and the two together settled somewhere between them: above
+            // the actual surface, "floating over the ramp, not on it".
+            if (obj.userData && (obj.userData.softObstacle || obj.userData.isSlopeRamp)) continue;
             // Written straight into the candidate's own box so a rejected
             // object costs nothing beyond the one getObstacleBox call, and an
             // accepted one is already cached for the 300 inner iterations.
