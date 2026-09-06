@@ -10345,7 +10345,38 @@ export function startGame(CharacterClass) {
                 // key falling, being put back, and falling again forever.
                 const gy = storyGroundY(spawnPos.x, spawnPos.z, -Infinity);
                 const grounded = gy > -Infinity && spawnPos.y - gy < 4.0;
-                if (grounded) keyGroup.userData.homePos = spawnPos.clone();
+                if (grounded) {
+                    keyGroup.userData.homePos = spawnPos.clone();
+                    // How far it may fall before the physics decide it is
+                    // lost and snap it back - NOT the flat CARRY_RESPAWN_DROP
+                    // every other carryable with a home uses.
+                    //
+                    // That flat 2.0 is right for the approach cube, whose home
+                    // sits right next to where it is actually used. It is
+                    // wrong for a key: the whole point of this one is to be
+                    // carried or thrown DOWN to whatever lock is waiting for
+                    // it, and on the forest's exit landing that lock sits
+                    // 11.8 units below the jar that held the key. A flat
+                    // 2-unit leash snapped it back to the landing part way
+                    // down the ramp, long before it could ever reach the
+                    // thing it exists to unlock - "thrown down the hill,
+                    // comes back before it gets to a lock".
+                    //
+                    // So the floor is measured from the lowest lock still
+                    // waiting to be opened, not from the key's own
+                    // birthplace: whatever lock it might still be delivered
+                    // to is what makes a depth legitimate, and only going
+                    // PAST that - into the sea, off the map - is actually
+                    // lost. Level 1's lock sits right at ground level next to
+                    // its jar, so this reduces to nearly the old behaviour
+                    // there; the forest's does not, which is the case this
+                    // exists for.
+                    let floorY = gy;
+                    for (const lockGroup of activeLockInstances) {
+                        if (!lockGroup.userData.keyInserted) floorY = Math.min(floorY, lockGroup.position.y);
+                    }
+                    keyGroup.userData.homeFloorY = floorY - CARRY_RESPAWN_DROP;
+                }
                 levelGroup.add(keyGroup);
                 collidables.push(keyGroup);
                 const carryKey = { mesh: keyGroup, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
@@ -15663,6 +15694,21 @@ export function startGame(CharacterClass) {
                 w.position.set(cx, (top + FOREST_BORDER_CAP) * 0.5, cz);
                 w.updateMatrixWorld(true);
                 levelGroup.add(w); collidables.push(w);
+                // The genuinely INVISIBLE part of the frame - real solid
+                // collision with no mesh a player ever sees. This is what a
+                // thrown key or jar actually meets when it stops dead beside
+                // border trees that carry no collider of their own (they are
+                // visual only - see p.noCollide two passes up); this box is
+                // what stands in for them, at the wall's own full height, so
+                // it reaches exactly as high as the border trees planted on
+                // top of it.
+                //
+                // Shown on "Show Hitboxes" rather than left to be found by
+                // throwing things at it blind - the existing magenta
+                // wireframe already means "this is an actual collision
+                // hitbox" everywhere else it appears, and that is exactly
+                // what this is.
+                addWireframeBoxDebugHelper(w.position, sx, top + FOREST_BORDER_CAP, sz);
             });
         }
 
@@ -24896,8 +24942,18 @@ export function startGame(CharacterClass) {
             // Height only. Carrying it AROUND is the whole mechanic, so a
             // distance leash would keep snatching it out of your hands; going
             // DOWN is the one direction it cannot come back from on its own.
-            if (c.mesh.userData.homePos &&
-                c.mesh.position.y < c.mesh.userData.homePos.y - CARRY_RESPAWN_DROP) {
+            //
+            // The floor is PER OBJECT (homeFloorY) when one was computed -
+            // see destroyJarCarryable for the key's own version - and only
+            // falls back to a flat CARRY_RESPAWN_DROP under home when it
+            // was not. The key needs a floor anchored to the lock it is
+            // headed for, which can sit far below where it was born; the
+            // cube's home is already right next to where it is used, so the
+            // flat fallback is exactly right for it.
+            const dropFloor = c.mesh.userData.homeFloorY !== undefined
+                ? c.mesh.userData.homeFloorY
+                : (c.mesh.userData.homePos ? c.mesh.userData.homePos.y - CARRY_RESPAWN_DROP : undefined);
+            if (dropFloor !== undefined && c.mesh.position.y < dropFloor) {
                 c.mesh.position.copy(c.mesh.userData.homePos);
                 c.velocity.set(0, 0, 0);
                 c.wasThrown = false;
