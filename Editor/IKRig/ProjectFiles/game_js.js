@@ -21084,6 +21084,16 @@ export function startGame(CharacterClass) {
     // because the target backed off is the fault chargeAutoRange exists to
     // prevent; this must not reintroduce it from the other side.
     window.lockFaceRange = 2.5;
+    // The same question, asked with your hands full.
+    //
+    // lockFaceRange's own 2.5 is derived from swinging: autoPunchRange plus
+    // the distance the turn covers before the first punch could land. None of
+    // that applies while carrying - punchUsable is false the whole time, so
+    // there is no swing this range is timed against. What is left is just
+    // "something dangerous is near and I cannot fight it with my hands full",
+    // which wants noticing from further off, not closer. Doubled rather than
+    // left equal.
+    window.carryLockFaceRange = 5.0;
     // How much NEARER a second bot has to be before it takes the lock off the
     // one you already have. Pure hysteresis: at 0 two bots standing the same
     // distance away would swap it every frame and the character would shiver
@@ -26754,8 +26764,14 @@ export function startGame(CharacterClass) {
                     // chargeAutoRange was widened to prevent.
                     const lb = lockedBot;
                     const punching = !!(window.combat && window.combat.punchState > 0);
+                    // Carrying reads carryLockFaceRange instead of
+                    // lockFaceRange - see its own comment. isCarryingObj, not
+                    // merely being near a carryable: this is about hands
+                    // actually full, and lockPos below already gives the jar
+                    // itself priority for anything short of that.
+                    const faceRange = window.isCarryingObj ? window.carryLockFaceRange : window.lockFaceRange;
                     const lockEngaged = !!lb && (punching ||
-                        char.group.position.distanceTo(lb.group.position) <= window.lockFaceRange);
+                        char.group.position.distanceTo(lb.group.position) <= faceRange);
                     // Published for the animation dispatch a few hundred lines
                     // down, which picks strafe/backward clips off the lock. If
                     // the body is not being steered, the legs must not act as
