@@ -10463,6 +10463,43 @@ export function startGame(CharacterClass) {
             targetBox3.setFromCenterAndSize(obj.position, _carrySizeVec);
             return targetBox3;
         }
+        // TREES answer with their TRUNK'S box, not the whole tree's.
+        //
+        // The forest's collider merges one tree's trunk and all four canopy
+        // chunks into a single mesh (see treeCollisionGeo), and those chunks
+        // reach out and up at their own angles - so the plain
+        // Box3.setFromObject below, asked of the WHOLE mesh, wraps a lot of
+        // air the tree never actually occupies. That box was what a thrown
+        // jar or key was testing against directly, and it is solid over
+        // plenty of space that only looks empty because the box, not the
+        // tree, is what is there: a throw could shatter or bounce well clear
+        // of any branch or leaf. Excluding trees outright fixed that but
+        // traded it for the opposite - nothing thrown could hit a trunk
+        // either, sailing straight through solid-looking bark.
+        //
+        // trunkGeo is the real, low-poly trunk-only geometry the ragdoll's
+        // own trunk test already uses (_sweepTrunk in ragdoll_physics.js) -
+        // reused here for a box rather than a per-triangle test, which this
+        // generic AABB loop has no way to run, but still a world-space box
+        // built from ONLY the trunk's own vertices rather than the whole
+        // tree's. Cached the same way cachedBox3 is below: trees never move,
+        // so a box computed once from world-space vertices stays correct.
+        //
+        // Only set on the piece that IS the trunk (see isTreeTrunk): the
+        // forest's one merged collider always carries it, but a village
+        // tree's CANOPY pieces are each their own separate collidable with
+        // no trunk geometry of their own - those fall through to the
+        // ordinary whole-mesh box further down, which is already tight to
+        // just that one chunk and never had this problem to begin with.
+        if (obj.userData && obj.userData.isTreeCollider && obj.userData.trunkGeo) {
+            if (!obj.userData.trunkBox3) {
+                const trunkGeo = obj.userData.trunkGeo;
+                if (!trunkGeo.boundingBox) trunkGeo.computeBoundingBox();
+                obj.userData.trunkBox3 = trunkGeo.boundingBox.clone().applyMatrix4(obj.matrixWorld);
+            }
+            targetBox3.copy(obj.userData.trunkBox3);
+            return targetBox3;
+        }
         // `instanceof`, not a plain truthiness check: a level authored in the
         // shape editor and exported as glTF carries its own `cachedBox3` in
         // each node's `extras`, and GLTFLoader copies `extras` wholesale into
@@ -25040,28 +25077,16 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    // TREES excluded too, and this is the important one: a
-                    // tree's collider is real trunk+canopy triangles, but
-                    // getObstacleBox has no way to test against those here -
-                    // it falls through to Box3.setFromObject, one crude AABB
-                    // wrapping the whole tree (trunk plus all four canopy
-                    // chunks, which reach out and up at odd angles). That box
-                    // covers plenty of open air the tree's actual geometry
-                    // never touches, and this loop was testing thrown objects
-                    // against it directly - a jar or key sailing near a tree
-                    // could shatter or bounce in space that only LOOKS empty
-                    // because it read as solid to the box, not to the eye.
-                    // The same reasoning that already keeps trees out of
-                    // isVerticalSpaceClear (softObstacle) and every ground
-                    // raycast in the game (isTreeCollider) applies here: a
-                    // shape this coarse cannot be allowed to answer for a
-                    // tree, so it does not get asked. A thrown prop now
-                    // passes through trees rather than clip an invisible box
-                    // around them - the accurate per-triangle test that
-                    // exists for ragdoll bodies (_sweepTrunk) is not
-                    // reachable from this generic AABB loop.
+                    // TREES are no longer excluded here - they answer through
+                    // the normal getObstacleBox call just below, which now
+                    // gives a tree its TRUNK's own box instead of one
+                    // wrapping the whole tree (see getObstacleBox's own
+                    // comment). A jar can shatter against real bark again,
+                    // and the canopy - which that box no longer covers - goes
+                    // back to being something a throw passes through, rather
+                    // than an invisible wall in the shape of open air.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -25099,13 +25124,11 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    // ...and trees - see the X pass above for why: a tree's
-                    // real collision is its trunk and canopy triangles, and
-                    // this loop can only ever ask a crude whole-tree AABB
-                    // instead, which is solid over plenty of air the tree
-                    // itself never reaches.
+                    // ...and trees are back in here too - see the X pass
+                    // above, getObstacleBox now hands one back its own
+                    // trunk's box rather than the whole tree's.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -25217,9 +25240,10 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
-                    // ...and trees, same reason as the X and Z passes above.
+                    // ...and trees are back too, same reason as the X and Z
+                    // passes above.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const overlapY = Math.min(carryBox.max.y - obstacleBox.min.y, obstacleBox.max.y - carryBox.min.y);
