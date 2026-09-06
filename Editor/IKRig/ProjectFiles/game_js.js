@@ -25040,8 +25040,28 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
+                    // TREES excluded too, and this is the important one: a
+                    // tree's collider is real trunk+canopy triangles, but
+                    // getObstacleBox has no way to test against those here -
+                    // it falls through to Box3.setFromObject, one crude AABB
+                    // wrapping the whole tree (trunk plus all four canopy
+                    // chunks, which reach out and up at odd angles). That box
+                    // covers plenty of open air the tree's actual geometry
+                    // never touches, and this loop was testing thrown objects
+                    // against it directly - a jar or key sailing near a tree
+                    // could shatter or bounce in space that only LOOKS empty
+                    // because it read as solid to the box, not to the eye.
+                    // The same reasoning that already keeps trees out of
+                    // isVerticalSpaceClear (softObstacle) and every ground
+                    // raycast in the game (isTreeCollider) applies here: a
+                    // shape this coarse cannot be allowed to answer for a
+                    // tree, so it does not get asked. A thrown prop now
+                    // passes through trees rather than clip an invisible box
+                    // around them - the accurate per-triangle test that
+                    // exists for ragdoll bodies (_sweepTrunk) is not
+                    // reachable from this generic AABB loop.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -25079,8 +25099,13 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
+                    // ...and trees - see the X pass above for why: a tree's
+                    // real collision is its trunk and canopy triangles, and
+                    // this loop can only ever ask a crude whole-tree AABB
+                    // instead, which is solid over plenty of air the tree
+                    // itself never reaches.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const speed = c.velocity.length();
@@ -25192,8 +25217,9 @@ export function startGame(CharacterClass) {
                     // so checkHit's dedicated hit reaction never got a
                     // chance to fire at all, regardless of where the sandbag
                     // was positioned.
+                    // ...and trees, same reason as the X and Z passes above.
                     if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                        || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) return;
+                        || obj.userData?.isSlopeRamp || obj.userData?.isTreeCollider || activeLockInstances.includes(obj)) return;
                     getObstacleBox(obj, obstacleBox);
                     if (carryBox.intersectsBox(obstacleBox)) {
                         const overlapY = Math.min(carryBox.max.y - obstacleBox.min.y, obstacleBox.max.y - carryBox.min.y);
