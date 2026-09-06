@@ -15703,12 +15703,34 @@ export function startGame(CharacterClass) {
                 // it reaches exactly as high as the border trees planted on
                 // top of it.
                 //
-                // Shown on "Show Hitboxes" rather than left to be found by
-                // throwing things at it blind - the existing magenta
-                // wireframe already means "this is an actual collision
-                // hitbox" everywhere else it appears, and that is exactly
-                // what this is.
-                addWireframeBoxDebugHelper(w.position, sx, top + FOREST_BORDER_CAP, sz);
+                // FORCED VISIBLE rather than gated on "Show Hitboxes" -
+                // addWireframeBoxDebugHelper's own version of this (same box,
+                // same magenta wireframe, toggled by that checkbox) was tried
+                // first and was not actually visible to the person looking
+                // for it, so this stays unconditionally on instead of
+                // guessing at why. depthTest/depthWrite both off so it draws
+                // on top of the trees and terrain that would otherwise hide a
+                // thin wireframe line inside dense foliage, and a high
+                // renderOrder so it wins against other transparent geometry
+                // drawn the same frame.
+                //
+                // TEMPORARY: once these have actually been looked at, this
+                // should go back through addWireframeBoxDebugHelper (normal
+                // hitbox-toggle behaviour) or be deleted outright along with
+                // the collider itself, whichever the inspection decides.
+                {
+                    const dbg = new THREE.Mesh(
+                        new THREE.BoxGeometry(sx, top + FOREST_BORDER_CAP, sz),
+                        new THREE.MeshBasicMaterial({
+                            color: 0xff00ff, wireframe: true, transparent: true,
+                            opacity: 0.9, depthTest: false, depthWrite: false,
+                        })
+                    );
+                    dbg.position.copy(w.position);
+                    dbg.raycast = () => {};
+                    dbg.renderOrder = 999;
+                    levelGroup.add(dbg);
+                }
             });
         }
 
