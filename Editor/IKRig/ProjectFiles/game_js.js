@@ -10362,7 +10362,39 @@ export function startGame(CharacterClass) {
                 const gy = storyGroundY(spawnPos.x, spawnPos.z, -Infinity);
                 const grounded = gy > -Infinity && spawnPos.y - gy < 4.0;
                 if (grounded) {
-                    keyGroup.userData.homePos = spawnPos.clone();
+                    // At the KEY's own resting height, not the jar's. This is
+                    // the "key came out somewhere you were not looking" bug,
+                    // and it is a teleport rather than a placement mistake.
+                    //
+                    // A jar sits at floor + 0.5, because 0.5 is half of the
+                    // fixed 1x1x1 box (_carrySizeVec) the carryable physics
+                    // gives every prop regardless of its model. Born at the
+                    // jar's exact position, the key inherits that 0.5 - but
+                    // its OWN rest offset is floorOffset * keyScale, 0.56 at
+                    // the shipping scale. Those 6cm are the whole bug: at
+                    // 0.56 the box bottom clears the deck by 0.06, at 0.5 it
+                    // sits EXACTLY on it, and Box3.intersectsBox counts
+                    // touching as intersecting. So on the key's first frame
+                    // the X pass read a flush contact as a horizontal
+                    // collision and pushed it out by the overlap it measured
+                    // against the DECK - a 12x26 slab, so ~6 units in X, then
+                    // the Z pass did the same for ~13 - landing it in the
+                    // corner of the block in a single frame, nowhere near the
+                    // jar it came from.
+                    //
+                    // spawnStairJar carries this same finding in its own
+                    // comment (its 0.51, not 0.5, is the same fix); the
+                    // forest's jars escape it only because they are
+                    // restStatic, which returns out of the physics loop
+                    // before any of these passes run. A key has no such flag,
+                    // so it is placed where it would have SETTLED instead -
+                    // the same floor + floorOffset*keyScale construction
+                    // spawnTestKeyAndLock and the lock placements already use.
+                    keyGroup.position.y = gy + keyGroup.userData.floorOffset * window.keyScale;
+                    // The corrected height, not spawnPos - a respawn that put
+                    // it back at the touching height would just fire the same
+                    // teleport again.
+                    keyGroup.userData.homePos = keyGroup.position.clone();
                     // How far it may fall before the physics decide it is
                     // lost and snap it back - NOT the flat CARRY_RESPAWN_DROP
                     // every other carryable with a home uses.
@@ -10403,8 +10435,12 @@ export function startGame(CharacterClass) {
                 // at. That last one is the number the floorOffset fix turns
                 // on - if it is large the key hovers, if it is near zero the
                 // fix is a no-op and the fault is somewhere else entirely.
+                // Where it actually ENDED UP, not spawnPos - those two now
+                // differ in Y by the rest-offset correction above, and a log
+                // reporting the position the key was never left at is how
+                // this bug read as "the key spawned fine" for so long.
                 console.log('Jar key spawned at ('
-                    + spawnPos.x.toFixed(1) + ', ' + spawnPos.y.toFixed(1) + ', ' + spawnPos.z.toFixed(1)
+                    + keyGroup.position.x.toFixed(1) + ', ' + keyGroup.position.y.toFixed(1) + ', ' + keyGroup.position.z.toFixed(1)
                     + ')  ground ' + (grounded ? gy.toFixed(1) : 'NONE')
                     + '  restOffset ' + (keyGroup.userData.floorOffset * window.keyScale).toFixed(2));
             }
