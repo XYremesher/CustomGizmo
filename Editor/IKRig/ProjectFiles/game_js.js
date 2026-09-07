@@ -7293,9 +7293,6 @@ export function startGame(CharacterClass) {
                 jar.isCarried = false;
                 jar.wasThrown = true;
                 jar.throwOwnerId = null;
-                // See performThrow's own copy of this - carried onto the key
-                // if this jar turns out to be the one holding it.
-                jar.mesh.userData.throwOrigin = jar.mesh.position.clone();
                 jar.velocity.copy(_jarHoldVec)
                     .multiplyScalar(window.throwHorizontalSpeed)
                     .setY(window.throwVerticalSpeed);
@@ -9756,11 +9753,6 @@ export function startGame(CharacterClass) {
             // lock and nearer the player start at z=0, on the flat platform
             // before the stairs begin.
             freeKey.position.set(3, freeKey.userData.floorOffset * window.keyScale, -5);
-            // Fallback for the isKey rescue check (carryables loop) if it is
-            // ever thrown before homePos/throwOrigin exist any other way -
-            // this key is not born from a jar, so destroyJarCarryable's own
-            // copy of this never runs for it.
-            freeKey.userData.homePos = freeKey.position.clone();
             levelGroup.add(freeKey);
             collidables.push(freeKey);
             const carryFreeKey = { mesh: freeKey, velocity: new THREE.Vector3(), isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
@@ -10358,14 +10350,6 @@ export function startGame(CharacterClass) {
                 keyGroup.position.copy(spawnPos);
                 keyGroup.userData.isCarryable = true;
                 keyGroup.userData.isKey = true;
-                // Inherited from the jar if it was thrown here, so the key
-                // rescue check (in the carryables loop) has somewhere to put
-                // it back other than spawnPos itself - spawnPos is exactly
-                // the bad spot (over the edge, down the ramp, in the sea)
-                // this is meant to recover FROM. Falls back to spawnPos when
-                // the jar was only punched in place and never thrown, which
-                // is already a reasonable spot to come back to.
-                keyGroup.userData.throwOrigin = jarMesh.userData.throwOrigin || spawnPos.clone();
                 // Somewhere to come back to - see the homePos rule in the
                 // carryable physics. A key is born wherever its jar died, and
                 // the ways a jar dies include being thrown off the landing, so
@@ -20113,13 +20097,6 @@ export function startGame(CharacterClass) {
                 _tempVec2.copy(cObj.mesh.position).addScaledVector(_tempVec3, 0.15);
                 if (!overlapsSolidCollidable(_tempVec2, cObj.mesh)) cObj.mesh.position.copy(_tempVec2);
 
-                // Where to come back to if this throw ends badly - see the
-                // isKey rescue check in the carryables loop. Recorded for
-                // every throw, not just the key's, because a jar can be the
-                // one thrown and the key is born wherever THAT jar dies
-                // (destroyJarCarryable copies it onto the spawned key).
-                cObj.mesh.userData.throwOrigin = cObj.mesh.position.clone();
-
                 cObj.velocity.copy(_tempVec3).multiplyScalar(window.throwHorizontalSpeed).setY(window.throwVerticalSpeed);
 
                 if (network) network.sendThrowEvent(cObj.netId, cObj.mesh.position, cObj.mesh.quaternion, cObj.velocity);
@@ -25254,11 +25231,6 @@ export function startGame(CharacterClass) {
                     rayDown.set(_tempVec1.set(c.mesh.position.x, c.mesh.position.y + 1.2, c.mesh.position.z), _downVec);
                     const fh = rayDown.intersectObjects(playerNear(c.mesh.position.x, c.mesh.position.z), true);
                     let fy = 0;
-                    // Whether fy actually came from a hit, not the 0 default -
-                    // see the key rescue check below, which needs to tell
-                    // "resting on real ground at y=0" apart from "found
-                    // nothing at all and fy is just the fallback".
-                    let foundRealFloor = false;
                     for (let k = 0; k < fh.length; k++) {
                         const ud = fh[k].object.userData;
                         // Not tree canopies, and not the carryable's own
@@ -25277,10 +25249,9 @@ export function startGame(CharacterClass) {
                             _hitObj = _hitObj.parent;
                         }
                         if (ud.isTreeCollider || _isSelf) continue;
-                        fy = fh[k].point.y; foundRealFloor = true; break;
+                        fy = fh[k].point.y; break;
                     }
                     c._floorY = fy;
-                    c._floorFound = foundRealFloor;
                 }
                 // How high this object's ORIGIN sits above the floor it rests
                 // on. 0.5 is half a jar, and it was applied to everything -
@@ -25355,65 +25326,6 @@ export function startGame(CharacterClass) {
                     }
                 });
                 if (earlyExit) break;
-            }
-
-            // Rescue for a key that settled somewhere broken rather than
-            // somewhere real - a NEW rule, and a shakier one than the rest
-            // of this file, so it is written narrowly (isKey only) and
-            // explained in full rather than just dropped in.
-            //
-            // Not the same case as the homePos/dropFloor check above this
-            // loop, which only fires once the object has fallen BELOW a
-            // known height - that already covers "thrown into the sea" for
-            // a key with a homeFloorY. This one catches two things that can
-            // happen well ABOVE that floor, at a standstill, which is
-            // exactly what a settled-but-wrong object looks like:
-            //
-            //  - c._floorFound is false: this frame's floor raycast hit
-            //    nothing at all (skipping tree canopies and itself), so fy
-            //    fell back to its 0 default and restY clamped the key to
-            //    hover at ~0.5 over open air - off the edge of the shore,
-            //    past the map's own cliff, wherever nothing was built. A
-            //    key doing this never falls further (restY holds it) and
-            //    never reads as "lost" to the homeFloorY check either,
-            //    because it never went below anything - it is just floating
-            //    where there is no ground, at rest, forever.
-            //  - it is embedded in something solid: the X/Y/Z bounce passes
-            //    above deliberately let a key pass through the ramp and any
-            //    lock (see their own comments - otherwise a thrown key
-            //    could never reach a lock to insert into, or never clear
-            //    the ramp's inflated box). That is the right call for
-            //    reaching them, but it also means nothing stops a key that
-            //    tunnels INTO one from the side or underneath, and once it
-            //    is inside, the floor raycast can still report a plausible
-            //    surface above it and the clamp above never fires. Checked
-            //    with the same exclusion list the bounce passes use, so
-            //    this only catches genuine solid geometry, not the ramp or
-            //    a lock it is legitimately resting against/near.
-            //
-            // Gated on being nearly stopped so this never fires on a key
-            // still mid-arc through a gap it is about to clear on its own.
-            if (c.mesh.userData.isKey && !c.isCarried && c.velocity.lengthSq() < 0.05) {
-                let brokenRest = !c._floorFound;
-                if (!brokenRest) {
-                    carryBox.setFromCenterAndSize(c.mesh.position, _carrySizeVec);
-                    for (const obj of carryableNear(c)) {
-                        if (obj === ground || obj === c.mesh || obj.userData?.isCarryable || obj.userData?.isSandbagCollider
-                            || obj.userData?.isSlopeRamp || activeLockInstances.includes(obj)) continue;
-                        getObstacleBox(obj, obstacleBox);
-                        if (carryBox.intersectsBox(obstacleBox)) { brokenRest = true; break; }
-                    }
-                }
-                if (brokenRest) {
-                    const rescueSpot = c.mesh.userData.throwOrigin || c.mesh.userData.homePos;
-                    if (rescueSpot) {
-                        c.mesh.position.copy(rescueSpot);
-                        c.velocity.set(0, 0, 0);
-                        c.wasThrown = false;
-                        c._floorY = undefined;
-                        c._floorFound = undefined;
-                    }
-                }
             }
 
             // A thrown key can also settle into the lock, same as walking
