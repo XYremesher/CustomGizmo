@@ -19725,6 +19725,40 @@ export function startGame(CharacterClass) {
         return hits.length > 0 && Math.abs(hits[0].point.y - referenceY) < 0.6;
     }
 
+    // Whether a point is UNDER a water surface. This exists because no
+    // other placement test in the game can answer it: the forest's sea is
+    // deliberately NOT a collidable (you wade and swim through it, and
+    // adding it would read as a floor to every ground scan there is), so a
+    // key thrown into the sea does not fail any "did it find solid ground"
+    // question - it sinks past the surface and settles on the river BED,
+    // which is an ordinary collidable and answers "yes, solid ground"
+    // exactly the way the shore does. Underwater and ashore are
+    // indistinguishable without asking the water itself.
+    //
+    // waterMeshSyncs is the per-level registry of every water plane, and
+    // each mesh's own position.y IS its surface height - the same value the
+    // foam uniforms are driven from every frame, so this cannot drift from
+    // what is drawn, or from a surface the level editor has dragged.
+    const _waterSpotBox = new THREE.Box3();
+    function pointIsUnderWater(pos) {
+        for (let i = 0; i < waterMeshSyncs.length; i++) {
+            const wm = waterMeshSyncs[i].mesh;
+            if (!wm || !wm.parent) continue;
+            if (pos.y >= wm.position.y) continue;
+            // Footprint as well as height: a level can hold more than one
+            // body at different levels (a sea plus an elevated pond), and
+            // being below the POND's surface means nothing while standing
+            // outside it on dry ground.
+            _waterSpotBox.setFromObject(wm);
+            if (pos.x < _waterSpotBox.min.x || pos.x > _waterSpotBox.max.x) continue;
+            if (pos.z < _waterSpotBox.min.z || pos.z > _waterSpotBox.max.z) continue;
+            return true;
+        }
+        return false;
+    }
+    const _keyRescueFwd = new THREE.Vector3();
+    const _keyRescuePos = new THREE.Vector3();
+
     // ---- Auto carry ----
     // Armed, standing next to something carryable fills a ring on the button
     // and the pickup fires when it completes. The delay is the point: an
@@ -25087,6 +25121,57 @@ export function startGame(CharacterClass) {
                 c.debugHelper.visible = document.getElementById('toggle-hitbox').checked;
             }
             if (c.isCarried) return;
+            // A key that has gone into the water comes back to the PLAYER.
+            //
+            // Deliberately not a collider, a fence or an invisible wall
+            // around the throwable area: you may throw the key wherever you
+            // like, and the recovery happens after it lands rather than
+            // being prevented up front. Nothing about the throw changes.
+            //
+            // The player, not homePos - which is the difference between this
+            // and the fall-below-home rule just underneath. homePos is where
+            // the jar died, which on the exit landing is up a ramp and
+            // across a deck from wherever you are standing when you watch
+            // the key go into the sea; being handed it back where you are is
+            // what makes this read as a recovery instead of a second trip.
+            // It is checked BEFORE that rule for the same reason - both can
+            // be true of a key at the bottom of the sea, and this one is the
+            // answer that was actually asked for.
+            //
+            // Height alone decides it, not stillness: the key is in the
+            // water the moment it is under the surface, and waiting for it
+            // to settle first would only mean watching it sink. A throw that
+            // ARCS over water stays dry the whole way, so nothing fires for
+            // a key that is merely passing above it.
+            if (c.mesh.userData.isKey && pointIsUnderWater(c.mesh.position)) {
+                _keyRescueFwd.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+                // The key's own resting height, the same construction the
+                // jar-break spawn and both lock placements use - and above
+                // the 0.5 half-box that a flush contact would shove sideways
+                // (see performDrop's own 0.51 for that same reason).
+                const keyRestOffset = c.mesh.userData.floorOffset !== undefined
+                    ? c.mesh.userData.floorOffset * window.keyScale : 0.51;
+                // The drop button's own placement search: a few distances in
+                // front, each rejected if it is too high, too low or already
+                // occupied, falling back to the player's own feet - a spot
+                // they are demonstrably standing in legally.
+                const spot = findDropPlacement(char.group.position, _keyRescueFwd, keyRestOffset);
+                _keyRescuePos.copy(char.group.position)
+                    .addScaledVector(_keyRescueFwd, spot.dist)
+                    .setY(spot.floorY + keyRestOffset);
+                // Unless the player is standing in the water themselves -
+                // wading the river is a scripted part of this level, and
+                // handing the key back into the water it just came out of
+                // would put it straight back under the surface and fire this
+                // again every frame. Left where it is instead, to be
+                // recovered on the first frame they are back on dry land.
+                if (!pointIsUnderWater(_keyRescuePos)) {
+                    c.mesh.position.copy(_keyRescuePos);
+                    c.velocity.set(0, 0, 0);
+                    c.wasThrown = false;
+                    c._floorY = undefined;
+                }
+            }
             // A carryable with a home comes back if it ends up below it.
             //
             // For the forest approach's cube: the last step is the only way on
