@@ -836,7 +836,21 @@ export const RagdollPhysics = {
             // iteration and pulled back down by the real-surface raycast on the
             // next, and the two together settled somewhere between them: above
             // the actual surface, "floating over the ramp, not on it".
-            if (obj.userData && (obj.userData.softObstacle || obj.userData.isSlopeRamp)) continue;
+            // isLock joins the two above for the same shape-mismatch reason,
+            // not a new one: isVerticalSpaceClear already carries this exact
+            // finding in its own comment - a lock's box is "a tall narrow
+            // column nothing like its real shape" (base + upright star
+            // container). That column reaches well above the lock's actual
+            // solid footprint, so a ragdoll settling anywhere near one read
+            // as buried in the column and got shoved out along the smallest
+            // overlap axis - straight up, out of the top - which is the
+            // forest ramp's own lock: the ramp launches a knocked-down body
+            // right past it, so this is where it started being seen instead
+            // of a coincidence. Landing on the lock itself is unaffected, as
+            // it is for the ramp - the per-particle floor raycast still
+            // reads the lock's real mesh, it just no longer double-guesses
+            // that reading with a box that was never its shape.
+            if (obj.userData && (obj.userData.softObstacle || obj.userData.isSlopeRamp || obj.userData.isLock)) continue;
             // Written straight into the candidate's own box so a rejected
             // object costs nothing beyond the one getObstacleBox call, and an
             // accepted one is already cached for the 300 inner iterations.

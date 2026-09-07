@@ -13156,7 +13156,23 @@ export function startGame(CharacterClass) {
         // The shore itself, top at y = 0 - the same height as the wood's own
         // slabs, which puts it 2.3 above FOREST_RIVER_Y. Land at the water's
         // edge rather than in it: you come down to the sea, you do not wade.
-        const stripZ0 = footZ - 2, stripZ1 = footZ + 20;
+        //
+        // Its near edge is NOT footZ - 2 outright - the wood's own exit
+        // corridor already built a ground tongue past the frame wall, out to
+        // forestSlabHalfZ() + FOREST_ENTRY_APPROACH (buildForestGroundBox,
+        // the pass that keeps a corridor from opening onto nothing), and
+        // that tongue reaches to z=112 in the linear wood - past the ramp's
+        // own foot at 107.8. Starting this strip at footZ-2=105.8 anyway
+        // built a SECOND slab on top of that tongue for the 6+ units where
+        // both exist: two independent meshes, both with a flat top at
+        // y=0, over the same ground - which is exactly a coplanar overlap,
+        // and the seam between them flickered as the camera turned. The
+        // tongue is comfortably wide enough for the ramp and this strip both
+        // (its own half-width is 15 against this strip's own half of 14), so
+        // there is nothing to rebuild there - only pick up where it leaves
+        // off.
+        const tongueEndZ = forestSlabHalfZ() + FOREST_ENTRY_APPROACH;
+        const stripZ0 = Math.max(footZ - 2, tongueEndZ), stripZ1 = footZ + 20;
         put(FOREST_APPROACH_W, 6, stripZ1 - stripZ0, cx, -3, (stripZ0 + stripZ1) * 0.5);
 
         // The ramp, laid so its top face meets the landing's lip at one end
@@ -15756,41 +15772,17 @@ export function startGame(CharacterClass) {
                 levelGroup.add(w); collidables.push(w);
                 // The genuinely INVISIBLE part of the frame - real solid
                 // collision with no mesh a player ever sees. This is what a
-                // thrown key or jar actually meets when it stops dead beside
-                // border trees that carry no collider of their own (they are
-                // visual only - see p.noCollide two passes up); this box is
-                // what stands in for them, at the wall's own full height, so
-                // it reaches exactly as high as the border trees planted on
-                // top of it.
+                // thrown key or jar meets when it stops dead beside border
+                // trees that carry no collider of their own (they are visual
+                // only - see p.noCollide two passes up); this box is what
+                // stands in for them, at the wall's own full height, so it
+                // reaches exactly as high as the border trees planted on top
+                // of it.
                 //
-                // FORCED VISIBLE rather than gated on "Show Hitboxes" -
-                // addWireframeBoxDebugHelper's own version of this (same box,
-                // same magenta wireframe, toggled by that checkbox) was tried
-                // first and was not actually visible to the person looking
-                // for it, so this stays unconditionally on instead of
-                // guessing at why. depthTest/depthWrite both off so it draws
-                // on top of the trees and terrain that would otherwise hide a
-                // thin wireframe line inside dense foliage, and a high
-                // renderOrder so it wins against other transparent geometry
-                // drawn the same frame.
-                //
-                // TEMPORARY: once these have actually been looked at, this
-                // should go back through addWireframeBoxDebugHelper (normal
-                // hitbox-toggle behaviour) or be deleted outright along with
-                // the collider itself, whichever the inspection decides.
-                {
-                    const dbg = new THREE.Mesh(
-                        new THREE.BoxGeometry(sx, top + FOREST_BORDER_CAP, sz),
-                        new THREE.MeshBasicMaterial({
-                            color: 0xff00ff, wireframe: true, transparent: true,
-                            opacity: 0.9, depthTest: false, depthWrite: false,
-                        })
-                    );
-                    dbg.position.copy(w.position);
-                    dbg.raycast = () => {};
-                    dbg.renderOrder = 999;
-                    levelGroup.add(dbg);
-                }
+                // A forced-visible magenta wireframe twin of this box stood
+                // here for a session while it was being inspected - it is
+                // gone now that the inspection is done. The collider itself
+                // never changed.
             });
         }
 
@@ -19247,6 +19239,27 @@ export function startGame(CharacterClass) {
                         }
                         continue;
                     }
+                    // A ROTATED, elongated box has the same "my box is not my
+                    // shape" problem the InstancedMesh check just above
+                    // exists for, from a different cause: a ramp 0.6 thick
+                    // and slope-length long, tilted up to 45+ degrees, has an
+                    // axis-aligned bounding box reaching nearly as high as it
+                    // is LONG. containsPoint against that box read the camera
+                    // as "inside" the ramp - and therefore dissolved it -
+                    // while the camera was still well clear of the real
+                    // surface, well before it had turned anywhere near it.
+                    // Same fix as the InstancedMesh case: ask the real
+                    // geometry with a ray instead of the inflated box. See
+                    // the matching comments on isSlopeRamp in
+                    // updateCameraInside and the ragdoll's collision
+                    // candidates for the other two places this exact shape
+                    // of bug turned up.
+                    if (m.userData && m.userData.isSlopeRamp) {
+                        if (_ditherRay.intersectObject(m, false).length > 0) {
+                            _ditherLevelHold = window.ditherHoldTime; break;
+                        }
+                        continue;
+                    }
                     getObstacleBox(m, _ditherBox);
                     if (_ditherBox.containsPoint(cam.position)) { _ditherLevelHold = window.ditherHoldTime; break; }
                     if (_ditherRay.ray.intersectBox(_ditherBox, _ditherBoxHit) === null) continue;
@@ -20510,8 +20523,20 @@ export function startGame(CharacterClass) {
                 // "below the surface" and says nothing about being enclosed.
                 // Same objection the dither probe makes to testing the frame
                 // wall's InstancedMesh by box rather than by ray.
+                //
+                // A slope ramp is the same shape of problem as the lake rim
+                // just above, from a different cause: it is not sparse, it is
+                // ROTATED. A box 0.6 thick and slope-length long tilted up to
+                // 45+ degrees has an axis-aligned bounding box reaching
+                // nearly as high as the box is LONG, not the 0.6 it is
+                // actually thick - so the camera could sit well clear of the
+                // real ramp, above or beside it, and still test as "inside"
+                // that inflated box. That is what turned the ramp to glass
+                // before the camera had visually reached it at all - see the
+                // matching fix in the ragdoll's own collision candidates for
+                // the same root cause.
                 if (ud && (ud.isCarryable || ud.isSandbagCollider
-                    || ud.isGroundSlab || ud.softObstacle)) continue;
+                    || ud.isGroundSlab || ud.softObstacle || ud.isSlopeRamp)) continue;
                 getObstacleBox(near[i], _camInsideBox);
                 if (_camInsideBox.containsPoint(cam.position)) { inside = true; insideMesh = near[i]; break; }
             }
