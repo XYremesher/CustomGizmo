@@ -25200,28 +25200,68 @@ export function startGame(CharacterClass) {
             // be measured before it can be judged.
             if (c.mesh.userData.isKey && _keyGroundReady && !c.isCarried
                 && c._floorY !== undefined
-                && c.velocity.lengthSq() < 0.05
                 && !(c._floorObj && c._floorObj.userData.keyGround)) {
-                _keyRescueFwd.set(0, 0, 1).applyQuaternion(char.group.quaternion);
                 // The key's own resting height, the same construction the
                 // jar-break spawn and both lock placements use - and above
                 // the 0.5 half-box that a flush contact would shove sideways
                 // (see performDrop's own 0.51 for that same reason).
                 const keyRestOffset = c.mesh.userData.floorOffset !== undefined
                     ? c.mesh.userData.floorOffset * window.keyScale : 0.51;
-                // The drop button's own placement search: a few distances in
-                // front, each rejected if it is too high, too low or already
-                // occupied, falling back to the player's own feet - a spot
-                // they are demonstrably standing in legally.
-                const spot = findDropPlacement(char.group.position, _keyRescueFwd, keyRestOffset);
-                _keyRescuePos.copy(char.group.position)
-                    .addScaledVector(_keyRescueFwd, spot.dist)
-                    .setY(spot.floorY + keyRestOffset);
-                c.mesh.position.copy(_keyRescuePos);
-                c.velocity.set(0, 0, 0);
-                c.wasThrown = false;
-                c._floorY = undefined;
-                c._floorObj = null;
+                // HAS IT LANDED - not "is it moving slowly", which is a
+                // different question and the wrong one. A key is created with
+                // zero velocity and picks up only ~0.125 per frame from
+                // gravity, so for the first two frames of its life a key born
+                // in MID-AIR is both stationary and nowhere near the ground.
+                // Judged on speed alone it was condemned instantly and handed
+                // to the player before it had fallen anywhere - which is the
+                // "the key comes out where I picked the jar up, not where it
+                // broke" report: the jar was thrown, it broke out over
+                // nothing, and the key was back in the thrower's hands within
+                // two frames of being born.
+                //
+                // restY is the physics' own resting height a few lines down,
+                // reproduced rather than approximated - including its
+                // Math.max floor-of-last-resort, which is what holds a key
+                // out over open water at ~0.5 instead of letting it sink to
+                // the sea bed. Comparing against floorY + offset alone would
+                // call that key "still falling" forever and never rescue it.
+                //
+                // A nested `if` rather than an early return: this is a
+                // forEach callback, so returning here would skip the rest of
+                // it - including the gravity and floor clamp below - and a
+                // key still on its way down would hang in the air instead of
+                // falling to the ground it is about to be judged on.
+                const restY = Math.max(keyRestOffset, c._floorY + keyRestOffset);
+                const landed = c.mesh.position.y <= restY + 0.05 && c.velocity.lengthSq() < 0.05;
+                if (landed) {
+                    _keyRescueFwd.set(0, 0, 1).applyQuaternion(char.group.quaternion);
+                    // The drop button's own placement search: a few distances
+                    // in front, each rejected if it is too high, too low or
+                    // already occupied, falling back to the player's own feet
+                    // - a spot they are demonstrably standing in legally.
+                    const spot = findDropPlacement(char.group.position, _keyRescueFwd, keyRestOffset);
+                    _keyRescuePos.copy(char.group.position)
+                        .addScaledVector(_keyRescueFwd, spot.dist)
+                        .setY(spot.floorY + keyRestOffset);
+                    // TEMPORARY, window.keyRescueDebug to silence. "The key
+                    // came out where I picked the jar up" and "the rescue
+                    // moved it there" look identical on screen - the rescue
+                    // hands it to the player, and the player is often
+                    // standing exactly where they picked the jar up. This
+                    // line, next to the existing spawn log, says which
+                    // happened and what ground it was rejected for.
+                    if (window.keyRescueDebug !== false) {
+                        console.log('[key-rescue] from ('
+                            + c.mesh.position.x.toFixed(1) + ', ' + c.mesh.position.y.toFixed(1) + ', ' + c.mesh.position.z.toFixed(1)
+                            + ') resting on ' + (c._floorObj ? (c._floorObj.name || c._floorObj.type) : 'NOTHING')
+                            + ' -> player at (' + _keyRescuePos.x.toFixed(1) + ', ' + _keyRescuePos.y.toFixed(1) + ', ' + _keyRescuePos.z.toFixed(1) + ')');
+                    }
+                    c.mesh.position.copy(_keyRescuePos);
+                    c.velocity.set(0, 0, 0);
+                    c.wasThrown = false;
+                    c._floorY = undefined;
+                    c._floorObj = null;
+                }
             }
             // A carryable with a home comes back if it ends up below it.
             //
