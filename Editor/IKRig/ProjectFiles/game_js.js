@@ -15824,9 +15824,19 @@ export function startGame(CharacterClass) {
                 // Tree transforms are position + Y rotation + uniform scale,
                 // and a sphere is rotation invariant, so the Y rotation can
                 // simply be ignored when placing the centre.
+                //
+                // (p.y || 0), matching pass 2's own _pos.set(p.x, (p.y || 0)
+                // + ..., p.z) exactly - most trees never set p.y (ground
+                // level, base at 0) but the frame-top border trees do
+                // (FOREST_BORDER_HEIGHT + FOREST_BORDER_CAP, ~11.8 units up).
+                // Dropping it here left their canopy sphere sitting near
+                // ground level while the actual canopy was 11.8 units
+                // higher, so the segment-to-sphere test never lined up with
+                // where the tree really was - the border trees never
+                // dissolved right, unlike every tree inside the wood.
                 ditherProbeSpheres.push({
                     x: p.x + cCenter.x * p.scale,
-                    y: cCenter.y * p.scale,
+                    y: (p.y || 0) + cCenter.y * p.scale,
                     z: p.z + cCenter.z * p.scale,
                     r: localR * p.scale,
                 });
