@@ -846,11 +846,31 @@ export const RagdollPhysics = {
             // overlap axis - straight up, out of the top - which is the
             // forest ramp's own lock: the ramp launches a knocked-down body
             // right past it, so this is where it started being seen instead
-            // of a coincidence. Landing on the lock itself is unaffected, as
-            // it is for the ramp - the per-particle floor raycast still
-            // reads the lock's real mesh, it just no longer double-guesses
-            // that reading with a box that was never its shape.
-            if (obj.userData && (obj.userData.softObstacle || obj.userData.isSlopeRamp || obj.userData.isLock)) continue;
+            // of a coincidence.
+            //
+            // isKey belongs here for the identical reason and turned out to
+            // be the dominant case, not the rare one: buildStarAssembly
+            // builds both the lock AND the free-standing/carried StarKey
+            // from the same base+container shape, so the key is exactly as
+            // tall and exactly as narrow a THREE.Group as the lock is - and
+            // being carryable, it gets dropped or thrown right where a fight
+            // is happening far more often than a lock sits still in one
+            // spot. That is "any other hit sometimes, a StarKey nearby
+            // always": every knockdown near a dropped key was reading it as
+            // a solid column and launching off of it.
+            //
+            // Correction to the claim this comment used to make about the
+            // per-particle floor raycast catching these two: it did not,
+            // until now. THREE.Group has no geometry of its own and the
+            // raycast below was intersectObjects(collidables) with no
+            // recursive flag, so a Group was invisible to it - the known
+            // "must pass recursive = true" lesson from elsewhere in this
+            // codebase, missed here. Fixed at the call below, so landing on
+            // the lock or the key is handled correctly by that real-surface
+            // reading instead of by this box test, which was never going to
+            // get their shape right.
+            if (obj.userData && (obj.userData.softObstacle || obj.userData.isSlopeRamp
+                || obj.userData.isLock || obj.userData.isKey)) continue;
             // Written straight into the candidate's own box so a rejected
             // object costs nothing beyond the one getObstacleBox call, and an
             // accepted one is already cached for the 300 inner iterations.
@@ -903,15 +923,38 @@ export const RagdollPhysics = {
             _ragdollFloorOrigin.copy(p.pos);
             _ragdollFloorOrigin.y += 1.0;
             _ragdollFloorRay.set(_ragdollFloorOrigin, _ragdollFloorDown);
-            const hits = _ragdollFloorRay.intersectObjects(collidables);
+            // recursive = true. THREE.Group has no geometry of its own, and
+            // the lock/key groups just excluded above are exactly that -
+            // without this the ray was blind to them and this pass
+            // contributed nothing to a body resting on either, leaving the
+            // (also wrong) box test as the only thing touching them at all.
+            // Same lesson as elsewhere in this codebase: intersectObjects
+            // defaults to non-recursive and a childless Group is invisible
+            // to it however close the ray passes.
+            const hits = _ragdollFloorRay.intersectObjects(collidables, true);
             let found = ragdollFloor;
+            let foundObj = null;
             // Same rule as every ground read in the game: a canopy is a
             // perfectly good hit for a downward ray and a bad answer for
             // "what is under me" - see _ragdollFloorY's own copy of this.
             for (let h = 0; h < hits.length; h++) {
                 if (hits[h].object.userData && hits[h].object.userData.isTreeCollider) continue;
                 found = hits[h].point.y;
+                foundObj = hits[h].object;
                 break;
+            }
+            // TEMPORARY diagnostic for the "ragdoll launches into the air on
+            // hit" report - window.ragdollFloorDebug (default on) logs any
+            // per-particle floor jump big enough to read as a launch once
+            // the constraint solver drags the rest of the body along with
+            // it, so the actual offending object shows up in the console
+            // instead of being guessed at. Remove once the cause is found.
+            if (window.ragdollFloorDebug !== false && found - p.pos.y > 1.0) {
+                console.warn('[ragdoll-floor-jump]', p.id,
+                    'pos.y', p.pos.y.toFixed(3), '-> floor', found.toFixed(3),
+                    'delta', (found - p.pos.y).toFixed(3),
+                    'from', foundObj ? (foundObj.name || foundObj.userData?.isLock && 'lock' || foundObj.userData?.isSlopeRamp && 'ramp' || foundObj.type || foundObj.uuid) : 'fallback ragdollFloor',
+                    foundObj ? foundObj.userData : null);
             }
             p._slopeFloorY = found;
         }

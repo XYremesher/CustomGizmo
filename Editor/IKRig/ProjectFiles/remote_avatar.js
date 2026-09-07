@@ -1184,7 +1184,12 @@ export class RemoteAvatar {
         _ragdollRayOrigin.copy(hipsP ? hipsP.pos : this.group.position);
         _ragdollRayOrigin.y += 0.5;
         _ragdollRaycaster.set(_ragdollRayOrigin, _ragdollDownVec);
-        const hits = _ragdollRaycaster.intersectObjects(window.collidables || []);
+        // recursive = true - THREE.Group (the lock, the StarKey) has no
+        // geometry of its own, so without this a companion/bot standing on
+        // either was invisible to this ray. See ragdoll_physics.js's own
+        // copy of this fix for the fuller story (a knocked-down body reading
+        // one of those groups' box instead was launching into the air).
+        const hits = _ragdollRaycaster.intersectObjects(window.collidables || [], true);
         // Skip tree canopies, same as every other ground read in the game -
         // a knockback arcing a body up near canopy height (routine right at
         // a tree's base) hit the canopy first and reported ITS top as the
