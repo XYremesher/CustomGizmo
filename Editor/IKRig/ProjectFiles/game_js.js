@@ -25198,7 +25198,19 @@ export function startGame(CharacterClass) {
             // before anything had looked at what it is standing on. It is
             // also why a rescue clears both - the placement gets a frame to
             // be measured before it can be judged.
-            if (c.mesh.userData.isKey && _keyGroundReady && !c.isCarried
+            // OFF by default (window.keyRescueEnabled = true to arm it), and
+            // that is not caution about the whitelist - it is that this rule
+            // is the ONLY thing in the game that moves a key after it is
+            // born, and the reported fault is a key ending up somewhere other
+            // than where its jar broke. Whether or not this is the cause,
+            // switching it off restores exactly the behaviour asked for - the
+            // key stays where it broke - and if the fault survives that, this
+            // code is ruled out and the cause is elsewhere, which is worth
+            // more right now than the rule is. The whitelist and the recovery
+            // stay written and working behind the flag, for when what should
+            // trigger them is settled.
+            if (window.keyRescueEnabled === true
+                && c.mesh.userData.isKey && _keyGroundReady && !c.isCarried
                 && c._floorY !== undefined
                 && !(c._floorObj && c._floorObj.userData.keyGround)) {
                 // The key's own resting height, the same construction the
