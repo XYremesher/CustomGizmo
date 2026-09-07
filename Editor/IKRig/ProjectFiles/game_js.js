@@ -10407,8 +10407,8 @@ export function startGame(CharacterClass) {
                     // lost and snap it back - NOT the flat CARRY_RESPAWN_DROP
                     // every other carryable with a home uses.
                     //
-                    // That flat 2.0 is right for the approach cube, whose home
-                    // sits right next to where it is actually used. It is
+                    // That flat 2.0 was right for the approach cube - gone now
+                    // - whose home sat right next to where it was used. It is
                     // wrong for a key: the whole point of this one is to be
                     // carried or thrown DOWN to whatever lock is waiting for
                     // it, and on the forest's exit landing that lock sits
@@ -13162,7 +13162,8 @@ export function startGame(CharacterClass) {
     // bounding box at build time rather than a guessed height - the lock is a
     // Group of scaled clones and its height is not a number written anywhere.
     const FOREST_APPROACH_STEP_RISE = 1.2;
-    // The LAST rise, and why it is not another ordinary one.
+    // How tall the rock face at the end of the run is, and why it is not
+    // another ordinary rise.
     //
     // A jump apexes at v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below
     // the lip it holds, so a lip up to 3.52 above your feet can be caught
@@ -13170,13 +13171,13 @@ export function startGame(CharacterClass) {
     // simply climbable. 4.0 is past that: from the tread you cannot reach
     // it however well you time it.
     //
-    // Stand on the cube and you can. It is 1.0 tall, so your feet start
-    // 1.0 higher and the lip is 3.0 away - an ordinary rise again. That
-    // window, (3.52, 4.52], is the whole design: too high alone, in reach
-    // off the block, and it is what makes carrying the thing up the run
-    // the point rather than scenery.
+    // That unreachability used to be a PUZZLE - a 1.0 carryable cube stood
+    // on the tread below, and standing on it put the lip back in range. The
+    // cube is gone and the way on is the cave mouth cut through the face
+    // instead, so the number now does the opposite job: it is what stops the
+    // face reading as one more step to hop, and sends you through the
+    // opening rather than over the top. Keep it above 3.52 for that reason.
     const FOREST_APPROACH_LAST_RISE = 4.0;
-    const FOREST_APPROACH_CUBE = 1.0;
     function buildForestExitApproach() {
         const mat = _forestBorderMat ||
             new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
@@ -13316,38 +13317,74 @@ export function startGame(CharacterClass) {
             const h = stepTop + i * FOREST_STEP_SIZE;
             put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE);
         }
-        // ...and a last one you cannot make on your own. See
-        // FOREST_APPROACH_LAST_RISE.
+        // ...and the run no longer ends in a step. It ends at a ROCK FACE with
+        // a cave mouth cut through it.
+        //
+        // What was here: a rise of FOREST_APPROACH_LAST_RISE, deliberately too
+        // tall to climb, and a carryable cube on the tread below whose entire
+        // purpose was to be carried over and stood on so the lip came into
+        // reach. Both are gone together - the way on is THROUGH the opening
+        // now rather than over the top, which leaves the cube with nothing to
+        // solve, and a prop whose only job has been taken away reads worse
+        // than no prop at all. The rise itself survives as the HEIGHT of the
+        // face: it is what makes this read as a wall you cannot simply hop.
+        //
+        // Cut, not modelled. A pillar either side, the mass under the sill and
+        // a lintel over it is how a box gets a real hole through it without a
+        // CSG step, and each piece is an ordinary slab from put() above - so
+        // the face collides, takes grass and dissolves exactly as the steps
+        // do, with no special handling anywhere else.
         const penultTop = stepTop + 2 * FOREST_STEP_SIZE;
         const lastTop = penultTop + FOREST_APPROACH_LAST_RISE;
-        put(forestStairW(), lastTop, FOREST_STEP_SIZE, cx, lastTop * 0.5, stepZ + 3 * FOREST_STEP_SIZE);
+        const faceZ = stepZ + 3 * FOREST_STEP_SIZE;
+        const faceW = forestStairW();
+        // Wide enough to walk into without lining yourself up, and over head
+        // height. It stands on the tread you arrive on, not on the shore -
+        // that tread is the floor in front of it.
+        const CAVE_W = 3.2, CAVE_H = 2.8;
+        const pillarW = Math.max(0, (faceW - CAVE_W) * 0.5);
+        if (pillarW > 0) {
+            const pillarOff = (CAVE_W + pillarW) * 0.5;
+            put(pillarW, lastTop, FOREST_STEP_SIZE, cx - pillarOff, lastTop * 0.5, faceZ);
+            put(pillarW, lastTop, FOREST_STEP_SIZE, cx + pillarOff, lastTop * 0.5, faceZ);
+        }
+        // Under the sill, so the face is solid from the shore up to the tread
+        // and the mouth is not a hole standing open above the run below.
+        put(CAVE_W, penultTop, FOREST_STEP_SIZE, cx, penultTop * 0.5, faceZ);
+        // ...and over it. Guarded because the lintel only exists while the
+        // opening is shorter than the face - at CAVE_H >= the rise there is
+        // simply nothing left above it to build.
+        const lintelH = lastTop - penultTop - CAVE_H;
+        if (lintelH > 0) {
+            put(CAVE_W, lintelH, FOREST_STEP_SIZE, cx, penultTop + CAVE_H + lintelH * 0.5, faceZ);
+        }
+        // The back of it, a third of the way in. A mouth to look into rather
+        // than a way through was the brief - but the stop has to be SOLID, not
+        // merely dark: the opening is cut clean through a face 3 deep, and
+        // beyond it the run has no ground at all, so without this walking in
+        // would take you straight off the level.
+        const CAVE_BACK = 1.0;
+        put(CAVE_W, CAVE_H, CAVE_BACK, cx, penultTop + CAVE_H * 0.5,
+            faceZ + (FOREST_STEP_SIZE - CAVE_BACK) * 0.5);
 
-        // The cube that gets you up it, sitting on the tread below.
-        //
-        // Off to the side rather than dead centre, so arriving on that step
-        // does not mean walking into it - it is the thing you go and pick up,
-        // not an obstacle in the path.
-        const cubeGeo = new RoundedBoxGeometry(
-            FOREST_APPROACH_CUBE, FOREST_APPROACH_CUBE, FOREST_APPROACH_CUBE, 1, 0.06);
-        const cube = new THREE.Mesh(cubeGeo,
-            new THREE.MeshToonMaterial({ color: 0xffaa00, gradientMap: threeTone }));
-        cube.position.set(cx + 2.0, penultTop + FOREST_APPROACH_CUBE * 0.5,
-            stepZ + 2 * FOREST_STEP_SIZE);
-        cube.castShadow = true; cube.receiveShadow = true;
-        cube.userData.isCarryable = true;
-        // Where it belongs, and where it is put back from. A cube thrown off
-        // the shore is not a mistake you can walk back from - the last step is
-        // the only way on and this is the only way up it - so it returns
-        // rather than ending the level quietly. See the homePos check in the
-        // carryable physics.
-        cube.userData.homePos = cube.position.clone();
-        cube.updateMatrixWorld(true);
-        levelGroup.add(cube);
-        collidables.push(cube);
-        const carryCube = { mesh: cube, velocity: new THREE.Vector3(),
-                            isCarried: false, wasThrown: false, netId: nextCarryNetId++ };
-        carryables.push(carryCube);
-        addCarryableDebugHelper(carryCube);
+        // ...and what makes it read as a cave rather than a cupboard: an
+        // unlit black shell lining the recess. MeshBasicMaterial so no light
+        // finds it at any time of day, and BackSide so what draws is the
+        // INSIDE of the box - the near face is skipped, and you look straight
+        // through where it would have been into the dark. Inset a hair so it
+        // cannot z-fight the stone it lines, and left out of `collidables`
+        // deliberately: the pieces above are what stop you, and giving a
+        // decorative shell its own solid box would put an invisible wall
+        // across the mouth.
+        const caveDepth = FOREST_STEP_SIZE - CAVE_BACK;
+        const caveDark = new THREE.Mesh(
+            new THREE.BoxGeometry(CAVE_W - 0.04, CAVE_H - 0.02, caveDepth - 0.02),
+            new THREE.MeshBasicMaterial({ color: 0x07070a, side: THREE.BackSide }));
+        caveDark.position.set(cx, penultTop + CAVE_H * 0.5,
+            faceZ - FOREST_STEP_SIZE * 0.5 + caveDepth * 0.5);
+        caveDark.castShadow = false; caveDark.receiveShadow = false;
+        caveDark.updateMatrixWorld(true);
+        levelGroup.add(caveDark);
 
         // Where the shore fight is staged from - see stageForestShoreBots,
         // which cannot run from here.
@@ -25188,11 +25225,15 @@ export function startGame(CharacterClass) {
             }
             // A carryable with a home comes back if it ends up below it.
             //
-            // For the forest approach's cube: the last step is the only way on
-            // and the cube is the only way up it, so a cube thrown off the
-            // shore, into the sea or down the ramp is a level you cannot
-            // finish and no way to tell. Nothing else carries a homePos, so
-            // this costs one undefined check for every other prop.
+            // Written for the forest approach's carryable cube: the last step
+            // could not be climbed without standing on it, so a cube thrown
+            // off the shore, into the sea or down the ramp was a level you
+            // could not finish, with no way to tell. That cube is gone - the
+            // face it solved is a cave mouth now - and the KEY is the only
+            // thing still carrying a homePos, for the same reason it was
+            // given one: it is the one prop the level cannot be finished
+            // without. Nothing else has one, so this costs a single
+            // undefined check for every other prop.
             //
             // Height only. Carrying it AROUND is the whole mechanic, so a
             // distance leash would keep snatching it out of your hands; going
