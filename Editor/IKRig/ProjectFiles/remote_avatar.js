@@ -1194,8 +1194,19 @@ export class RemoteAvatar {
         // a knockback arcing a body up near canopy height (routine right at
         // a tree's base) hit the canopy first and reported ITS top as the
         // floor, standing the bot back up in the treetop.
+        //
+        // Skip the StarKey too, by ancestry (its child clones carry no
+        // flags of their own) - see ragdoll_physics.js's own copy of this
+        // for why: a thrown key sits at chest/head height for its whole
+        // flight, and this ray reading it as the floor right when a bot it
+        // just hit starts ragdolling is what launched that bot into the
+        // air. The lock stays a valid floor - it is fixed in place, never
+        // thrown, always at a sensible resting height.
         for (let i = 0; i < hits.length; i++) {
             if (hits[i].object.userData.isTreeCollider) continue;
+            let _anc = hits[i].object, _isKeyHit = false;
+            while (_anc) { if (_anc.userData && _anc.userData.isKey) { _isKeyHit = true; break; } _anc = _anc.parent; }
+            if (_isKeyHit) continue;
             return hits[i].point.y;
         }
         // -Infinity, not 0, when there is nothing below: the solver clamps to

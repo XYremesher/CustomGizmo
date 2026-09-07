@@ -937,8 +937,31 @@ export const RagdollPhysics = {
             // Same rule as every ground read in the game: a canopy is a
             // perfectly good hit for a downward ray and a bad answer for
             // "what is under me" - see _ragdollFloorY's own copy of this.
+            //
+            // isKey joins it, and for a different reason than the lock stays
+            // in: recursive:true (just above) means this ray can now land on
+            // the key's own child meshes, which is exactly the point for a
+            // body resting near one on the ground - but a thrown key spends
+            // its whole flight suspended at roughly chest/head height, and
+            // for the one or two frames right after it hits an enemy it is
+            // still sitting there, overlapping the body that is only just
+            // starting to ragdoll. This ray reading THAT as the floor
+            // clamped particles up to chest height the instant they existed
+            // - "the enemy launches into the air when hit by a thrown
+            // StarKey" - the exact old bug, back through a new door. A lock
+            // never does this (it is fixed in place, never thrown, always
+            // at a sensible resting height), so it keeps counting as floor;
+            // a key never should, thrown or not - it is small enough that
+            // nothing should be reading it as ground either way. Matched by
+            // walking up to the group, same as the carryable physics' own
+            // ancestry walk elsewhere - buildStarAssembly's child clones
+            // carry no flags of their own, only the group does.
             for (let h = 0; h < hits.length; h++) {
-                if (hits[h].object.userData && hits[h].object.userData.isTreeCollider) continue;
+                const hu = hits[h].object.userData;
+                if (hu && hu.isTreeCollider) continue;
+                let _anc = hits[h].object, _isKeyHit = false;
+                while (_anc) { if (_anc.userData && _anc.userData.isKey) { _isKeyHit = true; break; } _anc = _anc.parent; }
+                if (_isKeyHit) continue;
                 found = hits[h].point.y;
                 foundObj = hits[h].object;
                 break;
