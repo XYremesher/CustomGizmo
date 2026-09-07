@@ -1238,6 +1238,14 @@ export function startGame(CharacterClass) {
     scene.add(fillLight); scene.add(fillLight.target);
 
     const collidables = [];
+    // Whether this level has an authored key route at all - the surfaces
+    // tagged userData.keyGround (the landing the jars stand on, the ramp,
+    // and the shore the lock stands on). False everywhere else, which
+    // switches the key rescue in the carryables loop OFF rather than letting
+    // it fire on every surface of a level that never opted in. Declared up
+    // here with `collidables` because buildLevel clears it alongside them,
+    // and buildLevel runs long before the rescue code further down is read.
+    let _keyGroundReady = false;
     // Bumped once per frame in animate(). Anything that wants to derive a list
     // from `collidables` and reuse it for the rest of the frame compares
     // against this instead of rebuilding per call - see visionLosList.
@@ -10763,6 +10771,12 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
+        // Cleared with them: the key whitelist is tagged onto slabs that
+        // have just been thrown away, so a level with no authored approach
+        // has no allowed ground at all - and there the rule must not run,
+        // or every spot would fail it and the key would be dragged back to
+        // the player forever. buildForestExitApproach sets it again.
+        _keyGroundReady = false;
         // The cast, and it is not optional. RemoteAvatar puts its group
         // straight into `scene` rather than levelGroup (remote_avatar.js), so
         // the wipe at the top of this function does not touch a single bot or
@@ -13182,12 +13196,19 @@ export function startGame(CharacterClass) {
             box.position.set(px, py, pz);
             box.castShadow = true; box.receiveShadow = true;
             box.userData.isGroundSlab = true;
+            // Ground the key is allowed to come to rest on - the shore the
+            // lock stands on, and the run of steps built into that same
+            // shore. See the key rescue in the carryables loop: land it
+            // anywhere that is NOT one of these and it is handed back to the
+            // player, so it can always be carried to the lock.
+            box.userData.keyGround = true;
             box.updateMatrixWorld(true);
             ditherLevelMeshes.push(box);
             levelGroup.add(box);
             collidables.push(box);
             return box;
         };
+        _keyGroundReady = true;
 
         // The shore itself, top at y = 0 - the same height as the wood's own
         // slabs, which puts it 2.3 above FOREST_RIVER_Y. Land at the water's
@@ -13234,6 +13255,11 @@ export function startGame(CharacterClass) {
         ramp.castShadow = true; ramp.receiveShadow = true;
         ramp.userData.isSlopeRamp = true;
         ramp.userData.rampAngleRad = ang;
+        // The second of the three surfaces the key may rest on - see the
+        // put() helper above and the key rescue in the carryables loop. A
+        // key thrown down the ramp very often stops ON the ramp, and that
+        // is a place it can plainly be picked up from.
+        ramp.userData.keyGround = true;
         // NOT flagged softObstacle - that flag is shared with
         // isVerticalSpaceClear, the camera-containment test and the
         // carryable box phase, none of which have this ramp's problem, and
@@ -13374,10 +13400,18 @@ export function startGame(CharacterClass) {
             box.updateMatrixWorld(true);
             levelGroup.add(box);
             collidables.push(box);
+            return box;
         };
         // The landing, level with the frame top.
         const pz = (forestPlatformZ0() + forestPlatformZ1()) * 0.5;
-        put(forestStairW(), top, forestPlatformZ1() - forestPlatformZ0(), forestStepX(), pz);
+        const landing = put(forestStairW(), top, forestPlatformZ1() - forestPlatformZ0(), forestStepX(), pz);
+        // The third surface the key may rest on, and the one it is born on -
+        // the jars stand here, so a key is on this deck the moment its jar
+        // breaks. The STAIRS below are deliberately not tagged: they climb
+        // back down into the wood, which is off the route to the lock, and a
+        // key that ends up down there is exactly the "where did it go" case
+        // this is meant to catch. See the key rescue in the carryables loop.
+        landing.userData.keyGround = true;
         // ...and the stairs up to it, marching south from its edge. Each rise
         // is one 3.0 cube - the same block Level 1 is built from, and the same
         // height as the island edges, which is what the player's jump-and-grab
@@ -18601,6 +18635,12 @@ export function startGame(CharacterClass) {
         nextCarryNetId = 0;
         debugHelpers.forEach(h => scene.remove(h)); debugHelpers.length = 0;
         collidables.length = 0; collidables.push(ground);
+        // Cleared with them: the key whitelist is tagged onto slabs that
+        // have just been thrown away, so a level with no authored approach
+        // has no allowed ground at all - and there the rule must not run,
+        // or every spot would fail it and the key would be dragged back to
+        // the player forever. buildForestExitApproach sets it again.
+        _keyGroundReady = false;
         // Level 2 (buildLevelFromGlb) and the water test level both hide
         // this in favor of a water plane - reset here so switching back to
         // any other level always gets the grass back regardless of which
@@ -19725,37 +19765,6 @@ export function startGame(CharacterClass) {
         return hits.length > 0 && Math.abs(hits[0].point.y - referenceY) < 0.6;
     }
 
-    // Whether a point is UNDER a water surface. This exists because no
-    // other placement test in the game can answer it: the forest's sea is
-    // deliberately NOT a collidable (you wade and swim through it, and
-    // adding it would read as a floor to every ground scan there is), so a
-    // key thrown into the sea does not fail any "did it find solid ground"
-    // question - it sinks past the surface and settles on the river BED,
-    // which is an ordinary collidable and answers "yes, solid ground"
-    // exactly the way the shore does. Underwater and ashore are
-    // indistinguishable without asking the water itself.
-    //
-    // waterMeshSyncs is the per-level registry of every water plane, and
-    // each mesh's own position.y IS its surface height - the same value the
-    // foam uniforms are driven from every frame, so this cannot drift from
-    // what is drawn, or from a surface the level editor has dragged.
-    const _waterSpotBox = new THREE.Box3();
-    function pointIsUnderWater(pos) {
-        for (let i = 0; i < waterMeshSyncs.length; i++) {
-            const wm = waterMeshSyncs[i].mesh;
-            if (!wm || !wm.parent) continue;
-            if (pos.y >= wm.position.y) continue;
-            // Footprint as well as height: a level can hold more than one
-            // body at different levels (a sea plus an elevated pond), and
-            // being below the POND's surface means nothing while standing
-            // outside it on dry ground.
-            _waterSpotBox.setFromObject(wm);
-            if (pos.x < _waterSpotBox.min.x || pos.x > _waterSpotBox.max.x) continue;
-            if (pos.z < _waterSpotBox.min.z || pos.z > _waterSpotBox.max.z) continue;
-            return true;
-        }
-        return false;
-    }
     const _keyRescueFwd = new THREE.Vector3();
     const _keyRescuePos = new THREE.Vector3();
 
@@ -25121,29 +25130,41 @@ export function startGame(CharacterClass) {
                 c.debugHelper.visible = document.getElementById('toggle-hitbox').checked;
             }
             if (c.isCarried) return;
-            // A key that has gone into the water comes back to the PLAYER.
+            // A key that came to rest off the approach comes back to the
+            // PLAYER, so it can always be walked to the lock.
             //
-            // Deliberately not a collider, a fence or an invisible wall
-            // around the throwable area: you may throw the key wherever you
-            // like, and the recovery happens after it lands rather than
-            // being prevented up front. Nothing about the throw changes.
+            // The allowed ground is a WHITELIST, not a judgement about
+            // whether a spot looks valid - three surfaces, the ones the key
+            // has any business being on: the landing the jars stand on, the
+            // ramp down from it, and the shore the lock stands on (with the
+            // steps built into that same shore, so a throw that skips down
+            // the run is not snatched back from a stone it plainly landed
+            // on). Everything else is off the route: the sea, the grass
+            // below, the wood, the far bank.
             //
-            // The player, not homePos - which is the difference between this
-            // and the fall-below-home rule just underneath. homePos is where
-            // the jar died, which on the exit landing is up a ramp and
-            // across a deck from wherever you are standing when you watch
-            // the key go into the sea; being handed it back where you are is
-            // what makes this read as a recovery instead of a second trip.
-            // It is checked BEFORE that rule for the same reason - both can
-            // be true of a key at the bottom of the sea, and this one is the
-            // answer that was actually asked for.
+            // Two earlier attempts asked a cleverer question instead - "did
+            // it find solid ground" and then "is it under water" - and both
+            // missed, because the ways a key gets lost here mostly do not
+            // look broken. The sea's own bed is ordinary solid ground and
+            // answers the first exactly as the shore does; grass beside the
+            // landing passes both. Only the whitelist covers all of them at
+            // once, and it is what was asked for in the first place.
             //
-            // Height alone decides it, not stillness: the key is in the
-            // water the moment it is under the surface, and waiting for it
-            // to settle first would only mean watching it sink. A throw that
-            // ARCS over water stays dry the whole way, so nothing fires for
-            // a key that is merely passing above it.
-            if (c.mesh.userData.isKey && pointIsUnderWater(c.mesh.position)) {
+            // Deliberately not a collider or an invisible wall around the
+            // throwable area: the throw is never blocked, the key is picked
+            // back up after it lands.
+            // _floorY, not _floorObj, as the "has it been measured yet" test:
+            // the two are written together, and a key that has never been
+            // through the physics below has neither. Without this the rule
+            // reads a brand new key's blank _floorObj as "not allowed
+            // ground" and teleports it away on the frame its jar broke,
+            // before anything had looked at what it is standing on. It is
+            // also why a rescue clears both - the placement gets a frame to
+            // be measured before it can be judged.
+            if (c.mesh.userData.isKey && _keyGroundReady && !c.isCarried
+                && c._floorY !== undefined
+                && c.velocity.lengthSq() < 0.05
+                && !(c._floorObj && c._floorObj.userData.keyGround)) {
                 _keyRescueFwd.set(0, 0, 1).applyQuaternion(char.group.quaternion);
                 // The key's own resting height, the same construction the
                 // jar-break spawn and both lock placements use - and above
@@ -25159,18 +25180,11 @@ export function startGame(CharacterClass) {
                 _keyRescuePos.copy(char.group.position)
                     .addScaledVector(_keyRescueFwd, spot.dist)
                     .setY(spot.floorY + keyRestOffset);
-                // Unless the player is standing in the water themselves -
-                // wading the river is a scripted part of this level, and
-                // handing the key back into the water it just came out of
-                // would put it straight back under the surface and fire this
-                // again every frame. Left where it is instead, to be
-                // recovered on the first frame they are back on dry land.
-                if (!pointIsUnderWater(_keyRescuePos)) {
-                    c.mesh.position.copy(_keyRescuePos);
-                    c.velocity.set(0, 0, 0);
-                    c.wasThrown = false;
-                    c._floorY = undefined;
-                }
+                c.mesh.position.copy(_keyRescuePos);
+                c.velocity.set(0, 0, 0);
+                c.wasThrown = false;
+                c._floorY = undefined;
+                c._floorObj = null;
             }
             // A carryable with a home comes back if it ends up below it.
             //
@@ -25351,7 +25365,7 @@ export function startGame(CharacterClass) {
                     c._floorT = 0.12;
                     rayDown.set(_tempVec1.set(c.mesh.position.x, c.mesh.position.y + 1.2, c.mesh.position.z), _downVec);
                     const fh = rayDown.intersectObjects(playerNear(c.mesh.position.x, c.mesh.position.z), true);
-                    let fy = 0;
+                    let fy = 0, fobj = null;
                     for (let k = 0; k < fh.length; k++) {
                         const ud = fh[k].object.userData;
                         // Not tree canopies, and not the carryable's own
@@ -25370,9 +25384,16 @@ export function startGame(CharacterClass) {
                             _hitObj = _hitObj.parent;
                         }
                         if (ud.isTreeCollider || _isSelf) continue;
-                        fy = fh[k].point.y; break;
+                        fy = fh[k].point.y; fobj = fh[k].object; break;
                     }
                     c._floorY = fy;
+                    // WHICH surface, not just how high it is - the key's own
+                    // whitelist check above asks what it is standing on, and
+                    // a height cannot answer that (the sea bed and the shore
+                    // are both just numbers). Null when the ray found
+                    // nothing, which is itself an answer: nothing under it
+                    // is not one of the allowed surfaces either.
+                    c._floorObj = fobj;
                 }
                 // How high this object's ORIGIN sits above the floor it rests
                 // on. 0.5 is half a jar, and it was applied to everything -
