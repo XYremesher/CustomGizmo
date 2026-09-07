@@ -13162,21 +13162,34 @@ export function startGame(CharacterClass) {
     // bounding box at build time rather than a guessed height - the lock is a
     // Group of scaled clones and its height is not a number written anywhere.
     const FOREST_APPROACH_STEP_RISE = 1.2;
+    // The highest lip that can be caught off a standing jump, and the number
+    // every gate along this approach is measured against. A jump apexes at
+    // v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below the lip it holds, so
+    // anything within 3.52 of your feet is reachable and anything past it is
+    // not. Written down once here because two separate places need it to mean
+    // the same thing - the first step, which must be OUT of reach from the
+    // shore, and the rock face at the top, which must be out of reach from
+    // the tread.
+    const FOREST_GRAB_REACH = 3.52;
+    const FOREST_SHORE_Y = 0;               // the shore strip's top
+    // How far past that reach the first step sits. Small on purpose: it only
+    // has to be unreachable, and every unit here is also a unit taken out of
+    // the climb FROM the lock, which has the same ceiling.
+    const FOREST_APPROACH_STEP_CLEAR = 0.4;
     // How tall the rock face at the end of the run is, and why it is not
     // another ordinary rise.
     //
-    // A jump apexes at v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below
-    // the lip it holds, so a lip up to 3.52 above your feet can be caught
-    // off a standing jump - which is why the 3.0 rises below are all
-    // simply climbable. 4.0 is past that: from the tread you cannot reach
-    // it however well you time it.
+    // FOREST_GRAB_REACH above is what a standing jump can catch - which is
+    // why the 3.0 rises below are all simply climbable. 4.0 is past it: from
+    // the tread you cannot reach the top however well you time it.
     //
     // That unreachability used to be a PUZZLE - a 1.0 carryable cube stood
     // on the tread below, and standing on it put the lip back in range. The
     // cube is gone and the way on is the cave mouth cut through the face
     // instead, so the number now does the opposite job: it is what stops the
     // face reading as one more step to hop, and sends you through the
-    // opening rather than over the top. Keep it above 3.52 for that reason.
+    // opening rather than over the top. Keep it above FOREST_GRAB_REACH for
+    // that reason.
     const FOREST_APPROACH_LAST_RISE = 4.0;
     function buildForestExitApproach() {
         const mat = _forestBorderMat ||
@@ -13308,7 +13321,41 @@ export function startGame(CharacterClass) {
         // the stairs still exist and are still climbable, they just are not
         // pitched against something that is not there.
         const lockTop = lock ? new THREE.Box3().setFromObject(lock).max.y : FOREST_STEP_SIZE - FOREST_APPROACH_STEP_RISE;
-        const stepTop = lockTop + FOREST_APPROACH_STEP_RISE;
+        // ...but ALSO out of reach from the shore, which lockTop + one rise was
+        // not. That put the lip around 2.3 above a shore at y=0, and a lip
+        // within FOREST_GRAB_REACH of your feet can be caught off a standing
+        // jump - so the whole lock could be walked past and grabbed over, and
+        // the run climbed with the key still sitting in its jar. The lock was
+        // not a gate, it was scenery beside one.
+        //
+        // Whichever is higher, so the step stays reachable FROM the lock and
+        // ungrabbable from the ground the lock stands on. The margin is what
+        // keeps it out of reach rather than exactly at the edge of it.
+        //
+        // This does change how it feels, and the change is forced, not
+        // chosen: with the lock about 1.1 tall, "out of reach from a shore at
+        // 0" means a lip above 3.52, which is more than 2.4 above the lock -
+        // so the way up is now a jump and a LEDGE GRAB off the lock rather
+        // than the plain 1.2 hop FOREST_APPROACH_STEP_RISE was pitched for.
+        // There is no height that is both a hop from a lock this size and
+        // unreachable from the ground beside it; the only way to have both
+        // back is a taller lock (keyScale), not a different step.
+        const stepTop = Math.max(lockTop + FOREST_APPROACH_STEP_RISE,
+            FOREST_SHORE_Y + FOREST_GRAB_REACH + FOREST_APPROACH_STEP_CLEAR);
+        // The other half of the same question, and the one that turns a gate
+        // into a dead end if it is ever missed: raising the lip past what can
+        // be caught FROM THE LOCK would lock the level for good, key or no
+        // key. Nothing here can produce that at the shipping keyScale - the
+        // lock is tall enough - but keyScale is a live slider and a smaller
+        // lock is a shorter platform, so this says so out loud rather than
+        // leaving it to be discovered by being stuck on the shore.
+        if (lock && stepTop - lockTop > FOREST_GRAB_REACH) {
+            console.warn('Forest approach: the first step is '
+                + (stepTop - lockTop).toFixed(2) + ' above the lock, past the '
+                + FOREST_GRAB_REACH + ' a standing jump can catch - the run is '
+                + 'unreachable even with the key inserted. Raise keyScale or '
+                + 'lower FOREST_APPROACH_STEP_CLEAR.');
+        }
         const stepZ = footZ + FOREST_APPROACH_LOCK_GAP + FOREST_APPROACH_STEP_GAP;
         put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ);
         // The run continuing up from it - the first step is the one you jumped
