@@ -13191,6 +13191,47 @@ export function startGame(CharacterClass) {
     // opening rather than over the top. Keep it above FOREST_GRAB_REACH for
     // that reason.
     const FOREST_APPROACH_LAST_RISE = 4.0;
+    // ---- TEMPORARY: the Lock Step Top slider ----
+    // Here to find the height at which the lock actually gates the run, by
+    // standing next to it and dragging rather than by rebuilding the level
+    // per guess. Delete this block, applyForestLockStepTop, the two run*()
+    // registrations inside the builder and the panel row when the number is
+    // settled - nothing else reads any of it.
+    //
+    // The whole run moves together, not just the step. Everything above the
+    // step is derived from its top (two rises at +3 and +6, then the rock
+    // face and its cave), so moving the step alone would close the gap to the
+    // next one and, far enough up, swallow it - which is not the thing being
+    // tuned. Shifting the lot keeps every relationship except the one under
+    // test: lock top -> first lip.
+    const _forestStepRun = [];
+    let _forestStepRunTop = 0;
+    function applyForestLockStepTop(newTop) {
+        if (!_forestStepRun.length) return;
+        const delta = newTop - _forestStepRunTop;
+        for (let i = 0; i < _forestStepRun.length; i++) {
+            const p = _forestStepRun[i];
+            if (p.grow) {
+                // Base stays on the ground and the top moves, which is what
+                // these slabs are: a step is its own height. scale.y rather
+                // than a new BoxGeometry so dragging allocates nothing; it
+                // stretches the side texture a little, which is a fair price
+                // for a control that is coming back out.
+                const h = Math.max(0.05, p.h0 + delta);
+                p.m.scale.y = h / p.h0;
+                p.m.position.y = h * 0.5;
+            } else {
+                p.m.position.y = p.y0 + delta;
+            }
+            p.m.updateMatrixWorld(true);
+            // Or the slider moves the picture and nothing else.
+            // getObstacleBox caches the box it builds on the object forever
+            // (userData.cachedBox3) because level geometry does not normally
+            // move, so every collision, ledge and placement test downstream
+            // would go on answering from where this slab USED to be.
+            if (p.m.userData) p.m.userData.cachedBox3 = undefined;
+        }
+    }
     function buildForestExitApproach() {
         const mat = _forestBorderMat ||
             new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
@@ -13357,12 +13398,26 @@ export function startGame(CharacterClass) {
                 + 'lower FOREST_APPROACH_STEP_CLEAR.');
         }
         const stepZ = footZ + FOREST_APPROACH_LOCK_GAP + FOREST_APPROACH_STEP_GAP;
-        put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ);
+        // TEMPORARY, with applyForestLockStepTop: runGrow is a slab standing
+        // on the ground whose HEIGHT is the thing that moves, runLift one
+        // already up in the air that is carried along. Both just record; they
+        // hand the mesh straight back.
+        _forestStepRun.length = 0;
+        _forestStepRunTop = stepTop;
+        const runGrow = (m) => {
+            _forestStepRun.push({ m, h0: m.geometry.parameters.height, grow: true });
+            return m;
+        };
+        const runLift = (m) => {
+            _forestStepRun.push({ m, y0: m.position.y, grow: false });
+            return m;
+        };
+        runGrow(put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ));
         // The run continuing up from it - the first step is the one you jumped
         // onto, so these are the ones after it. Two ordinary rises...
         for (let i = 1; i <= 2; i++) {
             const h = stepTop + i * FOREST_STEP_SIZE;
-            put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE);
+            runGrow(put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE));
         }
         // ...and the run no longer ends in a step. It ends at a ROCK FACE with
         // a cave mouth cut through it.
@@ -13392,18 +13447,18 @@ export function startGame(CharacterClass) {
         const pillarW = Math.max(0, (faceW - CAVE_W) * 0.5);
         if (pillarW > 0) {
             const pillarOff = (CAVE_W + pillarW) * 0.5;
-            put(pillarW, lastTop, FOREST_STEP_SIZE, cx - pillarOff, lastTop * 0.5, faceZ);
-            put(pillarW, lastTop, FOREST_STEP_SIZE, cx + pillarOff, lastTop * 0.5, faceZ);
+            runGrow(put(pillarW, lastTop, FOREST_STEP_SIZE, cx - pillarOff, lastTop * 0.5, faceZ));
+            runGrow(put(pillarW, lastTop, FOREST_STEP_SIZE, cx + pillarOff, lastTop * 0.5, faceZ));
         }
         // Under the sill, so the face is solid from the shore up to the tread
         // and the mouth is not a hole standing open above the run below.
-        put(CAVE_W, penultTop, FOREST_STEP_SIZE, cx, penultTop * 0.5, faceZ);
+        runGrow(put(CAVE_W, penultTop, FOREST_STEP_SIZE, cx, penultTop * 0.5, faceZ));
         // ...and over it. Guarded because the lintel only exists while the
         // opening is shorter than the face - at CAVE_H >= the rise there is
         // simply nothing left above it to build.
         const lintelH = lastTop - penultTop - CAVE_H;
         if (lintelH > 0) {
-            put(CAVE_W, lintelH, FOREST_STEP_SIZE, cx, penultTop + CAVE_H + lintelH * 0.5, faceZ);
+            runLift(put(CAVE_W, lintelH, FOREST_STEP_SIZE, cx, penultTop + CAVE_H + lintelH * 0.5, faceZ));
         }
         // The back of it, a third of the way in. A mouth to look into rather
         // than a way through was the brief - but the stop has to be SOLID, not
@@ -13411,8 +13466,8 @@ export function startGame(CharacterClass) {
         // beyond it the run has no ground at all, so without this walking in
         // would take you straight off the level.
         const CAVE_BACK = 1.0;
-        put(CAVE_W, CAVE_H, CAVE_BACK, cx, penultTop + CAVE_H * 0.5,
-            faceZ + (FOREST_STEP_SIZE - CAVE_BACK) * 0.5);
+        runLift(put(CAVE_W, CAVE_H, CAVE_BACK, cx, penultTop + CAVE_H * 0.5,
+            faceZ + (FOREST_STEP_SIZE - CAVE_BACK) * 0.5));
 
         // ...and what makes it read as a cave rather than a cupboard: an
         // unlit black shell lining the recess. MeshBasicMaterial so no light
@@ -13432,6 +13487,16 @@ export function startGame(CharacterClass) {
         caveDark.castShadow = false; caveDark.receiveShadow = false;
         caveDark.updateMatrixWorld(true);
         levelGroup.add(caveDark);
+        runLift(caveDark);
+        // TEMPORARY, with the Lock Step Top slider: the panel row starts at
+        // whatever the build actually chose, so the number under the slider
+        // is the real height from the first frame rather than a markup
+        // default that disagrees with the level until it is first dragged.
+        window.forestLockStepTop = stepTop;
+        const _stepTopSlider = document.getElementById('lock-step-top-slider');
+        if (_stepTopSlider) _stepTopSlider.value = stepTop;
+        const _stepTopVal = document.getElementById('lock-step-top-val');
+        if (_stepTopVal) _stepTopVal.innerText = stepTop.toFixed(2);
 
         // Where the shore fight is staged from - see stageForestShoreBots,
         // which cannot run from here.
@@ -22349,7 +22414,15 @@ export function startGame(CharacterClass) {
         { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
         { id: 'charge-proj-speed-slider', vId: 'charge-proj-speed-val', func: v => window.chargeAttackProjectileSpeed = v },
         { id: 'charge-proj-fade-slider', vId: 'charge-proj-fade-val', func: v => window.chargeAttackProjectileFadeRate = v },
-        { id: 'charge-proj-hit-cutoff-slider', vId: 'charge-proj-hit-cutoff-val', func: v => window.chargeAttackProjectileHitCutoff = v }
+        { id: 'charge-proj-hit-cutoff-slider', vId: 'charge-proj-hit-cutoff-val', func: v => window.chargeAttackProjectileHitCutoff = v },
+        // TEMPORARY - the forest lock's gate height, to be found by dragging
+        // it next to the lock rather than guessed at a rebuild at a time.
+        // Remove this row with applyForestLockStepTop and the panel markup.
+        // On 'input', not 'change': the whole point is watching the lip move
+        // while the drag is happening, and moving it is a handful of matrix
+        // updates rather than a rebuild, so it is cheap enough to do live.
+        { id: 'lock-step-top-slider', vId: 'lock-step-top-val',
+          func: v => { window.forestLockStepTop = v; applyForestLockStepTop(v); }, fix: 2 }
     ];
 
     uiBindings.forEach(b => {
