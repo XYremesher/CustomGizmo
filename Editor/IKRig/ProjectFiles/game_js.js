@@ -13162,76 +13162,45 @@ export function startGame(CharacterClass) {
     // bounding box at build time rather than a guessed height - the lock is a
     // Group of scaled clones and its height is not a number written anywhere.
     const FOREST_APPROACH_STEP_RISE = 1.2;
-    // The highest lip that can be caught off a standing jump, and the number
-    // every gate along this approach is measured against. A jump apexes at
-    // v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below the lip it holds, so
-    // anything within 3.52 of your feet is reachable and anything past it is
-    // not. Written down once here because two separate places need it to mean
-    // the same thing - the first step, which must be OUT of reach from the
-    // shore, and the rock face at the top, which must be out of reach from
-    // the tread.
-    const FOREST_GRAB_REACH = 3.52;
+    // The highest lip that can actually be caught, MEASURED rather than
+    // derived, and the number every gate along this approach is judged by.
+    //
+    // The derivation says otherwise and the derivation is wrong: a standing
+    // jump apexes at v^2/2g = 10^2/60 = 1.67 and a grip sits 1.85 below the
+    // lip it holds, which gives 3.52 - so the first step past the lock was
+    // built at 3.92, comfortably "out of reach", and was still being caught
+    // straight off the shore. Dragged live against the real thing (the Lock
+    // Step Top slider, since removed) it took 5.6 to close. So 3.52 is a
+    // floor, not the reach: it describes a jump from STANDING, and a run-up
+    // plus whatever vertical slack the ledge grab allows is worth most of two
+    // units more.
+    //
+    // Kept a shade under the measured 5.6, since 5.6 is the height that
+    // blocks it rather than the highest that was caught.
+    const FOREST_GRAB_REACH = 5.5;
     const FOREST_SHORE_Y = 0;               // the shore strip's top
-    // How far past that reach the first step sits. Small on purpose: it only
-    // has to be unreachable, and every unit here is also a unit taken out of
-    // the climb FROM the lock, which has the same ceiling.
-    const FOREST_APPROACH_STEP_CLEAR = 0.4;
+    // Where the first step past the lock sits, and the whole reason the lock
+    // is a gate rather than scenery: below this you climb the run with the
+    // key still in its jar. Found by dragging, not computed - see the reach
+    // above for why nothing here could have predicted it.
+    const FOREST_APPROACH_STEP_TOP = 5.6;
     // How tall the rock face at the end of the run is, and why it is not
     // another ordinary rise.
     //
-    // FOREST_GRAB_REACH above is what a standing jump can catch - which is
-    // why the 3.0 rises below are all simply climbable. 4.0 is past it: from
-    // the tread you cannot reach the top however well you time it.
+    // 4.0 was picked against the DERIVED reach of 3.52, to be the one rise on
+    // the run that could not be hopped - first as a puzzle (a carryable cube
+    // stood on the tread below, and standing on it put the lip back in
+    // range), then, once the cube was replaced by the cave mouth, as the
+    // thing that sends you through the opening rather than over the top.
     //
-    // That unreachability used to be a PUZZLE - a 1.0 carryable cube stood
-    // on the tread below, and standing on it put the lip back in range. The
-    // cube is gone and the way on is the cave mouth cut through the face
-    // instead, so the number now does the opposite job: it is what stops the
-    // face reading as one more step to hop, and sends you through the
-    // opening rather than over the top. Keep it above FOREST_GRAB_REACH for
-    // that reason.
+    // KNOWN BROKEN, and left as it is until someone decides what it should
+    // be. FOREST_GRAB_REACH is a measured 5.5 now, not 3.52 - the same
+    // measurement that moved the first step to 5.6 - so a 4.0 rise from the
+    // tread is comfortably catchable and the face can simply be climbed. The
+    // cave is skippable. Taking it past the reach means something over 5.6,
+    // which is a visibly taller wall at the end of the run, so it is a look
+    // decision as much as a gameplay one and not one to make silently.
     const FOREST_APPROACH_LAST_RISE = 4.0;
-    // ---- TEMPORARY: the Lock Step Top slider ----
-    // Here to find the height at which the lock actually gates the run, by
-    // standing next to it and dragging rather than by rebuilding the level
-    // per guess. Delete this block, applyForestLockStepTop, the two run*()
-    // registrations inside the builder and the panel row when the number is
-    // settled - nothing else reads any of it.
-    //
-    // The whole run moves together, not just the step. Everything above the
-    // step is derived from its top (two rises at +3 and +6, then the rock
-    // face and its cave), so moving the step alone would close the gap to the
-    // next one and, far enough up, swallow it - which is not the thing being
-    // tuned. Shifting the lot keeps every relationship except the one under
-    // test: lock top -> first lip.
-    const _forestStepRun = [];
-    let _forestStepRunTop = 0;
-    function applyForestLockStepTop(newTop) {
-        if (!_forestStepRun.length) return;
-        const delta = newTop - _forestStepRunTop;
-        for (let i = 0; i < _forestStepRun.length; i++) {
-            const p = _forestStepRun[i];
-            if (p.grow) {
-                // Base stays on the ground and the top moves, which is what
-                // these slabs are: a step is its own height. scale.y rather
-                // than a new BoxGeometry so dragging allocates nothing; it
-                // stretches the side texture a little, which is a fair price
-                // for a control that is coming back out.
-                const h = Math.max(0.05, p.h0 + delta);
-                p.m.scale.y = h / p.h0;
-                p.m.position.y = h * 0.5;
-            } else {
-                p.m.position.y = p.y0 + delta;
-            }
-            p.m.updateMatrixWorld(true);
-            // Or the slider moves the picture and nothing else.
-            // getObstacleBox caches the box it builds on the object forever
-            // (userData.cachedBox3) because level geometry does not normally
-            // move, so every collision, ledge and placement test downstream
-            // would go on answering from where this slab USED to be.
-            if (p.m.userData) p.m.userData.cachedBox3 = undefined;
-        }
-    }
     function buildForestExitApproach() {
         const mat = _forestBorderMat ||
             new THREE.MeshToonMaterial({ color: 0x8d8d93, gradientMap: threeTone });
@@ -13363,61 +13332,47 @@ export function startGame(CharacterClass) {
         // pitched against something that is not there.
         const lockTop = lock ? new THREE.Box3().setFromObject(lock).max.y : FOREST_STEP_SIZE - FOREST_APPROACH_STEP_RISE;
         // ...but ALSO out of reach from the shore, which lockTop + one rise was
-        // not. That put the lip around 2.3 above a shore at y=0, and a lip
-        // within FOREST_GRAB_REACH of your feet can be caught off a standing
-        // jump - so the whole lock could be walked past and grabbed over, and
-        // the run climbed with the key still sitting in its jar. The lock was
-        // not a gate, it was scenery beside one.
+        // not. That put the lip around 2.3 above a shore at y=0, so the lock
+        // could simply be walked past and grabbed over and the run climbed
+        // with the key still sitting in its jar. The lock was not a gate, it
+        // was scenery beside one.
         //
         // Whichever is higher, so the step stays reachable FROM the lock and
-        // ungrabbable from the ground the lock stands on. The margin is what
-        // keeps it out of reach rather than exactly at the edge of it.
+        // ungrabbable from the ground the lock stands on.
         //
-        // This does change how it feels, and the change is forced, not
-        // chosen: with the lock about 1.1 tall, "out of reach from a shore at
-        // 0" means a lip above 3.52, which is more than 2.4 above the lock -
-        // so the way up is now a jump and a LEDGE GRAB off the lock rather
-        // than the plain 1.2 hop FOREST_APPROACH_STEP_RISE was pitched for.
-        // There is no height that is both a hop from a lock this size and
-        // unreachable from the ground beside it; the only way to have both
-        // back is a taller lock (keyScale), not a different step.
+        // The feel changes, and the change is forced rather than chosen: with
+        // the lock about 1.1 tall there is no height that is both a hop from
+        // the lock and unreachable from the shore beside it, so the way up is
+        // a jump and a LEDGE GRAB off the lock now, not the plain 1.2 step
+        // FOREST_APPROACH_STEP_RISE was pitched for. Having both back means a
+        // taller lock (keyScale), not a different step.
         const stepTop = Math.max(lockTop + FOREST_APPROACH_STEP_RISE,
-            FOREST_SHORE_Y + FOREST_GRAB_REACH + FOREST_APPROACH_STEP_CLEAR);
+            FOREST_SHORE_Y + FOREST_APPROACH_STEP_TOP);
         // The other half of the same question, and the one that turns a gate
-        // into a dead end if it is ever missed: raising the lip past what can
-        // be caught FROM THE LOCK would lock the level for good, key or no
-        // key. Nothing here can produce that at the shipping keyScale - the
-        // lock is tall enough - but keyScale is a live slider and a smaller
-        // lock is a shorter platform, so this says so out loud rather than
-        // leaving it to be discovered by being stuck on the shore.
+        // into a dead end if it is ever missed: the lip has to stay catchable
+        // FROM THE LOCK, or the run is shut for good, key or no key.
+        //
+        // The margin here is genuinely thin, and that is worth knowing rather
+        // than discovering. The step blocks the shore at 5.6 and the reach is
+        // about 5.5, so what makes it passable at all is the ~1.1 the lock
+        // adds under your feet - a gate held open by roughly a unit. Anything
+        // that moves either number (keyScale shrinking the lock, a change to
+        // jump speed or the grab window) can close it, so this says so out
+        // loud instead of leaving it to be found while stuck on the shore.
         if (lock && stepTop - lockTop > FOREST_GRAB_REACH) {
             console.warn('Forest approach: the first step is '
                 + (stepTop - lockTop).toFixed(2) + ' above the lock, past the '
-                + FOREST_GRAB_REACH + ' a standing jump can catch - the run is '
-                + 'unreachable even with the key inserted. Raise keyScale or '
-                + 'lower FOREST_APPROACH_STEP_CLEAR.');
+                + FOREST_GRAB_REACH + ' that can be caught - the run is '
+                + 'unreachable even with the key inserted. Raise keyScale (a '
+                + 'taller lock) or lower FOREST_APPROACH_STEP_TOP.');
         }
         const stepZ = footZ + FOREST_APPROACH_LOCK_GAP + FOREST_APPROACH_STEP_GAP;
-        // TEMPORARY, with applyForestLockStepTop: runGrow is a slab standing
-        // on the ground whose HEIGHT is the thing that moves, runLift one
-        // already up in the air that is carried along. Both just record; they
-        // hand the mesh straight back.
-        _forestStepRun.length = 0;
-        _forestStepRunTop = stepTop;
-        const runGrow = (m) => {
-            _forestStepRun.push({ m, h0: m.geometry.parameters.height, grow: true });
-            return m;
-        };
-        const runLift = (m) => {
-            _forestStepRun.push({ m, y0: m.position.y, grow: false });
-            return m;
-        };
-        runGrow(put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ));
+        put(forestStairW(), stepTop, FOREST_STEP_SIZE, cx, stepTop * 0.5, stepZ);
         // The run continuing up from it - the first step is the one you jumped
         // onto, so these are the ones after it. Two ordinary rises...
         for (let i = 1; i <= 2; i++) {
             const h = stepTop + i * FOREST_STEP_SIZE;
-            runGrow(put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE));
+            put(forestStairW(), h, FOREST_STEP_SIZE, cx, h * 0.5, stepZ + i * FOREST_STEP_SIZE);
         }
         // ...and the run no longer ends in a step. It ends at a ROCK FACE with
         // a cave mouth cut through it.
@@ -13447,18 +13402,18 @@ export function startGame(CharacterClass) {
         const pillarW = Math.max(0, (faceW - CAVE_W) * 0.5);
         if (pillarW > 0) {
             const pillarOff = (CAVE_W + pillarW) * 0.5;
-            runGrow(put(pillarW, lastTop, FOREST_STEP_SIZE, cx - pillarOff, lastTop * 0.5, faceZ));
-            runGrow(put(pillarW, lastTop, FOREST_STEP_SIZE, cx + pillarOff, lastTop * 0.5, faceZ));
+            put(pillarW, lastTop, FOREST_STEP_SIZE, cx - pillarOff, lastTop * 0.5, faceZ);
+            put(pillarW, lastTop, FOREST_STEP_SIZE, cx + pillarOff, lastTop * 0.5, faceZ);
         }
         // Under the sill, so the face is solid from the shore up to the tread
         // and the mouth is not a hole standing open above the run below.
-        runGrow(put(CAVE_W, penultTop, FOREST_STEP_SIZE, cx, penultTop * 0.5, faceZ));
+        put(CAVE_W, penultTop, FOREST_STEP_SIZE, cx, penultTop * 0.5, faceZ);
         // ...and over it. Guarded because the lintel only exists while the
         // opening is shorter than the face - at CAVE_H >= the rise there is
         // simply nothing left above it to build.
         const lintelH = lastTop - penultTop - CAVE_H;
         if (lintelH > 0) {
-            runLift(put(CAVE_W, lintelH, FOREST_STEP_SIZE, cx, penultTop + CAVE_H + lintelH * 0.5, faceZ));
+            put(CAVE_W, lintelH, FOREST_STEP_SIZE, cx, penultTop + CAVE_H + lintelH * 0.5, faceZ);
         }
         // The back of it, a third of the way in. A mouth to look into rather
         // than a way through was the brief - but the stop has to be SOLID, not
@@ -13466,8 +13421,8 @@ export function startGame(CharacterClass) {
         // beyond it the run has no ground at all, so without this walking in
         // would take you straight off the level.
         const CAVE_BACK = 1.0;
-        runLift(put(CAVE_W, CAVE_H, CAVE_BACK, cx, penultTop + CAVE_H * 0.5,
-            faceZ + (FOREST_STEP_SIZE - CAVE_BACK) * 0.5));
+        put(CAVE_W, CAVE_H, CAVE_BACK, cx, penultTop + CAVE_H * 0.5,
+            faceZ + (FOREST_STEP_SIZE - CAVE_BACK) * 0.5);
 
         // ...and what makes it read as a cave rather than a cupboard: an
         // unlit black shell lining the recess. MeshBasicMaterial so no light
@@ -13487,16 +13442,6 @@ export function startGame(CharacterClass) {
         caveDark.castShadow = false; caveDark.receiveShadow = false;
         caveDark.updateMatrixWorld(true);
         levelGroup.add(caveDark);
-        runLift(caveDark);
-        // TEMPORARY, with the Lock Step Top slider: the panel row starts at
-        // whatever the build actually chose, so the number under the slider
-        // is the real height from the first frame rather than a markup
-        // default that disagrees with the level until it is first dragged.
-        window.forestLockStepTop = stepTop;
-        const _stepTopSlider = document.getElementById('lock-step-top-slider');
-        if (_stepTopSlider) _stepTopSlider.value = stepTop;
-        const _stepTopVal = document.getElementById('lock-step-top-val');
-        if (_stepTopVal) _stepTopVal.innerText = stepTop.toFixed(2);
 
         // Where the shore fight is staged from - see stageForestShoreBots,
         // which cannot run from here.
@@ -22414,15 +22359,7 @@ export function startGame(CharacterClass) {
         { id: 'charge-punch-knockback-slider', vId: 'charge-punch-knockback-val', func: v => window.chargePunchKnockback = v },
         { id: 'charge-proj-speed-slider', vId: 'charge-proj-speed-val', func: v => window.chargeAttackProjectileSpeed = v },
         { id: 'charge-proj-fade-slider', vId: 'charge-proj-fade-val', func: v => window.chargeAttackProjectileFadeRate = v },
-        { id: 'charge-proj-hit-cutoff-slider', vId: 'charge-proj-hit-cutoff-val', func: v => window.chargeAttackProjectileHitCutoff = v },
-        // TEMPORARY - the forest lock's gate height, to be found by dragging
-        // it next to the lock rather than guessed at a rebuild at a time.
-        // Remove this row with applyForestLockStepTop and the panel markup.
-        // On 'input', not 'change': the whole point is watching the lip move
-        // while the drag is happening, and moving it is a handful of matrix
-        // updates rather than a rebuild, so it is cheap enough to do live.
-        { id: 'lock-step-top-slider', vId: 'lock-step-top-val',
-          func: v => { window.forestLockStepTop = v; applyForestLockStepTop(v); }, fix: 2 }
+        { id: 'charge-proj-hit-cutoff-slider', vId: 'charge-proj-hit-cutoff-val', func: v => window.chargeAttackProjectileHitCutoff = v }
     ];
 
     uiBindings.forEach(b => {
