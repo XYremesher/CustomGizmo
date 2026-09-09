@@ -14365,15 +14365,15 @@ export function startGame(CharacterClass) {
     // end of the wood is what is being built and walking the whole corridor to
     // reach it costs a few minutes per attempt.
     //
-    // window.forestDebugEnd = false, then reload, for the real opening: the
-    // corridor mouth with all three recruits still waiting to be found. Set
-    // the default back to false before this ships, or the game skips its own
-    // tutorial.
+    // window.forestDebugEnd = true, then reload, to skip back to the exit
+    // landing shortcut for iterating on that end of the level without
+    // walking the whole corridor each attempt.
     //
-    // It was off by default until now, which is why setting it here was
-    // needed at all - the flag was never assigned anywhere, so it read
-    // undefined and this returned on its first line.
-    if (window.forestDebugEnd === undefined) window.forestDebugEnd = true;
+    // Back to false: the real opening, the corridor mouth with all three
+    // recruits still waiting to be found. Left assignable via the console
+    // rather than deleted - the shortcut is still worth having on hand while
+    // the exit landing keeps changing.
+    if (window.forestDebugEnd === undefined) window.forestDebugEnd = false;
     // How far in from the landing's own lip the debug start stands. A body
     // is 0.45 across (see isVerticalSpaceClear's bodyRadius), so one full
     // width in puts the whole of it on the deck with the edge still
