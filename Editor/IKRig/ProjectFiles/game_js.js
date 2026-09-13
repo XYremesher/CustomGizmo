@@ -12850,6 +12850,23 @@ export function startGame(CharacterClass) {
         const off = isLinearForest() ? STORY_FIRST_OFFSET_LINEAR : STORY_FIRST_OFFSET;
         return { x: forestEntryX(), z: (z0 + z1) * 0.5 + off };
     }
+    // Where the linear wood's first PAIR of enemies wakes - a third of the
+    // way from the bag to the first companion (see the botAt.BotYellow/
+    // BotYellow2 assignment, which now calls this instead of repeating the
+    // math). Pulled out into its own function for the same reason
+    // forestMeetPoint exists as one rather than being inlined at its call
+    // site: pickForestLakes needs this point too, before either the fight or
+    // the companion has been placed, and a second copy of the formula is a
+    // second place for the two to quietly disagree.
+    //
+    // Only meaningful for the linear wood - the square one places this same
+    // pair by a plain standoff from its own meet point instead (see botAt's
+    // non-linear branch), which already sits inside forestMeetPoint's own
+    // STORY_MEET_CLEAR.
+    function forestFirstPairFightPoint() {
+        const bag = forestBagPoint(), m1 = forestMeetPoint();
+        return { x: 0, z: bag.z + (m1.z - bag.z) * 0.35 };
+    }
     // ...and where the SECOND one waits, on the far island. It gets a clearing
     // of its own for the same reason the first does, and more so: that scene
     // is a cinematic with a charge punch thrown across it, and a charge punch
@@ -13707,7 +13724,7 @@ export function startGame(CharacterClass) {
                 // wants to be somewhere you reach shortly after putting your
                 // fists down - far enough that it is not standing over the
                 // lesson, near enough that it still belongs to it.
-                const first = bag.z + (m1.z - bag.z) * 0.35;
+                const first = forestFirstPairFightPoint().z;
                 // TWO at the first beat, both plain. Two of the simplest enemy
                 // is a different fight from one - you have to watch a flank -
                 // without asking for a move you have not been taught, which is
@@ -16319,6 +16336,25 @@ export function startGame(CharacterClass) {
             const keepOut = r + FOREST_LAKE_BANK + FOREST_SPAWN_CLEAR_ENOUGH;
             if (Math.abs(x - forestEntryX()) < FOREST_ENTRY_W * 0.5 + keepOut &&
                 z < ez1 + keepOut && z > ez0 - keepOut) continue;
+            // Never on top of a story beat either - a companion or a fight
+            // standing knee-deep is the same mistake the entrance corridor
+            // guard above exists to prevent, just discovered later: the
+            // linear wood's first enemy pair (see forestFirstPairFightPoint)
+            // was landing right at the edge of a lake this test knew nothing
+            // about, ~10 units short of clashing outright, which read as a
+            // lake sitting exactly where the fight belonged. Measured against
+            // the bank's full reach plus STORY_MEET_CLEAR, the same radius
+            // the tree scatter already keeps clear around these same points -
+            // one number, so the two cannot silently disagree about how much
+            // room a clearing needs.
+            const beatClear = r + FOREST_LAKE_BANK + STORY_MEET_CLEAR;
+            const meet = forestMeetPoint(), meet2 = forestMeetPoint2();
+            if (Math.hypot(x - meet.x, z - meet.z) < beatClear) continue;
+            if (Math.hypot(x - meet2.x, z - meet2.z) < beatClear) continue;
+            if (isLinearForest()) {
+                const ff = forestFirstPairFightPoint();
+                if (Math.hypot(x - ff.x, z - ff.z) < beatClear) continue;
+            }
             let clash = false;
             for (let k = 0; k < lakes.length; k++) {
                 if (Math.hypot(x - lakes[k].x, z - lakes[k].z) < r + lakes[k].r + 10) { clash = true; break; }
