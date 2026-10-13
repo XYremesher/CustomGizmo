@@ -4146,24 +4146,162 @@ export function startGame(CharacterClass) {
     // of its hits landed without being worth the sum of them. See the
     // companions' full combo.
     // ---- Knocked out ----
-    // Put a bot down twice in quick succession and it stops being a fight.
-    // It still stands up - the ragdoll's own recovery is untouched - but then
-    // it holds where it is, see-through, for a while: still on the field,
-    // visibly not a threat. Without this a bot you have beaten twice gets
-    // straight back on you, and nothing you do ever reads as winning.
-    //
-    // The second knockdown has to be RECENT to count. Two spread across a long
-    // fight are just a long fight; two inside a few seconds is being taken
-    // apart, which is the thing worth acknowledging.
-    const AI_KO_WINDOW = 14;   // a second knockdown within this many seconds
-    const AI_KO_TIME = 30;     // ...puts it out of the fight for this long
+    // Used to mean "down twice in quick succession" - a two-strikes grace
+    // before a bot was sidelined, still see-through and out of the fight
+    // rather than gone. PROTOTYPE removed that grace (see noteBotKnockdown):
+    // every bot is killable now, so the first knockdown is already the one
+    // that counts. AI_KO_OPACITY (the see-through look itself) is still what
+    // a dead body fades to.
     const AI_KO_OPACITY = 0.4;
-    function noteBotKnockdown(bot) {
-        const now = performance.now() / 1000;
-        if (bot._lastDownAt !== undefined && (now - bot._lastDownAt) < AI_KO_WINDOW) {
-            bot.knockedOutT = AI_KO_TIME;
+    // ---- PROTOTYPE: reward orb ----
+    // Not pushed. A small glowing ball, dropped by every bot in the game once
+    // it has actually died (see noteBotKnockdown/updateAiBot's _koLookT
+    // check). Falls under gravity to the ground it died on, then freezes;
+    // once the player is close it flies to them and vanishes on contact. Not
+    // wired to anything yet - no counter, no currency - this is only the
+    // drop-and-collect feel, which was asked for on its own before deciding
+    // what it is worth.
+    const FOREST_ORB_MAGNET_R = 4.0;
+    const FOREST_ORB_SPEED = 14.0;
+    const FOREST_ORB_CATCH_R = 0.6;
+    let _forestOrbGeo = null;
+    const _forestOrbSpawnPos = new THREE.Vector3();
+    let _forestOrbs = [];
+    window.orbsCollected = 0;
+    const FOREST_ORB_GRAVITY = 30;   // same constant the carryable physics falls at
+    const FOREST_ORB_REST = 0.25;    // == the sphere's own radius, so it rests ON the ground, not IN it
+    const _forestOrbMats = {};
+    function _orbMaterial(color) {
+        // One shared material per colour, not one per spawn - every orb of a
+        // colour wants to be the same thing drawn more than once, which is
+        // what sharing a material gets for free. Keyed by the colour number
+        // so an unexpected one still gets its own instance instead of being
+        // silently painted the first colour anyone asked for.
+        const key = color | 0;
+        if (!_forestOrbMats[key]) {
+            _forestOrbMats[key] = new THREE.MeshBasicMaterial({ color: key });
         }
-        bot._lastDownAt = now;
+        return _forestOrbMats[key];
+    }
+    function spawnRewardOrb(pos, opts) {
+        if (!_forestOrbGeo) _forestOrbGeo = new THREE.SphereGeometry(0.25, 10, 8);
+        const color = (opts && opts.color !== undefined) ? opts.color : 0x3fd6ff;
+        const preSettled = !!(opts && opts.preSettled);
+        const orb = new THREE.Mesh(_forestOrbGeo, _orbMaterial(color));
+        // At the bot's own height (its group origin is its feet), plus a
+        // small hop - a coin that pops up out of what dropped it and lands
+        // reads as loot; one that just appears sitting on the ground does not.
+        // preSettled skips both the hop and the floor-resolve: a coin PLACED
+        // in advance (a treetop trail, a landmark on a column) belongs
+        // exactly where it was put, not wherever gravity carries it from
+        // there - a floating marker that falls to the ground is not a
+        // landmark any more.
+        orb.position.copy(pos);
+        if (!preSettled) orb.position.y += 0.6;
+        levelGroup.add(orb);
+        if (preSettled) {
+            _forestOrbs.push({ mesh: orb, vy: 0, vx: 0, vz: 0,
+                               floor: orb.position.y - FOREST_ORB_REST, settled: true });
+            return;
+        }
+        // Floor resolved HERE, once, with -Infinity as the fallback instead
+        // of 0: a bot dying on the forest exit landing (y 11.8) that falls
+        // off its edge was reading storyGroundY's own default-0 as "the
+        // ground is at the world origin" and dropping all the way through to
+        // y=0, which is the "yerden geçiyor" report. The capture below (the
+        // max of what the raycast actually hit and the spawn height minus a
+        // half-unit) means a missed raycast simply pins the orb at where
+        // it was born rather than letting it fall through the level - and
+        // when the raycast does hit, the small nudge below the spawn still
+        // leaves room for the pop to be visible.
+        const floorRay = storyGroundY(orb.position.x, orb.position.z, -Infinity);
+        const floor = floorRay > -Infinity ? Math.max(floorRay, orb.position.y - 1.5)
+                                           : orb.position.y - 0.3;
+        _forestOrbs.push({
+            mesh: orb,
+            vy: 4.0,
+            // Small horizontal scatter, so two orbs from the same pair fight
+            // do not land exactly on top of each other.
+            vx: (Math.random() - 0.5) * 2.0, vz: (Math.random() - 0.5) * 2.0,
+            floor,
+            settled: false,
+        });
+    }
+    // Falls under gravity to the real ground under it (storyGroundY, the same
+    // single-raycast helper the story placement code already uses) and then
+    // FREEZES - no more physics, no idle bob, nothing read or written about
+    // it again until a player is close enough to matter. A dropped item that
+    // never stops moving reads as broken, not alive; the ragdoll bodies this
+    // same file freezes once settled are the same reasoning.
+    function updateRewardOrbs(delta) {
+        if (!_forestOrbs.length || !char || !char.group) return;
+        const p = char.group.position;
+        for (let i = _forestOrbs.length - 1; i >= 0; i--) {
+            const o = _forestOrbs[i];
+            const m = o.mesh;
+            if (!o.settled) {
+                o.vy -= FOREST_ORB_GRAVITY * delta;
+                m.position.x += o.vx * delta;
+                m.position.z += o.vz * delta;
+                m.position.y += o.vy * delta;
+                // o.floor, not a per-frame storyGroundY lookup: the floor was
+                // resolved at spawn time against the bot's actual position
+                // (see spawnRewardOrb) and does not need re-asking as the orb
+                // hops a few units sideways - re-asking is what let it fall
+                // through a step edge when its hop carried it off one.
+                if (m.position.y <= o.floor + FOREST_ORB_REST) {
+                    m.position.y = o.floor + FOREST_ORB_REST;
+                    o.settled = true;
+                }
+            }
+            // Horizontal distance only, not full 3D - the orb rests at ankle
+            // height once settled (or at chest height mid-flight, once
+            // magnetised) and the player's own position is its FEET, so a 3D
+            // distance check was comparing across a gap that never actually
+            // closed: the ball could sit right on top of the player and
+            // still read as ~1 unit away. Catching something is a question
+            // of standing where it is, not of matching its height exactly.
+            const dx = m.position.x - p.x, dz = m.position.z - p.z;
+            const d = Math.hypot(dx, dz);
+            if (d < FOREST_ORB_CATCH_R) {
+                levelGroup.remove(m);
+                _forestOrbs.splice(i, 1);
+                window.orbsCollected++;
+                continue;
+            }
+            if (o.settled && d < FOREST_ORB_MAGNET_R) {
+                const t = Math.min(1, FOREST_ORB_SPEED * delta / Math.max(d, 0.01));
+                m.position.x += (p.x - m.position.x) * t;
+                m.position.z += (p.z - m.position.z) * t;
+                m.position.y += (p.y + 1.0 - m.position.y) * t;
+            }
+        }
+    }
+    // PROTOTYPE: every bot has a fixed number of stand-ups before it goes
+    // down for good, set at spawn from the enemy tier (see standUpsBase in
+    // addAiBot). While standUpsLeft > 0 we leave knockedOutT at 0, which
+    // means the ragdoll's own recovery runs untouched - the bot flops, lies
+    // there, stands back up, and keeps fighting; the countdown decrements
+    // instead. Once it hits zero the next knockdown is lethal: knockedOutT
+    // = Infinity so the recovery timer never reaches it and the body freezes
+    // (RemoteAvatar's own heldDown && settled branch stops the sim for
+    // free). The orb is not dropped here - see updateAiBot's _koLookT check,
+    // which waits for the knocked-out fade to actually finish first.
+    //
+    // Not companions, even under friendly fire - staggerBot is the same
+    // function for both, and "hepsi ölebilir" was said about the things you
+    // are fighting, not your own recruits. Companions already run their own
+    // knockdown/revive handling (companion.knockedOutT = 10.0, elsewhere in
+    // this file); this just declines to also apply the enemies' one-and-done
+    // rule on top of it.
+    function noteBotKnockdown(bot) {
+        if (companions.some(r => r.comp === bot)) return;
+        if ((bot.standUpsLeft | 0) > 0) {
+            bot.standUpsLeft -= 1;
+            return;
+        }
+        bot.knockedOutT = Infinity;
+        bot.killed = true;
     }
     // What a knocked-out body turns into. Fading alone did not read at a
     // glance - a faint yellow is still a yellow - and in a fight with three of
@@ -4178,8 +4316,13 @@ export function startGame(CharacterClass) {
     // hiding the one that mattered. The delay lets the ragdoll finish and
     // settle first; the fade then says "and it is staying there", which is a
     // different statement and wants its own moment.
-    const AI_KO_LOOK_DELAY = 1.2;   // after it goes down, before anything changes
-    const AI_KO_LOOK_FADE = 2.0;    // ...and how long the change itself takes
+    // Shortened for the prototype. 1.2 + 2.0 (3.2s total) left the loot
+    // feeling like it was never going to arrive - "çok uzun sürüyor
+    // şeffaflaşmaları". 0.3 + 0.7 is a beat long enough that the knockdown
+    // and the fade do not stack on each other, and short enough that the
+    // orb lands while you are still looking at the body it came from.
+    const AI_KO_LOOK_DELAY = 0.3;   // after it goes down, before anything changes
+    const AI_KO_LOOK_FADE = 0.7;    // ...and how long the change itself takes
     const _koColFrom = new THREE.Color();
     const _koColTo = new THREE.Color(AI_KO_COLOR);
     // t is 0 for a normal body and 1 for a fully faded one. Written every
@@ -4610,6 +4753,23 @@ export function startGame(CharacterClass) {
         // nothing to call on a bot that is not out: it returns on the first
         // comparison once the look has finished moving.
         setBotKnockedOutLook(aiBot, aiBot.knockedOutT > 0, delta);
+        // PROTOTYPE: every bot's orb, held until it has actually finished
+        // fading out (_koLookT reaches 1) rather than dropped at the moment
+        // it went down - "enemyler söndükten sonra gelecek toplar". One-shot
+        // (_orbDropped), since _koLookT simply stays at 1 every frame
+        // afterward and would otherwise drop a second orb, a third, forever.
+        if (aiBot.killed && aiBot._koLookT >= 1 && !aiBot._orbDropped) {
+            aiBot._orbDropped = true;
+            // NOT aiBot.group.position - that is where it was STANDING before
+            // it went down, and a dead bot never calls beginStandUp (see
+            // noteBotKnockdown), which is the only thing that ever snaps the
+            // group back under the body. It sits wherever the knockback and
+            // the ragdoll settle carried it, which getHitReferencePoint
+            // already knows how to read (the hips bone's actual world
+            // position while isRagdoll is true - see its own comment).
+            aiBot.getHitReferencePoint(_forestOrbSpawnPos);
+            spawnRewardOrb(_forestOrbSpawnPos);
+        }
         // A hit mid-climb drops it - being knocked off a wall should look
         // like being knocked off a wall, not like finishing the climb anyway.
         if (aiBot.isRagdoll || aiBot.isStandingUp) {
@@ -5339,6 +5499,17 @@ export function startGame(CharacterClass) {
             goalLine: null, stepLine: null,
         };
         rec.bot.setColor(opts.color);
+        // PROTOTYPE: how many knockdowns this one SURVIVES - "turuncular 1
+        // kere kalksın, kırmızılar 2 kere kalksın". Keyed off the same spec
+        // flags that decide what they SWING with, so it reads as the enemy
+        // tier doing both (the harder-hitting enemy is also the one that
+        // takes an extra one to put away). Yellow (no flag) = 0, dies on
+        // first knockdown; Orange (combo) = 1, dies on second; Red (charge)
+        // = 2, dies on third. Saved on the bot so noteBotKnockdown can see
+        // it without a spec lookup per hit, and so storyPlaceBot's reset
+        // below can snap it back for a reused bot slot.
+        rec.bot.standUpsBase = opts.charge ? 2 : opts.combo ? 1 : 0;
+        rec.bot.standUpsLeft = rec.bot.standUpsBase;
         const spawnPos = char.group.position;
         if (_aiBotSpawnOverride) {
             // Story spawns place the bot themselves - see _aiBotSpawnOverride.
@@ -12591,6 +12762,11 @@ export function startGame(CharacterClass) {
             ditherOccluders.push(o);
         });
         levelGroup.add(root);
+        // No gold here. This is the level the forest's cave portal opens into,
+        // and the forest itself was stripped of coins - the two read as one
+        // run, so a sudden crown of gold on every peak here broke that. The
+        // peak-finder (placeVoxelLevelCoins) is kept for when there is a reason
+        // to mark this level's tops again; it is simply not called.
 
         // Terrain underneath. Positioned from the platform's own bounds rather
         // than a fixed coordinate, so it stays centred under whatever shape
@@ -12694,6 +12870,19 @@ export function startGame(CharacterClass) {
         if (window.resetPlayerMomentum) window.resetPlayerMomentum();
         char.group.rotation.y = 0;
         window.compassTarget = null;
+        // The way OUT of this level: an exit portal to the water test level,
+        // on the start ground. Set a few units to the side of the spawn so it
+        // does not fire the instant you arrive, and ray down there to sit the
+        // ring on the real surface rather than guessing the platform's height
+        // (fall back to spawn height if that offset hangs over an edge).
+        {
+            const sp = char.group.position;
+            const ox = sp.x + 5, oz = sp.z;
+            rayDown.set(_tempVec1.set(ox, bounds.max.y + 5, oz), _downVec);
+            const pHits = rayDown.intersectObject(root, true);
+            const surfY = pHits.length ? pHits[0].point.y : sp.y - 1.0;
+            placeWaterExitPortal(ox, surfY + 1.3, oz);
+        }
     }
 
     // Drops trees onto the authored geometry: fire rays down over its
@@ -12850,13 +13039,27 @@ export function startGame(CharacterClass) {
         const off = isLinearForest() ? STORY_FIRST_OFFSET_LINEAR : STORY_FIRST_OFFSET;
         return { x: forestEntryX(), z: (z0 + z1) * 0.5 + off };
     }
-    // Where the linear wood's first PAIR of enemies wakes - a third of the
-    // way from the bag to the first companion (see the botAt.BotYellow/
-    // BotYellow2 assignment, which now calls this instead of repeating the
-    // math). Pulled out into its own function for the same reason
-    // forestMeetPoint exists as one rather than being inlined at its call
-    // site: pickForestLakes needs this point too, before either the fight or
-    // the companion has been placed, and a second copy of the formula is a
+    // Where the linear wood's first PAIR of enemies waits - past the bag,
+    // not a third of the way to the first companion. That old fraction (of a
+    // corridor that runs 52 long, bag to companion) landed the clash 18 units
+    // out, which read as a WALK after the lesson. Two tree-gaps was then the
+    // other extreme - near enough that the pair stood in plain sight from the
+    // first frame with no distance to it at all.
+    //
+    // Four tree-gaps (FOREST_CORRIDOR_TREE_GAP) ~13 past the bag is the middle
+    // the walk-vs-no-distance pull leaves: far enough to sit HIDDEN in the
+    // following mist at spawn (the bank rides ~10 ahead of you) and to give
+    // the pair room to CHARGE - they no longer wait for you to arrive, they
+    // run the moment the bag is behind you (see updateBagArrow), and a charge
+    // wants ground to cross. This lands inside the entrance-corridor exclusion
+    // (z past the mouth kept clear only on the centre line - see the tree
+    // scatter), so the pair stands among trees, with just the walking line and
+    // their own feet clear of a trunk rather than on a bald clearing.
+    //
+    // Pulled out into its own function for the same reason forestMeetPoint
+    // exists as one rather than being inlined at its call site:
+    // pickForestLakes needs this point too, before either the fight or the
+    // companion has been placed, and a second copy of the formula is a
     // second place for the two to quietly disagree.
     //
     // Only meaningful for the linear wood - the square one places this same
@@ -12864,8 +13067,232 @@ export function startGame(CharacterClass) {
     // non-linear branch), which already sits inside forestMeetPoint's own
     // STORY_MEET_CLEAR.
     function forestFirstPairFightPoint() {
-        const bag = forestBagPoint(), m1 = forestMeetPoint();
-        return { x: 0, z: bag.z + (m1.z - bag.z) * 0.35 };
+        const bag = forestBagPoint();
+        return { x: 0, z: bag.z + FOREST_CORRIDOR_TREE_GAP * 4 };
+    }
+
+    // ---- PROTOTYPE: fog of war ----
+    // Not pushed. The ground you have not reached yet is not shown - the wood
+    // ahead simply fades into mist, the way an unexplored map reads in a
+    // strategy game, and it does not lift until whatever is standing in it is
+    // dead.
+    //
+    // WHITE, not black, and that is the whole difference between this reading
+    // as fog and reading as a wall: the scene already carries a white
+    // FogExp2 (see scene.fog), so the horizon in this game is ALREADY a white
+    // haze. Mist in the same white is the same weather getting thicker, and
+    // the seam between the two disappears. The black curtain this replaces
+    // was fighting the atmosphere it stood in.
+    //
+    // LAYERS, not one plane, for the same reason: a single quad has one
+    // opacity and one edge, and an edge is what gives away a curtain. Seven
+    // of them spread over FOG_DEPTH, each a little denser than the last,
+    // accumulate into something you walk INTO - the near ones barely there,
+    // the far ones solid - and there is no single surface to notice.
+    //
+    // Cost is seven unlit transparent quads and a position write per frame.
+    // The real thing (a reveal mask sampled in a fullscreen pass, world
+    // position reconstructed from depth) would cover ground, trees, enemies
+    // and props with no per-material work, but costs an extra pass and forces
+    // the composer path on permanently - the game renders straight to the
+    // screen today unless the pixel pass is on. Worth it the day the level
+    // stops being a corridor; not before.
+    const FOG_HEIGHT = 60;           // taller than anything you can climb here
+    const FOG_WIDTH_PAD = 30;        // past the frame wall either side, so no edge shows
+    const FOG_LAYERS = 7;
+    const FOG_DEPTH = 14;            // how deep the bank of mist is, front to back
+    // Density of the FARTHEST layer. The near ones scale down from here, so
+    // the bank as a whole goes from barely-there to solid across FOG_DEPTH.
+    const FOG_MAX_ALPHA = 0.55;
+    // How far ahead of the furthest point reached the mist begins, when
+    // nothing is holding it (i.e. between fights). Close enough that the
+    // bank reads as sitting just past you rather than a horizon you watch
+    // recede from a comfortable distance - the far edge of a clearing, not
+    // the edge of the map.
+    //
+    // What a curtain cannot do: hide something BESIDE you that you have not
+    // been to, or re-hide a side path once you walk past its mouth. Neither
+    // exists in a 44-wide strip you walk one way along - "unexplored" and
+    // "further along +Z than I have been" are the same set here.
+    const FOG_REVEAL_AHEAD = 10;
+    // How far the fog FRONT sits before the NEAREST enemy. Small: the near
+    // edge of the bank catches the front of the pack so they read as
+    // emerging FROM the mist, with the bulk of the bank (FOG_DEPTH = 14) still
+    // ahead of them. At 8 the bots sat 8+ units deep, past the see-through
+    // front layers (opacity ramps as t^2, so depth 8 of 14 is already ~0.18
+    // and the far bot of a pair was buried) - you could not see what you were
+    // meant to walk in and fight, and the fight itself happened blind inside
+    // the cloud. At 2 the nearest bot is at depth 2 (~0.05, all but clear) and
+    // even a pair's far bot is ~depth 5 (~0.11, light haze): visible, shrouded,
+    // with the mist sitting mostly beyond them.
+    const FOG_HIDE_BEHIND = 2;
+    // How far past the FARTHEST enemy the invisible slab parks - the player
+    // has to be able to reach every bot in the gate before being stopped.
+    const FOG_BLOCK_AHEAD = 3;
+    const FOG_BLOCK_HEIGHT = 14;
+    // The mist only ever moves FORWARD (Math.max against its own high water
+    // mark): walking back down the corridor must not re-hide ground you have
+    // already taken, which is what separates a reveal from a shade that
+    // follows the camera. It is also the one thing this gets for free that a
+    // real mask would have to store - there is nothing to remember, the
+    // furthest z IS the memory.
+    let _fogLayers = [];
+    let _fogMaxZ = -Infinity;
+    let _fogGateW = 0;
+    // Every beat the mist holds at, in the order you walk into them along
+    // the corridor - built from the bots actually standing there (see
+    // buildFogCurtain) rather than a fixed lead distance, so "ahead" always
+    // means "at the next pack of enemies", not a constant that happens to
+    // line up with the first fight and drifts from every one after it.
+    //
+    // The two tutorial fights only. The charge trio (BotOrange2/BotRed2) is
+    // NOT gated: it stands right in front of the canopy tree ring, and a slab
+    // parked there read as "the next objective is this clump of trees" and
+    // stopped the walk dead at the one spot the level wants you to go AROUND
+    // and climb, not be walled out of. Those bots still wake and come when you
+    // collect the companion that hands you the charge card - they just no
+    // longer hold a mist wall at the foot of the canopy. After this gate the
+    // mist simply follows you (blockZ = Infinity), so nothing downstream reads
+    // as a gate.
+    const FOG_GATE_KEYS = [
+        ['BotYellow', 'BotYellow2'],
+        ['BotYellow3', 'BotOrange'],
+    ];
+    let _fogGates = [];
+    let _fogGateIdx = 0;
+    let _fogBlockMesh = null;
+    function buildFogCurtain() {
+        _fogLayers.forEach(m => { if (m.parent) m.parent.remove(m); });
+        _fogLayers = [];
+        _fogMaxZ = -Infinity;
+        if (_fogBlockMesh) {
+            const i = collidables.indexOf(_fogBlockMesh);
+            if (i !== -1) collidables.splice(i, 1);
+            if (_fogBlockMesh.parent) _fogBlockMesh.parent.remove(_fogBlockMesh);
+        }
+        _fogBlockMesh = null;
+        _fogGates = [];
+        _fogGateIdx = 0;
+        if (!isLinearForest()) return;
+        _fogGateW = forestSlabHalfX() * 2 + FOG_WIDTH_PAD;
+        const geo = new THREE.PlaneGeometry(_fogGateW, FOG_HEIGHT);
+        for (let i = 0; i < FOG_LAYERS; i++) {
+            // 1 at the back, thinning toward the front. Squared, so the
+            // near edge of the bank falls away faster than it builds - you
+            // notice the mist getting thick well before you notice it start.
+            const t = (i + 1) / FOG_LAYERS;
+            const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+                // The scene's own fog colour, not a hardcoded white - the
+                // presentation mode retints scene.fog (see
+                // presentationFogColor) and mist that did not follow it
+                // would be the one white thing left in a grey level.
+                color: scene.fog ? scene.fog.color.clone() : new THREE.Color(0xffffff),
+                transparent: true,
+                opacity: FOG_MAX_ALPHA * t * t,
+                side: THREE.DoubleSide,
+                // Off, or the near layers would clip the far ones and the
+                // bank would render as hard bands instead of a gradient.
+                depthWrite: false,
+            }));
+            m.userData.fogLayerT = t;
+            m.renderOrder = 10 + i;
+            m.frustumCulled = false;
+            levelGroup.add(m);
+            _fogLayers.push(m);
+        }
+        // This runs after every bot for the beat has been placed (see the
+        // buildFogCurtain call in startForestStory), so each gate can read
+        // its own bots' actual spawn position instead of a separately-tuned
+        // "fight point" that can drift from where the bots really stand.
+        _fogGates = FOG_GATE_KEYS.map(keys => {
+            const bots = keys.map(key => {
+                const spec = AI_BOT_SPECS.find(sp => sp.key === key);
+                const rec = spec && aiBots.find(r => r.bot.id === spec.id);
+                return rec ? rec.bot : null;
+            }).filter(Boolean);
+            if (!bots.length) return null;
+            const botZs = bots.map(b => b.group.position.z);
+            // fogZ: fog front is FOG_HIDE_BEHIND units BEFORE the nearest bot,
+            // so every bot in the pack stands inside the bank rather than in
+            // front of it. blockZ: invisible slab is past the FARTHEST bot, so
+            // the player can reach and fight the whole group.
+            return {
+                bots,
+                fogZ:   Math.min(...botZs) - FOG_HIDE_BEHIND,
+                blockZ: Math.max(...botZs) + FOG_BLOCK_AHEAD,
+            };
+        }).filter(Boolean);
+        _armFogGate();
+    }
+    // Invisible via the MATERIAL, not .visible - three.js skips a
+    // material-hidden mesh at render time but still raycasts it, which is
+    // exactly what an invisible collider needs (the same trick the forest's
+    // own tree colliders use). Drops the slab at whichever gate is next in
+    // line, or leaves it off once every gate has fallen.
+    function _armFogGate() {
+        if (_fogBlockMesh) {
+            const i = collidables.indexOf(_fogBlockMesh);
+            if (i !== -1) collidables.splice(i, 1);
+            if (_fogBlockMesh.parent) _fogBlockMesh.parent.remove(_fogBlockMesh);
+            _fogBlockMesh = null;
+        }
+        const gate = _fogGates[_fogGateIdx];
+        if (!gate) return;
+        _fogBlockMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(_fogGateW, FOG_BLOCK_HEIGHT, 2.0),
+            new THREE.MeshBasicMaterial({ visible: false }));
+        _fogBlockMesh.position.set(forestEntryX(), FOG_BLOCK_HEIGHT * 0.5 - 1, gate.blockZ);
+        _fogBlockMesh.updateMatrixWorld(true);
+        levelGroup.add(_fogBlockMesh);
+        collidables.push(_fogBlockMesh);
+    }
+    // The way ahead just opened - say so on the one piece of navigation this
+    // game has. The mist pulling back is easy to miss when you are standing
+    // in it looking at two bodies; the compass lighting up is not.
+    function flashCompass() {
+        if (!compassBackdropEl) return;
+        // Removed, reflow, re-added: a class that is already on the element
+        // restarts nothing, and the day a second gate opens this has to fire
+        // again. Reading offsetWidth is what forces the style flush between
+        // the two, which is the whole trick.
+        compassBackdropEl.classList.remove('compass-open');
+        void compassBackdropEl.offsetWidth;
+        compassBackdropEl.classList.add('compass-open');
+    }
+    function updateFogCurtain() {
+        // .parent too, not just the reference: buildLevel wipes levelGroup's
+        // children wholesale, so switching to a level that never calls
+        // buildFogCurtain leaves these pointing at detached meshes that would
+        // otherwise go on being moved around off-scene every frame.
+        if (!_fogLayers.length || !_fogLayers[0].parent || !char || !char.group) return;
+        // A `while`, not an `if`: a mature charge punch can sweep several
+        // bots at once (see detectMeleeHits' maxTargets), which can clear a
+        // whole gate and leave the next one already dead too (the fill-bot
+        // ring at the first beat, say). Each clear flashes the compass in
+        // its own right - the way ahead opening twice in one frame is still
+        // two things worth saying so about.
+        while (_fogGateIdx < _fogGates.length && _fogGates[_fogGateIdx].bots.every(b => b.killed)) {
+            _fogGateIdx++;
+            _armFogGate();
+            flashCompass();
+        }
+        _fogMaxZ = Math.max(_fogMaxZ, char.group.position.z);
+        // Held at the current gate until it falls, then back to following
+        // you. min(), so clearing it can only ever let the mist move on -
+        // there is no arrangement of the two that walks it backwards.
+        // fogZ, not blockZ - blockZ is the physical slab past the bots;
+        // fogZ is where the fog FRONT parks (before the bots, so they read
+        // as standing inside the mist).
+        const blockZ = _fogGateIdx < _fogGates.length ? _fogGates[_fogGateIdx].fogZ : Infinity;
+        const front = Math.min(_fogMaxZ + FOG_REVEAL_AHEAD, blockZ);
+        for (let i = 0; i < _fogLayers.length; i++) {
+            const m = _fogLayers[i];
+            // Dropped below its own half height so the bottom edge is buried
+            // in the ground rather than hovering over it with daylight
+            // underneath.
+            m.position.set(forestEntryX(), FOG_HEIGHT * 0.5 - 6,
+                front + FOG_DEPTH * m.userData.fogLayerT);
+        }
     }
     // ...and where the SECOND one waits, on the far island. It gets a clearing
     // of its own for the same reason the first does, and more so: that scene
@@ -13003,7 +13430,7 @@ export function startGame(CharacterClass) {
         // The companions themselves are owned by the companion registry -
         // this only drops the waiting list.
         _freeRecruits = [];
-        _bagMoveOnT = -1;
+        _firstPairCharged = false;
         _climbPraised = false;
         _forestTopReached = false;
         _forestStairsSeen = false;
@@ -13139,6 +13566,88 @@ export function startGame(CharacterClass) {
             collidables.push(b);
         }
         return c;
+    }
+
+    // ---- PROTOTYPE: gold coins ----
+    // Not pushed. A plain gold version of the reward orb - the same geometry,
+    // the same magnet-and-catch (see spawnRewardOrb/updateRewardOrbs), just
+    // placed up front instead of dropped by a bot. The visual difference
+    // (gold vs cyan) is what tells you "something to go for" from "something
+    // that just dropped off a kill".
+    const COIN_COLOR = 0xffc23a;
+    function placeCoin(x, y, z) { spawnRewardOrb({ x, y, z }, { color: COIN_COLOR, preSettled: true }); }
+    // The voxel-authored level's peaks. The whole level is ONE merged mesh,
+    // so there is no per-block Box3 to read: a cell's top has to come from
+    // actually asking the geometry what is up there, which is a raycast
+    // straight down. Grid across the model's own XZ footprint, keep the
+    // top-surface Y per cell, then only the LOCAL MAXIMA - a cell counts as
+    // a peak if its own top is higher than every one of its 8 neighbours.
+    // That turns "every cell on the top floor" (a lot of flat coins) into
+    // "the top of each separate stack" (gold on the summits).
+    const _voxelPeakRay = new THREE.Raycaster();
+    const _voxelPeakDown = new THREE.Vector3(0, -1, 0);
+    const _voxelPeakOrigin = new THREE.Vector3();
+    function placeVoxelLevelCoins(root) {
+        root.updateMatrixWorld(true);
+        const bb = new THREE.Box3().setFromObject(root);
+        if (!isFinite(bb.min.x)) return;
+        const CELL = 1.0, LIFT = 1.5;
+        // Collect the meshes once; a raycast per cell against a short list
+        // is far cheaper than against every collidable in the scene.
+        const targets = [];
+        root.traverse(o => { if (o.isMesh) targets.push(o); });
+        if (!targets.length) return;
+        const nx = Math.max(1, Math.ceil((bb.max.x - bb.min.x) / CELL));
+        const nz = Math.max(1, Math.ceil((bb.max.z - bb.min.z) / CELL));
+        const tops = new Map();
+        const key = (ix, iz) => ix + ',' + iz;
+        for (let ix = 0; ix < nx; ix++) {
+            for (let iz = 0; iz < nz; iz++) {
+                const x = bb.min.x + (ix + 0.5) * CELL;
+                const z = bb.min.z + (iz + 0.5) * CELL;
+                _voxelPeakOrigin.set(x, bb.max.y + 2, z);
+                _voxelPeakRay.set(_voxelPeakOrigin, _voxelPeakDown);
+                const hits = _voxelPeakRay.intersectObjects(targets, true);
+                if (!hits.length) continue;
+                tops.set(key(ix, iz), { x, y: hits[0].point.y, z, ix, iz });
+            }
+        }
+        const peaks = [];
+        tops.forEach(t => {
+            let isPeak = true;
+            for (let dx = -1; dx <= 1 && isPeak; dx++) {
+                for (let dz = -1; dz <= 1 && isPeak; dz++) {
+                    if (!dx && !dz) continue;
+                    const n = tops.get(key(t.ix + dx, t.iz + dz));
+                    if (n && n.y > t.y + 0.01) isPeak = false;
+                }
+            }
+            if (isPeak) peaks.push(t);
+        });
+        peaks.forEach(t => placeCoin(t.x, t.y + LIFT, t.z));
+        if (window.coinDebug !== false) {
+            console.log('[coin] voxel peaks: ' + peaks.length + ' placed (grid ' + nx + 'x' + nz + ', tops ' + tops.size + ')');
+        }
+    }
+    function placeForestCanopyCoinTrail(cp) {
+        // Over the 12-tree ring that surrounds the canopy platform (see the
+        // staircase ring in the tree-placement pass). Same arc the trunks
+        // follow, lifted to just over the platform's own top - from the
+        // forest floor you see a crown of gold floating up there and the
+        // route reads itself.
+        const ring = 12;
+        const r = FOREST_CANOPY_R + 0.6;
+        for (let i = 0; i < ring; i++) {
+            const a = (i / ring) * Math.PI * 2;
+            // Placed at the tree-top / deck-surface level so they read as
+            // resting ON the ring trees rather than floating above them.
+            // The deck top is FOREST_CANOPY_Y; +0.5 puts the coin centre
+            // just above that surface.
+            placeCoin(cp.x + Math.cos(a) * r, FOREST_CANOPY_Y + 0.5, cp.z + Math.sin(a) * r);
+        }
+        if (window.coinDebug !== false) {
+            console.log('[coin] canopy ring: 12 placed around (' + cp.x.toFixed(1) + ', ' + cp.z.toFixed(1) + ') at y ' + (FOREST_CANOPY_Y + 0.5).toFixed(1));
+        }
     }
 
     // How wide the stairs and their landing are.
@@ -13463,7 +13972,18 @@ export function startGame(CharacterClass) {
         // Where the shore fight is staged from - see stageForestShoreBots,
         // which cannot run from here.
         _forestShoreFootZ = footZ;
+        // ...and where the level's GOAL sits: in the mouth of the cave at the
+        // top of this run, past the lock. cx/penultTop/faceZ are this run's
+        // own numbers, so the goal tracks the cave wherever the approach
+        // geometry puts it rather than being a second copy of the formula.
+        // Height is a reach into the opening (which spans penultTop ->
+        // penultTop + CAVE_H), z at the mouth plane (the face's near side),
+        // so arriving on the tread in front of it is within the star's own
+        // reach and ends the level there.
+        _forestCaveMouth = new THREE.Vector3(
+            cx, penultTop + 1.4, faceZ - FOREST_STEP_SIZE * 0.5);
     }
+    let _forestCaveMouth = null;
     // Somebody waiting at the bottom of the ramp.
     //
     // Dormant, so they wake as you come down rather than being awake through
@@ -13485,6 +14005,26 @@ export function startGame(CharacterClass) {
         // The shore's own top, the same y buildForestExitApproach lays it at.
         storyPlaceBot('BotYellow4', cx - 3.5, 0, z + 6.0, true, Math.PI);
         storyPlaceBot('BotOrange2', cx + 3.5, 0, z + 9.0, true, Math.PI);
+    }
+    // An exit portal OUT to the water test level, dropped on a level's own
+    // start ground. Its destination is named outright, which the goal star
+    // cannot do (the star only advances to the next level in the dropdown), so
+    // it needs its own mesh and its own proximity test (see the check in
+    // animate). A cyan ring so it does not read as another gold goal. Re-added
+    // every build that wants it because buildLevel wipes levelGroup; made once
+    // and reused.
+    let _waterExitPortal = null;
+    function placeWaterExitPortal(x, y, z) {
+        if (!_waterExitPortal) {
+            _waterExitPortal = new THREE.Mesh(
+                new THREE.TorusGeometry(1.1, 0.22, 12, 32),
+                new THREE.MeshBasicMaterial({ color: 0x33ddff }));
+            _waterExitPortal.frustumCulled = false;
+        }
+        _waterExitPortal.position.set(x, y, z);
+        _waterExitPortal.visible = true;
+        _waterExitPortal.updateMatrixWorld(true);
+        levelGroup.add(_waterExitPortal);
     }
     function buildForestExitSteps() {
         const top = forestFrameTopY();
@@ -13868,6 +14408,11 @@ export function startGame(CharacterClass) {
                 });
             }
             storyPlaceBot('BotRed', forestStepX(), topStepY, topStepZ, true);
+            // PROTOTYPE fog - see buildFogCurtain's own comment. Bails out on
+            // its own for anything but the linear wood. Built here, after
+            // every gate's bots are placed, so each gate can read its own
+            // bots' real spawn position rather than only the first pair's.
+            buildFogCurtain();
             // Anything past the staged four is a performance probe (see
             // window.enemyTestCount). They go in a tight ring in the first
             // clearing rather than spread across the wood: the ring's diameter
@@ -14302,6 +14847,13 @@ export function startGame(CharacterClass) {
             rec.bot.knockedOutT = 0;
             rec.bot._lastDownAt = undefined;
             rec.bot._koAnnounced = false;
+            // PROTOTYPE: a bot slot reused for a LATER beat is a fresh fight,
+            // not a resurrection of whichever earlier one it died as. Lives
+            // snap back to this tier's own base so an orange still takes two
+            // next time, a red three, however many it was down to last time.
+            rec.bot.killed = false;
+            rec.bot._orbDropped = false;
+            rec.bot.standUpsLeft = rec.bot.standUpsBase | 0;
             rec.bot.dormant = !!dormant;
             // Staged placement, not play: snapped back rather than faded,
             // since there is nobody watching a body that is being put down
@@ -14556,9 +15108,14 @@ export function startGame(CharacterClass) {
         // Not every card is about the punch button. One that is about the
         // COMPASS has nothing to demonstrate with it, and leaving a picture of
         // a punch button on it would be pointing at the wrong control.
+        // The in-card demo button is OFF. The pulse that used to run on it
+        // now runs on the REAL button that just appeared (see
+        // _hintAttentionBtn below) - the thing that lets a card say "this
+        // one" without a second, confusingly tappable copy of it inside the
+        // card itself.
         const demoEl = document.getElementById('hint-demo');
-        const noDemo = !!(opts && opts.noDemo);
-        if (demoEl) demoEl.style.display = noDemo ? 'none' : '';
+        const noDemo = true;
+        if (demoEl) demoEl.style.display = 'none';
         // Sized from the REAL button, measured now rather than guessed in CSS.
         // The card is pointing at a specific control, so the picture of it has
         // to be that control - a demo that is a different size, with a
@@ -14624,11 +15181,36 @@ export function startGame(CharacterClass) {
         card.style.display = 'flex';
         // Next frame, so the transition has a start state to animate from.
         requestAnimationFrame(() => card.classList.add('show'));
+        // Pulse the live button so the eye lands on IT, not on the card.
+        // The card's own hint-tap/hint-hold keyframes are reused by class -
+        // same animation, same tempo, just worn by the real control. Hold
+        // for a charge or carry (both are hold-to-perform), tap otherwise;
+        // the card already chose this way for its own demo, see its own
+        // .charge/.carry → hint-hold rule.
+        if (_hintAttentionBtn && _hintAttentionBtn !== realBtn) {
+            _hintAttentionBtn.classList.remove('hint-attention-tap', 'hint-attention-hold');
+        }
+        if (realBtn) {
+            const hold = id === 'charge' || id === 'carry';
+            realBtn.classList.remove('hint-attention-tap', 'hint-attention-hold');
+            realBtn.classList.add(hold ? 'hint-attention-hold' : 'hint-attention-tap');
+            _hintAttentionBtn = realBtn;
+        } else {
+            _hintAttentionBtn = null;
+        }
     }
+    // Tracked here (not inside the card) because the pulse lives on a button
+    // the card does not own, and hideHintCard has to be able to find and
+    // clear it even after the card itself is gone.
+    let _hintAttentionBtn = null;
     function hideHintCard(learned) {
         if (!_hintId) return;
         if (learned) _hintDone[_hintId] = true;
         _hintId = null;
+        if (_hintAttentionBtn) {
+            _hintAttentionBtn.classList.remove('hint-attention-tap', 'hint-attention-hold');
+            _hintAttentionBtn = null;
+        }
         const card = document.getElementById('hint-card');
         if (!card) return;
         card.classList.remove('show');
@@ -14821,16 +15403,20 @@ export function startGame(CharacterClass) {
     // talking over it would step on the thing you just did. A couple of
     // seconds is long enough to watch the bag swing and short enough that it
     // reads as a reply to what you did.
-    const BAG_MOVE_ON_DELAY = 2.5;
     const STORY_MOVE_ON_LINE = 'Let\'s move on and\nfind the others.';
-    let _bagMoveOnT = -1;
+    let _firstPairCharged = false;
     function updateBagArrow(tSec, delta) {
         const bag = _forestSandbag;
         if (!bag || !bag.group) return;
-        // bagHitCount counts the PLAYER's connecting punches only - the
-        // companion's own swings go through a different path and do not add to
-        // it - so this really is "you have done it", not "something hit it".
-        const done = (window.bagHitCount || 0) > 0;
+        // Two ways to be done with the bag, whichever comes first:
+        //  - a connecting punch on it (bagHitCount counts the PLAYER's hits
+        //    only - a companion's own swings go through another path - so this
+        //    is "you did it", not "something touched it"), or
+        //  - simply walking PAST it. The lesson is optional; stepping beyond
+        //    the bag is you deciding you are done with it, and the fight should
+        //    answer that the same way a punch does.
+        const passed = char && char.group && char.group.position.z > bag.group.position.z;
+        const done = (window.bagHitCount || 0) > 0 || passed;
         if (done) {
             if (bag._beacon) removeRecruitBeacon(bag);
             // The demonstration is over the moment it stops being a
@@ -14844,21 +15430,16 @@ export function startGame(CharacterClass) {
                 if (!tutor && cm && cm._wasBagTutor) tutor = cm;
             }
             if (tutor) tutor._wasBagTutor = true;
-            // ...and then, a moment later, it says so and the first enemy
-            // comes. -1 is "not started", so this arms on the first frame
-            // after the bag is hit and runs once.
-            if (_bagMoveOnT < 0) _bagMoveOnT = 0;
-            else if (_bagMoveOnT < BAG_MOVE_ON_DELAY) {
-                _bagMoveOnT += delta || 0;
-                if (_bagMoveOnT >= BAG_MOVE_ON_DELAY) {
-                    if (tutor) storySay(tutor, STORY_MOVE_ON_LINE, 'companion');
-                    // By name, not by nearness: this beat is staged. The
-                    // nearest sleeper to the bag IS the single yellow, but
-                    // only because of where it was put - saying which one is
-                    // what keeps that true when something moves.
-                    wakeBot('BotYellow');
-                    wakeBot('BotYellow2');
-                }
+            // The pair charges the INSTANT the bag is behind you - no wait.
+            // The old 2.5s pause read as the game thinking; the charge is the
+            // whole beat and it should land the moment you turn from the bag.
+            // By name, not by nearness: this is staged, and naming which bots
+            // keeps it right if anything ever moves.
+            if (!_firstPairCharged) {
+                _firstPairCharged = true;
+                if (tutor) storySay(tutor, STORY_MOVE_ON_LINE, 'companion');
+                wakeBot('BotYellow');
+                wakeBot('BotYellow2');
             }
             return;
         }
@@ -15325,6 +15906,13 @@ export function startGame(CharacterClass) {
                 // gap between two trunks with branches over their heads.
                 if (Math.hypot(px - meet.x, pz - meet.z) < STORY_MEET_CLEAR) continue;
                 if (Math.hypot(px - meet2.x, pz - meet2.z) < STORY_MEET_CLEAR) continue;
+                // The first enemy pair gets NO clearing of its own: that fight
+                // belongs among the trees, not on a bald patch. The pair sits
+                // inside the entrance-corridor exclusion below (z past the
+                // mouth is kept clear only on the narrow centre line, where the
+                // camera rides), so the walking line and the bots' own feet
+                // stay out of a trunk while the wood closes in around the
+                // fight on either side.
                 // ...and the canopy platform's own footprint stays clear, so
                 // its ring below is the only thing standing there.
                 if (Math.hypot(px - _canopyPt.x, pz - _canopyPt.z) < FOREST_CANOPY_R + 0.5) continue;
@@ -15445,7 +16033,7 @@ export function startGame(CharacterClass) {
                 });
             }
         }
-        corridorTreeRows(forestEntryX(), -1, 3.2, 2);
+        corridorTreeRows(forestEntryX(), -1, FOREST_CORRIDOR_TREE_GAP, 2);
         // No tree frame at the EXIT. It was 126 trees you walked straight
         // through - the invisible barriers do the stopping there, so it read
         // as decoration you could stand inside rather than as a passage.
@@ -16065,19 +16653,22 @@ export function startGame(CharacterClass) {
         if (window.faceCameraAlongPlayer) window.faceCameraAlongPlayer();
         if (window.resetPlayerMomentum) window.resetPlayerMomentum();
         star.visible = true;
-        // In the mouth of the EXIT corridor, which is across the river - so
-        // The diamond is NOT at the exit any more - it sits on the canopy
-        // platform in the middle of the wood, which you can only reach by
-        // climbing the trees ringing it. That makes finishing the level
-        // something you go and take rather than a door you walk through, and
-        // it gives that platform a reason to exist beyond the throw lesson.
         buildForestExitSteps();
         // After the steps, because it hangs off the landing they build.
         buildForestExitApproach();
-        {
-            const cp = buildForestCanopyPlatform();
-            star.position.set(cp.x, FOREST_CANOPY_Y + 1.6, cp.z);
-        }
+        // The goal sits in the CAVE MOUTH at the top of the exit approach -
+        // past the lock, at the far end of the run of steps buildForestExitApproach
+        // builds (it stores the mouth as _forestCaveMouth). You finish by
+        // walking out through the exit doorway, down to the shore, through the
+        // lock, up the run and into the cave - not by climbing the tree ring in
+        // the middle of the wood. The canopy platform is still built but carries
+        // nothing now: the ring stands as scenery until there is a use for it
+        // again (the gold trail that used to mark the climb is gone with it).
+        // Fallback to the exit doorway only if the approach left no mouth (e.g.
+        // a forest variant that does not build the run).
+        buildForestCanopyPlatform();
+        if (_forestCaveMouth) star.position.copy(_forestCaveMouth);
+        else star.position.set(forestExitX(), forestFrameTopY() + 1.6, forestSlabHalfZ());
         placeForestExitGate();
         levelGroup.add(star);
         window.compassTarget = star.position;
@@ -16354,6 +16945,17 @@ export function startGame(CharacterClass) {
             if (isLinearForest()) {
                 const ff = forestFirstPairFightPoint();
                 if (Math.hypot(x - ff.x, z - ff.z) < beatClear) continue;
+                // ...and keep the whole START of the walk dry, at ANY x. The
+                // beat guards above only clear a disc around the centre line,
+                // so a lake off to the SIDE still laid a pond across the
+                // opening stretch - which is the "göl olmasın demiştik" that
+                // kept coming back. A full-width band instead: no water whose
+                // near bank reaches below the first companion, so the start is
+                // dry ground and the first water you meet is the stream
+                // crossing past it. Near bank (z - r - bank), not the centre,
+                // or a lake centred just past the line still washes back into
+                // the start.
+                if (z - (r + FOREST_LAKE_BANK) < meet.z) continue;
             }
             let clash = false;
             for (let k = 0; k < lakes.length; k++) {
@@ -16570,6 +17172,12 @@ export function startGame(CharacterClass) {
     const FOREST_ENTRY_X = -25;
     const FOREST_ENTRY_W = 12;     // = 2 blocks; wide enough for the follow-cam
     const FOREST_ENTRY_LEN = 18;   // how far the corridor reaches inward
+    // Spacing of the entrance avenue's own tree rows (see corridorTreeRows).
+    // Pulled out into a name because forestFirstPairFightPoint reads it too -
+    // "how far past the bag" is specified in the one unit the corridor
+    // actually has a ruler for, trees, rather than a bare distance nobody
+    // can eyeball against the level.
+    const FOREST_CORRIDOR_TREE_GAP = 3.2;
     // The way out - same shape as the entrance, but on the FAR side of the
     // river, so crossing is the price of leaving rather than an optional
     // detour. The chasm occupies x 14.5..21.5, and this sits in the middle of
@@ -19725,6 +20333,82 @@ export function startGame(CharacterClass) {
         apply();
         el.addEventListener('change', apply);
     })();
+    // ---- Camera rotation lock ----
+    // Set here, before the wire() block below reads them for its first
+    // paint() - a flag declared further down (where cameraTheta itself
+    // lives) would still be undefined at that first paint, same ordering
+    // bug the comment above toggle-ui-alt already warns about for the
+    // checkbox panel.
+    //
+    // Off by default: a free orbit is the camera this game shipped with, and
+    // nothing changes unless this is switched on (see the camera-lock-btn
+    // wiring below and updateCameraLock, called every frame from animate()
+    // right after the right-stick input that used to be the only thing
+    // touching cameraTheta there).
+    //
+    // ON holds cameraTheta directly behind the player's own facing - the
+    // same angle faceCameraAlongPlayer snaps to once, just held there every
+    // frame instead of as a one-off reset button.
+    window.cameraLockEnabled = false;
+    // Whether the lock still lets a drag or the right stick turn the camera
+    // at all while it is on.
+    //
+    // OFF is rigid: cameraTheta is pinned to the locked angle outright every
+    // frame, and steering it does nothing.
+    //
+    // ON is the "esnek" give: steering still works exactly as it does
+    // unlocked (see the pointermove handler and the input.right block
+    // below, neither of which this touches) - the lock only reasserts
+    // itself once steering STOPS, easing cameraTheta back to the locked
+    // angle instead of leaving it wherever it was let go.
+    window.cameraLockElastic = true;
+    // How fast an elastic lock eases back once steering stops - the
+    // fraction of the remaining deviation it closes per second. Exposed so
+    // the feel can be tuned without a reload.
+    window.cameraLockReturnSpeed = 2.5;
+    // How far the elastic give may drift before the "turn back" card (see
+    // #turn-back-card in ClimbGame.html) tells the player they have turned
+    // past a comfortable glance. Two angles, not one, so it does not
+    // flicker right at the edge - once shown it has to earn its way back
+    // under the lower one before it will show again.
+    const CAMERA_LOCK_WARN_SHOW = 100 * Math.PI / 180;
+    const CAMERA_LOCK_WARN_HIDE = 75 * Math.PI / 180;
+    let _turnBackShown = false;
+    function setTurnBackCard(show) {
+        if (show === _turnBackShown) return;
+        _turnBackShown = show;
+        const card = document.getElementById('turn-back-card');
+        if (card) card.classList.toggle('show', show);
+    }
+    // Wrapped to (-PI, PI]. A plain subtraction crosses the +-PI seam the
+    // wrong way half the time cameraTheta and the locked angle straddle it
+    // independently, which would occasionally send the "shortest way back"
+    // spring the long way round instead.
+    function _angleDiff(a, b) {
+        return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+    }
+    function updateCameraLock(delta) {
+        if (!window.cameraLockEnabled || !char || !char.group) { setTurnBackCard(false); return; }
+        const lockedTheta = char.group.rotation.y + Math.PI;
+        if (!window.cameraLockElastic) {
+            cameraTheta = lockedTheta;
+            setTurnBackCard(false);
+            return;
+        }
+        // Steering already happened exactly where input.right/pointermove
+        // wrote it into cameraTheta this frame or the last - nothing here
+        // intercepts that, it only decides whether to pull cameraTheta back
+        // once steering has stopped.
+        const steering = lookPointerId !== null
+            || Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05;
+        if (!steering) {
+            const diff = _angleDiff(cameraTheta, lockedTheta);
+            const pull = Math.min(1, window.cameraLockReturnSpeed * (delta || 0));
+            cameraTheta = lockedTheta + diff * (1 - pull);
+        }
+        const dev = Math.abs(_angleDiff(cameraTheta, lockedTheta));
+        setTurnBackCard(_turnBackShown ? dev > CAMERA_LOCK_WARN_HIDE : dev > CAMERA_LOCK_WARN_SHOW);
+    }
     const punchBtnEl = document.getElementById('punch-btn');
     // The two combat toggles. Both sit on the punch button because both change
     // what punching does, and both are the kind of assist you want to flip
@@ -19757,6 +20441,13 @@ export function startGame(CharacterClass) {
             window.carryAutoLock = v;
             if (!v) lockedCarry = null;
         });
+        // This one defaults ON (window.cameraLockElastic above) rather than
+        // off like the rest of this block, so paint() has to run even when
+        // the main lock itself is still off - otherwise the elastic button
+        // would sit unlit for a feature that is already enabled underneath
+        // the lock it modifies.
+        wire('camera-lock-btn', () => window.cameraLockEnabled, v => { window.cameraLockEnabled = v; });
+        wire('camera-lock-elastic-btn', () => window.cameraLockElastic, v => { window.cameraLockElastic = v; });
     }
     // Throws a punch on its own while locked on and in reach. Deliberately
     // gated on the lock: auto-punching at nothing in particular would just be
@@ -24297,6 +24988,7 @@ export function startGame(CharacterClass) {
             cameraTheta -= input.right.x * 0.04;
             cameraPhi = Math.max(CAMERA_PHI_MIN, Math.min(CAMERA_PHI_MAX, cameraPhi - input.right.y * 0.04));
         }
+        updateCameraLock(delta);
 
         let lightTrack = _tempVec2.copy(char.group.position);
         if (char.isRagdoll) {
@@ -25082,6 +25774,22 @@ export function startGame(CharacterClass) {
                 overlay.innerHTML = `CONGRATULATIONS!<br><span style="font-size: 16px;">Level Completed!</span>`;
                 overlay.style.display = 'block';
                 setTimeout(() => { overlay.style.display = 'none'; buildLevel(); }, 3000);
+            }
+        }
+
+        // The water-test exit portal, on the voxel level's start ground.
+        // Named destination, not the star's next-in-dropdown advance, so it is
+        // its own mesh and its own test. .parent gates it to wherever it was
+        // added: buildLevel wipes levelGroup, and only the voxel build re-adds
+        // the ring, so it is in the scene nowhere else.
+        if (_waterExitPortal && _waterExitPortal.parent && _waterExitPortal.visible) {
+            _waterExitPortal.rotation.y += delta * 1.5;
+            if (char.group.position.distanceTo(_waterExitPortal.position) < 2.6) {
+                _waterExitPortal.visible = false;
+                currentLevel = 'local_water';
+                const sel = document.getElementById('level-select');
+                if (sel) sel.value = currentLevel;
+                buildLevel();
             }
         }
 
@@ -28269,6 +28977,8 @@ export function startGame(CharacterClass) {
         updateForestStory(delta);
         updateFreeRecruits(delta);
         updateRiverLesson();
+        updateFogCurtain();
+        updateRewardOrbs(delta);
         recordPlayerTrail(delta);
         updateAiBots(delta);
         updateCompanions(delta);
