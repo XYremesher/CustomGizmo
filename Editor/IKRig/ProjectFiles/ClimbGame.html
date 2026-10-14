@@ -467,6 +467,17 @@
            border-color: rgba(255, 255, 255, 0.85);
            color: #fff;
         }
+        /* The camera-lock toggle lives on screen, not in the drawer, so it
+           needs its own anchor - .lock-btn forces position:static for the
+           stacked panel buttons, so this overrides it with !important. Top
+           right, below #hud-connect-btn (top:10px) and clear of the
+           top-centre compass. A touch larger than the drawer buttons so it
+           reads as a first-class control. */
+        #camera-lock-btn {
+           position: absolute !important; top: 56px !important; right: 12px !important;
+           bottom: auto !important; left: auto !important;
+           width: 40px; height: 40px; font-size: 15px; z-index: 12;
+        }
         #warp-btns {
            display: flex; flex-direction: column-reverse; gap: 6px; align-items: center;
             z-index: 11;
@@ -930,15 +941,69 @@
         }
         #hint-card.charge #hint-text .hint-title { color: rgba(255, 106, 255, 0.72); }
 
+        /* A status card, not a lesson - it comes and goes on its own every
+           frame (see updateCameraLock), so unlike #hint-card it owns no JS
+           state of its own beyond the one class toggle. Sits above the
+           compass rather than beside the punch button: the thing it is
+           telling you about is which way you are facing, not a control. */
+        #turn-back-card {
+            position: fixed; top: 86px; left: 50%; transform: translateX(-50%) translateY(-6px);
+            display: block; z-index: 11;
+            background: rgba(15,18,22,0.82); border: 1px solid rgba(255,80,80,0.4);
+            border-radius: 10px; padding: 7px 14px;
+            font-family: monospace; color: #eef2f6; font-size: 15px; line-height: 1.25;
+            white-space: nowrap; pointer-events: none;
+            opacity: 0; transition: opacity 0.35s ease, transform 0.35s ease;
+        }
+        #turn-back-card.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+        .turn-back-title {
+            display: block; font-size: 11px; letter-spacing: 0.08em;
+            text-transform: uppercase; margin-bottom: 3px; color: rgba(255, 110, 110, 0.85);
+        }
+
         /* Top centre, above everything else on the HUD. The arrow is rotated
            about its own middle, so the translateX(-50%) that centres it has to
            be part of the same transform the rotation is written into - see
            where that string is built. */
-        #compass-arrow { position: absolute; top: 14px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
+        /* Dropped by half its own height (the disc is 44, so 22) - still up
+           at the top, just clear of whatever shares that edge. The two tops
+           stay 6px apart whatever those numbers are: the arrow is 32 inside
+           a 44 disc, so 6 either side is what centres it. */
+        #compass-arrow { position: absolute; top: 36px; left: 50%; width: 32px; height: 32px; pointer-events: none; z-index: 10; filter: drop-shadow(0 0 3px rgba(0,0,0,0.6)); }
         /* No border, and darker. The pale ring drew the eye to the disc
            rather than to the arrow on it, and the disc is only there to keep
            the arrow readable over a bright sky or a pale path. */
-        #compass-backdrop { position: absolute; top: 8px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 9; }
+        #compass-backdrop { position: absolute; top: 30px; left: 50%; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 9; }
+        /* PROTOTYPE: the way ahead just opened, look at the compass.
+           On the BACKDROP, not the arrow: the arrow's own filter and
+           transform are rewritten from script every frame (ahead/behind
+           tint, needle angle), and an animation sharing those properties
+           would be arguing with it. The disc is script-free apart from
+           display, so a pulse on it has nothing to fight. */
+        @keyframes compassOpenFlash {
+            0%   { box-shadow: 0 0 0 0 rgba(120, 225, 255, 0); background: rgba(0, 0, 0, 0.6); }
+            18%  { box-shadow: 0 0 16px 7px rgba(120, 225, 255, 0.95); background: rgba(52, 126, 158, 0.85); }
+            100% { box-shadow: 0 0 0 0 rgba(120, 225, 255, 0); background: rgba(0, 0, 0, 0.6); }
+        }
+        #compass-backdrop.compass-open { animation: compassOpenFlash 0.9s ease-out 3; }
+        /* PROTOTYPE: look at THIS button. Pulls the eye to the real control
+           while its hint card is up, instead of the card showing a fake
+           button inside itself (see #hint-demo, now hidden). The animations
+           themselves are the card's own hint-tap / hint-hold defined
+           above - this just hands them to the live button rather than to a
+           copy of it on the card. */
+        .hint-attention-tap  { animation: hint-tap 2.4s linear infinite; }
+        .hint-attention-hold { animation: hint-hold 2s linear infinite; }
+        /* The press-feedback shrink the controls carry (see the shared
+           :active rule for #punch-btn/#carry-btn/...) is a transform-scale
+           and so is the pulse above - two keyframe-free scales on the same
+           element, the second one wins and the press would stop reading
+           while the pulse runs. Dropping the attention class the moment a
+           pointer lands on the button hands it back for as long as the
+           press lasts; the card's own learning check (see updateHintCard)
+           takes it off for good shortly after. */
+        .hint-attention-tap:active,
+        .hint-attention-hold:active { animation: none; transform: scale(0.95); }
 
         /* Inside a block: black, dithered, with a hole where you are.
            The camera has no collision by choice - being pulled in filled the
@@ -1807,7 +1872,13 @@
     </div>
     <div id="drop-btn">DROP</div>
     <div id="throw-btn">THROW</div>
-    
+    <!-- Camera lock, ALWAYS on screen (not buried in the utility drawer): a
+         small standalone toggle so it is a tap away, which is what was asked
+         for. Shares the .lock-btn look (lights red via .on when active) and
+         the same #camera-lock-btn wiring; the elastic sub-option stays in the
+         drawer. -->
+    <div id="camera-lock-btn" class="lock-btn" title="Lock the camera behind you">&#128274;&#127909;</div>
+
     <button id="right-tools-toggle" type="button" aria-label="Open utility panel" title="Utility panel" onclick="var panel=document.getElementById('right-tools-panel'); var open=panel.classList.toggle('open'); this.textContent=open ? '-' : '+'; this.setAttribute('aria-expanded', open ? 'true' : 'false');">+</button>
     <div id="right-tools-panel">
         <div class="utility-stack">
@@ -1816,6 +1887,7 @@
             <div id="carry-lock-btn" class="lock-btn" title="Auto-target nearby carryables">&#128274;&#128230;</div>
             <div id="assist-grab-btn" class="lock-btn" title="Assisted ledge grab - catches lips you nearly reached">&#129495;</div>
             <div id="auto-jump-gap-btn" class="lock-btn" title="Auto jump across gaps you can clear">&#8599;</div>
+            <div id="camera-lock-elastic-btn" class="lock-btn" title="Let the camera lock give a little before it springs back">&#12336;&#65039;</div>
         </div>
         <div class="utility-stack">
     <!-- Tap toggles the pixel effect, press-and-hold opens the size slider.
@@ -1899,6 +1971,10 @@
              Hidden by default so a card without one does not leave a gap. -->
         <img id="hint-icon" alt="">
     </div>
+    <!-- Shown/hidden every frame by updateCameraLock in game_js.js, while
+         the elastic camera lock is on and steered far enough that the
+         locked direction has fallen behind the player. -->
+    <div id="turn-back-card"><span class="turn-back-title">Turn Back</span>Your target's behind you</div>
     <!-- The flat compass. Its rotation is written every frame from the 3D
          needle's own projected tip (see game_js.js); src is set from there too,
          so it follows ASSET_BASE. -->
@@ -3038,6 +3114,13 @@
                         // same rule, and two copies of that arithmetic would
                         // drift apart the first time either was retuned.
                         window.staggerBot(bot, velocity, intensity, strength);
+                        // A connecting punch on an enemy teaches the same
+                        // lesson the bag does - the bag just happens to be
+                        // standing there first. Counting it here too means
+                        // the forest's opening test (updateBagArrow in
+                        // game_js.js) passes on whichever one you actually
+                        // hit, not only the bag.
+                        window.bagHitCount = (window.bagHitCount || 0) + 1;
                         // Counted so the forest tutorial can react to the
                         // player actually pulling a combo off. The LAST blow
                         // of the string is the one that counts - it is the
