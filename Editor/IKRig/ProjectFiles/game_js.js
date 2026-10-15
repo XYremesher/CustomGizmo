@@ -20346,33 +20346,73 @@ export function startGame(CharacterClass) {
     // right after the right-stick input that used to be the only thing
     // touching cameraTheta there).
     //
-    // ON holds cameraTheta directly behind the player's own facing - the
-    // same angle faceCameraAlongPlayer snaps to once, just held there every
-    // frame instead of as a one-off reset button.
+    // A SINGLE angle, not "wherever you currently face": _lockAnchorTheta is
+    // captured ONCE - when the lock is switched on, and again whenever
+    // faceCameraAlongPlayer is called while it is on (see both call sites
+    // below) - and does not move again on its own afterwards. It used to be
+    // read fresh every frame as char.group.rotation.y + PI, which sounds
+    // right ("hold the camera behind the player") but is not: mAng, the
+    // angle the movement code turns the character TOWARD while walking, is
+    // itself cameraTheta + the stick's screen-relative angle (see the
+    // moveMag > 0.1 branch further down) - so the character's facing is
+    // downstream of cameraTheta while walking. Re-deriving the lock's target
+    // from that same live rotation.y every frame closed a loop with no fixed
+    // point for almost any walking direction: the camera does not settle
+    // behind you, it spins at a steady, non-decaying rate for as long as you
+    // keep walking, and spins FASTER the more aggressively the lock chases
+    // it. A fixed anchor has nothing to chase and nothing to feed back into,
+    // so the loop cannot exist at any walking speed or turn rate.
     window.cameraLockEnabled = false;
-    // Whether the lock still lets a drag or the right stick turn the camera
-    // at all while it is on.
+    let _lockAnchorTheta = 0;
+    // The locked view's own vertical rest angle - not derived from the
+    // player the way the horizontal anchor is from rotation.y (there is no
+    // "up/down facing" to hold behind), so it is simply the same default
+    // pitch faceCameraAlongPlayer snaps cameraPhi to on a manual reset.
+    const CAMERA_LOCK_PHI_DEFAULT = Math.PI / 3;
+    let _lockAnchorPhi = CAMERA_LOCK_PHI_DEFAULT;
+    // Captures "the one angle" the lock holds to. Called when the lock is
+    // switched on (so it starts from behind however the player happens to be
+    // facing right then) and from faceCameraAlongPlayer while already on (so
+    // the reset button doubles as "pick a new single angle" instead of
+    // fighting a lock that would otherwise snap straight back to the old
+    // one). Never called from inside updateCameraLock itself, which is the
+    // whole point - nothing re-anchors it on its own.
+    function _setCameraLockAnchor() {
+        if (!char || !char.group) return;
+        _lockAnchorTheta = char.group.rotation.y + Math.PI;
+        _lockAnchorPhi = CAMERA_LOCK_PHI_DEFAULT;
+    }
+    // Whether the lock allows ANY drift from the single anchor angle.
     //
-    // OFF is rigid: cameraTheta is pinned to the locked angle outright every
-    // frame, and steering it does nothing.
+    // OFF is rigid: cameraTheta/cameraPhi are pinned to the anchor outright
+    // every frame, and steering does nothing.
     //
     // ON is the "esnek" give: steering still works exactly as it does
-    // unlocked (see the pointermove handler and the input.right block
-    // below, neither of which this touches) - the lock only reasserts
-    // itself once steering STOPS, easing cameraTheta back to the locked
-    // angle instead of leaving it wherever it was let go.
+    // unlocked (see the pointermove handler and the input.right block below,
+    // neither of which this touches) up to CAMERA_LOCK_MAX_DEV from the
+    // anchor, which it cannot be carried past even mid-drag; once steering
+    // STOPS, it eases back toward the anchor instead of staying wherever it
+    // was let go. Both halves - the hard limit AND the spring-back - read
+    // from the same fixed _lockAnchorTheta/_lockAnchorPhi, which is what
+    // makes the spring-back safe here: it used to read char.group.rotation.y
+    // fresh every frame instead, and that chased the character's own
+    // walking-facing, which is itself downstream of cameraTheta while
+    // walking - a loop with no fixed point that read as the camera spinning
+    // rather than settling. A target that does not move on its own has
+    // nothing to feed back into, however far the clamp lets it wander first.
     window.cameraLockElastic = true;
-    // How fast an elastic lock eases back once steering stops - the
-    // fraction of the remaining deviation it closes per second. Exposed so
-    // the feel can be tuned without a reload.
-    window.cameraLockReturnSpeed = 2.5;
-    // How far the elastic give may drift before the "turn back" card (see
-    // #turn-back-card in ClimbGame.html) tells the player they have turned
-    // past a comfortable glance. Two angles, not one, so it does not
-    // flicker right at the edge - once shown it has to earn its way back
-    // under the lower one before it will show again.
-    const CAMERA_LOCK_WARN_SHOW = 100 * Math.PI / 180;
-    const CAMERA_LOCK_WARN_HIDE = 75 * Math.PI / 180;
+    // How far the clamp lets the camera drift from the single anchor, each
+    // way - "biraz esneyebilecek" (it can give a little), not a free orbit.
+    const CAMERA_LOCK_MAX_DEV = 50 * Math.PI / 180;
+    // How fast the spring-back closes the remaining deviation once steering
+    // stops, same fraction-per-second shape as every other ease in this file.
+    // Exposed so the feel can be tuned without a reload.
+    window.cameraLockReturnSpeed = 3.5;
+    // Warns once the clamp is actually doing something - i.e. once you are
+    // pressed up against the limit, not merely near it. Hysteresis (two
+    // angles, not one) so the card does not flicker right at the edge.
+    const CAMERA_LOCK_WARN_SHOW = CAMERA_LOCK_MAX_DEV;
+    const CAMERA_LOCK_WARN_HIDE = CAMERA_LOCK_MAX_DEV * 0.7;
     let _turnBackShown = false;
     function setTurnBackCard(show) {
         if (show === _turnBackShown) return;
@@ -20381,32 +20421,56 @@ export function startGame(CharacterClass) {
         if (card) card.classList.toggle('show', show);
     }
     // Wrapped to (-PI, PI]. A plain subtraction crosses the +-PI seam the
-    // wrong way half the time cameraTheta and the locked angle straddle it
-    // independently, which would occasionally send the "shortest way back"
-    // spring the long way round instead.
+    // wrong way half the time cameraTheta and the anchor straddle it
+    // independently, which would occasionally clamp toward the long way
+    // round instead of the short one.
     function _angleDiff(a, b) {
         return Math.atan2(Math.sin(a - b), Math.cos(a - b));
     }
     function updateCameraLock(delta) {
         if (!window.cameraLockEnabled || !char || !char.group) { setTurnBackCard(false); return; }
-        const lockedTheta = char.group.rotation.y + Math.PI;
         if (!window.cameraLockElastic) {
-            cameraTheta = lockedTheta;
+            cameraTheta = _lockAnchorTheta;
+            cameraPhi = _lockAnchorPhi;
             setTurnBackCard(false);
             return;
         }
         // Steering already happened exactly where input.right/pointermove
-        // wrote it into cameraTheta this frame or the last - nothing here
-        // intercepts that, it only decides whether to pull cameraTheta back
-        // once steering has stopped.
+        // wrote it into cameraTheta/cameraPhi this frame or the last -
+        // nothing here intercepts that. Once it STOPS, ease both back toward
+        // the single anchor instead of leaving them wherever they were let
+        // go - this is the spring-back the clamp alone did not give you.
+        // Safe to do now in a way it was not before: the anchor is FIXED
+        // (set once - see _setCameraLockAnchor), not re-derived from the
+        // character's live rotation every frame, so easing toward it cannot
+        // feed back into anything that then moves the anchor itself. That
+        // feedback loop (character's walking-facing depends on cameraTheta,
+        // and the old per-frame anchor depended right back on the
+        // character's facing) was the entire cause of the walking spin - a
+        // fixed anchor has nothing to chase and nothing to be chased by.
         const steering = lookPointerId !== null
             || Math.abs(input.right.x) > 0.05 || Math.abs(input.right.y) > 0.05;
         if (!steering) {
-            const diff = _angleDiff(cameraTheta, lockedTheta);
+            const diff = _angleDiff(cameraTheta, _lockAnchorTheta);
             const pull = Math.min(1, window.cameraLockReturnSpeed * (delta || 0));
-            cameraTheta = lockedTheta + diff * (1 - pull);
+            cameraTheta = _lockAnchorTheta + diff * (1 - pull);
+            cameraPhi = cameraPhi + (_lockAnchorPhi - cameraPhi) * pull;
         }
-        const dev = Math.abs(_angleDiff(cameraTheta, lockedTheta));
+        // The hard limit on top, regardless of steering - caps how far a
+        // drag/stick can carry it even while actively steering (the ease
+        // above only runs once steering has already stopped, so this is
+        // what bounds it DURING a drag). A no-op once the ease has already
+        // pulled a released drag back inside the window. Theta needs the
+        // wrapped diff (it can sit on either side of the +-PI seam from the
+        // anchor); phi has no seam, it already lives inside
+        // [CAMERA_PHI_MIN, CAMERA_PHI_MAX], so a plain clamp is enough.
+        const devTheta = _angleDiff(cameraTheta, _lockAnchorTheta);
+        if (Math.abs(devTheta) > CAMERA_LOCK_MAX_DEV) {
+            cameraTheta = _lockAnchorTheta + Math.sign(devTheta) * CAMERA_LOCK_MAX_DEV;
+        }
+        cameraPhi = THREE.MathUtils.clamp(cameraPhi,
+            _lockAnchorPhi - CAMERA_LOCK_MAX_DEV, _lockAnchorPhi + CAMERA_LOCK_MAX_DEV);
+        const dev = Math.abs(_angleDiff(cameraTheta, _lockAnchorTheta));
         setTurnBackCard(_turnBackShown ? dev > CAMERA_LOCK_WARN_HIDE : dev > CAMERA_LOCK_WARN_SHOW);
     }
     const punchBtnEl = document.getElementById('punch-btn');
@@ -20446,7 +20510,13 @@ export function startGame(CharacterClass) {
         // the main lock itself is still off - otherwise the elastic button
         // would sit unlit for a feature that is already enabled underneath
         // the lock it modifies.
-        wire('camera-lock-btn', () => window.cameraLockEnabled, v => { window.cameraLockEnabled = v; });
+        wire('camera-lock-btn', () => window.cameraLockEnabled, v => {
+            window.cameraLockEnabled = v;
+            // Pick the single angle fresh every time it is switched ON -
+            // whatever the player happens to be facing at that moment, not
+            // whatever it was left at the last time this was toggled.
+            if (v) _setCameraLockAnchor();
+        });
         wire('camera-lock-elastic-btn', () => window.cameraLockElastic, v => { window.cameraLockElastic = v; });
     }
     // Throws a punch on its own while locked on and in reach. Deliberately
@@ -22931,6 +23001,12 @@ export function startGame(CharacterClass) {
     window.faceCameraAlongPlayer = () => {
         cameraTheta = char.group.rotation.y + Math.PI;
         cameraPhi = Math.PI / 3;
+        // If the rotation lock is on, this is also how its single anchor
+        // angle gets moved on purpose - see _setCameraLockAnchor's own
+        // comment. Without this, resetting the view while locked would
+        // snap the camera here for exactly one frame and then have the
+        // still-old anchor immediately clamp it back to where it was.
+        if (window.cameraLockEnabled) _setCameraLockAnchor();
     };
     document.getElementById('reset-cam-btn').addEventListener('pointerdown', () => { window.faceCameraAlongPlayer(); });
 
