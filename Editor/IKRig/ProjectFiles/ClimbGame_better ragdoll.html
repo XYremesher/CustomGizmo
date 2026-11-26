@@ -407,7 +407,7 @@
                 const baseUrl = 'https://raw.githubusercontent.com/XYremesher/CustomGizmo/main/Editor/IKRig/';
                 const loader = new FBXLoader();
 
-                loader.load(baseUrl + 'StickMan.fbx', (object) => {
+                loader.load(baseUrl + 'Character/StickMan.fbx', (object) => {
                     this.fbxModel = object;
                     object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
                     
@@ -495,14 +495,14 @@
                     });
 
                     const anims = [
-                        { name: 'idle', file: 'Idle.fbx' }, { name: 'walk', file: 'Walking.fbx' }, { name: 'run', file: 'Running.fbx' },
-                        { name: 'jump_start', file: 'JumpStart.fbx' }, { name: 'fall', file: 'JumpMidAir.fbx' }, { name: 'land', file: 'Landing.fbx' },
-                        { name: 'hang_idle', file: 'Hanging%20Idle.fbx' }, { name: 'hang_left', file: 'Moving%20While%20Hanging%20Left.fbx' },
-                        { name: 'hang_right', file: 'Moving%20While%20Hanging%20Right.fbx' }, { name: 'climb', file: 'Freehang%20Climb.fbx' },
-                        { name: 'standup_front', file: 'StandUp_Front.fbx' }, { name: 'standup_back', file: 'StandUp_Back.fbx' },
-                        { name: 'push', file: 'Push.fbx' }, { name: 'pull', file: 'Pull.fbx' },
-                        { name: 'carry', file: 'Carry.fbx' }, { name: 'throw', file: 'Throw.fbx' },
-                        { name: 'carry_start', file: 'Carry_Start.fbx' }
+                        { name: 'idle', file: 'Animations/Locomotion/Idle.fbx' }, { name: 'walk', file: 'Animations/Locomotion/Walking.fbx' }, { name: 'run', file: 'Animations/Locomotion/Running.fbx' },
+                        { name: 'jump_start', file: 'Animations/Jumping/JumpStart.fbx' }, { name: 'fall', file: 'Animations/Jumping/JumpMidAir.fbx' }, { name: 'land', file: 'Animations/Jumping/Landing.fbx' },
+                        { name: 'hang_idle', file: 'Animations/Climbing/Hanging%20Idle.fbx' }, { name: 'hang_left', file: 'Animations/Climbing/Moving%20While%20Hanging%20Left.fbx' },
+                        { name: 'hang_right', file: 'Animations/Climbing/Moving%20While%20Hanging%20Right.fbx' }, { name: 'climb', file: 'Animations/Climbing/Freehang%20Climb.fbx' },
+                        { name: 'standup_front', file: 'Animations/Jumping/StandUp_Front.fbx' }, { name: 'standup_back', file: 'Animations/Jumping/StandUp_Back.fbx' },
+                        { name: 'push', file: 'Animations/Interactions/Push.fbx' }, { name: 'pull', file: 'Animations/Interactions/Pull.fbx' },
+                        { name: 'carry', file: 'Animations/Interactions/Carry.fbx' }, { name: 'throw', file: 'Animations/Interactions/Throw.fbx' },
+                        { name: 'carry_start', file: 'Animations/Interactions/Carry_Start.fbx' }
                     ];
 
                     let loadedCount = 0;

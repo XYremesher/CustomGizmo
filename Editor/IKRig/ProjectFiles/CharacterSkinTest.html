@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Character Skin Test</title>
+<style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: #1a252c; }
+    canvas { display: block; }
+    #skin-test-ui {
+        position: absolute; top: 12px; left: 12px; z-index: 10;
+        display: flex; gap: 6px; font-family: sans-serif;
+    }
+    #skin-test-ui button {
+        padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.4);
+        background: rgba(20,20,26,0.7); color: #fff; cursor: pointer; font-size: 13px;
+    }
+    #skin-test-ui button.active { background: rgba(80,140,255,0.8); border-color: #fff; }
+    #skin-test-status {
+        position: absolute; bottom: 12px; left: 12px; z-index: 10;
+        font-family: sans-serif; font-size: 12px; color: rgba(255,255,255,0.7);
+    }
+    #skin-test-controls {
+        position: absolute; bottom: 32px; left: 12px; z-index: 10;
+        font-family: sans-serif; font-size: 12px; color: rgba(255,255,255,0.5);
+    }
+</style>
+</head>
+<body>
+    <div id="skin-test-ui">
+        <button data-clip="idle" class="active">Idle</button>
+        <button data-clip="walk">Walk</button>
+        <button data-clip="run">Run</button>
+        <button data-clip="jump_start">Jump</button>
+    </div>
+    <div id="skin-test-status">Loading...</div>
+    <div id="skin-test-controls">WASD/arrows to move, Shift to run, Space to jump</div>
+
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { ASSET_BASE } from './asset_base.js';
+
+        // Quarantined on purpose - this is just for looking at a candidate
+        // skin before deciding whether it's worth wiring into the real
+        // game, so it stays its own page rather than another branch inside
+        // ClimbGame.html's Character class.
+
+        const statusEl = document.getElementById('skin-test-status');
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a252c);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(2.2, 1.6, 3.2);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.target.set(0, 0.9, 0);
+
+        // Same toon-shading rig as ClimbGame.html (game_js.js: TOON_BAND_VALUES,
+        // buildToonGradientData, the ambient/dirLight/fillLight trio) so a skin
+        // judged here is judged under the lighting it'll actually render under,
+        // not a generic MeshStandardMaterial test-scene look.
+        const TOON_BAND_VALUES = [0, 128, 255];
+        const TOON_GRADIENT_SIZE = 64;
+        function buildToonGradientData(smoothness) {
+            const n = TOON_BAND_VALUES.length;
+            const data = new Uint8Array(TOON_GRADIENT_SIZE);
+            for (let i = 0; i < TOON_GRADIENT_SIZE; i++) {
+                const t = i / (TOON_GRADIENT_SIZE - 1);
+                const scaled = t * n;
+                const bandIndex = Math.min(n - 1, Math.floor(scaled));
+                const localT = scaled - bandIndex;
+                const currentVal = TOON_BAND_VALUES[bandIndex];
+                const nextVal = TOON_BAND_VALUES[Math.min(n - 1, bandIndex + 1)];
+                let blendT = 0;
+                if (smoothness > 0) {
+                    const edgeStart = 1 - smoothness;
+                    blendT = localT <= edgeStart ? 0 : (localT - edgeStart) / smoothness;
+                }
+                data[i] = Math.round(THREE.MathUtils.lerp(currentVal, nextVal, blendT));
+            }
+            return data;
+        }
+        const threeTone = new THREE.DataTexture(buildToonGradientData(0.0), TOON_GRADIENT_SIZE, 1, THREE.RedFormat);
+        threeTone.needsUpdate = true;
+        threeTone.minFilter = THREE.LinearFilter;
+        threeTone.magFilter = THREE.LinearFilter;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.55);
+        dirLight.position.set(0.1, 40, 0.1);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 0.5; dirLight.shadow.camera.far = 200;
+        dirLight.shadow.camera.left = -4; dirLight.shadow.camera.right = 4;
+        dirLight.shadow.camera.top = 4; dirLight.shadow.camera.bottom = -4;
+        dirLight.shadow.camera.updateProjectionMatrix();
+        scene.add(dirLight); scene.add(dirLight.target);
+
+        const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
+        fillLight.position.set(-25, 15, -20);
+        fillLight.castShadow = false;
+        scene.add(fillLight); scene.add(fillLight.target);
+
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(30, 30),
+            new THREE.MeshToonMaterial({ color: 0x2a3540, gradientMap: threeTone })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+        scene.add(new THREE.GridHelper(30, 30, 0x556677, 0x334455));
+
+        let skinRoot = null;
+        let mixer = null;
+        const clips = {};
+        let currentAction = null;
+
+        // Same clips ClimbGame.html's Character loads, kept to the handful
+        // worth eyeballing here rather than the whole animation set - this
+        // page is for judging the skin's look in motion, not for building
+        // the real state machine.
+        const ANIM_FILES = {
+            idle: 'Animations/Locomotion/Idle.fbx',
+            walk: 'Animations/Locomotion/Walking.fbx',
+            run: 'Animations/Locomotion/Running.fbx',
+            jump_start: 'Animations/Jumping/JumpStart.fbx',
+        };
+
+        function playClip(name) {
+            if (!mixer || !clips[name]) return;
+            const next = mixer.clipAction(clips[name]);
+            if (currentAction === next) return;
+            next.reset().fadeIn(0.2).play();
+            if (currentAction) currentAction.fadeOut(0.2);
+            currentAction = next;
+            document.querySelectorAll('#skin-test-ui button').forEach(b => {
+                b.classList.toggle('active', b.dataset.clip === name);
+            });
+        }
+
+        document.querySelectorAll('#skin-test-ui button[data-clip]').forEach(btn => {
+            btn.addEventListener('click', () => playClip(btn.dataset.clip));
+        });
+
+        const fbxLoader = new FBXLoader();
+
+        // Flat per-slot colors, StickMan.fbx-style (solid color + gradientMap,
+        // no map/vertexColors) rather than the vertex-painted look - keyed by
+        // material name so it survives re-export reordering. Originally
+        // lightened toward white in two passes, which also desaturated the
+        // 4 actually-colored slots into a washed gray ("solgun" - pale, not
+        // "dolgun" - rich) - redone from the ORIGINAL dark colors via HSL,
+        // raising lightness AND saturation together instead of blending
+        // toward white. Material.001/.002/.004/.009/lambert1 are genuinely
+        // neutral grays (R=G=B in the source), nothing to enrich there. Keep
+        // in sync with ClimbGame.html's own window.SKIN_MATERIAL_COLORS -
+        // this page can't share it directly, being its own standalone page.
+        const SKIN_MATERIAL_COLORS = {
+            'Material.001': 0x3d3d3d, // was #0c0c0c
+            'Material.002': 0x333333, // was #000000
+            'lambert1': 0x999999, // was #808080
+            'Material.004': 0x494949, // was #1c1c1c
+            'Material.005': 0xc64039, // was #301d1c (HSL: L 15%->50%, S 26%->55%)
+            'Material.006': 0x338999, // was #061b1f (HSL: L 7%->40%, S 68%->50%)
+            'Material.007': 0xdd3c40, // was #cc2428 (HSL: L 47%->55%, S kept ~70%)
+            'Material.009': 0x333333, // was #000000
+            'Material.010': 0xc66e39, // was #543929 (HSL: L 25%->50%, S 34%->55%)
+        };
+
+        // The skin itself - same "mixamorig:" bone names as our own
+        // StickMan.fbx (checked before building this page), so it takes our
+        // animation clips with no retargeting: they're both exports off the
+        // same standard Mixamo rig.
+        fbxLoader.load(ASSET_BASE + 'Character/Character_Clothed/StickMan_skin.fbx', (object) => {
+            skinRoot = object;
+            // Same 0.0065 scale ClimbGame.html's fbxModel uses - the FBX
+            // export is otherwise ~150x too big for a 1-unit-tall scene.
+            object.scale.setScalar(0.0065);
+            // Swap the shading model to MeshToonMaterial + the game's own
+            // gradientMap (see SKIN_MATERIAL_COLORS above for the per-slot
+            // color override), same as ClimbGame.html's body material -
+            // judged under the game's actual lighting/banding, not a generic
+            // Standard/Phong material under flat test-scene lights.
+            object.traverse(child => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                    if (child.material) {
+                        // The FBX has 9 distinct material slots (skin, hair,
+                        // shirt, pants, shoes, ...) - child.material is an
+                        // ARRAY and geometry.groups map face ranges to each
+                        // slot by index. Collapsing to a single material
+                        // (reading only slot 0) is what was washing every
+                        // part down to one grey tone - this has to rebuild
+                        // one MeshToonMaterial PER slot, same index order.
+                        // No outline shell here (by request) - StickMan.fbx's
+                        // own flat-color look, just one color per slot.
+                        const build = (m) => new THREE.MeshToonMaterial({
+                            color: SKIN_MATERIAL_COLORS[m.name] !== undefined ? SKIN_MATERIAL_COLORS[m.name] : (m.color || 0xffffff),
+                            gradientMap: threeTone
+                        });
+                        child.material = Array.isArray(child.material)
+                            ? child.material.map(build)
+                            : build(child.material);
+                    }
+                }
+            });
+            scene.add(object);
+            mixer = new THREE.AnimationMixer(object);
+            // jump_start is LoopOnce/clamped (see startJump) - this is the
+            // only way to know it's done and hand control back to idle/walk.
+            mixer.addEventListener('finished', (e) => {
+                if (e.action === jumpAction) isJumping = false;
+            });
+            loadClip('idle');
+        });
+
+        let pendingLoads = 0;
+        function loadClip(name) {
+            if (clips[name] || !ANIM_FILES[name]) return;
+            pendingLoads++;
+            fbxLoader.load(ASSET_BASE + ANIM_FILES[name], (animObj) => {
+                pendingLoads--;
+                if (animObj.animations.length) {
+                    clips[name] = animObj.animations[0];
+                    if (name === 'idle') playClip('idle');
+                }
+                updateStatus();
+            }, undefined, (err) => {
+                pendingLoads--;
+                statusEl.textContent = 'Failed to load ' + name + ': ' + err.message;
+            });
+        }
+        Object.keys(ANIM_FILES).forEach(loadClip);
+
+        function updateStatus() {
+            if (!skinRoot) { statusEl.textContent = 'Loading skin...'; return; }
+            if (pendingLoads > 0) { statusEl.textContent = 'Loading animations... (' + pendingLoads + ' left)'; return; }
+            statusEl.textContent = 'StickMan_skin.fbx - drag to orbit, buttons to switch clips, WASD to walk it around';
+        }
+        updateStatus();
+
+        // Minimal WASD/arrow movement so the skin can be judged in motion
+        // under player control, not just canned button presses in place.
+        // Deliberately simple (no physics, no ground collision - the ground
+        // plane is flat) - this is still just for eyeballing the skin, not a
+        // second copy of ClimbGame.html's movement/state machine.
+        const keys = Object.create(null);
+        const MOVE_KEYS = ['Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (MOVE_KEYS.includes(e.code)) e.preventDefault();
+        });
+        window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+        const WALK_SPEED = 1.6;
+        const RUN_SPEED = 3.4;
+        const charPos = new THREE.Vector3(0, 0, 0);
+        let isJumping = false;
+        let jumpAction = null;
+
+        function startJump() {
+            if (!mixer || !clips.jump_start || isJumping) return;
+            isJumping = true;
+            jumpAction = mixer.clipAction(clips.jump_start);
+            jumpAction.reset();
+            jumpAction.setLoop(THREE.LoopOnce);
+            jumpAction.clampWhenFinished = true;
+            jumpAction.fadeIn(0.1).play();
+            if (currentAction && currentAction !== jumpAction) currentAction.fadeOut(0.1);
+            currentAction = jumpAction;
+            document.querySelectorAll('#skin-test-ui button').forEach(b => {
+                b.classList.toggle('active', b.dataset.clip === 'jump_start');
+            });
+        }
+
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        function updateMovement(delta) {
+            if (!skinRoot) return;
+            if (keys.Space) startJump();
+
+            // Movement is camera-relative (forward = where the orbit camera is
+            // currently looking, flattened to the ground plane) so WASD keeps
+            // meaning whatever way the mouse has orbited the view.
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0;
+            if (forward.lengthSq() < 1e-6) forward.set(0, 0, -1);
+            forward.normalize();
+            const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+
+            let moveX = 0, moveZ = 0;
+            if (keys.KeyW || keys.ArrowUp) moveZ += 1;
+            if (keys.KeyS || keys.ArrowDown) moveZ -= 1;
+            if (keys.KeyD || keys.ArrowRight) moveX += 1;
+            if (keys.KeyA || keys.ArrowLeft) moveX -= 1;
+
+            const moveDir = new THREE.Vector3()
+                .addScaledVector(forward, moveZ)
+                .addScaledVector(right, moveX);
+            const moving = moveDir.lengthSq() > 1e-6;
+            if (moving) moveDir.normalize();
+
+            const running = !!(keys.ShiftLeft || keys.ShiftRight);
+            const speed = running ? RUN_SPEED : WALK_SPEED;
+            charPos.addScaledVector(moveDir, speed * delta);
+            skinRoot.position.copy(charPos);
+
+            if (moving) {
+                const targetYaw = Math.atan2(moveDir.x, moveDir.z);
+                let diff = targetYaw - skinRoot.rotation.y;
+                diff = ((diff + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+                skinRoot.rotation.y += diff * Math.min(1, delta * 10);
+            }
+
+            if (!isJumping) playClip(moving ? (running ? 'run' : 'walk') : 'idle');
+
+            // Follow cam: re-centering the orbit target on the character each
+            // frame keeps the same mouse-dragged angle/distance (OrbitControls
+            // rebuilds camera.position from target + its stored spherical
+            // offset in update()), so this alone is enough for a third-person
+            // follow without touching camera.position directly.
+            controls.target.lerp(new THREE.Vector3(charPos.x, charPos.y + 0.9, charPos.z), 1 - Math.pow(0.0001, delta));
+        }
+
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            updateMovement(delta);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

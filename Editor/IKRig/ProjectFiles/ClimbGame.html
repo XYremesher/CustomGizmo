@@ -443,8 +443,13 @@
            touch-action: none; cursor: pointer; z-index: 12; user-select: none;
         }
         #right-tools-panel {
-           position: absolute; right: 12px; bottom: 196px; display: flex; flex-direction: column; gap: 8px;
-           align-items: center; z-index: 11; opacity: 0; pointer-events: none;
+           /* Columns instead of one strip that grows taller with every
+              companion/enemy warp button added - row-reverse so the first
+              column hugs the right edge (where the + sits) and extra
+              columns grow leftward instead of the whole thing climbing
+              off the top of the screen. */
+           position: absolute; right: 12px; bottom: 196px; display: flex; flex-direction: row-reverse; gap: 8px;
+           align-items: flex-end; z-index: 11; opacity: 0; pointer-events: none;
            transform: translateX(12px); transition: opacity 0.18s ease, transform 0.18s ease;
         }
         #right-tools-panel.open { opacity: 1; pointer-events: auto; transform: translateX(0); }
@@ -479,7 +484,11 @@
            width: 40px; height: 40px; font-size: 15px; z-index: 12;
         }
         #warp-btns {
-           display: flex; flex-direction: column-reverse; gap: 6px; align-items: center;
+           /* One column per 4 companions/bots instead of a single column that
+              keeps growing - wraps into a second column leftward (matching
+              #right-tools-panel's own row-reverse) rather than ever taller. */
+           display: flex; flex-direction: column-reverse; flex-wrap: wrap-reverse; gap: 6px; align-items: center;
+           max-height: 136px;
             z-index: 11;
         }
         .warp-btn {
@@ -492,7 +501,17 @@
         }
         .warp-btn:active { transform: scale(0.88); border-color: #fff; }
         #punch-btn { position: absolute; bottom: 30px; right: 160px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.5); display: none; justify-content: center; align-items: center; color: white; font-family: monospace; font-weight: bold; font-size: 13px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); touch-action: none; cursor: pointer; z-index: 10; background: rgba(200, 50, 50, 0.7); }
-        
+        /* "Show All Action Buttons" design mode (toggle-show-all-btns) -
+           !important beats the inline style.display these buttons' own
+           per-frame/conditional logic sets, without touching that logic at
+           all, so every contextual button can be seen and arranged at once
+           regardless of carry/ledge/unlock state. */
+        body.show-all-btns #hold-btn,
+        body.show-all-btns #carry-btn,
+        body.show-all-btns #drop-btn,
+        body.show-all-btns #throw-btn,
+        body.show-all-btns #punch-btn { display: flex !important; }
+
         /* ---- Alternate control layout (body.ui-alt, ON by default) ----
            Wide-screen problem this solves: the two clusters are anchored to
            opposite EDGES, so the wider the display the further apart your
@@ -509,8 +528,14 @@
            the stick's line rather than beside it, which is what makes the two
            read as one cluster instead of two corners. */
         :root { --ui-alt-gap: 400px; }
-        /* Portrait: move stick centred. It's 120px wide, so left: 50% - 60px centres it. */
-        body.ui-alt #base-left { left: calc(50% - 60px); }
+        /* Move stick to the right edge now (by request, marked on a
+           screenshot) - centring made sense when the action cluster sat
+           just to its right, but that cluster is now mirrored onto the
+           LEFT edge instead, so the stick moves to the opposite edge from
+           it rather than staying in the middle between them. Raised and
+           pulled in from the bare edge (30px -> 90px) so a thumb can
+           actually rest on it without reaching off the side of the screen. */
+        body.ui-alt #base-left { left: auto; right: 90px; bottom: 60px; }
         /* Moved down to sit just above the FPS counter (fixed at bottom:8px), UI2 only. */
         /* Clear of #fps-counter, which is fixed at bottom:8px and is now four
            lines tall (rate, draws/tris, rays, near) - about 76px with its
@@ -520,30 +545,60 @@
         /* Only the + places itself now - the tools it opens are all inside the
            drawer, which stacks them itself. */
         body.ui-alt #right-tools-panel { bottom: 134px; }
-        body.ui-alt #jump-btn  { bottom: 165px; right: 20px;  width: 60px; height: 60px; }
+        /* Mirrored back to the right edge (undoing the left mirror), by
+           request - #base-left stays on the right where it was moved to
+           separately. The last round (+25px raise, hold/carry/drop pulled
+           40px toward the edge) read as too cramped and was backed out -
+           this is that earlier, more spread-out spacing again. */
+        body.ui-alt #jump-btn  { bottom: 215px; right: 20px; width: 60px; height: 60px; }
         /* Swapped with build-btn (UI2 only) - each keeps its own size, only position trades. */
-        body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
+        body.ui-alt #punch-btn { bottom: 165px; right: 75px; width: 50px; height: 50px; }
         /* The ring is proportional to the button: 66/50 matches 76/60. Size is
            all that needs overriding now - the SVG centres itself and its
            viewBox scales the circle, so neither the offset nor the circle's
            own radius has to be restated here. Same size both orientations, so
            no landscape duplicate needed. */
         body.ui-alt #punch-btn > svg { width: 66px !important; height: 66px !important; }
-        body.ui-alt #build-btn { bottom: 116px; right: 26px; width: 38px; height: 38px; }
-        body.ui-alt #carry-btn { bottom: 181px; right: 92px; width: 42px; height: 42px; }
-        body.ui-alt #throw-btn { bottom: 119px; right: 64px; width: 38px; height: 38px; }
-        body.ui-alt #drop-btn  { bottom: 169px; right: 204px; width: 38px; height: 38px; }
+        body.ui-alt #build-btn { bottom: 166px; right: 26px; width: 38px; height: 38px; }
+        /* Carry/hold and throw/punch are mutually exclusive in play (never
+           both shown at once), so by request they share their partner's
+           exact spot rather than sitting at their own - carry takes hold's
+           position, throw takes punch's. hold-btn has no ui-alt override of
+           its own otherwise (its base #hold-btn rule, bottom:100px/right:155px,
+           is shared with UI1), so it gets one here too, raised to match the
+           rest. Drop stays independent (it and punch/throw CAN be visible
+           together) but sits halfway from its old spot toward punch's, by
+           an earlier request. */
+        body.ui-alt #hold-btn  { bottom: 150px; right: 155px; }
+        body.ui-alt #carry-btn { bottom: 150px; right: 155px; width: 42px; height: 42px; }
+        body.ui-alt #throw-btn { bottom: 165px; right: 75px; width: 38px; height: 38px; }
+        body.ui-alt #drop-btn  { bottom: 192px; right: 140px; width: 38px; height: 38px; }
 
         /* Landscape mode: right thumb position is lower. Centre the move stick
            and position the buttons where the thumb naturally falls. */
         @media (orientation: landscape) {
-            body.ui-alt #base-left { bottom: 20px; right: calc(50% - 80px); }
-            body.ui-alt #jump-btn  { bottom: 15px; right: calc(50% - 250px); width: 60px; height: 60px; }
-            body.ui-alt #punch-btn { bottom: 115px; right: 75px; width: 50px; height: 50px; }
-            body.ui-alt #build-btn { bottom: 46px; right: calc(50% - 325px); width: 38px; height: 38px; }
-            body.ui-alt #carry-btn { bottom: 176px; right: calc(50% - 258px); width: 42px; height: 42px; }
-            body.ui-alt #throw-btn { bottom: 114px; right: calc(50% - 287px); width: 38px; height: 38px; }
-            body.ui-alt #drop-btn  { bottom: 164px; right: calc(50% - 317px); width: 38px; height: 38px; }
+            /* Same pulled-in-and-raised move as the portrait rule above -
+               30px -> 90px from the edge, bottom raised to match. */
+            body.ui-alt #base-left { bottom: 50px; right: 90px; }
+            /* Mirrored back to the right (undoing the left mirror), raised a
+               further 25px (same as the portrait rules above), and
+               hold/carry/drop pulled 40px further toward the edge
+               (155->115, calc(25% - 121px) -> calc(25% - 161px)) so they
+               clear the joystick's own right:90px instead of sitting
+               inward of it. */
+            body.ui-alt #jump-btn  { bottom: 90px; right: calc(50% - 250px); width: 60px; height: 60px; }
+            body.ui-alt #punch-btn { bottom: 190px; right: 75px; width: 50px; height: 50px; }
+            body.ui-alt #build-btn { bottom: 121px; right: calc(50% - 325px); width: 38px; height: 38px; }
+            /* Same re-homing as the portrait rules above: carry onto hold's
+               spot, throw onto punch's (both fixed px there, same in this
+               orientation too, so no calc() needed for either) - drop's
+               halfway point IS a calc(), averaging its own old right:calc(50%
+               - 317px) against punch's fixed 75px: (-317+75)/2 = -121,
+               50%/2 = 25%. */
+            body.ui-alt #hold-btn  { bottom: 175px; right: 115px; }
+            body.ui-alt #carry-btn { bottom: 175px; right: 115px; width: 42px; height: 42px; }
+            body.ui-alt #throw-btn { bottom: 190px; right: 75px; width: 38px; height: 38px; }
+            body.ui-alt #drop-btn  { bottom: 214.5px; right: calc(25% - 161px); width: 38px; height: 38px; }
         }
         #punch-btn:active, #jump-btn:active, #reset-cam-btn:active, #build-btn:active, #hold-btn:active, #carry-btn:active, #drop-btn:active, #throw-btn:active { opacity: 0.8; transform: scale(0.95); }
 
@@ -1105,6 +1160,15 @@
                     + (e.reason && e.reason.message ? e.reason.message : e.reason));
             });
         })();
+        // ?skin=1 is for judging StickMan_skin.fbx with the real controller
+        // (see the toggle-stickman-skin checkbox below) without the forest
+        // story level's enemies/NPCs/cutscenes in the way - defaults it to
+        // "Blank (UI screenshots)", the level already built for isolated
+        // clean shots. ?level=... (any populateLevelsAndLoad value) still
+        // wins if someone wants the skin on a specific level instead.
+        if (new URLSearchParams(location.search).get('skin') === '1' && !window.startLevel) {
+            window.startLevel = new URLSearchParams(location.search).get('level') || 'local_blank';
+        }
     </script>
     <!-- Disabled for now during dev so it doesn't block testing - re-enable by removing class="hidden" here. -->
     <div id="start-overlay" class="hidden">
@@ -1336,10 +1400,31 @@
                     <input type="range" id="grass-alpha-slider" min="0.0" max="0.9" step="0.01" value="0.90" style="width: 100%;"><br>
                     <label>Grass Base Sink (% of height): <span id="grass-sink-val">25</span></label><br>
                     <input type="range" id="grass-sink-slider" min="0" max="30" step="1" value="25" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-grass-wind" checked> Grass Wind Sway (regional noise)</label><br>
+                    <label>Grass Wind Strength: <span id="grass-wind-strength-val">0.12</span></label><br>
+                    <input type="range" id="grass-wind-strength-slider" min="0.0" max="0.5" step="0.01" value="0.12" style="width: 100%;"><br>
+                    <label>Grass Wind Region Size (lower = bigger patches): <span id="grass-wind-scale-val">0.08</span></label><br>
+                    <input type="range" id="grass-wind-scale-slider" min="0.01" max="0.5" step="0.01" value="0.08" style="width: 100%;"><br>
+                    <label>Grass Wind Speed: <span id="grass-wind-speed-val">0.60</span></label><br>
+                    <input type="range" id="grass-wind-speed-slider" min="0.0" max="3.0" step="0.05" value="0.60" style="width: 100%;"><br>
                     <label>Flower Size: <span id="flower-size-val">1.00</span></label><br>
                     <input type="range" id="flower-size-slider" min="0.2" max="3.0" step="0.05" value="1.00" style="width: 100%;"><br>
                     <label>Flower Alpha Cutoff: <span id="flower-alpha-val">0.55</span></label><br>
                     <input type="range" id="flower-alpha-slider" min="0.0" max="0.9" step="0.01" value="0.55" style="width: 100%;"><br>
+                    <label>Tree-Ground Blend Start (flat below this): <span id="tree-ground-start-val">0.00</span></label><br>
+                    <input type="range" id="tree-ground-start-slider" min="0.0" max="2.0" step="0.05" value="0.00" style="width: 100%;"><br>
+                    <label>Tree-Ground Blend Height (grass): <span id="tree-ground-height-val">2.20</span></label><br>
+                    <input type="range" id="tree-ground-height-slider" min="0.0" max="6.0" step="0.05" value="2.20" style="width: 100%;"><br>
+                    <label>Tree-Ground Blend Height (worn/beige path): <span id="tree-ground-height-beige-val">0.45</span></label><br>
+                    <input type="range" id="tree-ground-height-beige-slider" min="0.0" max="6.0" step="0.05" value="0.45" style="width: 100%;"><br>
+                    <label>Tree-Ground Blend Amount: <span id="tree-ground-amt-val">0.30</span></label><br>
+                    <input type="range" id="tree-ground-amt-slider" min="0.0" max="1.0" step="0.05" value="0.30" style="width: 100%;"><br>
+                    <label>Tree-Ground Dark Multiply Threshold: <span id="tree-ground-dark-threshold-val">0.05</span></label><br>
+                    <input type="range" id="tree-ground-dark-threshold-slider" min="0.0" max="1.0" step="0.05" value="0.05" style="width: 100%;"><br>
+                    <label>Tree-Ground Dark Multiply Amount: <span id="tree-ground-dark-amt-val">1.00</span></label><br>
+                    <input type="range" id="tree-ground-dark-amt-slider" min="0.0" max="1.0" step="0.05" value="1.00" style="width: 100%;"><br>
+                    <label>Tree-Ground Dark Multiply Power (deepens cracks past plain Multiply): <span id="tree-ground-dark-power-val">5.00</span></label><br>
+                    <input type="range" id="tree-ground-dark-power-slider" min="1.0" max="5.0" step="0.1" value="5.00" style="width: 100%;"><br>
                     <label>Foam Thickness (all): <span id="foam-scale-val">0.30</span></label><br>
                     <input type="range" id="foam-scale-slider" min="0.1" max="4.0" step="0.05" value="0.30" style="width: 100%;"><br>
                     <label>Foam Thickness (player only): <span id="foam-char-val">1.00</span></label><br>
@@ -1534,6 +1619,7 @@
                     <input type="range" id="ledge-force-slider" min="0.2" max="3.0" step="0.1" value="0.6" style="width: 100%;"><br>
                     <label>Model Scale: <span id="scale-val">0.0065</span></label><br>
                     <input type="range" id="scale-slider" min="0.001" max="0.02" step="0.0005" value="0.0065" style="width: 100%;"><br>
+                    <label><input type="checkbox" id="toggle-stickman-skin" checked> Use StickMan_skin (reload to apply)</label><br>
                     <label>Ledge Offset: <span id="offset-val">0.06</span></label><br>
                     <input type="range" id="offset-slider" min="0.0" max="0.5" step="0.01" value="0.06" style="width: 100%;"><br>
                     <label>Wall Stop Threshold: <span id="wall-stop-val">0.90</span></label><br>
@@ -1609,8 +1695,8 @@
                     <input type="range" id="proj-speed-slider" min="5.0" max="50.0" step="1.0" value="20.0" style="width: 100%;"><br>
                     <label>Orange Recoil Force: <span id="orange-recoil-val">60.0</span></label><br>
                     <input type="range" id="orange-recoil-slider" min="5.0" max="100.0" step="1.0" value="60.0" style="width: 100%;"><br>
-                    <label>Head Size (all characters): <span id="head-scale-val">0.70</span></label><br>
-                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="0.70" style="width: 100%;"><br>
+                    <label>Head Size (all characters): <span id="head-scale-val">1.00</span></label><br>
+                    <input type="range" id="head-scale-slider" min="0.3" max="2.5" step="0.05" value="1.00" style="width: 100%;"><br>
                 </div>
             </div>
 
@@ -1681,6 +1767,15 @@
                     <label><input type="checkbox" id="toggle-camera-joystick"> Show Camera Joystick</label><br>
                     <label><input type="checkbox" id="toggle-build-btn" checked> Show Build (B) Button</label><br>
                     <label><input type="checkbox" id="toggle-punch-btn" checked> Show Punch Button</label><br>
+                    <!-- Forces hold/carry/drop/throw/punch visible regardless
+                         of the game's own per-frame conditions (near a
+                         carryable, ledge state, etc.) - those buttons are
+                         real UI the game usually only shows at the right
+                         moment, so there was no way to see and arrange them
+                         all at once outside of contriving every condition
+                         live. CSS !important override (see the rule below),
+                         not a change to any of that logic. -->
+                    <label><input type="checkbox" id="toggle-show-all-btns"> Show All Action Buttons (design mode)</label><br>
                     <label><input type="checkbox" id="toggle-drag-deadzone"> Show Drag Dead-Zone (matte overlay)</label><br>
                     <label>Icon Size: <span id="icon-size-val">40</span>px</label><br>
                     <input type="range" id="icon-size-slider" min="12" max="96" step="1" value="40" style="width: 100%;"><br>
@@ -1709,7 +1804,7 @@
             <div class="category">
                 <div class="category-header">Shader Test</div>
                 <div class="category-content">
-                    <label><input type="checkbox" id="toggle-toon-outline"> Cell + Outline</label><br>
+                    <label><input type="checkbox" id="toggle-toon-outline" checked> Cell + Outline</label><br>
                     <label>Cell Shading Smoothness: <span id="toon-smoothness-val">0.00</span></label><br>
                     <input type="range" id="toon-smoothness-slider" min="0.0" max="1.0" step="0.05" value="0.00" style="width: 100%;"><br>
                     <label>Outline Thickness: <span id="toon-outline-thickness-val">0.02</span></label><br>
@@ -3752,52 +3847,118 @@
                 const baseUrl = ASSET_BASE;
                 const loader = new FBXLoader();
 
-                loader.load(baseUrl + 'StickMan.fbx', (object) => {
+                // Debug toggle only - flips which FBX loads and how its
+                // material is built. Read once here (same moment as
+                // scale-slider's initial value below) because the model only
+                // loads once at construction; checking the box mid-session
+                // does nothing until the page is reloaded.
+                // ?skin=1 in the URL is the easy way in - the panel checkbox
+                // is buried two clicks deep (dock the panel open, then expand
+                // the "Physics & Core" category), so this is here for a quick
+                // ClimbGame.html?skin=1 reload instead of hunting for it.
+                // Either one checks the box so the panel reflects reality.
+                const skinParam = new URLSearchParams(location.search).get('skin');
+                const stickmanSkinToggle = document.getElementById('toggle-stickman-skin');
+                const useStickManSkin = !!(skinParam === '1' || stickmanSkinToggle?.checked);
+                if (stickmanSkinToggle) stickmanSkinToggle.checked = useStickManSkin;
+                // Exposed globally so the Viewer compendium (game_js.js,
+                // ensureViewerLoaded/viewerCharacterLoader - a separate
+                // preview modal with its own loader) can pick the same model
+                // instead of always showing the old placeholder regardless of
+                // this toggle.
+                window.useStickManSkin = useStickManSkin;
+                const modelPath = useStickManSkin ? 'Character/Character_Clothed/StickMan_skin.fbx' : 'Character/StickMan.fbx';
+                // Flat per-slot colors for StickMan_skin.fbx's 9 material slots
+                // (skin, hair, shirt, pants, shoes, ...), keyed by name so it
+                // survives re-export reordering. History: lightened toward
+                // white in two passes, which is also what desaturates - by
+                // the second pass the 4 actually-colored slots (.005/.006/
+                // .007/.010) read as washed-out gray rather than "brighter
+                // colors" ("solgun" - pale, not "dolgun" - rich/full). Redone
+                // from the ORIGINAL dark colors via HSL instead of an RGB-
+                // toward-white blend: lightness raised the same way, but
+                // saturation raised too (to ~0.5-0.7) rather than lost, which
+                // is what keeps a color looking like a brighter version of
+                // itself instead of a tint of gray. Material.001/.002/.004/
+                // .009/lambert1 are genuinely neutral grays (R=G=B in the
+                // source) with no hue to enrich, so they're unchanged from
+                // the first brightening pass. Exposed on window so
+                // game_js.js's Viewer (viewerCharacterLoader, a separate
+                // module/loader) uses the exact same colors rather than a
+                // second hardcoded copy.
+                window.SKIN_MATERIAL_COLORS = window.SKIN_MATERIAL_COLORS || {
+                    'Material.001': 0x3d3d3d, // was #0c0c0c
+                    'Material.002': 0x333333, // was #000000
+                    'lambert1': 0x999999, // was #808080
+                    'Material.004': 0x494949, // was #1c1c1c
+                    'Material.005': 0xc64039, // was #301d1c (HSL: L 15%->50%, S 26%->55%)
+                    'Material.006': 0x338999, // was #061b1f (HSL: L 7%->40%, S 68%->50%)
+                    'Material.007': 0xdd3c40, // was #cc2428 (HSL: L 47%->55%, S kept ~70%)
+                    'Material.009': 0x333333, // was #000000
+                    'Material.010': 0xc66e39, // was #543929 (HSL: L 25%->50%, S 34%->55%)
+                };
+
+                loader.load(baseUrl + modelPath, (object) => {
                     this.fbxModel = object;
                     object.scale.setScalar(parseFloat(document.getElementById('scale-slider').value));
-                    
+
                     object.traverse((child) => {
                         if (child.isMesh) {
                             child.castShadow = true;
                             child.receiveShadow = true;
                             if (child.material) {
-                                const mainMat = new THREE.MeshToonMaterial({ color: this.bodyColor !== null ? this.bodyColor : 0xdddddd, gradientMap: threeTone });
-                                this.bodyMaterials.push(mainMat);
-                                this.bodyMeshes.push(child);
-                                const rimUniform = { value: 0.0 };
-                                mainMat.onBeforeCompile = (shader) => {
-                                    shader.uniforms.rimIntensity = rimUniform;
-                                    shader.vertexShader = shader.vertexShader
-                                        .replace(
-                                            '#include <common>',
-                                            `#include <common>
-                                            varying vec3 vRimNormal;
-                                            varying vec3 vRimViewDir;`
-                                        )
-                                        .replace(
-                                            '#include <project_vertex>',
-                                            `#include <project_vertex>
-                                            vRimNormal = normalize(transformedNormal);
-                                            vRimViewDir = normalize(-mvPosition.xyz);`
-                                        );
-                                    shader.fragmentShader = shader.fragmentShader
-                                        .replace(
-                                            '#include <common>',
-                                            `#include <common>
-                                            uniform float rimIntensity;
-                                            varying vec3 vRimNormal;
-                                            varying vec3 vRimViewDir;`
-                                        )
-                                        .replace(
-                                            '#include <dithering_fragment>',
-                                            `#include <dithering_fragment>
-                                            float rimFactor = 1.0 - max(dot(normalize(vRimNormal), normalize(vRimViewDir)), 0.0);
-                                            rimFactor = pow(rimFactor, 2.0) * rimIntensity;
-                                            gl_FragColor.rgb += vec3(1.0) * rimFactor;`
-                                        );
+                                const buildBodyMat = (m) => {
+                                    // StickMan_skin.fbx has 9 material slots (skin,
+                                    // hair, shirt, pants, shoes, ...) - flat
+                                    // StickMan.fbx-style color per slot (by request,
+                                    // no map/vertexColors), not the placeholder's
+                                    // single bodyColor tint which would crush all 9
+                                    // down to one color. Non-gray/black originals
+                                    // lightened ~35% toward white; see
+                                    // SKIN_MATERIAL_COLORS for the source values.
+                                    const mainMat = useStickManSkin
+                                        ? new THREE.MeshToonMaterial({ color: window.SKIN_MATERIAL_COLORS[m.name] !== undefined ? window.SKIN_MATERIAL_COLORS[m.name] : (m.color || 0xffffff), gradientMap: threeTone })
+                                        : new THREE.MeshToonMaterial({ color: this.bodyColor !== null ? this.bodyColor : 0xdddddd, gradientMap: threeTone });
+                                    const rimUniform = { value: 0.0 };
+                                    mainMat.onBeforeCompile = (shader) => {
+                                        shader.uniforms.rimIntensity = rimUniform;
+                                        shader.vertexShader = shader.vertexShader
+                                            .replace(
+                                                '#include <common>',
+                                                `#include <common>
+                                                varying vec3 vRimNormal;
+                                                varying vec3 vRimViewDir;`
+                                            )
+                                            .replace(
+                                                '#include <project_vertex>',
+                                                `#include <project_vertex>
+                                                vRimNormal = normalize(transformedNormal);
+                                                vRimViewDir = normalize(-mvPosition.xyz);`
+                                            );
+                                        shader.fragmentShader = shader.fragmentShader
+                                            .replace(
+                                                '#include <common>',
+                                                `#include <common>
+                                                uniform float rimIntensity;
+                                                varying vec3 vRimNormal;
+                                                varying vec3 vRimViewDir;`
+                                            )
+                                            .replace(
+                                                '#include <dithering_fragment>',
+                                                `#include <dithering_fragment>
+                                                float rimFactor = 1.0 - max(dot(normalize(vRimNormal), normalize(vRimViewDir)), 0.0);
+                                                rimFactor = pow(rimFactor, 2.0) * rimIntensity;
+                                                gl_FragColor.rgb += vec3(1.0) * rimFactor;`
+                                            );
+                                    };
+                                    this.bodyMaterials.push(mainMat);
+                                    this.hitFlashUniforms.push(rimUniform);
+                                    return mainMat;
                                 };
-                                child.material = mainMat;
-                                this.hitFlashUniforms.push(rimUniform);
+                                child.material = Array.isArray(child.material)
+                                    ? child.material.map(buildBodyMat)
+                                    : buildBodyMat(child.material);
+                                this.bodyMeshes.push(child);
                             }
 
                             const xrayMaterial = new THREE.MeshBasicMaterial({
@@ -3827,6 +3988,9 @@
                             // (see setOutlineThickness) - same pattern as
                             // rimUniform above, which onBeforeCompile also only
                             // wires up once, lazily, on first compile.
+                            // Skipped entirely for the skin (by request) - no
+                            // outline shell on StickMan_skin.fbx's materials.
+                            if (useStickManSkin) return;
                             const outlineUniform = { value: window.toonOutlineThickness !== undefined ? window.toonOutlineThickness : 0.02 };
                             const outlineMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
                             outlineMat.onBeforeCompile = (shader) => {
@@ -4023,24 +4187,24 @@
                     });
 
                     const anims = [
-                        { name: 'idle', file: 'Idle.fbx' }, { name: 'walk', file: 'Walking.fbx' }, { name: 'run', file: 'Running.fbx' },
-                        { name: 'jump_start', file: 'JumpStart.fbx' }, { name: 'fall', file: 'JumpMidAir.fbx' }, { name: 'land', file: 'Landing.fbx' },
-                        { name: 'hang_idle', file: 'Hanging%20Idle.fbx' }, { name: 'hang_left', file: 'Moving%20While%20Hanging%20Left.fbx' },
-                        { name: 'hang_right', file: 'Moving%20While%20Hanging%20Right.fbx' }, { name: 'climb', file: 'Freehang%20Climb.fbx' },
-                        { name: 'standup_front', file: 'StandUp_Front.fbx' }, { name: 'standup_back', file: 'StandUp_Back.fbx' },
-                        { name: 'push', file: 'Push.fbx' }, { name: 'pull', file: 'Pull.fbx' },
-                        { name: 'carry', file: 'Carry.fbx' }, { name: 'throw', file: 'Throw.fbx' },
-                        { name: 'carry_start', file: 'Carry_Start.fbx' },
-                        { name: 'punch_left', file: 'Combat/Punch_Left.fbx' }, 
+                        { name: 'idle', file: 'Animations/Locomotion/Idle.fbx' }, { name: 'walk', file: 'Animations/Locomotion/Walking.fbx' }, { name: 'run', file: 'Animations/Locomotion/Running.fbx' },
+                        { name: 'jump_start', file: 'Animations/Jumping/JumpStart.fbx' }, { name: 'fall', file: 'Animations/Jumping/JumpMidAir.fbx' }, { name: 'land', file: 'Animations/Jumping/Landing.fbx' },
+                        { name: 'hang_idle', file: 'Animations/Climbing/Hanging%20Idle.fbx' }, { name: 'hang_left', file: 'Animations/Climbing/Moving%20While%20Hanging%20Left.fbx' },
+                        { name: 'hang_right', file: 'Animations/Climbing/Moving%20While%20Hanging%20Right.fbx' }, { name: 'climb', file: 'Animations/Climbing/Freehang%20Climb.fbx' },
+                        { name: 'standup_front', file: 'Animations/Jumping/StandUp_Front.fbx' }, { name: 'standup_back', file: 'Animations/Jumping/StandUp_Back.fbx' },
+                        { name: 'push', file: 'Animations/Interactions/Push.fbx' }, { name: 'pull', file: 'Animations/Interactions/Pull.fbx' },
+                        { name: 'carry', file: 'Animations/Interactions/Carry.fbx' }, { name: 'throw', file: 'Animations/Interactions/Throw.fbx' },
+                        { name: 'carry_start', file: 'Animations/Interactions/Carry_Start.fbx' },
+                        { name: 'punch_left', file: 'Combat/Punch_Left.fbx' },
                         { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
                         { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
                         { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
-                        { name: 'punch_walk', file: 'PunchWalk.fbx' },
-                        { name: 'sliding', file: 'Slide.fbx' },
-                        { name: 'runup', file: 'RunUp.fbx' },
-                        { name: 'stop_sliding', file: 'StopSliding.fbx' },
-                        { name: 'strafe_left_walk', file: 'StrafeLeftWalk.fbx' },
-                        { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
+                        { name: 'punch_walk', file: 'Combat/PunchWalk.fbx' },
+                        { name: 'sliding', file: 'Animations/Locomotion/Slide.fbx' },
+                        { name: 'runup', file: 'Animations/Locomotion/RunUp.fbx' },
+                        { name: 'stop_sliding', file: 'Animations/Locomotion/StopSliding.fbx' },
+                        { name: 'strafe_left_walk', file: 'Animations/Locomotion/StrafeLeftWalk.fbx' },
+                        { name: 'strafe_right_walk', file: 'Animations/Locomotion/StrafeRightWalk.fbx' },
                         // Files deliberately crossed. The two RUN clips are
                         // authored the opposite way round from the two WALK
                         // ones above - StrafeRunLeft.fbx actually strafes
@@ -4065,9 +4229,9 @@
                         { name: 'charge_back', url: 'ChargeRunBack.fbx' },
                         { name: 'charge_strafe_left', url: 'ChargeStrafeLeft.fbx' },
                         { name: 'charge_strafe_right', url: 'ChargeStrafeRight.fbx' },
-                        { name: 'strafe_left_run', file: 'StrafeRunRight.fbx' },
-                        { name: 'strafe_right_run', file: 'StrafeRunLeft.fbx' },
-                        { name: 'walk_backward', file: 'WalkingBackwards.fbx' }
+                        { name: 'strafe_left_run', file: 'Animations/Locomotion/StrafeRunRight.fbx' },
+                        { name: 'strafe_right_run', file: 'Animations/Locomotion/StrafeRunLeft.fbx' },
+                        { name: 'walk_backward', file: 'Animations/Locomotion/WalkingBackwards.fbx' }
                     ];
 
                     const processClip = (clip) => {
@@ -6289,7 +6453,6 @@ updateClimbing(delta) {
                     if (useWorldTarget) {
                         this.group.worldToLocal(targetWorldPos);
                         targetLocalPos.copy(targetWorldPos);
-                    } else {
                         targetLocalPos.set(0, 0.05, 0);
                     }
 

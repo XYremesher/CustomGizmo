@@ -1551,6 +1551,22 @@ export function startGame(CharacterClass) {
     // the ground even though the geometry itself is flush); at 0.15 that
     // margin is ~5%.
     window.grassAlphaTest = 0.90;
+    // Wind sway, by request - "bölgesel" (regional): the noise is sampled
+    // from each tuft's own WORLD xz (once per instance, not per vertex - see
+    // the onBeforeCompile below), so nearby tufts share nearly the same
+    // phase and sway together as one patch while tufts further apart drift
+    // out of sync, reading as gusts moving across the field rather than
+    // either perfect unison or per-blade jitter with no spatial coherence.
+    window.grassWindEnabled = true;
+    window.grassWindStrength = 0.12; // local units of sway at the blade TIP
+    window.grassWindScale = 0.08;    // lower = bigger regions (world-xz noise frequency)
+    window.grassWindSpeed = 0.6;     // how fast the gust pattern scrolls
+    const _grassWindUniforms = {
+        uGrassWindOn: { value: window.grassWindEnabled ? 1 : 0 },
+        uGrassWindStrength: { value: window.grassWindStrength },
+        uGrassWindScale: { value: window.grassWindScale },
+        uGrassWindTime: { value: 0 },
+    };
     const grassMats = [grassTex2, grassTex3].map(map => {
         const mat = new THREE.MeshToonMaterial({
             map, gradientMap: threeTone, side: THREE.DoubleSide, alphaTest: window.grassAlphaTest, transparent: false,
@@ -1571,11 +1587,52 @@ export function startGame(CharacterClass) {
         // reception, still fully intact - is identical no matter which face
         // or angle you're looking from.
         mat.onBeforeCompile = (shader) => {
+            shader.uniforms.uGrassWindOn = _grassWindUniforms.uGrassWindOn;
+            shader.uniforms.uGrassWindStrength = _grassWindUniforms.uGrassWindStrength;
+            shader.uniforms.uGrassWindScale = _grassWindUniforms.uGrassWindScale;
+            shader.uniforms.uGrassWindTime = _grassWindUniforms.uGrassWindTime;
+            shader.vertexShader = shader.vertexShader
+                .replace('#include <common>', `#include <common>
+                    uniform float uGrassWindOn;
+                    uniform float uGrassWindStrength;
+                    uniform float uGrassWindScale;
+                    uniform float uGrassWindTime;`)
+                // Sampled once per INSTANCE (at local origin, via
+                // instanceMatrix's own translation column) rather than per
+                // vertex - the whole tuft has to sway as one rigid blade, not
+                // have its own two crossed quads drift apart from each other.
+                // position.y is this geometry's own height-from-base (0 at
+                // the root pivot, 1 at the tip - see grassCrossGeo/
+                // grassCardGeo, both built with that same translate(0,0.5,0)
+                // pivot), so it's already exactly the right weight: root
+                // stays planted, tip sways most.
+                .replace('#include <begin_vertex>', `#include <begin_vertex>
+                    if (uGrassWindOn > 0.5) {
+                        #ifdef USE_INSTANCING
+                            vec2 _gwWorld = instanceMatrix[3].xz;
+                        #else
+                            vec2 _gwWorld = modelMatrix[3].xz;
+                        #endif
+                        float _gwPhase = dot(_gwWorld, vec2(uGrassWindScale, uGrassWindScale * 0.7)) + uGrassWindTime;
+                        float _gwNoise = sin(_gwPhase) * 0.6 + sin(_gwPhase * 1.7 + 1.3) * 0.4;
+                        float _gwWeight = position.y * uGrassWindStrength;
+                        transformed.x += _gwNoise * _gwWeight;
+                        transformed.z += _gwNoise * _gwWeight * 0.6;
+                    }`);
             shader.fragmentShader = shader.fragmentShader.replace(
                 '#include <normal_fragment_begin>',
                 'vec3 normal = normalize( vNormal );'
             );
         };
+        // onBeforeCompile is not part of three's program cache key (see
+        // TreeBody's own 'tree-body-ground-blend' key and ground.material's
+        // 'ground-forest-tint' for the same trap already hit twice in this
+        // file) - without this, grass shares its map+gradientMap+DoubleSide+
+        // alphaTest "shape" closely enough with other foliage materials
+        // (the tree canopy's 'leave'/'TreeLeaveBunch') that whichever
+        // compiles first could get cached and handed to the other, silently
+        // dropping the wind sway.
+        mat.customProgramCacheKey = () => 'grass-wind';
         return mat;
     });
     // Two crossed unit quads, pivot at the base so scaling grows them upward.
@@ -7045,7 +7102,7 @@ export function startGame(CharacterClass) {
     // these particular clips and not a guarantee. Writing it after the
     // avatars have updated costs a handful of assignments and cannot be
     // silently undone by a clip that does carry a scale track.
-    window.headScale = 0.7;
+    window.headScale = 1.0;
     function getHeadBone(avatar) {
         if (!avatar || !avatar.fbxModel) return null;
         if (avatar._headBone !== undefined) return avatar._headBone;
@@ -9417,6 +9474,66 @@ export function startGame(CharacterClass) {
     // except buildVillageLevel now waits on BOTH before it will actually
     // build (see the gate at its top) so the level never renders with the
     // whitebox trees still in place waiting for this to catch up.
+    // Live-tunable from the panel rather than baked into the shader string -
+    // this is being eyeballed against the actual model. Height is a WORLD-
+    // space measurement (vTreeBaseY = world Y above this instance's own
+    // ground Y, see the vertex shader below) deliberately, NOT scaled by
+    // each tree's own instance scale: that was the earlier bug - a local-
+    // space threshold maps to a TALLER absolute band on a bigger tree than
+    // on a smaller one standing right next to it (forestMinScale/MaxScale
+    // vary per tree), which is what read as the gradient boundary "slanting"
+    // across a row of differently-sized trunks. World space gives every
+    // tree the same absolute band regardless of its own scale.
+    // Below treeGroundBlendStart the trunk is FULLY ground-colored (a flat
+    // plateau, not just smoothstep's own near-zero slope at its bottom edge
+    // - that read as still fading immediately off the ground rather than
+    // sitting flush with it); the fade itself runs from there up to
+    // treeGroundBlendHeight, where it reaches pure bark again.
+    window.treeGroundBlendStart = 0.0;
+    window.treeGroundBlendHeight = 2.2;
+    window.treeGroundBlendAmt = 0.3;
+    // Separate, lower ceiling for beige/worn-path ground (vs. green grass,
+    // which uses treeGroundBlendHeight above) - by request: the tint should
+    // reach higher up the trunk where the ground is green, and stay lower
+    // where it's the forest's worn tan path. Blended by the SAME openness
+    // mask the forest-tint/groundTex lookup above already samples (1 =
+    // fully on the path, 0 = fully grass), so it follows whatever is
+    // actually under each tree rather than being a fixed height everywhere.
+    window.treeGroundBlendHeightBeige = 0.45;
+    // The dark-only Multiply pass's own controls - threshold is a luminance
+    // cutoff (texels darker than this get multiplied toward the ground
+    // color; 0 disables the pass entirely), amt is that multiply's own
+    // strength on top of the mask.
+    window.treeGroundDarkThreshold = 0.05;
+    window.treeGroundDarkAmt = 1.0;
+    // Threshold/Amt alone cap out at plain Multiply (base * ground), and a
+    // light-ish ground color only darkens a crack a little - not enough once
+    // the mask is already selecting every dark texel at full strength. This
+    // is the extra lever past that ceiling: an exponent on the multiplied
+    // result (values are 0..1, so a bigger exponent pushes them further
+    // toward black), making cracks read as DEEPER rather than just more
+    // numerous. 1.0 = plain Multiply, unchanged from before.
+    window.treeGroundDarkPower = 5.0;
+    const _treeGroundUniforms = {
+        uTreeGroundStart: { value: window.treeGroundBlendStart },
+        uTreeGroundHeight: { value: window.treeGroundBlendHeight },
+        uTreeGroundHeightBeige: { value: window.treeGroundBlendHeightBeige },
+        uTreeGroundAmt: { value: window.treeGroundBlendAmt },
+        uTreeGroundDarkThreshold: { value: window.treeGroundDarkThreshold },
+        uTreeGroundDarkAmt: { value: window.treeGroundDarkAmt },
+        uTreeGroundDarkPower: { value: window.treeGroundDarkPower },
+        // Not a flat color any more - the trunk now samples the SAME
+        // groundTex + forest-mask tint the ground itself uses, at the
+        // tree's own world xz, so a trunk standing over green grass blends
+        // toward green and one standing over the forest's worn tan path
+        // blends toward that instead, matching whatever is actually under it.
+        uTreeGroundTex: { value: groundTex },
+        uForestMask: _groundTintUniforms.uForestMask,
+        uForestArea: _groundTintUniforms.uForestArea,
+        uForestTintOn: _groundTintUniforms.uForestTintOn,
+        uForestTintColor: _groundTintUniforms.uForestTintColor,
+        uForestTintAmt: _groundTintUniforms.uForestTintAmt,
+    };
     const villageTreeLoader = new GLTFLoader();
     const onVillageTreeLoaded = (gltf) => {
         treeModel = gltf.scene;
@@ -9513,6 +9630,226 @@ export function startGame(CharacterClass) {
                 // only opaque one, i.e. the cheapest per pixel. The alpha-cut
                 // canopy is the real shadow cost.
                 if (name === 'leave' || name === 'TreeBody') mat.userData.noShadow = true;
+                if (name === 'TreeBody') {
+                    // Raises the level's own ground color a way up the trunk
+                    // as a soft gradient, by request - the grass collar
+                    // (grassTreeInner/Spread above) hides the seam with more
+                    // grass; this softens the trunk's OWN color right at its
+                    // base too, instead of bark meeting dirt as a hard line.
+                    // See window.treeGroundBlendHeight/Amt above for the
+                    // live-tunable reach/strength.
+                    mat.onBeforeCompile = (shader) => {
+                        shader.uniforms.uTreeGroundStart = _treeGroundUniforms.uTreeGroundStart;
+                        shader.uniforms.uTreeGroundHeight = _treeGroundUniforms.uTreeGroundHeight;
+                        shader.uniforms.uTreeGroundHeightBeige = _treeGroundUniforms.uTreeGroundHeightBeige;
+                        shader.uniforms.uTreeGroundAmt = _treeGroundUniforms.uTreeGroundAmt;
+                        shader.uniforms.uTreeGroundDarkThreshold = _treeGroundUniforms.uTreeGroundDarkThreshold;
+                        shader.uniforms.uTreeGroundDarkAmt = _treeGroundUniforms.uTreeGroundDarkAmt;
+                        shader.uniforms.uTreeGroundDarkPower = _treeGroundUniforms.uTreeGroundDarkPower;
+                        shader.uniforms.uTreeGroundTex = _treeGroundUniforms.uTreeGroundTex;
+                        shader.uniforms.uForestMask = _treeGroundUniforms.uForestMask;
+                        shader.uniforms.uForestArea = _treeGroundUniforms.uForestArea;
+                        shader.uniforms.uForestTintOn = _treeGroundUniforms.uForestTintOn;
+                        shader.uniforms.uForestTintColor = _treeGroundUniforms.uForestTintColor;
+                        shader.uniforms.uForestTintAmt = _treeGroundUniforms.uForestTintAmt;
+                        shader.vertexShader = shader.vertexShader
+                            .replace('#include <common>', `#include <common>
+                                #ifdef USE_INSTANCING
+                                attribute float aTreeGroundY;
+                                #endif
+                                varying float vTreeBaseY;
+                                varying vec3 vTreeWorld;`)
+                            // World position has to account for instancing
+                            // manually - forest trees are one InstancedMesh
+                            // per source mesh, and the instance transform is
+                            // normally folded into mvPosition INSIDE this
+                            // same chunk, never written back into `transformed`,
+                            // so a plain modelMatrix*transformed (what the
+                            // ground's own vGroundWorld patch uses, fine there
+                            // since the ground isn't instanced) would give
+                            // every tree instance the SAME wrong world
+                            // position. Village clones aren't instanced, so
+                            // the #ifdef branch is skipped there and this
+                            // still resolves correctly.
+                            //
+                            // Height is measured in WORLD space against this
+                            // instance's own ground Y (aTreeGroundY, set from
+                            // the exact same placements[i].y the JS placement
+                            // loop uses - see sources.forEach above), not
+                            // local mesh Y: local Y alone put the gradient at
+                            // a different ABSOLUTE world height on every tree
+                            // once forestMinScale/MaxScale varies their size,
+                            // which read as the boundary "slanting" across a
+                            // row of differently-sized trunks. Village clones
+                            // aren't instanced; modelMatrix[3].y (that
+                            // Object3D's own world Y origin, set directly to
+                            // groundY when it's placed) is the equivalent
+                            // ground reference there.
+                            .replace('#include <project_vertex>', `#include <project_vertex>
+                                vec4 _treeWorld4 = vec4( transformed, 1.0 );
+                                #ifdef USE_INSTANCING
+                                    _treeWorld4 = instanceMatrix * _treeWorld4;
+                                #endif
+                                vTreeWorld = (modelMatrix * _treeWorld4).xyz;
+                                #ifdef USE_INSTANCING
+                                    vTreeBaseY = vTreeWorld.y - aTreeGroundY;
+                                #else
+                                    vTreeBaseY = vTreeWorld.y - modelMatrix[3].y;
+                                #endif`);
+                        shader.fragmentShader = shader.fragmentShader
+                            .replace('#include <common>', `#include <common>
+                                uniform float uTreeGroundStart;
+                                uniform float uTreeGroundHeight;
+                                uniform float uTreeGroundHeightBeige;
+                                uniform float uTreeGroundAmt;
+                                uniform float uTreeGroundDarkThreshold;
+                                uniform float uTreeGroundDarkAmt;
+                                uniform float uTreeGroundDarkPower;
+                                uniform sampler2D uTreeGroundTex;
+                                uniform sampler2D uForestMask;
+                                uniform float uForestTintOn;
+                                uniform vec2 uForestArea;
+                                uniform vec3 uForestTintColor;
+                                uniform float uForestTintAmt;
+                                varying float vTreeBaseY;
+                                varying vec3 vTreeWorld;
+                                // "Color" layer mode (Photoshop/CSS
+                                // compositing-spec sense): takes the BLEND
+                                // layer's hue/saturation but keeps the BASE
+                                // layer's own luminance - so the bark's wood
+                                // grain/cut detail (which lives in luminance,
+                                // not hue) stays fully visible through the
+                                // tint instead of washing flat the way a
+                                // plain mix() toward a solid color does.
+                                float _treeLum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
+                                // Luminance transfer by RATIO (multiply), not
+                                // the additive SetLum+clip from before - by
+                                // request, this layer needs to actually read
+                                // as lit/shadowed. Additive SetLum shifts
+                                // blendCol's channels by a flat amount then
+                                // clips out-of-range ones back in, and in deep
+                                // shadow (base luminance near 0) that shift is
+                                // strongly negative, which the clip resolves
+                                // by dragging the color toward GRAY - so the
+                                // ground tint desaturated toward a flat dark
+                                // gray in shadow instead of staying a darker
+                                // version of its own hue. Scaling blendCol by
+                                // the base/blendCol luminance ratio instead
+                                // keeps hue and saturation exactly as the
+                                // ratio shrinks it toward black, which is what
+                                // "receiving light" should look like here.
+                                vec3 _treeColorBlend(vec3 base, vec3 blendCol) {
+                                    float lBase = _treeLum(base);
+                                    float lBlend = max(_treeLum(blendCol), 1e-4);
+                                    return clamp(blendCol * (lBase / lBlend), 0.0, 1.0);
+                                }`)
+                            // Back on the FINAL shaded color (dithering_fragment),
+                            // not diffuseColor pre-lighting - light/shadow-
+                            // independent by request: a short, strong blend
+                            // (small Height, high Amount) landing on
+                            // diffuseColor let the trunk's own per-facet
+                            // toon-shaded light/shadow bands cross it, which
+                            // is the jagged "kesişim" look - this way the
+                            // patch is a flat tint unaffected by which toon
+                            // band or shadow state the fragment is in,
+                            // trading shadow-accuracy for a clean edge.
+                            .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+                                // Same groundTex tiling the ground plane itself
+                                // uses (repeat 150 over a 1000-unit plane =
+                                // 0.15 tiles/unit) and the same forest worn-path
+                                // mask blend ground.material's own patch applies
+                                // - sampled at THIS trunk's world xz, so it
+                                // reads whatever is actually under this
+                                // specific tree (green grass, or the tan path)
+                                // instead of one fixed color everywhere.
+                                vec3 _localGround = texture2D(uTreeGroundTex, vTreeWorld.xz * 0.15).rgb;
+                                // Hoisted out of the if-block below (was
+                                // block-scoped there) - also needed for the
+                                // per-ground-type height just past it. 0 =
+                                // grass, 1 = fully on the forest's worn path.
+                                float _openness = 0.0;
+                                if (uForestTintOn > 0.5) {
+                                    vec2 _muv = vTreeWorld.xz / uForestArea + 0.5;
+                                    if (_muv.x > 0.0 && _muv.x < 1.0 && _muv.y > 0.0 && _muv.y < 1.0) {
+                                        _openness = texture2D(uForestMask, _muv).r;
+                                        float _lum = dot(_localGround, vec3(0.299, 0.587, 0.114));
+                                        vec3 _worn = uForestTintColor * (0.55 + 0.9 * _lum);
+                                        _localGround = mix(_localGround, _worn, _openness * uForestTintAmt);
+                                    }
+                                }
+                                // Reverted the light/shadow modulation this
+                                // used to have (scaling by gl_FragColor's own
+                                // lit luminance) - by request, the ground
+                                // merge is a full, flat, shadowless pass: the
+                                // raw groundTex/forest-tint sample above, at
+                                // its own constant brightness regardless of
+                                // whether this fragment is lit or shadowed.
+                                // Flat 1.0 below uTreeGroundStart (fully
+                                // ground-colored right at the base, not just
+                                // smoothstep's own near-zero slope there),
+                                // fading to 0 by uTreeGroundHeight on grass,
+                                // or by the (by request, lower)
+                                // uTreeGroundHeightBeige on the worn path -
+                                // blended by the SAME _openness mask above,
+                                // so the ceiling follows whatever ground is
+                                // actually under this tree.
+                                float _treeFadeHeight = mix(uTreeGroundHeight, uTreeGroundHeightBeige, _openness);
+                                float _fadeTop = max(_treeFadeHeight, uTreeGroundStart + 0.001);
+                                float _groundBlend = 1.0 - smoothstep(uTreeGroundStart, _fadeTop, vTreeBaseY);
+                                // Two passes stacked, not one: Color mode on
+                                // its own kept the bark's own luminance even
+                                // at full blend, so right at the trunk's
+                                // actual contact point with the ground it
+                                // never matched flat - a visible seam at
+                                // exactly the spot that most needs to read as
+                                // "merged into the ground". A plain flat mix
+                                // (the earlier, pre-Color-mode pass) toward
+                                // _localGround handles that merge, and is
+                                // itself faded by the SAME _groundBlend, so it
+                                // is total right at y=0 and fades out exactly
+                                // as the Color-mode pass (which keeps the
+                                // grain/cut detail) fades in above it.
+                                vec3 _treeColored = _treeColorBlend(gl_FragColor.rgb, _localGround);
+                                vec3 _treeGroundLayer = mix(_treeColored, _localGround, _groundBlend);
+                                vec3 _treeBase = mix(gl_FragColor.rgb, _treeGroundLayer, _groundBlend * uTreeGroundAmt);
+                                // Third pass, Multiply, restricted to only the
+                                // DARKEST bark texels (grain lines, knots,
+                                // crevices - below uTreeGroundDarkThreshold,
+                                // so mid-tones and anything lit are untouched)
+                                // - by request. Multiply with the ground color
+                                // sinks those dark details toward it rather
+                                // than lifting them, reading as the darkest
+                                // bark detail settling into the ground instead
+                                // of sitting on top of it. Both threshold and
+                                // strength are live-tunable (see the panel).
+                                //
+                                // Mask reads the ORIGINAL lit bark color
+                                // (gl_FragColor, before the tint passes above
+                                // touched it), not _treeBase - masking off
+                                // the already-tinted base meant a strong tint
+                                // (high Amount) brightened everything toward
+                                // the ground color FIRST and left nothing dark
+                                // left for this mask to find, so cracks never
+                                // showed however the slider was pushed. This
+                                // is the fix for "on top": the crack detail is
+                                // read from the bark itself and layered over
+                                // the tint, not starved by it.
+                                float _treeDarkMask = 1.0 - smoothstep(0.0, max(uTreeGroundDarkThreshold, 0.001), _treeLum(gl_FragColor.rgb));
+                                vec3 _treeMultiplied = pow(clamp(_treeBase * _localGround, 0.0, 1.0), vec3(uTreeGroundDarkPower));
+                                gl_FragColor.rgb = mix(_treeBase, _treeMultiplied, _treeDarkMask * uTreeGroundDarkAmt * _groundBlend);`);
+                    };
+                    // onBeforeCompile is NOT part of three's program cache
+                    // key (see ground.material's own 'ground-forest-tint' key
+                    // and shellMaterialFor's comment on the same trap) -
+                    // without this, TreeBody's plain opaque/no-alphaTest/
+                    // DoubleSide "shape" matches other materials elsewhere in
+                    // the scene closely enough that whichever compiled FIRST
+                    // got cached and handed to the other, silently dropping
+                    // this patch (measured: zero visible effect, no error).
+                    // Chainable like makeDitherable's own key below, which
+                    // wraps this material next.
+                    mat.customProgramCacheKey = () => 'tree-body-ground-blend';
+                }
                 if (isLeaf) {
                     mat.userData.isLeaf = true;
                     // Same normal-flip cancel as grassMats' own onBeforeCompile
@@ -12214,7 +12551,7 @@ export function startGame(CharacterClass) {
     // Lazy-loaded (mirrors ensureLevelEditorLoaded's own reasoning): most
     // players never open this, so the extra FBX fetch + renderer/scene
     // setup only happens the first time the button is actually clicked.
-    const Viewer = { scene: null, camera: null, renderer: null, composer: null, controls: null, active: false, playerModel: null, companionGroup: null, enemyGroup: null, loaded: false, mixers: [], clock: new THREE.Clock(), category: 'player' };
+    const Viewer = { scene: null, camera: null, renderer: null, composer: null, controls: null, active: false, playerModel: null, companionGroup: null, enemyGroup: null, loaded: false, mixers: [], clock: new THREE.Clock(), category: 'player', outlineMeshes: [], outlineUniforms: [] };
     // The viewer's own copy, and the same two corrections applyHeadScale just
     // got: the NECK carries the size, and only the first match of it.
     //
@@ -12280,17 +12617,82 @@ export function startGame(CharacterClass) {
             group.position.set(position[0], position[1], position[2]);
             group.rotation.y = rotationY;
             parent.add(group);
-            new FBXLoader().load(baseUrl + 'StickMan.fbx', (object) => {
+            // Mirrors ClimbGame.html's own Character loader: when the skin is
+            // active, every preview here (player/companions/enemies) shows
+            // the SAME real model instead of the old placeholder regardless
+            // of this toggle - this is a separate loader (different module,
+            // same reason the pixelated pass/outline below copy their
+            // settings instead of sharing an instance) and used to ignore it
+            // entirely.
+            const useSkin = !!window.useStickManSkin;
+            const modelPath = useSkin ? 'Character/Character_Clothed/StickMan_skin.fbx' : 'Character/StickMan.fbx';
+            new FBXLoader().load(baseUrl + modelPath, (object) => {
                 object.scale.setScalar(scale * parseFloat(document.getElementById('scale-slider').value));
                 object.traverse(child => {
                     if (child.isMesh) {
-                        child.material = new THREE.MeshToonMaterial({ color, gradientMap: threeTone });
+                        if (useSkin) {
+                            // Flat per-slot color (StickMan.fbx-style, no
+                            // map/vertexColors) from the shared table
+                            // ClimbGame.html's Character builds - the `color`
+                            // tint (used to recolor companions/enemies in this
+                            // gallery) has no meaning for a skin with its own
+                            // authored colors, so it's intentionally not
+                            // applied here.
+                            const build = (m) => new THREE.MeshToonMaterial({
+                                color: (window.SKIN_MATERIAL_COLORS && window.SKIN_MATERIAL_COLORS[m.name] !== undefined) ? window.SKIN_MATERIAL_COLORS[m.name] : (m.color || 0xffffff),
+                                gradientMap: threeTone
+                            });
+                            child.material = Array.isArray(child.material)
+                                ? child.material.map(build)
+                                : build(child.material);
+                        } else {
+                            child.material = new THREE.MeshToonMaterial({ color, gradientMap: threeTone });
+                        }
                         child.castShadow = true; child.receiveShadow = true;
+
+                        // Same inverted-hull outline as the player's own
+                        // Character class in ClimbGame.html (see its
+                        // setOutlineEnabled/setOutlineThickness) - duplicated
+                        // here rather than shared because Character lives in
+                        // a different module, same reason the pixelated pass
+                        // above copies its settings instead of an instance.
+                        // Kept in sync with the same global toggle/slider so
+                        // the compendium never shows a different look than
+                        // the scene behind it. Skipped for the skin (by
+                        // request) - no outline shell on its materials.
+                        if (useSkin) return;
+                        const outlineUniform = { value: window.toonOutlineThickness !== undefined ? window.toonOutlineThickness : 0.02 };
+                        const outlineMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+                        outlineMat.onBeforeCompile = (shader) => {
+                            shader.uniforms.outlineThickness = outlineUniform;
+                            shader.vertexShader = shader.vertexShader
+                                .replace(
+                                    '#include <common>',
+                                    `#include <common>
+                                    uniform float outlineThickness;`
+                                )
+                                .replace(
+                                    '#include <project_vertex>',
+                                    `vec4 mvPosition = vec4( transformed, 1.0 );
+                                    mvPosition = modelViewMatrix * mvPosition;
+                                    mvPosition.xyz += normalize( normalMatrix * objectNormal ) * outlineThickness;
+                                    gl_Position = projectionMatrix * mvPosition;`
+                                );
+                        };
+                        Viewer.outlineUniforms.push(outlineUniform);
+                        const outlineClone = child.clone();
+                        outlineClone.material = outlineMat;
+                        outlineClone.visible = !!window.toonOutlineEnabled;
+                        if (child.isSkinnedMesh) {
+                            outlineClone.bind(child.skeleton, child.bindMatrix);
+                        }
+                        Viewer.outlineMeshes.push(outlineClone);
+                        child.parent.add(outlineClone);
                     }
                 });
                 applyViewerHeadScale(object);
                 group.add(object);
-                new FBXLoader().load(baseUrl + 'Idle.fbx', (animObj) => {
+                new FBXLoader().load(baseUrl + 'Animations/Locomotion/Idle.fbx', (animObj) => {
                     if (!animObj.animations.length) return;
                     const mixer = new THREE.AnimationMixer(object);
                     mixer.clipAction(animObj.animations[0]).play();
@@ -16072,8 +16474,29 @@ export function startGame(CharacterClass) {
         const _q = new THREE.Quaternion();
         const _pos = new THREE.Vector3();
         const _scl = new THREE.Vector3();
+        // Per-instance ground Y, read by TreeBody's onBeforeCompile
+        // (uTreeGroundStart/Height patch) to measure height in WORLD space
+        // instead of local mesh units - local Y alone put the gradient at a
+        // different ABSOLUTE height on every tree once forestMinScale/
+        // MaxScale varies their size (a bigger tree's local threshold maps
+        // to a taller world band than a smaller tree standing right next to
+        // it), which is what read as the boundary "slanting" across a row of
+        // differently-sized trees even though each individual trunk's own
+        // band was level.
+        // True terrain height (p.y), NOT the placement origin used for the
+        // instance matrix just below (p.y + forestTreeLift*scale) - that lift
+        // only exists to visually embed the trunk's root flare ~0.04 of its
+        // own scale into the ground (see forestTreeLift's own comment), so
+        // using it here would have put the gradient's own "0" that same
+        // distance above the ground the bark actually sinks into, leaving a
+        // sliver of untinted bark showing between the true ground and where
+        // the effect started.
+        const _treeGroundYArray = new Float32Array(placements.length);
+        placements.forEach((p, i) => { _treeGroundYArray[i] = (p.y || 0); });
+        const _treeGroundYAttr = new THREE.InstancedBufferAttribute(_treeGroundYArray, 1);
         sources.forEach(src => {
             const inst = new THREE.InstancedMesh(src.geometry, src.material, placements.length);
+            inst.geometry.setAttribute('aTreeGroundY', _treeGroundYAttr);
             placements.forEach((p, i) => {
                 _q.setFromAxisAngle(_upVec, p.rotY);
                 // See forestTreeLift. The collider below takes the same
@@ -20333,6 +20756,18 @@ export function startGame(CharacterClass) {
         apply();
         el.addEventListener('change', apply);
     })();
+    // Same shape as toggle-ui-alt just above - a layout/design choice, pure
+    // CSS, forcing hold/carry/drop/throw/punch visible via the !important
+    // rule in ClimbGame.html regardless of what their own per-frame logic
+    // sets. Off by default (unchecked in the markup) so nothing changes
+    // unless this is switched on.
+    (() => {
+        const el = document.getElementById('toggle-show-all-btns');
+        if (!el) return;
+        const apply = () => document.body.classList.toggle('show-all-btns', el.checked);
+        apply();
+        el.addEventListener('change', apply);
+    })();
     // ---- Camera rotation lock ----
     // Set here, before the wire() block below reads them for its first
     // paint() - a flag declared further down (where cameraTheta itself
@@ -22402,6 +22837,91 @@ export function startGame(CharacterClass) {
         }
     }
 
+    // Melee reach arc - a ground ring segment marking the BOUNDARY of
+    // detectMeleeHits' actual reach (hitRadius 0.7 + the ~1.0 forward
+    // gate every "in reach" test there uses, e.g. the aiBot check
+    // `d < hitRadius + 1.0`), not a debug toggle: shows automatically once
+    // an enemy closes to meleeArcShowRange, so the boundary is only ever on
+    // screen when it's actually relevant to the fight in front of you.
+    window.meleeArcRadius = 1.7;
+    window.meleeArcShowRange = 6.0;
+    const MELEE_ARC_FOV_DEG = 100;
+    const MELEE_ARC_THICKNESS = 0.06;
+    // Full grow/shrink sweep takes this long either direction.
+    const MELEE_ARC_ANIM_SECONDS = 0.25;
+    let _meleeArc = null;
+    // 0 = collapsed to a sliver dead ahead, 1 = fully expanded to
+    // MELEE_ARC_FOV_DEG - animates toward 1 while an enemy is in range and
+    // back toward 0 once none are (including a downed one - see isRagdoll
+    // below), so it always grows/shrinks from the centre rather than
+    // popping on/off.
+    let _meleeArcProgress = 0;
+    function buildMeleeArcGeometry(halfAngleRad) {
+        // Same ground-mapping as makeVisionWedge (CircleGeometry lies in XY
+        // from +X, rotateX(-90) drops it flat, -PI/2 - half centres the arc
+        // on +Z to match character facing) - RingGeometry instead of
+        // CircleGeometry because this marks the BOUNDARY, not the whole
+        // reachable area. thetaLength floored above 0 - RingGeometry on a
+        // true zero sweep degenerates.
+        const geo = new THREE.RingGeometry(
+            window.meleeArcRadius - MELEE_ARC_THICKNESS, window.meleeArcRadius,
+            32, 1, -Math.PI * 0.5 - halfAngleRad, Math.max(halfAngleRad, 0.001) * 2
+        );
+        geo.rotateX(-Math.PI / 2);
+        return geo;
+    }
+    function updateMeleeRangeArc(delta) {
+        if (!_meleeArc) {
+            _meleeArc = new THREE.Mesh(buildMeleeArcGeometry(0), new THREE.MeshBasicMaterial({
+                color: 0xffffff, transparent: true, opacity: 0.85,
+                depthWrite: false, side: THREE.DoubleSide,
+            }));
+            _meleeArc.raycast = () => {}; // a reach indicator must never be a wall
+            _meleeArc.renderOrder = 2;
+            _meleeArc.visible = false;
+            scene.add(_meleeArc);
+        }
+        let nearestD = Infinity;
+        for (let i = 0; i < aiBots.length; i++) {
+            const bot = aiBots[i].bot;
+            // Ragdolled = down, not a threat standing in front of you right
+            // now - without this exclusion the arc stayed up next to a
+            // defeated bot that was never actually removed from aiBots.
+            if (!bot || !bot.isLoaded || bot.isRagdoll) continue;
+            const d = bot.group.position.distanceTo(char.group.position);
+            if (d < nearestD) nearestD = d;
+        }
+        // Sandbags too - same "in reach" reference point detectMeleeHits
+        // itself measures to (colliderMesh, chest height, when present).
+        (window.sacks || []).forEach(sack => {
+            const sackAt = sack.colliderMesh ? sack.colliderMesh.position : sack.group.position;
+            const d = sackAt.distanceTo(char.group.position);
+            if (d < nearestD) nearestD = d;
+        });
+        const targetProgress = (nearestD <= window.meleeArcShowRange) ? 1 : 0;
+        const prevProgress = _meleeArcProgress;
+        const step = delta / MELEE_ARC_ANIM_SECONDS;
+        _meleeArcProgress = THREE.MathUtils.clamp(
+            _meleeArcProgress + Math.sign(targetProgress - _meleeArcProgress) * step,
+            0, 1
+        );
+        if (_meleeArcProgress <= 0 && targetProgress === 0) {
+            _meleeArc.visible = false;
+            return;
+        }
+        _meleeArc.visible = true;
+        if (_meleeArcProgress !== prevProgress || !_meleeArc.geometry) {
+            const fullHalf = THREE.MathUtils.degToRad(MELEE_ARC_FOV_DEG) * 0.5;
+            // smoothstep, not linear - reads as an ease in/out rather than a
+            // constant-speed sweep.
+            const eased = _meleeArcProgress * _meleeArcProgress * (3 - 2 * _meleeArcProgress);
+            _meleeArc.geometry.dispose();
+            _meleeArc.geometry = buildMeleeArcGeometry(fullHalf * eased);
+        }
+        _meleeArc.position.set(char.group.position.x, char.group.position.y + 0.03, char.group.position.z);
+        _meleeArc.quaternion.copy(char.group.quaternion);
+    }
+
     // ---- Warp buttons -------------------------------------------------
     // One circle per companion and bot, in its own body colour, stacked above
     // the lock buttons. Tapping one brings that agent to you.
@@ -23056,7 +23576,23 @@ export function startGame(CharacterClass) {
         // Slider is a whole-number percent (0-30) for a more readable label
         // than a 0.00-0.30 fraction; grassBaseSink itself stays a fraction.
         { id: 'grass-sink-slider', vId: 'grass-sink-val', func: v => window.grassBaseSink = v / 100, fix: 0, raw: true },
+        // Read straight off window.* by the per-frame uniform sync (see
+        // _grassWindUniforms above), so recording the value here is all
+        // that's needed - no rebuild, no material touch.
+        { id: 'grass-wind-strength-slider', vId: 'grass-wind-strength-val', func: v => window.grassWindStrength = v, fix: 2 },
+        { id: 'grass-wind-scale-slider', vId: 'grass-wind-scale-val', func: v => window.grassWindScale = v, fix: 2 },
+        { id: 'grass-wind-speed-slider', vId: 'grass-wind-speed-val', func: v => window.grassWindSpeed = v, fix: 2 },
         { id: 'flower-size-slider', vId: 'flower-size-val', func: v => window.flowerSize = v, fix: 2 },
+        // Read straight off window.* by the per-frame uniform sync (see
+        // _treeGroundUniforms above), so recording the value here is all
+        // that's needed - no rebuild, no material touch.
+        { id: 'tree-ground-start-slider', vId: 'tree-ground-start-val', func: v => window.treeGroundBlendStart = v, fix: 2 },
+        { id: 'tree-ground-height-slider', vId: 'tree-ground-height-val', func: v => window.treeGroundBlendHeight = v, fix: 2 },
+        { id: 'tree-ground-height-beige-slider', vId: 'tree-ground-height-beige-val', func: v => window.treeGroundBlendHeightBeige = v, fix: 2 },
+        { id: 'tree-ground-amt-slider', vId: 'tree-ground-amt-val', func: v => window.treeGroundBlendAmt = v, fix: 2 },
+        { id: 'tree-ground-dark-threshold-slider', vId: 'tree-ground-dark-threshold-val', func: v => window.treeGroundDarkThreshold = v, fix: 2 },
+        { id: 'tree-ground-dark-amt-slider', vId: 'tree-ground-dark-amt-val', func: v => window.treeGroundDarkAmt = v, fix: 2 },
+        { id: 'tree-ground-dark-power-slider', vId: 'tree-ground-dark-power-val', func: v => window.treeGroundDarkPower = v, fix: 2 },
         // Dither: all read straight off window.* by the per-frame uniform
         // update, so recording the value here is all that is needed - no
         // rebuild, no material touch.
@@ -23245,6 +23781,14 @@ export function startGame(CharacterClass) {
         const disp = document.getElementById('grass-alpha-val');
         if (disp) disp.innerText = v.toFixed(2);
     });
+    // Just the on/off master for the wind-sway shader patch (see
+    // _grassWindUniforms) - the per-frame sync reads window.grassWindEnabled
+    // directly, so this only has to record it.
+    const grassWindToggleEl = document.getElementById('toggle-grass-wind');
+    if (grassWindToggleEl) {
+        window.grassWindEnabled = grassWindToggleEl.checked;
+        grassWindToggleEl.addEventListener('change', e => { window.grassWindEnabled = e.target.checked; });
+    }
     const flowerAlphaEl = document.getElementById('flower-alpha-slider');
     if (flowerAlphaEl) flowerAlphaEl.addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -24094,11 +24638,18 @@ export function startGame(CharacterClass) {
     renderPrefabPanel();
     } // end setupEditorUI()
 
-    window.toonOutlineEnabled = false;
+    // On by default - the outline is part of the game's normal look now,
+    // not just a "Shader Test" comparison toggle, so both the live scene
+    // and the Viewer (which mirrors this same flag) need to start with it
+    // already showing instead of waiting on someone to find the checkbox.
+    window.toonOutlineEnabled = true;
     window.toonOutlineThickness = 0.02;
+    document.getElementById('toggle-toon-outline').checked = true;
+    char.setOutlineEnabled(true);
     document.getElementById('toggle-toon-outline').addEventListener('change', e => {
         window.toonOutlineEnabled = e.target.checked;
         char.setOutlineEnabled(e.target.checked);
+        Viewer.outlineMeshes.forEach(m => m.visible = e.target.checked);
     });
     document.getElementById('toon-smoothness-slider').addEventListener('input', e => {
         const v = parseFloat(e.target.value);
@@ -24110,6 +24661,7 @@ export function startGame(CharacterClass) {
         window.toonOutlineThickness = v;
         document.getElementById('toon-outline-thickness-val').textContent = v.toFixed(3);
         char.setOutlineThickness(v);
+        Viewer.outlineUniforms.forEach(u => u.value = v);
     });
 
     // Phong/Lambert shading test: static level geometry (ground, stairs,
@@ -24610,6 +25162,17 @@ export function startGame(CharacterClass) {
         _triGrassUniforms.uTriVColor.value = window.triGrassVColor;
         _triGrassUniforms.uTriUnderMul.value = window.triGrassUnderMul;
         _triGrassUniforms.uTriSideTint.value.set(window.triGrassSideTint);
+        _treeGroundUniforms.uTreeGroundStart.value = window.treeGroundBlendStart;
+        _treeGroundUniforms.uTreeGroundHeight.value = window.treeGroundBlendHeight;
+        _treeGroundUniforms.uTreeGroundHeightBeige.value = window.treeGroundBlendHeightBeige;
+        _treeGroundUniforms.uTreeGroundAmt.value = window.treeGroundBlendAmt;
+        _treeGroundUniforms.uTreeGroundDarkThreshold.value = window.treeGroundDarkThreshold;
+        _treeGroundUniforms.uTreeGroundDarkAmt.value = window.treeGroundDarkAmt;
+        _treeGroundUniforms.uTreeGroundDarkPower.value = window.treeGroundDarkPower;
+        _grassWindUniforms.uGrassWindOn.value = window.grassWindEnabled ? 1 : 0;
+        _grassWindUniforms.uGrassWindStrength.value = window.grassWindStrength;
+        _grassWindUniforms.uGrassWindScale.value = window.grassWindScale;
+        _grassWindUniforms.uGrassWindTime.value = clock.elapsedTime * window.grassWindSpeed;
         // Before the uniform upload below, never after: uWaterLevel and
         // uFoamLevel are both read straight off mesh.position.y, so moving the
         // surface afterwards would leave the foam a frame behind it.
@@ -25791,17 +26354,19 @@ export function startGame(CharacterClass) {
         // actually tuned for - direction is preserved exactly, only the
         // magnitude is snapped.
         const JOYSTICK_DEADZONE = 0.15, JOYSTICK_RUN_THRESHOLD = 0.7, JOYSTICK_WALK_MAG = 0.6;
-        // Keyboard input only reaches full run magnitude while shift is
-        // held - WASD alone used to always land at rawMag 1.0 (a single key
-        // is fully on or off, nothing in between), which meant keyboard
-        // players could never walk at all, only run. The touch joystick is
-        // untouched by this - its own analog deflection still decides walk
-        // vs run exactly as before.
+        // Keyboard defaults to full run magnitude, dropping to walk only
+        // while shift is held - WASD alone used to always land at rawMag 1.0
+        // (a single key is fully on or off, nothing in between), which meant
+        // keyboard players could never walk at all without this gate, only
+        // run; by request, shift is now the WALK (slow) modifier rather than
+        // the run one, reversed from how it first shipped. The touch
+        // joystick is untouched by this - its own analog deflection still
+        // decides walk vs run exactly as before, regardless of shift.
         const isKeyboardInput = Math.abs(input.left.x) <= 0.1 && Math.abs(input.left.y) <= 0.1 && (keys.w || keys.a || keys.s || keys.d);
         let moveMag = 0, curX = 0, curY = 0;
         if (rawMag > JOYSTICK_DEADZONE) {
             const wantsRun = rawMag >= JOYSTICK_RUN_THRESHOLD;
-            moveMag = (wantsRun && (!isKeyboardInput || keys.shift)) ? 1.0 : JOYSTICK_WALK_MAG;
+            moveMag = (wantsRun && (!isKeyboardInput || !keys.shift)) ? 1.0 : JOYSTICK_WALK_MAG;
             curX = (rawX / rawMag) * moveMag;
             curY = (rawY / rawMag) * moveMag;
         }
@@ -29057,6 +29622,7 @@ export function startGame(CharacterClass) {
         updateRewardOrbs(delta);
         recordPlayerTrail(delta);
         updateAiBots(delta);
+        updateMeleeRangeArc(delta);
         updateCompanions(delta);
         // After the companion has moved for this frame, so the crumb is where
         // it actually ended up.

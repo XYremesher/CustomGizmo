@@ -7,47 +7,47 @@ import { ASSET_BASE } from './asset_base.js';
 const BASE_URL = ASSET_BASE;
 
 const REMOTE_ANIMS = [
-    { name: 'idle', file: 'Idle.fbx' },
-    { name: 'walk', file: 'Walking.fbx' },
+    { name: 'idle', file: 'Animations/Locomotion/Idle.fbx' },
+    { name: 'walk', file: 'Animations/Locomotion/Walking.fbx' },
     // Strafes, so companions and bots can circle a target the way the player
     // does instead of moonwalking in the forward cycle. The two RUN files are
     // authored the opposite way round from the walks - the same crossed
     // mapping ClimbGame.html documents.
-    { name: 'strafe_left_walk', file: 'StrafeLeftWalk.fbx' },
-    { name: 'strafe_right_walk', file: 'StrafeRightWalk.fbx' },
-    { name: 'strafe_left_run', file: 'StrafeRunRight.fbx' },
-    { name: 'strafe_right_run', file: 'StrafeRunLeft.fbx' },
+    { name: 'strafe_left_walk', file: 'Animations/Locomotion/StrafeLeftWalk.fbx' },
+    { name: 'strafe_right_walk', file: 'Animations/Locomotion/StrafeRightWalk.fbx' },
+    { name: 'strafe_left_run', file: 'Animations/Locomotion/StrafeRunRight.fbx' },
+    { name: 'strafe_right_run', file: 'Animations/Locomotion/StrafeRunLeft.fbx' },
     // Walking backward. strafeStateFor can return this for a companion or a
     // bot backing off, and it was never in this list - so the request found no
     // action, fadeToAction returned early, and whatever was playing stayed on
     // while the body slid backwards. The player has loaded it all along.
-    { name: 'walk_backward', file: 'WalkingBackwards.fbx' },
-    { name: 'run', file: 'Running.fbx' },
-    { name: 'jump_start', file: 'JumpStart.fbx' },
-    { name: 'fall', file: 'JumpMidAir.fbx' },
-    { name: 'land', file: 'Landing.fbx' },
-    { name: 'hang_idle', file: 'Hanging%20Idle.fbx' },
+    { name: 'walk_backward', file: 'Animations/Locomotion/WalkingBackwards.fbx' },
+    { name: 'run', file: 'Animations/Locomotion/Running.fbx' },
+    { name: 'jump_start', file: 'Animations/Jumping/JumpStart.fbx' },
+    { name: 'fall', file: 'Animations/Jumping/JumpMidAir.fbx' },
+    { name: 'land', file: 'Animations/Jumping/Landing.fbx' },
+    { name: 'hang_idle', file: 'Animations/Climbing/Hanging%20Idle.fbx' },
     // Sideways shimmy clips - same two the local Character loads. Without
     // them a companion moving along a ledge slid in the idle hang pose,
     // which reads as being dragged rather than climbing.
-    { name: 'hang_left', file: 'Moving%20While%20Hanging%20Left.fbx' },
-    { name: 'hang_right', file: 'Moving%20While%20Hanging%20Right.fbx' },
-    { name: 'climb', file: 'Freehang%20Climb.fbx' },
-    { name: 'push', file: 'Push.fbx' },
-    { name: 'pull', file: 'Pull.fbx' },
-    { name: 'carry_start', file: 'Carry_Start.fbx' },
-    { name: 'carry', file: 'Carry.fbx' },
-    { name: 'throw', file: 'Throw.fbx' },
+    { name: 'hang_left', file: 'Animations/Climbing/Moving%20While%20Hanging%20Left.fbx' },
+    { name: 'hang_right', file: 'Animations/Climbing/Moving%20While%20Hanging%20Right.fbx' },
+    { name: 'climb', file: 'Animations/Climbing/Freehang%20Climb.fbx' },
+    { name: 'push', file: 'Animations/Interactions/Push.fbx' },
+    { name: 'pull', file: 'Animations/Interactions/Pull.fbx' },
+    { name: 'carry_start', file: 'Animations/Interactions/Carry_Start.fbx' },
+    { name: 'carry', file: 'Animations/Interactions/Carry.fbx' },
+    { name: 'throw', file: 'Animations/Interactions/Throw.fbx' },
     { name: 'punch_left', file: 'Combat/Punch_Left.fbx' },
     { name: 'punch_right', file: 'Combat/Punch_Right.fbx' },
     { name: 'punch_combo', file: 'Combat/Punch_Combo.fbx' },
     { name: 'punch_charge', file: 'Combat/Punch_Charge.fbx' },
-    { name: 'punch_walk', file: 'PunchWalk.fbx' },
-    { name: 'standup_front', file: 'StandUp_Front.fbx' },
-    { name: 'standup_back', file: 'StandUp_Back.fbx' },
-    { name: 'slide', file: 'Slide.fbx' },
-    { name: 'runup', file: 'RunUp.fbx' },
-    { name: 'stop_sliding', file: 'StopSliding.fbx' }
+    { name: 'punch_walk', file: 'Combat/PunchWalk.fbx' },
+    { name: 'standup_front', file: 'Animations/Jumping/StandUp_Front.fbx' },
+    { name: 'standup_back', file: 'Animations/Jumping/StandUp_Back.fbx' },
+    { name: 'slide', file: 'Animations/Locomotion/Slide.fbx' },
+    { name: 'runup', file: 'Animations/Locomotion/RunUp.fbx' },
+    { name: 'stop_sliding', file: 'Animations/Locomotion/StopSliding.fbx' }
 ];
 
 // punch_walk deliberately excluded - see the matching comment in
@@ -286,7 +286,7 @@ export class RemoteAvatar {
         this.hitRecoveryPush = 1;
 
         const loader = new FBXLoader();
-        loader.load(BASE_URL + 'StickMan.fbx', (object) => {
+        loader.load(BASE_URL + 'Character/StickMan.fbx', (object) => {
             this.fbxModel = object;
             object.scale.setScalar(0.0065);
 
